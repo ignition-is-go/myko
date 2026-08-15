@@ -1301,6 +1301,7 @@ disconnect operations reuse the existing `#[myko_item]` delete commands.
 ```rust
 client.connect_graph(&assignment);
 client.connect_graph_batch(&assignments);
+client.sync_graph_from(&tag_id, None, &assignments);
 client.ensure_graph(&assignment);
 client.disconnect_graph::<TagAssignment>(&assignment_id);
 ```
@@ -1308,11 +1309,13 @@ client.disconnect_graph::<TagAssignment>(&assignment_id);
 ```typescript
 client.sendCommand(TagAssignmentGraph.connect(assignment));
 client.sendCommand(TagAssignmentGraph.connectMany(assignments));
+client.sendCommand(TagAssignmentGraph.syncFrom(tagId, assignments));
 client.sendCommand(TagAssignmentGraph.ensure(assignment));
 client.sendCommand(TagAssignmentGraph.disconnect(assignmentId));
 
 const assignments = client.graph(TagAssignmentGraph);
 await assignments.connect(assignment, { timeoutMs: 5_000, signal });
+await assignments.from(tagId).sync(desiredAssignments, { timeoutMs: 5_000 });
 ```
 
 These helpers do not add a graph mutation wire format. They inherit ordinary
@@ -1321,6 +1324,17 @@ budgets, and the reduce → graph projection → persistence ordering. `ensure`
 requires `PairPolicy::Unique`; it uses the indexed pair reservation and repeats
 the scope-aware lookup after a concurrent uniqueness conflict, so simultaneous
 callers converge on the winning edge ID rather than requiring client retries.
+
+Generated `syncFrom`/`syncTo` commands make the supplied values the exact edge
+set at one endpoint (and, for scoped edges, one mandatory scope). The server
+plans against a graph generation and retries if a concurrent writer wins,
+making reconciliation authoritative rather than a racy convenience wrapper.
+Only changed values enter one mixed final-state reducer batch: unchanged edges
+are counted but not re-emitted, stale edges and desired upserts are validated
+together, unique-pair replacements may delete the predecessor and insert its
+replacement atomically, and subscribers observe one batch without an empty or
+partially replaced intermediate state. The result reports inserted, updated,
+deleted, and unchanged counts.
 
 Successful command completion is a causal barrier for already-live queries and
 reports on the same connection: synchronous reactive responses produced by the
@@ -1956,6 +1970,16 @@ run measured:
 | demand-driven endpoint | 1.672–1.731 ms | 89.6–91.2 µs | about 18.8× faster; scans the canonical store once for the endpoint set rather than once per endpoint |
 
 Both cases collapse 100 client/wire subscriptions to one logical subscription.
+
+`graph/endpoint_sync_100_of_1000` compares exact-set reconciliation for 100
+changes in a 1,000-edge endpoint. A short 2026-08-15 run measured server-side
+reconciliation at 668.6–674.1 µs and an in-process client diff followed by
+separate delete/set mutations at 603.8–630.5 µs. Reconciliation therefore costs
+about 9% more server CPU in this local case; its performance gain is end-to-end:
+one command and one reactive/persistence drain replace the subscribe/readiness
+round trip plus two mutation commands and eliminate the transient intermediate
+state. This benchmark intentionally records that tradeoff rather than treating
+reduced client latency and server CPU as the same metric.
 
 Windowed `fromMany` and `toMany` queries push eager-endpoint page selection into
 the graph index. The index performs a k-way merge over already sorted endpoint

@@ -24,7 +24,7 @@ use myko::{
         BenchUndirectedGraphEdgeId, EnsureBenchGraphEdge,
     },
     core::item::downcast_any_item_arc,
-    graph::GraphWindowQueryFactory,
+    graph::{GraphClientSync, GraphWindowQueryFactory},
     prelude::*,
     query::QueryRequest,
     request::RequestContext,
@@ -1370,6 +1370,94 @@ fn bench_authority_contention(c: &mut Criterion) {
     });
 }
 
+fn bench_endpoint_sync(c: &mut Criterion) {
+    let desired = edges(N)
+        .into_iter()
+        .enumerate()
+        .map(|(index, edge)| {
+            if index < N.saturating_sub(100) {
+                edge
+            } else {
+                BenchGraphEdge {
+                    id: BenchGraphEdgeId::from(format!("replacement-edge-{index}")),
+                    ..edge
+                }
+            }
+        })
+        .collect::<Vec<_>>();
+    let mut group = c.benchmark_group("graph/endpoint_sync_100_of_1000");
+    group.throughput(Throughput::Elements(u64::try_from(N).unwrap_or(u64::MAX)));
+    group.bench_function("server_reconcile", |b| {
+        b.iter_batched(
+            || {
+                let context = Arc::new(seeded(N));
+                let request = Arc::new(RequestContext::from_client(
+                    Uuid::new_v4().to_string().into(),
+                    "graph-sync-benchmark".into(),
+                    context.host_id,
+                ));
+                let command = <BenchGraphEdge as GraphClientSync>::sync_from_command(
+                    &BenchGraphNodeId::from("node-0"),
+                    None,
+                    &desired,
+                );
+                (context, request, command)
+            },
+            |(context, request, command)| {
+                black_box(
+                    command
+                        .execute(CommandContext::new(
+                            "SyncBenchGraphEdgesFrom".into(),
+                            request,
+                            context,
+                        ))
+                        .expect("reconcile endpoint"),
+                );
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.bench_function("client_diff_two_mutations", |b| {
+        b.iter_batched(
+            || (seeded(N), desired.clone()),
+            |(context, desired)| {
+                let current = context
+                    .edges::<BenchGraphEdge>()
+                    .from(&BenchGraphNodeId::from("node-0"))
+                    .expect("load endpoint");
+                let desired_ids = desired
+                    .iter()
+                    .map(WithId::id)
+                    .collect::<std::collections::HashSet<_>>();
+                let current_by_id = current
+                    .iter()
+                    .map(|edge| (edge.id(), edge))
+                    .collect::<std::collections::HashMap<_, _>>();
+                let deletes = current
+                    .iter()
+                    .filter(|edge| !desired_ids.contains(&edge.id()))
+                    .map(AsRef::as_ref)
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let upserts = desired
+                    .iter()
+                    .filter(|edge| {
+                        current_by_id
+                            .get(&edge.id())
+                            .is_none_or(|old| old.as_ref() != *edge)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                context.batch_del(&deletes).expect("delete stale edges");
+                context.batch_set(&upserts).expect("set desired edges");
+                black_box((deletes.len(), upserts.len()));
+            },
+            BatchSize::SmallInput,
+        );
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_zero_registration_overhead,
@@ -1389,5 +1477,6 @@ criterion_group!(
     bench_exact_pair_lookup,
     bench_endpoint_delete_plan,
     bench_authority_contention,
+    bench_endpoint_sync,
 );
 criterion_main!(benches);
