@@ -10,6 +10,7 @@
 use std::{hint::black_box, sync::Arc};
 
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
+use hyphae::{MapQuery, SelectExt};
 use myko::{
     bench_entities::{
         BenchForwardGraphEdge, BenchForwardGraphEdgeId, BenchGraphEdge, BenchGraphEdgeId,
@@ -284,6 +285,42 @@ fn bench_adjacency_lookup(c: &mut Criterion) {
     shape.finish();
 }
 
+fn bench_watch_initialization(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let source_count = 1_000_usize;
+    let context = context(true);
+    context
+        .batch_set(&nodes(edge_count.saturating_add(source_count)))
+        .expect("seed watch graph nodes");
+    context
+        .batch_set(&distributed_edges(edge_count, source_count))
+        .expect("seed watch graph edges");
+    let store = context.registry.get_or_create("BenchGraphEdge");
+    let from = BenchGraphNodeId::from("node-0");
+
+    let mut group = c.benchmark_group("graph/sparse_watch_initialization");
+    group.bench_function("canonical_select", |b| {
+        b.iter(|| {
+            let from = from.clone();
+            let selected = MapQuery::materialize((*store).clone().select(move |item| {
+                downcast_any_item_arc::<BenchGraphEdge>(item, "graph watch benchmark")
+                    .is_some_and(|edge| edge.from_id == from)
+            }));
+            black_box(selected.snapshot().len())
+        });
+    });
+    group.bench_function("index_seeded", |b| {
+        b.iter(|| {
+            let watched = context
+                .edges::<BenchGraphEdge>()
+                .watch_from(&from)
+                .expect("index-seeded watch");
+            black_box(watched.snapshot().len())
+        });
+    });
+    group.finish();
+}
+
 fn bench_exact_pair_lookup(c: &mut Criterion) {
     let pair_n = 10_000_usize;
     let context = seeded(pair_n);
@@ -418,6 +455,7 @@ criterion_group!(
     bench_zero_registration_overhead,
     bench_projection_write,
     bench_adjacency_lookup,
+    bench_watch_initialization,
     bench_exact_pair_lookup,
     bench_endpoint_delete_plan,
     bench_authority_contention,

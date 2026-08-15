@@ -813,6 +813,9 @@ struct GraphState {
     failed: bool,
 }
 
+type GraphWatchMap = hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>>;
+type GraphWatchDiff = hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>;
+
 /// Coherent in-memory projection over all registered edge item stores.
 ///
 /// The runtime is only constructed when graph registrations exist, preserving
@@ -1567,6 +1570,128 @@ impl GraphIndex {
             EndPosition::B => &edges.b,
         };
         map.get(endpoint).map_or_else(Vec::new, EdgeIds::ids)
+    }
+
+    fn watch_diff_at(
+        registration: &EdgeRegistration,
+        position: EndPosition,
+        endpoint: &EndpointValue,
+        diff: &GraphWatchDiff,
+    ) -> Option<GraphWatchDiff> {
+        let matches = |item: &Arc<dyn AnyItem>| {
+            (registration.extract)(item.as_ref()).is_ok_and(|endpoints| {
+                let candidate = match position {
+                    EndPosition::A => endpoints.a,
+                    EndPosition::B => endpoints.b,
+                };
+                candidate == *endpoint
+            })
+        };
+        match diff {
+            GraphWatchDiff::Initial { entries } => Some(GraphWatchDiff::Initial {
+                entries: entries
+                    .iter()
+                    .filter(|(_, item)| matches(item))
+                    .cloned()
+                    .collect(),
+            }),
+            GraphWatchDiff::Insert { key, value } => {
+                matches(value).then(|| GraphWatchDiff::Insert {
+                    key: key.clone(),
+                    value: value.clone(),
+                })
+            }
+            GraphWatchDiff::Remove { key, old_value } => {
+                matches(old_value).then(|| GraphWatchDiff::Remove {
+                    key: key.clone(),
+                    old_value: old_value.clone(),
+                })
+            }
+            GraphWatchDiff::Update {
+                key,
+                old_value,
+                new_value,
+            } => match (matches(old_value), matches(new_value)) {
+                (true, true) => Some(GraphWatchDiff::Update {
+                    key: key.clone(),
+                    old_value: old_value.clone(),
+                    new_value: new_value.clone(),
+                }),
+                (true, false) => Some(GraphWatchDiff::Remove {
+                    key: key.clone(),
+                    old_value: old_value.clone(),
+                }),
+                (false, true) => Some(GraphWatchDiff::Insert {
+                    key: key.clone(),
+                    value: new_value.clone(),
+                }),
+                (false, false) => None,
+            },
+            GraphWatchDiff::Batch { changes } => {
+                let changes = changes
+                    .iter()
+                    .filter_map(|change| {
+                        Self::watch_diff_at(registration, position, endpoint, change)
+                    })
+                    .collect::<Vec<_>>();
+                (!changes.is_empty()).then_some(GraphWatchDiff::Batch { changes })
+            }
+        }
+    }
+
+    /// Build a live canonical edge map with an index-seeded initial snapshot.
+    ///
+    /// The authority barrier closes the subscribe/snapshot race with the
+    /// canonical mutation pipeline. Eager endpoints seed in O(bucket) time;
+    /// demand-driven endpoints retain scan-equivalent behavior. Subsequent
+    /// canonical diffs are routed by their old/new endpoints without rescanning.
+    fn watch_at(
+        &self,
+        edge_type: &str,
+        position: EndPosition,
+        endpoint: &EndpointValue,
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
+        use hyphae::{Materialize, Signal, Watchable};
+
+        let registration = self
+            .registration(edge_type)
+            .context("edge type is not registered")?;
+        let store = self.registry.get_or_create(edge_type);
+        let _authority = self.lock_authority();
+        let result = GraphWatchMap::new();
+        let result_weak = result.downgrade();
+        let endpoint_for_diffs = endpoint.clone();
+        let store_keepalive = store.clone();
+        let diffs = store.diffs().materialize();
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let guard = diffs.subscribe(move |signal| {
+            let _ = &store_keepalive;
+            if first.load(std::sync::atomic::Ordering::Relaxed)
+                && first.swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                return;
+            }
+            let Signal::Value(diff) = signal else {
+                return;
+            };
+            let Some(result) = result_weak.upgrade() else {
+                return;
+            };
+            if let Some(diff) =
+                Self::watch_diff_at(registration, position, &endpoint_for_diffs, diff.as_ref())
+            {
+                result.apply_diff_owned(diff);
+            }
+        });
+        result.own(guard);
+
+        let entries = self
+            .edge_ids_at(edge_type, position, endpoint)
+            .into_iter()
+            .filter_map(|id| store.get_value(&id).map(|item| (id, item)))
+            .collect();
+        result.apply_diff_owned(GraphWatchDiff::Initial { entries });
+        Ok(result.lock())
     }
 
     #[must_use]
@@ -2368,21 +2493,11 @@ where
     fn watch_at(
         &self,
         position: EndPosition,
-        endpoint: EndpointValue,
+        endpoint: &EndpointValue,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
-        use hyphae::{MapQuery, SelectExt};
-
-        let registration = self
+        let selected = self
             .graph()?
-            .registration(E::ENTITY_NAME_STATIC)
-            .context("edge type is not registered")?;
-        let store = self.context.registry.get_or_create(E::ENTITY_NAME_STATIC);
-        let selected = MapQuery::materialize((*store).clone().select(move |item| {
-            (registration.extract)(item.as_ref()).is_ok_and(|ends| match position {
-                EndPosition::A => ends.a == endpoint,
-                EndPosition::B => ends.b == endpoint,
-            })
-        }));
+            .watch_at(E::ENTITY_NAME_STATIC, position, endpoint)?;
         Ok(crate::item::typed_map_arc_from_any_item(
             selected,
             "EdgeQuery::watch_at",
@@ -2394,10 +2509,8 @@ where
         &self,
         value: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
-        self.watch_at(
-            EndPosition::A,
-            <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(value)?,
-        )
+        let endpoint = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(value)?;
+        self.watch_at(EndPosition::A, &endpoint)
     }
 
     /// Reactive counterpart of [`Self::to`].
@@ -2405,10 +2518,8 @@ where
         &self,
         value: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
-        self.watch_at(
-            EndPosition::B,
-            <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(value)?,
-        )
+        let endpoint = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(value)?;
+        self.watch_at(EndPosition::B, &endpoint)
     }
 
     /// Qualified-address spelling for [`Self::watch_from`].
@@ -2831,6 +2942,58 @@ mod tests {
     }
 
     #[test]
+    fn eager_watch_is_seeded_and_tracks_edges_moving_in_and_out() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let watched_tag = Tag {
+            name: "watched".into(),
+            id: TagId::from("tag-watched"),
+        };
+        let other_tag = Tag {
+            name: "other".into(),
+            id: TagId::from("tag-other"),
+        };
+        let article = Article {
+            title: "Reactive adjacency".into(),
+            id: ArticleId::from("article-watched"),
+        };
+        let edge = ForwardIndexedAssignment {
+            tag_id: watched_tag.id.clone(),
+            article_id: article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("forward-watch-edge"),
+        };
+        assert!(context.set(&watched_tag).is_ok());
+        assert!(context.set(&other_tag).is_ok());
+        assert!(context.set(&article).is_ok());
+        assert!(context.set(&edge).is_ok());
+
+        let watched = context
+            .edges::<ForwardIndexedAssignment>()
+            .watch_from(&watched_tag.id)
+            .expect("index-seeded watch");
+        assert_eq!(
+            watched.snapshot(),
+            vec![(edge.id(), Arc::new(edge.clone()))]
+        );
+
+        let moved_away = ForwardIndexedAssignment {
+            tag_id: other_tag.id.clone(),
+            ..edge.clone()
+        };
+        assert!(context.set(&moved_away).is_ok());
+        assert!(watched.snapshot().is_empty());
+
+        assert!(context.set(&edge).is_ok());
+        assert_eq!(
+            watched.snapshot(),
+            vec![(edge.id(), Arc::new(edge.clone()))]
+        );
+
+        assert!(context.del(&edge).is_ok());
+        assert!(watched.snapshot().is_empty());
+    }
+
+    #[test]
     fn edge_extraction_preserves_the_ordinary_item_shape() {
         let edge_item = TagAssignment {
             tag_id: TagId::from("tag-1"),
@@ -2948,6 +3111,7 @@ mod tests {
 
     #[test]
     fn graph_runtime_enforces_and_queries_registered_edges() {
+        let _serial = crate::test_util::scheduler_test_serial();
         let context = context();
         let tag = Tag {
             name: "rust".into(),
