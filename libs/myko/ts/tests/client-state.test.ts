@@ -1,7 +1,12 @@
 import { describe, expect, test } from 'bun:test'
 import type { Subject } from 'rxjs'
 
-import { MykoClient, type Query, type View } from '../src/client.js'
+import {
+  MykoClient,
+  type Command,
+  type Query,
+  type View,
+} from '../src/client.js'
 
 type Item = { id: string; value: number }
 
@@ -13,6 +18,9 @@ type ClientInternals = {
   queryErrorRoutes: Map<string, Subject<unknown>>
   sharedQueryResponseStreams: Map<string, unknown>
   sharedViewResponseStreams: Map<string, unknown>
+  pendingCommands: Map<string, unknown>
+  messageQueue: Array<{ event: string; data: unknown }>
+  routeMessage: (message: unknown) => void
 }
 
 const query: Query<Item> = {
@@ -25,6 +33,11 @@ const view: View<Item> = {
   viewId: 'ItemsByView',
   viewItemType: 'Item',
   view: {},
+}
+
+const update: Command<number> = {
+  commandId: 'UpdateItem',
+  command: { id: 'a', value: 2 },
 }
 
 describe('MykoClient watchQueryState', () => {
@@ -180,5 +193,49 @@ describe('MykoClient watchQueryState', () => {
     stateSub.unsubscribe()
     expect(internals.activeViews.size).toBe(0)
     expect(internals.sharedViewResponseStreams.size).toBe(0)
+  })
+})
+
+describe('MykoClient command completion', () => {
+  test('routes responses directly and releases per-command state', async () => {
+    const client = new MykoClient()
+    const internals = client as unknown as ClientInternals
+    const completion = client.sendCommand(update)
+    const tx = [...internals.pendingCommands.keys()][0]
+
+    internals.routeMessage({
+      event: 'ws:m:command-response',
+      data: { tx, response: 2 },
+    })
+
+    expect(await completion).toBe(2)
+    expect(internals.pendingCommands.size).toBe(0)
+  })
+
+  test('bounds waiting with timeout and removes an unsent command', async () => {
+    const client = new MykoClient()
+    const internals = client as unknown as ClientInternals
+    const completion = client.sendCommand(update, { timeoutMs: 0 })
+
+    await expect(completion).rejects.toMatchObject({ name: 'TimeoutError' })
+    expect(internals.pendingCommands.size).toBe(0)
+    expect(internals.messageQueue).toHaveLength(0)
+  })
+
+  test('supports abort and rejects pending work on disconnect', async () => {
+    const client = new MykoClient()
+    const internals = client as unknown as ClientInternals
+    const controller = new AbortController()
+    const aborted = client.sendCommand(update, { signal: controller.signal })
+    controller.abort()
+    await expect(aborted).rejects.toMatchObject({ name: 'AbortError' })
+    expect(internals.pendingCommands.size).toBe(0)
+
+    const disconnected = client.sendCommand(update)
+    client.disconnect()
+    await expect(disconnected).rejects.toThrow(
+      'Disconnected before command completion',
+    )
+    expect(internals.pendingCommands.size).toBe(0)
   })
 })

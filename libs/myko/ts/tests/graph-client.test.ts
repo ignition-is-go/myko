@@ -61,7 +61,12 @@ const eagerGraph = {
 
 describe('bindGraph', () => {
   test('binds endpoint scope once across edge, related, and aggregate operations', async () => {
-    const calls: Array<{ kind: string; id: string; payload: unknown }> = []
+    const calls: Array<{
+      kind: string
+      id: string
+      payload: unknown
+      options?: unknown
+    }> = []
     const state = new LiveCollection<Edge>()
     const nodeState = new LiveCollection<Node>()
     const client = {
@@ -73,8 +78,13 @@ describe('bindGraph', () => {
         calls.push({ kind: 'report', id: value.reportId, payload: value.report })
         return of(3)
       },
-      sendCommand(value: Command<unknown>) {
-        calls.push({ kind: 'command', id: value.commandId, payload: value.command })
+      sendCommand(value: Command<unknown>, options?: unknown) {
+        calls.push({
+          kind: 'command',
+          id: value.commandId,
+          payload: value.command,
+          options,
+        })
         return Promise.resolve(true)
       },
     } as unknown as MykoClient
@@ -90,7 +100,7 @@ describe('bindGraph', () => {
     expect(await firstValueFrom(scoped.count())).toBe(3)
 
     const edge: Edge = { id: 'edge-a-b', fromId: 'node-a', toId: 'node-b' }
-    await bound.connect(edge)
+    await bound.connect(edge, { timeoutMs: 250 })
     expect(calls).toEqual([
       { kind: 'query', id: 'EdgeGraphFrom', payload: { endpoint: 'node-a' } },
       {
@@ -103,7 +113,12 @@ describe('bindGraph', () => {
         id: 'EdgeGraphCountFrom',
         payload: { endpoint: 'node-a' },
       },
-      { kind: 'command', id: 'ConnectEdge', payload: { edge } },
+      {
+        kind: 'command',
+        id: 'ConnectEdge',
+        payload: { edge },
+        options: { timeoutMs: 250 },
+      },
     ])
   })
 

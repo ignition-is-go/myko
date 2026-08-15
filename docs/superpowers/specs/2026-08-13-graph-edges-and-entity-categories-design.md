@@ -1274,6 +1274,9 @@ client.sendCommand(TagAssignmentGraph.connect(assignment));
 client.sendCommand(TagAssignmentGraph.connectMany(assignments));
 client.sendCommand(TagAssignmentGraph.ensure(assignment));
 client.sendCommand(TagAssignmentGraph.disconnect(assignmentId));
+
+const assignments = client.graph(TagAssignmentGraph);
+await assignments.connect(assignment, { timeoutMs: 5_000, signal });
 ```
 
 These helpers do not add a graph mutation wire format. They inherit ordinary
@@ -1282,6 +1285,14 @@ budgets, and the reduce → graph projection → persistence ordering. `ensure`
 requires `PairPolicy::Unique`; it uses the indexed pair reservation and repeats
 the scope-aware lookup after a concurrent uniqueness conflict, so simultaneous
 callers converge on the winning edge ID rather than requiring client retries.
+
+Successful command completion is a causal barrier for already-live queries and
+reports on the same connection: synchronous reactive responses produced by the
+command share one FIFO with its terminal response and are delivered first. The
+TypeScript client routes terminal responses through an O(1) transaction map
+rather than allocating two filtered RxJS subscriptions per command. Optional
+timeouts and abort signals bound the client-side wait; aborting cannot roll back
+a command that has already reached the server.
 
 Runtime-dependent cardinality remains in the typed application validator; Myko
 cannot infer it solely from static schema metadata.
@@ -1773,6 +1784,7 @@ warmup, 200 ms measurement) produced:
 | related-entity off-page update, 10,000 related entities / 50 retained | 781.42 µs materialized session window | 1.9712 µs pushed window | about 396× faster; the retained snapshot is not republished |
 | sparse undirected neighbors, 10,000 edges / 1,000 sources | 4.3837 ms whole-store join | 60.706 µs routed neighbor IDs | about 72.2× faster |
 | dense undirected hub, 10,000 of 10,001 entities adjacent | 17.649 ms non-deduplicating whole-store join | 7.7310 ms targeted adaptive distinct neighbor view | about 2.3× faster than the simpler baseline and 64.9% faster than the adaptive full-store hydration it replaced; preserves parallel-edge and self-loop deduplication |
+| 5,000 concurrent TypeScript command completions | 265.951 ms filtered RxJS subjects | 1.785 ms direct transaction map | about 149× faster routing; removes two subscriptions and filters per in-flight command |
 
 These are development-machine microbenchmarks, not release SLOs. They validate
 the intended shape of the trade: the non-participating path stays within noise,
@@ -2025,6 +2037,12 @@ The graph-edge feature is acceptable when:
 18. Bound generated graph scopes expose their static execution strategy and
     provide typed mutable-window helpers for edge and related-entity queries;
     older descriptors remain source-compatible and report an unknown plan.
+19. A successful graph mutation resolves only after its synchronously caused
+    responses for already-live queries/reports have been delivered on that
+    connection. Command waits use direct transaction routing, accept optional
+    timeout/abort controls, and release queued/client state on every terminal
+    path without changing existing command wire messages or required call-site
+    arguments.
 
 ## 24. Decision
 

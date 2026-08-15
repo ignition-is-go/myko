@@ -2,6 +2,7 @@ import { map, type Observable } from 'rxjs'
 
 import type {
   Command,
+  CommandOptions,
   CommandResult,
   MykoClient,
   Query,
@@ -149,18 +150,23 @@ export type BoundGraph<G> = {
   ) => BetweenScope<G>
   connect: (
     edge: MethodFirstArg<G, 'connect'>,
+    options?: CommandOptions,
   ) => CommandPromise<MethodResult<G, 'connect'>>
   connectMany: (
     edges: MethodFirstArg<G, 'connectMany'>,
+    options?: CommandOptions,
   ) => CommandPromise<MethodResult<G, 'connectMany'>>
   ensure: (
     edge: MethodFirstArg<G, 'ensure'>,
+    options?: CommandOptions,
   ) => CommandPromise<MethodResult<G, 'ensure'>>
   disconnect: (
     id: MethodFirstArg<G, 'disconnect'>,
+    options?: CommandOptions,
   ) => CommandPromise<MethodResult<G, 'disconnect'>>
   disconnectMany: (
     ids: MethodFirstArg<G, 'disconnectMany'>,
+    options?: CommandOptions,
   ) => CommandPromise<MethodResult<G, 'disconnectMany'>>
 } & BatchScopes<G>
 
@@ -272,8 +278,15 @@ export function bindGraph<G extends object>(
     )
   const reportState = (key: string, args: unknown[]) =>
     client.watchReport(factory(graph, key)(...args) as Report<unknown>)
-  const command = (key: string, args: unknown[]) =>
-    client.sendCommand(factory(graph, key)(...args) as Command<unknown>)
+  const command = (
+    key: string,
+    args: unknown[],
+    options?: CommandOptions,
+  ) =>
+    client.sendCommand(
+      factory(graph, key)(...args) as Command<unknown>,
+      options,
+    )
   const windowed = (key: string, args: unknown[], window: QueryWindow) =>
     client.watchQueryWindowed(
       factory(graph, key)(...args) as Query<unknown> & {
@@ -351,11 +364,16 @@ export function bindGraph<G extends object>(
       count: () => reportState('countBetween', [a, b]),
       exists: () => reportState('existsBetween', [a, b]),
     }),
-    connect: (edge: unknown) => command('connect', [edge]),
-    connectMany: (edges: unknown) => command('connectMany', [edges]),
-    ensure: (edge: unknown) => command('ensure', [edge]),
-    disconnect: (id: unknown) => command('disconnect', [id]),
-    disconnectMany: (ids: unknown) => command('disconnectMany', [ids]),
+    connect: (edge: unknown, options?: CommandOptions) =>
+      command('connect', [edge], options),
+    connectMany: (edges: unknown, options?: CommandOptions) =>
+      command('connectMany', [edges], options),
+    ensure: (edge: unknown, options?: CommandOptions) =>
+      command('ensure', [edge], options),
+    disconnect: (id: unknown, options?: CommandOptions) =>
+      command('disconnect', [id], options),
+    disconnectMany: (ids: unknown, options?: CommandOptions) =>
+      command('disconnectMany', [ids], options),
   }
   if ('fromMany' in graph) {
     bound.fromMany = (values: unknown) =>

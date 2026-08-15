@@ -47,6 +47,7 @@
     "url": "https://github.com/ignition-is-go/myko"
   },
   "scripts": {
+    "bench:command-routing": "bun benches/command-routing.ts",
     "bench:live-collection": "bun benches/live-collection.ts",
     "build": "tsc",
     "check": "tsc --noEmit --skipLibCheck",

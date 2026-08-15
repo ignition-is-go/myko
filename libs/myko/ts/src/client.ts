@@ -266,6 +266,14 @@ export type QueryWatchOptions = {
   window?: QueryWindow | null
 }
 
+/** Lifecycle controls for waiting on command completion. */
+export type CommandOptions = {
+  /** Stop waiting after this many milliseconds. Does not undo a command already sent. */
+  timeoutMs?: number
+  /** Stop waiting when aborted. Does not undo a command already sent. */
+  signal?: AbortSignal
+}
+
 export type QueryWindowInfo = {
   totalCount: number | null
   window: QueryWindow | null
@@ -332,6 +340,11 @@ interface ManagedSocket {
   reconnectOnClose: boolean
 }
 
+type PendingCommand = {
+  resolve: (message: CommandResponseMessage) => void
+  reject: (error: Error) => void
+}
+
 /**
  * Reactive WebSocket client for Myko servers with automatic failover.
  */
@@ -365,6 +378,7 @@ export class MykoClient {
   private queryErrorRoutes = new Map<string, Subject<QueryErrorMessage>>()
   private viewErrorRoutes = new Map<string, Subject<QueryErrorMessage>>()
   private reportErrorRoutes = new Map<string, Subject<ReportErrorMessage>>()
+  private pendingCommands = new Map<string, PendingCommand>()
 
   // Lighter-weight direct-callback routing for `subscribeReport` — avoids
   // allocating an RxJS Subject per anchor when the consumer just needs a
@@ -1525,7 +1539,22 @@ export class MykoClient {
   /** Send a command and wait for response */
   sendCommand<C extends Command<unknown>>(
     command: C,
+    options: CommandOptions = {},
   ): Promise<CommandResult<C>> {
+    if (
+      options.timeoutMs !== undefined &&
+      (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0)
+    ) {
+      return Promise.reject(
+        new RangeError('Command timeoutMs must be a finite non-negative number'),
+      )
+    }
+    if (options.signal?.aborted) {
+      const error = new Error('Command aborted before it was sent')
+      error.name = 'AbortError'
+      return Promise.reject(error)
+    }
+
     const tx = uuid()
 
     const wrappedCommand = {
@@ -1539,26 +1568,50 @@ export class MykoClient {
     }
 
     return new Promise<CommandResult<C>>((resolve, reject) => {
-      const responseSub = this.commandResponses
-        .pipe(filter((r) => r.data.tx === tx))
-        .subscribe((r) => {
-          cleanup()
-          resolve(r.data.response as CommandResult<C>)
-        })
-
-      const errorSub = this.commandErrors
-        .pipe(filter((r) => r.data.tx === tx))
-        .subscribe((r) => {
-          cleanup()
-          reject(new Error(r.data.message))
-        })
-
-      const cleanup = () => {
-        responseSub.unsubscribe()
-        errorSub.unsubscribe()
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      const onAbort = () => {
+        const error = new Error('Command aborted')
+        error.name = 'AbortError'
+        fail(error)
+      }
+      const cleanup = (removeQueuedCommand = false) => {
+        this.pendingCommands.delete(tx)
+        if (timeout !== undefined) clearTimeout(timeout)
+        options.signal?.removeEventListener('abort', onAbort)
+        if (removeQueuedCommand && this.messageQueue.length > 0) {
+          this.messageQueue = this.messageQueue.filter(
+            (message) => this.messageTx(message) !== tx,
+          )
+        }
+      }
+      const fail = (error: Error) => {
+        cleanup(true)
+        reject(error)
       }
 
-      this.send({ event: MykoEvent.Command, data: wrappedCommand })
+      this.pendingCommands.set(tx, {
+        resolve: (message) => {
+          cleanup()
+          resolve(message.data.response as CommandResult<C>)
+        },
+        reject: fail,
+      })
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      if (options.timeoutMs !== undefined) {
+        timeout = setTimeout(() => {
+          const error = new Error(
+            `Command timed out after ${options.timeoutMs}ms`,
+          )
+          error.name = 'TimeoutError'
+          fail(error)
+        }, options.timeoutMs)
+      }
+
+      try {
+        this.send({ event: MykoEvent.Command, data: wrappedCommand })
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)))
+      }
     })
   }
 
@@ -1620,6 +1673,7 @@ export class MykoClient {
   }
 
   private closeAllSockets(): void {
+    this.failPendingCommands(new Error('Disconnected before command completion'))
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer)
     this.reconnectTimers.clear()
     this.endpointSockets.clear()
@@ -1696,6 +1750,9 @@ export class MykoClient {
       this.endpointSockets.delete(endpointKey)
 
       if (this.currentServer === address) {
+        this.failPendingCommands(
+          new Error(`Connection closed before command completion: ${address}`),
+        )
         const next = this.getFirstOpenSocket()
         if (next) {
           this.setCurrentServer(
@@ -1870,9 +1927,15 @@ export class MykoClient {
         this.reportResponses.next(message)
         break
       case MykoEvent.CommandResponse:
+        this.pendingCommands
+          .get(message.data.tx)
+          ?.resolve(message as CommandResponseMessage)
         this.commandResponses.next(message as CommandResponseMessage)
         break
       case MykoEvent.CommandError:
+        this.pendingCommands
+          .get(message.data.tx)
+          ?.reject(new Error(message.data.message))
         this.commandErrors.next(message as CommandErrorMessage)
         break
       case MykoEvent.QueryError:
@@ -1951,11 +2014,18 @@ export class MykoClient {
     this.sendNow(message)
   }
 
+  private failPendingCommands(error: Error): void {
+    for (const pending of [...this.pendingCommands.values()]) {
+      pending.reject(error)
+    }
+  }
+
   private messageTx(message: MykoMessage): string | null {
     const data = (message as { data?: unknown }).data as
-      | { tx?: string }
+      | { tx?: string; command?: { tx?: string } }
       | undefined
-    return typeof data?.tx === 'string' ? data.tx : null
+    if (typeof data?.tx === 'string') return data.tx
+    return typeof data?.command?.tx === 'string' ? data.command.tx : null
   }
 
   private sendNow(message: MykoMessage): void {
