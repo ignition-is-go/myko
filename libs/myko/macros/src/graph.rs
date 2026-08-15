@@ -769,20 +769,27 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
         let edge_id = format_ident!("{}Id", edge_name);
         let from_query = format_ident!("{}GraphFrom", edge_name);
         let from_id_query = format_ident!("{}GraphFromId", edge_name);
+        let selected_from_query = format_ident!("{}GraphFromIds", edge_name);
         let from_many_query = format_ident!("{}GraphFromMany", edge_name);
         let to_query = format_ident!("{}GraphTo", edge_name);
         let to_id_query = format_ident!("{}GraphToId", edge_name);
+        let selected_to_query = format_ident!("{}GraphToIds", edge_name);
         let to_many_query = format_ident!("{}GraphToMany", edge_name);
         let between_query = format_ident!("{}GraphBetween", edge_name);
         let between_id_query = format_ident!("{}GraphBetweenId", edge_name);
+        let selected_between_query = format_ident!("{}GraphBetweenIds", edge_name);
         let from_common = graph_query_common(krate, &from_query, &edge_type);
         let from_id_common = graph_query_common(krate, &from_id_query, &edge_type);
+        let selected_from_common = graph_query_common(krate, &selected_from_query, &edge_type);
         let from_many_common = graph_query_common(krate, &from_many_query, &edge_type);
         let to_common = graph_query_common(krate, &to_query, &edge_type);
         let to_id_common = graph_query_common(krate, &to_id_query, &edge_type);
+        let selected_to_common = graph_query_common(krate, &selected_to_query, &edge_type);
         let to_many_common = graph_query_common(krate, &to_many_query, &edge_type);
         let between_common = graph_query_common(krate, &between_query, &edge_type);
         let between_id_common = graph_query_common(krate, &between_id_query, &edge_type);
+        let selected_between_common =
+            graph_query_common(krate, &selected_between_query, &edge_type);
 
         quote! {
             /// Ordinary Myko query for edges whose A endpoint matches `endpoint`.
@@ -912,6 +919,83 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                         source,
                         ctx.query.clone(),
                         ctx.query_context.query_context.clone(),
+                    ))
+                }
+            }
+
+            /// Direct-key query for selected edges whose A endpoint matches `endpoint`.
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+            #serde_rename_attr
+            pub struct #selected_from_query {
+                pub endpoint: #a_address,
+                pub ids: Vec<#edge_id>,
+            }
+
+            impl #selected_from_query {
+                #[must_use]
+                pub fn new(endpoint: #a_address, mut ids: Vec<#edge_id>) -> Self {
+                    ids.sort_unstable();
+                    ids.dedup();
+                    Self { endpoint, ids }
+                }
+            }
+
+            #selected_from_common
+
+            impl #krate::graph::GraphWindowQueryFactory for #selected_from_query {
+                fn window_cell_factory(
+                    _query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                    _registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                    _request: std::sync::Arc<#krate::request::RequestContext>,
+                    _server: std::sync::Arc<#krate::server::MykoServerContext>,
+                    _window: #krate::wire::QueryWindow,
+                ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                    Ok(None)
+                }
+            }
+
+            impl #krate::query::QueryHandler for #selected_from_query {
+                fn test_entity(ctx: #krate::query::QueryTestContext<Self>) -> bool {
+                    let actual_id = #krate::prelude::WithId::id(ctx.item.as_ref());
+                    if !ctx.query.ids.iter().any(|id| id.as_ref() == actual_id.as_ref()) {
+                        return false;
+                    }
+                    let Ok(expected) =
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint)
+                    else {
+                        return false;
+                    };
+                    <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&ctx.item.ends())
+                        .is_ok_and(|actual| actual.a == expected)
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                fn build_view(
+                    ctx: #krate::query::QueryBuildArgs<Self>,
+                ) -> Option<impl #krate::prelude::MapQuery<
+                    Key = std::sync::Arc<str>,
+                    Value = std::sync::Arc<dyn #krate::item::AnyItem>,
+                >>
+                where
+                    Self: Send + Sync + 'static,
+                {
+                    let expected =
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).ok()?;
+                    let store = ctx.query_context.registry().get_or_create(
+                        <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                    );
+                    let mut ids = ctx.query.ids.iter().cloned()
+                        .map(std::sync::Arc::<str>::from)
+                        .collect::<Vec<_>>();
+                    ids.sort_unstable();
+                    ids.dedup();
+                    let source = #krate::query::build_ids_source_map(&store, &ids);
+                    Some(#krate::query::filter_typed_source::<#edge_type, _>(
+                        source,
+                        move |item| {
+                            <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&item.ends())
+                                .is_ok_and(|actual| actual.a == expected)
+                        },
                     ))
                 }
             }
@@ -1115,6 +1199,83 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                         source,
                         ctx.query.clone(),
                         ctx.query_context.query_context.clone(),
+                    ))
+                }
+            }
+
+            /// Direct-key query for selected edges whose B endpoint matches `endpoint`.
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+            #serde_rename_attr
+            pub struct #selected_to_query {
+                pub endpoint: #b_address,
+                pub ids: Vec<#edge_id>,
+            }
+
+            impl #selected_to_query {
+                #[must_use]
+                pub fn new(endpoint: #b_address, mut ids: Vec<#edge_id>) -> Self {
+                    ids.sort_unstable();
+                    ids.dedup();
+                    Self { endpoint, ids }
+                }
+            }
+
+            #selected_to_common
+
+            impl #krate::graph::GraphWindowQueryFactory for #selected_to_query {
+                fn window_cell_factory(
+                    _query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                    _registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                    _request: std::sync::Arc<#krate::request::RequestContext>,
+                    _server: std::sync::Arc<#krate::server::MykoServerContext>,
+                    _window: #krate::wire::QueryWindow,
+                ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                    Ok(None)
+                }
+            }
+
+            impl #krate::query::QueryHandler for #selected_to_query {
+                fn test_entity(ctx: #krate::query::QueryTestContext<Self>) -> bool {
+                    let actual_id = #krate::prelude::WithId::id(ctx.item.as_ref());
+                    if !ctx.query.ids.iter().any(|id| id.as_ref() == actual_id.as_ref()) {
+                        return false;
+                    }
+                    let Ok(expected) =
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint)
+                    else {
+                        return false;
+                    };
+                    <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&ctx.item.ends())
+                        .is_ok_and(|actual| actual.b == expected)
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                fn build_view(
+                    ctx: #krate::query::QueryBuildArgs<Self>,
+                ) -> Option<impl #krate::prelude::MapQuery<
+                    Key = std::sync::Arc<str>,
+                    Value = std::sync::Arc<dyn #krate::item::AnyItem>,
+                >>
+                where
+                    Self: Send + Sync + 'static,
+                {
+                    let expected =
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).ok()?;
+                    let store = ctx.query_context.registry().get_or_create(
+                        <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                    );
+                    let mut ids = ctx.query.ids.iter().cloned()
+                        .map(std::sync::Arc::<str>::from)
+                        .collect::<Vec<_>>();
+                    ids.sort_unstable();
+                    ids.dedup();
+                    let source = #krate::query::build_ids_source_map(&store, &ids);
+                    Some(#krate::query::filter_typed_source::<#edge_type, _>(
+                        source,
+                        move |item| {
+                            <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&item.ends())
+                                .is_ok_and(|actual| actual.b == expected)
+                        },
                     ))
                 }
             }
@@ -1348,6 +1509,103 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 }
             }
 
+            /// Direct-key query for selected edges matching one exact A/B pair.
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+            #serde_rename_attr
+            pub struct #selected_between_query {
+                pub a: #a_address,
+                pub b: #b_address,
+                pub ids: Vec<#edge_id>,
+            }
+
+            impl #selected_between_query {
+                #[must_use]
+                pub fn new(a: #a_address, b: #b_address, mut ids: Vec<#edge_id>) -> Self {
+                    ids.sort_unstable();
+                    ids.dedup();
+                    Self { a, b, ids }
+                }
+            }
+
+            #selected_between_common
+
+            impl #krate::graph::GraphWindowQueryFactory for #selected_between_query {
+                fn window_cell_factory(
+                    _query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                    _registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                    _request: std::sync::Arc<#krate::request::RequestContext>,
+                    _server: std::sync::Arc<#krate::server::MykoServerContext>,
+                    _window: #krate::wire::QueryWindow,
+                ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                    Ok(None)
+                }
+            }
+
+            impl #krate::query::QueryHandler for #selected_between_query {
+                fn test_entity(ctx: #krate::query::QueryTestContext<Self>) -> bool {
+                    let actual_id = #krate::prelude::WithId::id(ctx.item.as_ref());
+                    if !ctx.query.ids.iter().any(|id| id.as_ref() == actual_id.as_ref()) {
+                        return false;
+                    }
+                    let Ok(a) =
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.a)
+                    else {
+                        return false;
+                    };
+                    let Ok(b) =
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.b)
+                    else {
+                        return false;
+                    };
+                    <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&ctx.item.ends())
+                        .is_ok_and(|actual| {
+                            (actual.a == a && actual.b == b)
+                                || (<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::SHAPE
+                                    == #krate::graph::EdgeShapeKind::Undirected
+                                    && actual.a == b
+                                    && actual.b == a)
+                        })
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                fn build_view(
+                    ctx: #krate::query::QueryBuildArgs<Self>,
+                ) -> Option<impl #krate::prelude::MapQuery<
+                    Key = std::sync::Arc<str>,
+                    Value = std::sync::Arc<dyn #krate::item::AnyItem>,
+                >>
+                where
+                    Self: Send + Sync + 'static,
+                {
+                    let a =
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.a).ok()?;
+                    let b =
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.b).ok()?;
+                    let store = ctx.query_context.registry().get_or_create(
+                        <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                    );
+                    let mut ids = ctx.query.ids.iter().cloned()
+                        .map(std::sync::Arc::<str>::from)
+                        .collect::<Vec<_>>();
+                    ids.sort_unstable();
+                    ids.dedup();
+                    let source = #krate::query::build_ids_source_map(&store, &ids);
+                    Some(#krate::query::filter_typed_source::<#edge_type, _>(
+                        source,
+                        move |item| {
+                            <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&item.ends())
+                                .is_ok_and(|actual| {
+                                    (actual.a == a && actual.b == b)
+                                        || (<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::SHAPE
+                                            == #krate::graph::EdgeShapeKind::Undirected
+                                            && actual.a == b
+                                            && actual.b == a)
+                                })
+                        },
+                    ))
+                }
+            }
+
             impl #krate::graph::GraphClientQueries for #edge_type {
                 type FromQuery = #from_query;
                 type ToQuery = #to_query;
@@ -1385,6 +1643,28 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     id: &Self::Id,
                 ) -> Self::BetweenIdQuery {
                     #between_id_query::new(a.clone(), b.clone(), id.clone())
+                }
+            }
+
+            impl #krate::graph::GraphClientExactBatchQueries for #edge_type {
+                type FromIdsQuery = #selected_from_query;
+                type ToIdsQuery = #selected_to_query;
+                type BetweenIdsQuery = #selected_between_query;
+
+                fn from_ids_query(endpoint: &#a_address, ids: &[Self::Id]) -> Self::FromIdsQuery {
+                    #selected_from_query::new(endpoint.clone(), ids.to_vec())
+                }
+
+                fn to_ids_query(endpoint: &#b_address, ids: &[Self::Id]) -> Self::ToIdsQuery {
+                    #selected_to_query::new(endpoint.clone(), ids.to_vec())
+                }
+
+                fn between_ids_query(
+                    a: &#a_address,
+                    b: &#b_address,
+                    ids: &[Self::Id],
+                ) -> Self::BetweenIdsQuery {
+                    #selected_between_query::new(a.clone(), b.clone(), ids.to_vec())
                 }
             }
 

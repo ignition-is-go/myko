@@ -38,6 +38,7 @@ use myko::{
 const N: usize = 1_000;
 type BenchGraphFromQuery = <BenchGraphEdge as GraphClientQueries>::FromQuery;
 type BenchGraphFromIdQuery = <BenchGraphEdge as GraphClientExactQueries>::FromIdQuery;
+type BenchGraphFromIdsQuery = <BenchGraphEdge as GraphClientExactBatchQueries>::FromIdsQuery;
 type BenchGraphFromManyQuery = <BenchGraphEdge as GraphClientBatchQueries>::FromManyQuery;
 type BenchGraphCountFromReport = <BenchGraphEdge as GraphClientAggregates>::CountFromReport;
 
@@ -768,6 +769,13 @@ fn bench_high_degree_exact_edge_initialization(c: &mut Criterion) {
         BenchGraphEdge::from_id_query(&from, &edge_id),
         request.tx.clone(),
     ));
+    let selected_ids = (9_900..10_000)
+        .map(|ordinal| BenchGraphEdgeId::from(format!("edge-{ordinal}")))
+        .collect::<Vec<_>>();
+    let exact_batch_query: Arc<dyn AnyQuery> = Arc::new(QueryRequest::with_tx(
+        BenchGraphEdge::from_ids_query(&from, &selected_ids),
+        request.tx.clone(),
+    ));
     let server = Arc::new(context.clone());
     let mut group = c.benchmark_group("graph/high_degree_exact_edge_initialization");
     group.bench_function("hydrate_endpoint_then_select", |b| {
@@ -791,6 +799,18 @@ fn bench_high_degree_exact_edge_initialization(c: &mut Criterion) {
                 Some(server.clone()),
             )
             .expect("direct-key graph query");
+            black_box(watched.snapshot().len())
+        });
+    });
+    group.bench_function("direct_100_keys_scoped_query", |b| {
+        b.iter(|| {
+            let watched = <BenchGraphFromIdsQuery as QueryFactory>::cell_factory(
+                exact_batch_query.clone(),
+                context.registry.clone(),
+                request.clone(),
+                Some(server.clone()),
+            )
+            .expect("direct-key graph batch query");
             black_box(watched.snapshot().len())
         });
     });

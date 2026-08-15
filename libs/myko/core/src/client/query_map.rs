@@ -158,6 +158,21 @@ impl MykoClient {
         self.watch_query_map_state(E::from_id_query(endpoint, id))
     }
 
+    /// Watch selected edges by typed ID, constrained to endpoint A, with work
+    /// proportional to the requested IDs rather than endpoint degree.
+    pub fn watch_graph_from_ids<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        ids: &[E::Id],
+    ) -> QueryMapWatch<E>
+    where
+        E: crate::graph::GraphClientExactBatchQueries + WithTypedId,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
+    {
+        self.watch_query_map_state(E::from_ids_query(endpoint, ids))
+    }
+
     /// Watch the distinct union of edges at several endpoint-A addresses with
     /// one wire subscription.
     pub fn watch_graph_from_many<E>(
@@ -197,6 +212,20 @@ impl MykoClient {
         <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
     {
         self.watch_query_map_state(E::to_id_query(endpoint, id))
+    }
+
+    /// Watch selected edges by typed ID, constrained to endpoint B.
+    pub fn watch_graph_to_ids<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        ids: &[E::Id],
+    ) -> QueryMapWatch<E>
+    where
+        E: crate::graph::GraphClientExactBatchQueries + WithTypedId,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
+    {
+        self.watch_query_map_state(E::to_ids_query(endpoint, ids))
     }
 
     /// Watch the distinct union of edges at several endpoint-B addresses with
@@ -356,6 +385,21 @@ impl MykoClient {
         <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
     {
         self.watch_query_map_state(E::between_id_query(a, b, id))
+    }
+
+    /// Watch selected edges by typed ID, constrained to one endpoint pair.
+    pub fn watch_graph_between_ids<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        ids: &[E::Id],
+    ) -> QueryMapWatch<E>
+    where
+        E: crate::graph::GraphClientExactBatchQueries + WithTypedId,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
+    {
+        self.watch_query_map_state(E::between_ids_query(a, b, ids))
     }
 
     /// Watch one ordered page of edges at endpoint A.

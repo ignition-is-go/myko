@@ -831,6 +831,34 @@ where
     ) -> Self::BetweenIdQuery;
 }
 
+/// Generated direct-key queries for selected edge IDs inside one endpoint
+/// scope.
+///
+/// This is separate from the single-ID and endpoint-batch traits so
+/// downstream manual implementations remain source-compatible.
+pub trait GraphClientExactBatchQueries: GraphEdge + crate::common::with_id::WithTypedId
+where
+    Self::Ends: TypedEdgeEnds,
+{
+    type FromIdsQuery: crate::query::QueryParams + crate::query::QueryItemType<Item = Self>;
+    type ToIdsQuery: crate::query::QueryParams + crate::query::QueryItemType<Item = Self>;
+    type BetweenIdsQuery: crate::query::QueryParams + crate::query::QueryItemType<Item = Self>;
+
+    fn from_ids_query(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        ids: &[Self::Id],
+    ) -> Self::FromIdsQuery;
+    fn to_ids_query(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+        ids: &[Self::Id],
+    ) -> Self::ToIdsQuery;
+    fn between_ids_query(
+        a: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+        ids: &[Self::Id],
+    ) -> Self::BetweenIdsQuery;
+}
+
 /// Generated query for typed entities reached from endpoint A.
 pub trait GraphClientTargetsFrom: GraphEdge
 where
@@ -4922,6 +4950,11 @@ mod tests {
         );
         assert!(
             handlers
+                .query("ForwardIndexedAssignmentGraphFromIds")
+                .is_some()
+        );
+        assert!(
+            handlers
                 .query("ForwardIndexedAssignmentGraphToId")
                 .is_some()
         );
@@ -4933,6 +4966,11 @@ mod tests {
         assert!(
             handlers
                 .query("ForwardIndexedAssignmentGraphBetweenId")
+                .is_some()
+        );
+        assert!(
+            handlers
+                .query("ForwardIndexedAssignmentGraphBetweenIds")
                 .is_some()
         );
         assert!(
@@ -5426,6 +5464,10 @@ mod tests {
             title: "Generated query".into(),
             id: ArticleId::from("article-query"),
         };
+        let other_article = Article {
+            title: "Other generated query".into(),
+            id: ArticleId::from("article-query-other"),
+        };
         let edge = ForwardIndexedAssignment {
             tag_id: tag.id.clone(),
             article_id: article.id.clone(),
@@ -5434,6 +5476,7 @@ mod tests {
         assert!(context.set(&tag).is_ok());
         assert!(context.set(&other_tag).is_ok());
         assert!(context.set(&article).is_ok());
+        assert!(context.set(&other_article).is_ok());
         assert!(context.set(&edge).is_ok());
 
         let request = || {
@@ -5489,6 +5532,26 @@ mod tests {
             ForwardIndexedAssignment::from_id_query(&other_tag.id, &edge.id),
             request(),
         );
+        let selected_ids = [
+            edge.id.clone(),
+            ForwardIndexedAssignmentId::from("missing-edge"),
+            edge.id.clone(),
+        ];
+        let canonical_from_ids = ForwardIndexedAssignment::from_ids_query(&tag.id, &selected_ids);
+        assert_eq!(canonical_from_ids.ids.len(), 2);
+        let from_ids = context.query_map_by_str(canonical_from_ids, request());
+        let to_ids = context.query_map_by_str(
+            ForwardIndexedAssignment::to_ids_query(&article.id, &selected_ids),
+            request(),
+        );
+        let between_ids = context.query_map_by_str(
+            ForwardIndexedAssignment::between_ids_query(&tag.id, &article.id, &selected_ids),
+            request(),
+        );
+        let wrong_scope_ids = context.query_map_by_str(
+            ForwardIndexedAssignment::from_ids_query(&other_tag.id, &selected_ids),
+            request(),
+        );
         assert_eq!(from.snapshot().len(), 1);
         assert_eq!(to.snapshot().len(), 1);
         assert_eq!(between.snapshot().len(), 1);
@@ -5496,6 +5559,22 @@ mod tests {
         assert_eq!(to_id.snapshot().len(), 1);
         assert_eq!(between_id.snapshot().len(), 1);
         assert!(wrong_scope_id.snapshot().is_empty());
+        assert_eq!(from_ids.snapshot().len(), 1);
+        assert_eq!(to_ids.snapshot().len(), 1);
+        assert_eq!(between_ids.snapshot().len(), 1);
+        assert!(wrong_scope_ids.snapshot().is_empty());
+
+        let later_selected = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: other_article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("missing-edge"),
+        };
+        assert!(context.set(&later_selected).is_ok());
+        assert_eq!(from_ids.snapshot().len(), 2);
+        assert_eq!(to_ids.snapshot().len(), 1);
+        assert_eq!(between_ids.snapshot().len(), 1);
+        assert!(context.del(&later_selected).is_ok());
+        assert_eq!(from_ids.snapshot().len(), 1);
 
         let moved = ForwardIndexedAssignment {
             tag_id: other_tag.id.clone(),
@@ -5509,6 +5588,10 @@ mod tests {
         assert_eq!(to_id.snapshot().len(), 1);
         assert!(between_id.snapshot().is_empty());
         assert_eq!(wrong_scope_id.snapshot().len(), 1);
+        assert!(from_ids.snapshot().is_empty());
+        assert_eq!(to_ids.snapshot().len(), 1);
+        assert!(between_ids.snapshot().is_empty());
+        assert_eq!(wrong_scope_ids.snapshot().len(), 1);
     }
 
     #[test]
@@ -5689,6 +5772,15 @@ mod tests {
             request(),
         );
         assert_eq!(reverse_exact.snapshot().len(), 1);
+        let reverse_exact_batch = context.query_map_by_str(
+            ArticleLink::between_ids_query(
+                &article_b.id,
+                &article_a.id,
+                &[first.id.clone(), ArticleLinkId::from("missing-link")],
+            ),
+            request(),
+        );
+        assert_eq!(reverse_exact_batch.snapshot().len(), 1);
 
         let window_request = request();
         let window_query: Arc<dyn crate::query::AnyQuery> =
