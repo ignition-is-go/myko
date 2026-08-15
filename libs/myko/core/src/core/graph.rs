@@ -674,6 +674,36 @@ where
         .graph_window_between::<E>(&a, &b, window)
 }
 
+/// Type-erased pushed-window helper used by generated related-entity queries.
+#[doc(hidden)]
+pub fn graph_related_window_query_at<Q, E, T, F>(
+    query: &std::sync::Arc<dyn crate::query::AnyQuery>,
+    registry: std::sync::Arc<crate::store::StoreRegistry>,
+    request: std::sync::Arc<crate::request::RequestContext>,
+    server: std::sync::Arc<crate::server::MykoServerContext>,
+    window: crate::wire::QueryWindow,
+    positions: (EndPosition, EndPosition),
+    endpoint: F,
+) -> Result<Option<crate::query::WindowedQuerySource>, String>
+where
+    Q: crate::query::QueryParams + Clone,
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    T: EntityEndpointSpec,
+    F: FnOnce(&Q) -> Result<EndpointValue>,
+{
+    let any_ref: &dyn std::any::Any = query.as_ref();
+    let query: crate::query::QueryRequest<Q> =
+        crate::common::downcast::downcast_request(any_ref, "graph related window payload")?;
+    let endpoint = endpoint(&query.query).map_err(|error| error.to_string())?;
+    let query_context = std::sync::Arc::new(crate::query::QueryContext { req: request });
+    let related = crate::query::QueryBuildContext::new(query_context, registry, Some(server))
+        .graph_related_at::<E, T>(positions.0, &endpoint, positions.1)?;
+    Ok(Some(crate::query::WindowedQuerySource::from_map(
+        &related, window,
+    )))
+}
+
 /// Generated client-query types for one registered edge item.
 ///
 /// The `#[myko_edge]` macro implements this trait, allowing generic Rust client
@@ -4774,6 +4804,115 @@ mod tests {
                 .edges::<ForwardIndexedAssignment>()
                 .from(&tag.id)
                 .is_ok_and(|edges| edges.is_empty())
+        );
+    }
+
+    #[test]
+    fn related_entity_windows_suppress_off_page_updates() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "windowed-related".into(),
+            id: TagId::from("tag-windowed-related"),
+        };
+        let article_a = Article {
+            title: "A".into(),
+            id: ArticleId::from("article-windowed-a"),
+        };
+        let article_b = Article {
+            title: "B".into(),
+            id: ArticleId::from("article-windowed-b"),
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article_a).is_ok());
+        assert!(context.set(&article_b).is_ok());
+        assert!(
+            context
+                .batch_set(&[
+                    ForwardIndexedAssignment {
+                        tag_id: tag.id.clone(),
+                        article_id: article_a.id.clone(),
+                        id: ForwardIndexedAssignmentId::from("windowed-related-a"),
+                    },
+                    ForwardIndexedAssignment {
+                        tag_id: tag.id.clone(),
+                        article_id: article_b.id.clone(),
+                        id: ForwardIndexedAssignmentId::from("windowed-related-b"),
+                    },
+                ])
+                .is_ok()
+        );
+
+        let request = Arc::new(crate::request::RequestContext::from_client(
+            "related-window-query".into(),
+            "related-window-client".into(),
+            context.host_id,
+        ));
+        let query: Arc<dyn crate::query::AnyQuery> = Arc::new(crate::query::QueryRequest::with_tx(
+            ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
+            request.tx.clone(),
+        ));
+        let source = <ForwardIndexedAssignmentGraphTargetsFrom as super::GraphWindowQueryFactory>::window_cell_factory(
+            query,
+            context.registry.clone(),
+            request,
+            Arc::new(context.clone()),
+            crate::wire::QueryWindow { offset: 0, limit: 1 },
+        )
+        .expect("related window factory")
+        .expect("related window pushdown");
+        let initial = source.snapshots().get();
+        assert_eq!(initial.total_count, 2);
+        assert_eq!(initial.entries.len(), 1);
+        assert_eq!(initial.entries[0].0, article_a.id());
+
+        let off_page_update = Article {
+            title: "B updated".into(),
+            ..article_b.clone()
+        };
+        assert!(context.set(&off_page_update).is_ok());
+        assert!(Arc::ptr_eq(&initial, &source.snapshots().get()));
+
+        let visible_article_update = Article {
+            title: "A updated".into(),
+            ..article_a
+        };
+        assert!(context.set(&visible_article_update).is_ok());
+        let visible_update = source.snapshots().get();
+        assert!(!Arc::ptr_eq(&initial, &visible_update));
+
+        let article_first = Article {
+            title: "first".into(),
+            id: ArticleId::from("article-windowed-0"),
+        };
+        let edge_first = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: article_first.id.clone(),
+            id: ForwardIndexedAssignmentId::from("windowed-related-first"),
+        };
+        assert!(context.set(&article_first).is_ok());
+        assert!(context.set(&edge_first).is_ok());
+        let shifted = source.snapshots().get();
+        assert_eq!(shifted.total_count, 3);
+        assert_eq!(shifted.entries[0].0, article_first.id());
+        assert!(context.del(&edge_first).is_ok());
+        let restored = source.snapshots().get();
+        assert_eq!(restored.total_count, 2);
+        assert_eq!(restored.entries[0].0, visible_article_update.id());
+
+        source.set_window(Some(crate::wire::QueryWindow {
+            offset: 1,
+            limit: 1,
+        }));
+        let second_page = source.snapshots().get();
+        assert_eq!(second_page.entries.len(), 1);
+        assert_eq!(second_page.entries[0].0, article_b.id());
+        assert!(
+            second_page.entries[0]
+                .1
+                .as_any()
+                .downcast_ref::<Article>()
+                .is_some_and(|article| article.title.as_ref() == "B updated")
         );
     }
 

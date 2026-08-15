@@ -143,13 +143,23 @@ fn graph_related_query_tokens(
 
         impl #krate::graph::GraphWindowQueryFactory for #query_ident {
             fn window_cell_factory(
-                _query: std::sync::Arc<dyn #krate::query::AnyQuery>,
-                _registry: std::sync::Arc<#krate::store::StoreRegistry>,
-                _request: std::sync::Arc<#krate::request::RequestContext>,
-                _server: std::sync::Arc<#krate::server::MykoServerContext>,
-                _window: #krate::wire::QueryWindow,
+                query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                request: std::sync::Arc<#krate::request::RequestContext>,
+                server: std::sync::Arc<#krate::server::MykoServerContext>,
+                window: #krate::wire::QueryWindow,
             ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
-                Ok(None)
+                #krate::graph::graph_related_window_query_at::<Self, #edge_type, #target_endpoint, _>(
+                    &query,
+                    registry,
+                    request,
+                    server,
+                    window,
+                    (#edge_position, #related_position),
+                    |query| <#source_endpoint as #krate::graph::EndpointSpec>::erase(
+                        &query.endpoint,
+                    ),
+                )
             }
         }
 

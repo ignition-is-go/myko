@@ -553,6 +553,101 @@ fn bench_high_degree_window_update_churn(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_related_window_update_churn(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let from = BenchGraphNodeId::from("node-0");
+    let off_page_id = BenchGraphNodeId::from("zz-related-off-page");
+
+    let baseline = seeded(edge_count);
+    let watched = seeded(edge_count);
+    for context in [&baseline, &watched] {
+        context
+            .set(&BenchGraphNode {
+                id: off_page_id.clone(),
+                ordinal: 0,
+            })
+            .expect("seed off-page related target");
+        context
+            .set(&BenchGraphEdge {
+                id: BenchGraphEdgeId::from("related-off-page-edge"),
+                from_id: from.clone(),
+                to_id: off_page_id.clone(),
+            })
+            .expect("seed off-page related edge");
+    }
+
+    let baseline_edges = baseline
+        .edges::<BenchGraphEdge>()
+        .watch_from(&from)
+        .expect("baseline related edge watch");
+    let baseline_related = myko::graph::graph_related_entity_watch::<
+        BenchGraphEdge,
+        ConcreteEndpoint<BenchGraphNode>,
+    >(&baseline_edges, baseline.registry.as_ref(), EndPosition::B);
+    let baseline_weak = baseline_related.downgrade();
+    let baseline_guard = baseline_related.subscribe_diffs(move |_| {
+        let Some(related) = baseline_weak.upgrade() else {
+            return;
+        };
+        let mut entries = related.snapshot();
+        entries.sort_unstable_by(|(left, _), (right, _)| left.cmp(right));
+        black_box(entries.into_iter().take(50).count());
+    });
+
+    let watched_edges = watched
+        .edges::<BenchGraphEdge>()
+        .watch_from(&from)
+        .expect("pushed related edge watch");
+    let watched_related = myko::graph::graph_related_entity_watch::<
+        BenchGraphEdge,
+        ConcreteEndpoint<BenchGraphNode>,
+    >(&watched_edges, watched.registry.as_ref(), EndPosition::B);
+    let source = myko::query::WindowedQuerySource::from_map(
+        &watched_related,
+        myko::wire::QueryWindow {
+            offset: 0,
+            limit: 50,
+        },
+    );
+    let off_page_key: Arc<str> = off_page_id.clone().into();
+    assert!(
+        source
+            .snapshots()
+            .get()
+            .entries
+            .iter()
+            .all(|(id, _)| id != &off_page_key)
+    );
+
+    let mut group = c.benchmark_group("graph/related_window_update_churn");
+    for (name, context) in [
+        ("materialized_session_window", baseline),
+        ("pushed_window_outside_page", watched),
+    ] {
+        let mut ordinal = 0_i64;
+        group.bench_function(name, |b| {
+            let _keep_alive = (
+                &baseline_guard,
+                &baseline_edges,
+                &baseline_related,
+                &source,
+                &watched_edges,
+                &watched_related,
+            );
+            b.iter(|| {
+                ordinal = ordinal.saturating_add(1);
+                context
+                    .set(&BenchGraphNode {
+                        id: off_page_id.clone(),
+                        ordinal,
+                    })
+                    .expect("update related entity outside retained page");
+            });
+        });
+    }
+    group.finish();
+}
+
 fn legacy_diff_matches_from(
     diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
     from: &BenchGraphNodeId,
@@ -839,6 +934,7 @@ criterion_group!(
     bench_related_entity_initialization,
     bench_high_degree_window_initialization,
     bench_high_degree_window_update_churn,
+    bench_related_window_update_churn,
     bench_watch_route_fanout,
     bench_exact_pair_lookup,
     bench_endpoint_delete_plan,
