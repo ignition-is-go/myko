@@ -7,15 +7,18 @@ export {
 	type CommandError,
 	type CommandSuccess,
 	type ReactiveQuery,
+	type ReactiveQueryState,
 	type ReactiveReport
 } from './services/vue-client';
 
 // Vue composables
 export {
 	useQuery,
+	useQueryState,
 	useReport,
 	useConnection,
 	type UseQueryReturn,
+	type UseQueryStateReturn,
 	type UseReportReturn,
 	type UseConnectionReturn
 } from './composables';

@@ -10,6 +10,7 @@ import {
 	ConnectionStatus,
 	MykoClient,
 	MykoProtocol,
+	applyCollectionDiff,
 	type ClientStats,
 	type Command,
 	type CommandResult,
@@ -449,16 +450,7 @@ export class SvelteMykoClient {
 
 			const subscription = this.client.watchQueryDiff(query).subscribe({
 				next: (diff) => {
-					if (diff.sequence === 0n) {
-						items.clear();
-					}
-					for (const id of diff.deletes) {
-						items.delete(id);
-					}
-					for (const item of diff.upserts) {
-						const typedItem = item as Item;
-						items.set(typedItem.id, typedItem);
-					}
+					applyCollectionDiff(items, diff as QueryDiff<Item>);
 					resolved = true;
 					error = undefined;
 				},
@@ -516,16 +508,7 @@ export class SvelteMykoClient {
 			error = undefined;
 			const subscription = this.client.watchViewDiff(view).subscribe({
 				next: (diff) => {
-					if (diff.sequence === 0n) {
-						items.clear();
-					}
-					for (const id of diff.deletes) {
-						items.delete(id);
-					}
-					for (const item of diff.upserts) {
-						const typedItem = item as Item;
-						items.set(typedItem.id, typedItem);
-					}
+					applyCollectionDiff(items, diff as QueryDiff<Item>);
 					resolved = true;
 					error = undefined;
 				},
