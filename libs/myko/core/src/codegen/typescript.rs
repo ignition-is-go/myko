@@ -60,6 +60,36 @@ fn endpoint_requirement_literal(requirement: EndpointRequirement) -> String {
     }
 }
 
+fn graph_related_query_class(
+    edge: &str,
+    suffix: &str,
+    entity_type: &str,
+    address_position: char,
+) -> String {
+    format!(
+        r#"export class {edge}Graph{suffix} {{
+  static readonly queryId = "{edge}Graph{suffix}" as const;
+  static readonly queryItemType = "{entity_type}" as const;
+  readonly queryId = "{edge}Graph{suffix}" as const;
+  readonly queryItemType = "{entity_type}" as const;
+  readonly query: {{ endpoint: {edge}{address_position}Address }};
+  declare readonly $res: () => __MykoGraph{entity_type}[];
+  constructor(endpoint: {edge}{address_position}Address) {{ this.query = {{ endpoint }}; }}
+}}"#,
+    )
+}
+
+fn graph_related_query_helper(
+    edge: &str,
+    helper: &str,
+    suffix: &str,
+    address_position: char,
+) -> String {
+    format!(
+        "  {helper}: (endpoint: {edge}{address_position}Address) => new {edge}Graph{suffix}(endpoint),\n"
+    )
+}
+
 fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String {
     let a = &edge.endpoints[0];
     let b = &edge.endpoints[1];
@@ -67,47 +97,39 @@ fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String
     let b_type = endpoint_address_type((b.requirement)(), (b.qualifier_type)().is_some());
     let related_queries = edge.related_queries();
     let targets_from = match (related_queries.targets_from, (b.requirement)()) {
-        (true, EndpointRequirement::Concrete(entity_type)) => format!(
-            r#"export class {edge}GraphTargetsFrom {{
-  static readonly queryId = "{edge}GraphTargetsFrom" as const;
-  static readonly queryItemType = "{entity_type}" as const;
-  readonly queryId = "{edge}GraphTargetsFrom" as const;
-  readonly queryItemType = "{entity_type}" as const;
-  readonly query: {{ endpoint: {edge}AAddress }};
-  declare readonly $res: () => __MykoGraph{entity_type}[];
-  constructor(endpoint: {edge}AAddress) {{ this.query = {{ endpoint }}; }}
-}}"#,
-            edge = edge.edge_type,
-        ),
+        (true, EndpointRequirement::Concrete(entity_type)) => {
+            graph_related_query_class(edge.edge_type, "TargetsFrom", entity_type, 'A')
+        }
         _ => String::new(),
     };
     let sources_to = match (related_queries.sources_to, (a.requirement)()) {
-        (true, EndpointRequirement::Concrete(entity_type)) => format!(
-            r#"export class {edge}GraphSourcesTo {{
-  static readonly queryId = "{edge}GraphSourcesTo" as const;
-  static readonly queryItemType = "{entity_type}" as const;
-  readonly queryId = "{edge}GraphSourcesTo" as const;
-  readonly queryItemType = "{entity_type}" as const;
-  readonly query: {{ endpoint: {edge}BAddress }};
-  declare readonly $res: () => __MykoGraph{entity_type}[];
-  constructor(endpoint: {edge}BAddress) {{ this.query = {{ endpoint }}; }}
-}}"#,
-            edge = edge.edge_type,
-        ),
+        (true, EndpointRequirement::Concrete(entity_type)) => {
+            graph_related_query_class(edge.edge_type, "SourcesTo", entity_type, 'B')
+        }
+        _ => String::new(),
+    };
+    let neighbors = match (edge.has_neighbor_query(), (a.requirement)()) {
+        (true, EndpointRequirement::Concrete(entity_type)) => {
+            graph_related_query_class(edge.edge_type, "Neighbors", entity_type, 'A')
+        }
         _ => String::new(),
     };
     let targets_from_helper = match (related_queries.targets_from, (b.requirement)()) {
-        (true, EndpointRequirement::Concrete(_)) => format!(
-            "  targetsFrom: (endpoint: {edge}AAddress) => new {edge}GraphTargetsFrom(endpoint),\n",
-            edge = edge.edge_type,
-        ),
+        (true, EndpointRequirement::Concrete(_)) => {
+            graph_related_query_helper(edge.edge_type, "targetsFrom", "TargetsFrom", 'A')
+        }
         _ => String::new(),
     };
     let sources_to_helper = match (related_queries.sources_to, (a.requirement)()) {
-        (true, EndpointRequirement::Concrete(_)) => format!(
-            "  sourcesTo: (endpoint: {edge}BAddress) => new {edge}GraphSourcesTo(endpoint),\n",
-            edge = edge.edge_type,
-        ),
+        (true, EndpointRequirement::Concrete(_)) => {
+            graph_related_query_helper(edge.edge_type, "sourcesTo", "SourcesTo", 'B')
+        }
+        _ => String::new(),
+    };
+    let neighbors_helper = match (edge.has_neighbor_query(), (a.requirement)()) {
+        (true, EndpointRequirement::Concrete(_)) => {
+            graph_related_query_helper(edge.edge_type, "neighbors", "Neighbors", 'A')
+        }
         _ => String::new(),
     };
     format!(
@@ -142,11 +164,12 @@ export class {edge}GraphBetween {{
 }}
 {targets_from}
 {sources_to}
+{neighbors}
 export const {edge}Graph = {{
   from: (endpoint: {edge}AAddress) => new {edge}GraphFrom(endpoint),
   to: (endpoint: {edge}BAddress) => new {edge}GraphTo(endpoint),
   between: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphBetween(a, b),
-{targets_from_helper}{sources_to_helper}  countFrom: (endpoint: {edge}AAddress) => new {edge}GraphCountFrom({{ endpoint }}),
+{targets_from_helper}{sources_to_helper}{neighbors_helper}  countFrom: (endpoint: {edge}AAddress) => new {edge}GraphCountFrom({{ endpoint }}),
   countTo: (endpoint: {edge}BAddress) => new {edge}GraphCountTo({{ endpoint }}),
   countBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphCountBetween({{ a, b }}),
   existsBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphExistsBetween({{ a, b }}),
@@ -1186,6 +1209,9 @@ mod tests {
         assert!(rendered.contains("export class ScopedTagAssignmentGraphTargetsFrom"));
         assert!(rendered.contains("targetsFrom: (endpoint: ScopedTagAssignmentAAddress)"));
         assert!(!rendered.contains("export class AliasedEndpointAssignmentGraphTargetsFrom"));
+        assert!(rendered.contains("export class ArticleLinkGraphNeighbors"));
+        assert!(rendered.contains("neighbors: (endpoint: ArticleLinkAAddress)"));
+        assert!(!rendered.contains("export class TagAssignmentGraphNeighbors"));
         assert!(rendered.contains("Article as __MykoGraphArticle"));
         assert!(rendered.contains("countFrom: (endpoint: TagAssignmentAAddress)"));
         assert!(rendered.contains("new TagAssignmentGraphCountFrom({ endpoint })"));

@@ -704,6 +704,35 @@ where
     )))
 }
 
+/// Type-erased pushed-window helper used by generated undirected neighbor queries.
+#[doc(hidden)]
+pub fn graph_neighbor_window_query_at<Q, E, T, F>(
+    query: &std::sync::Arc<dyn crate::query::AnyQuery>,
+    registry: std::sync::Arc<crate::store::StoreRegistry>,
+    request: std::sync::Arc<crate::request::RequestContext>,
+    server: std::sync::Arc<crate::server::MykoServerContext>,
+    window: crate::wire::QueryWindow,
+    endpoint: F,
+) -> Result<Option<crate::query::WindowedQuerySource>, String>
+where
+    Q: crate::query::QueryParams + Clone,
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    T: EntityEndpointSpec,
+    F: FnOnce(&Q) -> Result<EndpointValue>,
+{
+    let any_ref: &dyn std::any::Any = query.as_ref();
+    let query: crate::query::QueryRequest<Q> =
+        crate::common::downcast::downcast_request(any_ref, "graph neighbor window payload")?;
+    let endpoint = endpoint(&query.query).map_err(|error| error.to_string())?;
+    let query_context = std::sync::Arc::new(crate::query::QueryContext { req: request });
+    let neighbors = crate::query::QueryBuildContext::new(query_context, registry, Some(server))
+        .graph_neighbors_at::<E, T>(&endpoint)?;
+    Ok(Some(crate::query::WindowedQuerySource::from_map(
+        &neighbors, window,
+    )))
+}
+
 /// Generated client-query types for one registered edge item.
 ///
 /// The `#[myko_edge]` macro implements this trait, allowing generic Rust client
@@ -761,6 +790,22 @@ where
     ) -> Self::Query;
 }
 
+/// Generated query for distinct entities adjacent through an undirected edge.
+pub trait GraphClientNeighbors: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds<B = <Self::Ends as TypedEdgeEnds>::A>,
+    <Self::Ends as TypedEdgeEnds>::A: EntityEndpointSpec,
+{
+    type Query: crate::query::QueryParams
+        + crate::query::QueryItemType<
+            Item = <<Self::Ends as TypedEdgeEnds>::A as EntityEndpointSpec>::Entity,
+        >;
+
+    fn neighbors_query(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Self::Query;
+}
+
 struct RelatedTargetSubscription {
     references: usize,
     generation: u64,
@@ -774,6 +819,8 @@ struct RelatedEntityWatchState {
     edge_targets: HashMap<Arc<str>, Arc<str>>,
     targets: HashMap<Arc<str>, RelatedTargetSubscription>,
     next_generation: u64,
+    bulk_target_guard: Option<hyphae::SubscriptionGuard>,
+    bulk_targets: bool,
 }
 
 impl RelatedEntityWatchState {
@@ -844,16 +891,42 @@ where
     Some(entity.id)
 }
 
-fn apply_related_edge_diff<E, T>(
+fn neighbor_entity_id<E, T>(edge: &E, endpoint: &EndpointValue) -> Option<Arc<str>>
+where
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    T: EntityEndpointSpec,
+{
+    let endpoints = E::Ends::erase(&edge.ends()).ok()?;
+    let entity = if endpoints.a == *endpoint {
+        endpoints.b.entity
+    } else if endpoints.b == *endpoint {
+        endpoints.a.entity
+    } else {
+        return None;
+    };
+    if entity.entity_type.as_ref() != T::Entity::ENTITY_NAME_STATIC {
+        tracing::error!(
+            edge_type = E::ENTITY_NAME_STATIC,
+            expected = T::Entity::ENTITY_NAME_STATIC,
+            actual = %entity.entity_type,
+            "typed graph neighbor endpoint mismatch"
+        );
+        return None;
+    }
+    Some(entity.id)
+}
+
+fn apply_related_edge_diff<E, F>(
     diff: &hyphae::MapDiff<Arc<str>, Arc<E>>,
     state: &mut RelatedEntityWatchState,
     retired: &mut Vec<RetiredRelatedTarget>,
     added: &mut Vec<(Arc<str>, u64)>,
-    position: EndPosition,
+    related_id: &F,
 ) where
     E: GraphEdge,
     E::Ends: TypedEdgeEnds,
-    T: EntityEndpointSpec,
+    F: Fn(&E) -> Option<Arc<str>>,
 {
     match diff {
         hyphae::MapDiff::Initial { entries } => {
@@ -865,7 +938,7 @@ fn apply_related_edge_diff<E, T>(
             );
             state.edge_targets.clear();
             for (edge_id, edge) in entries {
-                if let Some(target_id) = related_entity_id::<E, T>(edge, position) {
+                if let Some(target_id) = related_id(edge) {
                     state.upsert_edge(edge_id.clone(), target_id, retired, added);
                 }
             }
@@ -876,7 +949,7 @@ fn apply_related_edge_diff<E, T>(
             new_value: value,
             ..
         } => {
-            if let Some(target_id) = related_entity_id::<E, T>(value, position) {
+            if let Some(target_id) = related_id(value) {
                 state.upsert_edge(key.clone(), target_id, retired, added);
             } else if let Some(target) = state.remove_edge(key) {
                 retired.push(target);
@@ -889,7 +962,7 @@ fn apply_related_edge_diff<E, T>(
         }
         hyphae::MapDiff::Batch { changes } => {
             for change in changes {
-                apply_related_edge_diff::<E, T>(change, state, retired, added, position);
+                apply_related_edge_diff(change, state, retired, added, related_id);
             }
         }
     }
@@ -957,19 +1030,116 @@ fn install_related_target_subscription(
     drop(guard);
 }
 
-/// Join one routed edge watch to only the distinct target IDs it currently
-/// references. Unrelated target rows are never scanned or subscribed.
-#[doc(hidden)]
-#[must_use]
-pub fn graph_related_entity_watch<E, T>(
+fn collect_bulk_target_actions(
+    diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+    state: &RelatedEntityWatchState,
+    upserts: &mut Vec<(Arc<str>, Arc<dyn AnyItem>)>,
+    removals: &mut Vec<Arc<str>>,
+) {
+    match diff {
+        hyphae::MapDiff::Initial { entries } => {
+            upserts.extend(
+                entries
+                    .iter()
+                    .filter(|(key, _)| state.targets.contains_key(key))
+                    .cloned(),
+            );
+        }
+        hyphae::MapDiff::Insert { key, value }
+        | hyphae::MapDiff::Update {
+            key,
+            new_value: value,
+            ..
+        } => {
+            if state.targets.contains_key(key) {
+                upserts.push((key.clone(), value.clone()));
+            }
+        }
+        hyphae::MapDiff::Remove { key, .. } => {
+            if state.targets.contains_key(key) {
+                removals.push(key.clone());
+            }
+        }
+        hyphae::MapDiff::Batch { changes } => {
+            for change in changes {
+                collect_bulk_target_actions(change, state, upserts, removals);
+            }
+        }
+    }
+}
+
+fn install_bulk_target_subscription(
+    state: &Arc<Mutex<RelatedEntityWatchState>>,
+    dispatch: &Arc<parking_lot::ReentrantMutex<()>>,
+    output: hyphae::WeakCellMap<Arc<str>, Arc<dyn AnyItem>>,
+    store: &crate::store::EntityStore,
+) {
+    let state_weak: Weak<Mutex<RelatedEntityWatchState>> = Arc::downgrade(state);
+    let dispatch_for_store = dispatch.clone();
+    let guard = store.subscribe_diffs(move |diff| {
+        let _dispatch_guard = dispatch_for_store.lock();
+        let Some(state) = state_weak.upgrade() else {
+            return;
+        };
+        let (upserts, removals) = {
+            let state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !state.bulk_targets {
+                return;
+            }
+            let mut upserts = Vec::new();
+            let mut removals = Vec::new();
+            collect_bulk_target_actions(diff, &state, &mut upserts, &mut removals);
+            (upserts, removals)
+        };
+        let Some(output) = output.upgrade() else {
+            return;
+        };
+        hyphae::batch(|| {
+            for key in removals {
+                output.remove(&key);
+            }
+            for (key, value) in upserts {
+                output.insert(key, value);
+            }
+        });
+    });
+
+    let mut guard = Some(guard);
+    let mut state = state
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if state.bulk_targets && state.bulk_target_guard.is_none() {
+        state.bulk_target_guard = guard.take();
+    }
+    drop(state);
+    drop(guard);
+}
+
+fn prefer_bulk_target_subscription(targets: usize, store: &crate::store::EntityStore) -> bool {
+    use hyphae::{Gettable, Materialize};
+
+    const MIN_BULK_TARGETS: usize = 1_024;
+    const MIN_DENSITY_DENOMINATOR: usize = 4;
+
+    if targets < MIN_BULK_TARGETS {
+        return false;
+    }
+    let store_size = store.size().materialize().get();
+    targets >= store_size.saturating_div(MIN_DENSITY_DENOMINATOR)
+}
+
+fn graph_related_entity_watch_by<E, T, F>(
     edges: &hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>,
     registry: &crate::store::StoreRegistry,
-    position: EndPosition,
+    related_id: F,
 ) -> crate::query::FilteredCellMap
 where
     E: GraphEdge,
     E::Ends: TypedEdgeEnds,
     T: EntityEndpointSpec,
+    F: Fn(&E) -> Option<Arc<str>> + Send + Sync + 'static,
 {
     let output = hyphae::CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
     let state = Arc::new(Mutex::new(RelatedEntityWatchState::default()));
@@ -987,37 +1157,100 @@ where
         let retired = hyphae::batch(|| {
             let mut retired = Vec::new();
             let mut added = Vec::new();
-            {
+            let mut bulk_guards = Vec::new();
+            let (activate_bulk, bulk_targets) = {
                 let mut state = state_for_edges
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                apply_related_edge_diff::<E, T>(
-                    diff,
-                    &mut state,
-                    &mut retired,
-                    &mut added,
-                    position,
-                );
-            }
+                apply_related_edge_diff(diff, &mut state, &mut retired, &mut added, &related_id);
+                let activate_bulk = !state.bulk_targets
+                    && prefer_bulk_target_subscription(state.targets.len(), &store_for_edges);
+                if activate_bulk {
+                    state.bulk_targets = true;
+                    bulk_guards.extend(
+                        state
+                            .targets
+                            .values_mut()
+                            .filter_map(|target| target.guard.take()),
+                    );
+                }
+                (activate_bulk, state.bulk_targets)
+            };
             for (target_id, _) in &retired {
                 output.remove(target_id);
             }
-            for (target_id, generation) in added {
-                install_related_target_subscription(
+            if activate_bulk {
+                install_bulk_target_subscription(
                     &state_for_edges,
                     &dispatch_for_edges,
                     output.downgrade(),
                     store_for_edges.as_ref(),
-                    &target_id,
-                    generation,
                 );
+            } else if bulk_targets {
+                for (target_id, _) in added {
+                    if let Some(value) = store_for_edges.get_value(&target_id) {
+                        output.insert(target_id, value);
+                    }
+                }
+            } else {
+                for (target_id, generation) in added {
+                    install_related_target_subscription(
+                        &state_for_edges,
+                        &dispatch_for_edges,
+                        output.downgrade(),
+                        store_for_edges.as_ref(),
+                        &target_id,
+                        generation,
+                    );
+                }
             }
+            drop(bulk_guards);
             retired
         });
         drop(retired);
     });
     output.own(edge_guard);
     output.lock()
+}
+
+/// Join one routed edge watch to the distinct target IDs it currently references.
+///
+/// Sparse views install keyed subscriptions. High-density views switch to one
+/// filtered store subscription to avoid paying per-key setup cost at hubs.
+#[doc(hidden)]
+#[must_use]
+pub fn graph_related_entity_watch<E, T>(
+    edges: &hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>,
+    registry: &crate::store::StoreRegistry,
+    position: EndPosition,
+) -> crate::query::FilteredCellMap
+where
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    T: EntityEndpointSpec,
+{
+    graph_related_entity_watch_by::<E, T, _>(edges, registry, move |edge| {
+        related_entity_id::<E, T>(edge, position)
+    })
+}
+
+/// Join an incident undirected edge watch to its distinct neighboring entities.
+#[doc(hidden)]
+#[must_use]
+pub fn graph_neighbor_entity_watch<E, T>(
+    edges: &hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>,
+    registry: &crate::store::StoreRegistry,
+    endpoint: &EndpointValue,
+) -> crate::query::FilteredCellMap
+where
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    T: EntityEndpointSpec,
+{
+    let endpoint = endpoint.clone();
+    graph_related_entity_watch_by::<E, T, _>(edges, registry, move |edge| {
+        neighbor_entity_id::<E, T>(edge, &endpoint)
+    })
 }
 
 /// Generated live aggregate reports for one registered edge item.
@@ -1122,6 +1355,13 @@ pub struct EdgeRelatedQueryRegistration {
 
 inventory::collect!(EdgeRelatedQueryRegistration);
 
+/// Marker emitted when the edge macro generated an undirected neighbor query.
+pub struct EdgeNeighborQueryRegistration {
+    pub edge_type: &'static str,
+}
+
+inventory::collect!(EdgeNeighborQueryRegistration);
+
 impl EdgeRegistration {
     /// Effective per-end projection policies, falling back to the legacy
     /// whole-edge policy for manually submitted registrations.
@@ -1144,6 +1384,14 @@ impl EdgeRegistration {
             .map_or_else(EdgeRelatedQueryAvailability::default, |registration| {
                 registration.availability
             })
+    }
+
+    /// Whether a generated undirected neighbor query exists for this edge.
+    #[must_use]
+    pub fn has_neighbor_query(&self) -> bool {
+        inventory::iter::<EdgeNeighborQueryRegistration>
+            .into_iter()
+            .any(|registration| registration.edge_type == self.edge_type)
     }
 }
 
@@ -4142,6 +4390,27 @@ mod tests {
         ForwardIndexedAssignmentId,
     };
 
+    mod article_link {
+        use super::{Article, ArticleId};
+        use crate::prelude::*;
+
+        #[myko_item]
+        pub struct ArticleLink {
+            pub article_a_id: ArticleId,
+            pub article_b_id: ArticleId,
+        }
+
+        #[myko_edge]
+        impl GraphEdge for ArticleLink {
+            type Ends = Undirected<ConcreteEndpoint<Article>, ConcreteEndpoint<Article>>;
+
+            fn ends(&self) -> (ArticleId, ArticleId) {
+                (self.article_a_id.clone(), self.article_b_id.clone())
+            }
+        }
+    }
+    use article_link::{ArticleLink, ArticleLinkGraphNeighbors, ArticleLinkId};
+
     mod aliased_endpoint_edge {
         use super::{Article, ArticleId, Tag, TagId};
         use crate::prelude::*;
@@ -4867,6 +5136,219 @@ mod tests {
     }
 
     #[test]
+    fn generated_undirected_neighbors_are_routed_live_and_deduplicated() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let article_a = Article {
+            title: "A".into(),
+            id: ArticleId::from("neighbor-a"),
+        };
+        let article_b = Article {
+            title: "B".into(),
+            id: ArticleId::from("neighbor-b"),
+        };
+        let article_c = Article {
+            title: "C".into(),
+            id: ArticleId::from("neighbor-c"),
+        };
+        let unrelated = Article {
+            title: "unrelated".into(),
+            id: ArticleId::from("neighbor-unrelated"),
+        };
+        assert!(
+            context
+                .batch_set(&[
+                    article_a.clone(),
+                    article_b.clone(),
+                    article_c.clone(),
+                    unrelated.clone(),
+                ])
+                .is_ok()
+        );
+
+        let first = ArticleLink {
+            article_a_id: article_a.id.clone(),
+            article_b_id: article_b.id.clone(),
+            id: ArticleLinkId::from("neighbor-edge-first"),
+        };
+        let parallel = ArticleLink {
+            article_a_id: article_b.id.clone(),
+            article_b_id: article_a.id.clone(),
+            id: ArticleLinkId::from("neighbor-edge-parallel"),
+        };
+        let self_loop = ArticleLink {
+            article_a_id: article_a.id.clone(),
+            article_b_id: article_a.id.clone(),
+            id: ArticleLinkId::from("neighbor-edge-self"),
+        };
+        let third = ArticleLink {
+            article_a_id: article_a.id.clone(),
+            article_b_id: article_c.id.clone(),
+            id: ArticleLinkId::from("neighbor-edge-third"),
+        };
+        assert!(
+            context
+                .batch_set(&[first.clone(), parallel.clone(), self_loop.clone(), third,])
+                .is_ok()
+        );
+
+        let request = || {
+            Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "graph-neighbor-test".into(),
+                context.host_id,
+            ))
+        };
+        let neighbors = context.query_map_by_str(
+            ArticleLinkGraphNeighbors::new(article_a.id.clone()),
+            request(),
+        );
+        assert_eq!(neighbors.snapshot().len(), 3);
+        assert!(neighbors.get_value(&article_a.id()).is_some());
+        assert!(neighbors.get_value(&article_b.id()).is_some());
+        assert!(neighbors.get_value(&article_c.id()).is_some());
+
+        let reverse = context.query_map_by_str(
+            ArticleLinkGraphNeighbors::new(article_b.id.clone()),
+            request(),
+        );
+        assert_eq!(reverse.snapshot().len(), 1);
+        assert!(reverse.get_value(&article_a.id()).is_some());
+
+        let window_request = request();
+        let window_query: Arc<dyn crate::query::AnyQuery> =
+            Arc::new(crate::query::QueryRequest::with_tx(
+                ArticleLinkGraphNeighbors::new(article_a.id.clone()),
+                window_request.tx.clone(),
+            ));
+        let window =
+            <ArticleLinkGraphNeighbors as super::GraphWindowQueryFactory>::window_cell_factory(
+                window_query,
+                context.registry.clone(),
+                window_request,
+                Arc::new(context.clone()),
+                crate::wire::QueryWindow {
+                    offset: 0,
+                    limit: 1,
+                },
+            )
+            .expect("neighbor window factory")
+            .expect("neighbor window pushdown");
+        assert_eq!(window.snapshots().get().total_count, 3);
+        assert_eq!(window.snapshots().get().entries.len(), 1);
+
+        let diffs = Arc::new(AtomicUsize::new(0));
+        let diffs_for_watch = diffs.clone();
+        let _guard = neighbors.subscribe_diffs(move |_| {
+            diffs_for_watch.fetch_add(1, Ordering::SeqCst);
+        });
+        diffs.store(0, Ordering::SeqCst);
+        assert!(
+            context
+                .set(&Article {
+                    title: "still unrelated".into(),
+                    ..unrelated
+                })
+                .is_ok()
+        );
+        assert_eq!(diffs.load(Ordering::SeqCst), 0);
+
+        assert!(
+            context
+                .set(&Article {
+                    title: "B updated".into(),
+                    ..article_b.clone()
+                })
+                .is_ok()
+        );
+        assert_eq!(diffs.load(Ordering::SeqCst), 1);
+
+        assert!(context.del(&first).is_ok());
+        assert!(neighbors.get_value(&article_b.id()).is_some());
+        assert!(context.del(&parallel).is_ok());
+        assert!(neighbors.get_value(&article_b.id()).is_none());
+        assert!(context.del(&self_loop).is_ok());
+        assert!(neighbors.get_value(&article_a.id()).is_none());
+    }
+
+    #[test]
+    fn dense_undirected_neighbors_switch_to_bulk_target_updates() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let center = Article {
+            title: "center".into(),
+            id: ArticleId::from("dense-neighbor-center"),
+        };
+        assert!(context.set(&center).is_ok());
+
+        let neighbors = (0..1_024)
+            .map(|ordinal| Article {
+                title: format!("neighbor-{ordinal}").into(),
+                id: ArticleId::from(format!("dense-neighbor-{ordinal}")),
+            })
+            .collect::<Vec<_>>();
+        let edges = neighbors
+            .iter()
+            .enumerate()
+            .map(|(ordinal, neighbor)| ArticleLink {
+                article_a_id: if ordinal % 2 == 0 {
+                    center.id.clone()
+                } else {
+                    neighbor.id.clone()
+                },
+                article_b_id: if ordinal % 2 == 0 {
+                    neighbor.id.clone()
+                } else {
+                    center.id.clone()
+                },
+                id: ArticleLinkId::from(format!("dense-neighbor-edge-{ordinal}")),
+            })
+            .collect::<Vec<_>>();
+        assert!(context.batch_set(&neighbors).is_ok());
+        assert!(context.batch_set(&edges).is_ok());
+        let article_store = context.registry.get_or_create(Article::ENTITY_NAME_STATIC);
+        assert!(super::prefer_bulk_target_subscription(
+            neighbors.len(),
+            article_store.as_ref()
+        ));
+
+        let view = context.query_map_by_str(
+            ArticleLinkGraphNeighbors::new(center.id.clone()),
+            Arc::new(crate::request::RequestContext::from_client(
+                "dense-neighbor-query".into(),
+                "dense-neighbor-client".into(),
+                context.host_id,
+            )),
+        );
+        assert_eq!(view.snapshot().len(), neighbors.len());
+
+        let diffs = Arc::new(AtomicUsize::new(0));
+        let diffs_for_watch = diffs.clone();
+        let _guard = view.subscribe_diffs(move |_| {
+            diffs_for_watch.fetch_add(1, Ordering::SeqCst);
+        });
+        diffs.store(0, Ordering::SeqCst);
+        assert!(
+            context
+                .set(&Article {
+                    title: "center updated".into(),
+                    ..center
+                })
+                .is_ok()
+        );
+        assert_eq!(diffs.load(Ordering::SeqCst), 0);
+
+        let first_neighbor = Article {
+            title: "first updated".into(),
+            ..neighbors[0].clone()
+        };
+        assert!(context.set(&first_neighbor).is_ok());
+        assert_eq!(diffs.load(Ordering::SeqCst), 1);
+        assert!(context.del(&edges[0]).is_ok());
+        assert_eq!(view.snapshot().len(), neighbors.len().saturating_sub(1));
+    }
+
+    #[test]
     fn related_entity_output_can_reenter_graph_mutation() {
         let _serial = crate::test_util::scheduler_test_serial();
         let context = context();
@@ -5042,6 +5524,8 @@ mod tests {
             MykoClient::watch_graph_targets_from::<ForwardIndexedAssignment>;
         let sources_to: fn(&MykoClient, &ArticleId) -> QueryMapWatch<Tag> =
             MykoClient::watch_graph_sources_to::<ForwardIndexedAssignment>;
+        let neighbors: fn(&MykoClient, &ArticleId) -> QueryMapWatch<Article> =
+            MykoClient::watch_graph_neighbors::<ArticleLink>;
         let between: fn(
             &MykoClient,
             &TagId,
@@ -5070,6 +5554,24 @@ mod tests {
         )
             -> crate::client::WindowedQueryWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_between_windowed::<ForwardIndexedAssignment>;
+        let targets_from_windowed: fn(
+            &MykoClient,
+            &TagId,
+            crate::wire::QueryWindow,
+        ) -> crate::client::WindowedQueryWatch<Article> =
+            MykoClient::watch_graph_targets_from_windowed::<ForwardIndexedAssignment>;
+        let sources_to_windowed: fn(
+            &MykoClient,
+            &ArticleId,
+            crate::wire::QueryWindow,
+        ) -> crate::client::WindowedQueryWatch<Tag> =
+            MykoClient::watch_graph_sources_to_windowed::<ForwardIndexedAssignment>;
+        let neighbors_windowed: fn(
+            &MykoClient,
+            &ArticleId,
+            crate::wire::QueryWindow,
+        ) -> crate::client::WindowedQueryWatch<Article> =
+            MykoClient::watch_graph_neighbors_windowed::<ArticleLink>;
         let count_from: fn(
             &MykoClient,
             &TagId,
@@ -5097,10 +5599,14 @@ mod tests {
             to,
             targets_from,
             sources_to,
+            neighbors,
             between,
             from_windowed,
             to_windowed,
             between_windowed,
+            targets_from_windowed,
+            sources_to_windowed,
+            neighbors_windowed,
             count_from,
             count_to,
             count_between,

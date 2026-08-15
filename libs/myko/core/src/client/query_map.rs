@@ -158,8 +158,8 @@ impl MykoClient {
 
     /// Watch distinct typed entities reached from endpoint A.
     ///
-    /// The server subscribes only to the routed edge bucket and the target IDs
-    /// present in that bucket; unrelated entities do not participate.
+    /// The server follows the routed edge bucket and only publishes target IDs
+    /// present in it, adapting subscription strategy for dense hubs.
     pub fn watch_graph_targets_from<E>(
         &self,
         endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
@@ -201,6 +201,28 @@ impl MykoClient {
             >,
     {
         self.watch_query_map_state(E::sources_to_query(endpoint))
+    }
+
+    /// Watch distinct typed entities adjacent through an undirected edge.
+    pub fn watch_graph_neighbors<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+    ) -> QueryMapWatch<
+        <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
+    >
+    where
+        E: crate::graph::GraphClientNeighbors,
+        E::Ends: crate::graph::TypedEdgeEnds<B = <E::Ends as crate::graph::TypedEdgeEnds>::A>,
+        <E::Ends as crate::graph::TypedEdgeEnds>::A: crate::graph::EntityEndpointSpec,
+        <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity:
+            WithTypedId,
+        <<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity as WithTypedId>::Id:
+            hyphae::IdFor<
+                <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
+                MapKey = Arc<str>,
+            >,
+    {
+        self.watch_query_map_state(E::neighbors_query(endpoint))
     }
 
     /// Watch edges matching one exact endpoint pair through the generated
@@ -256,6 +278,54 @@ impl MykoClient {
         E::Ends: crate::graph::TypedEdgeEnds,
     {
         self.watch_query_windowed(E::between_query(a, b), window)
+    }
+
+    /// Watch one ordered page of distinct typed entities reached from endpoint A.
+    pub fn watch_graph_targets_from_windowed<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        window: QueryWindow,
+    ) -> WindowedQueryWatch<
+        <<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EntityEndpointSpec>::Entity,
+    >
+    where
+        E: crate::graph::GraphClientTargetsFrom,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E::Ends as crate::graph::TypedEdgeEnds>::B: crate::graph::EntityEndpointSpec,
+    {
+        self.watch_query_windowed(E::targets_from_query(endpoint), window)
+    }
+
+    /// Watch one ordered page of distinct typed entities that reach endpoint B.
+    pub fn watch_graph_sources_to_windowed<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        window: QueryWindow,
+    ) -> WindowedQueryWatch<
+        <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
+    >
+    where
+        E: crate::graph::GraphClientSourcesTo,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E::Ends as crate::graph::TypedEdgeEnds>::A: crate::graph::EntityEndpointSpec,
+    {
+        self.watch_query_windowed(E::sources_to_query(endpoint), window)
+    }
+
+    /// Watch one ordered page of distinct entities adjacent through an undirected edge.
+    pub fn watch_graph_neighbors_windowed<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        window: QueryWindow,
+    ) -> WindowedQueryWatch<
+        <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
+    >
+    where
+        E: crate::graph::GraphClientNeighbors,
+        E::Ends: crate::graph::TypedEdgeEnds<B = <E::Ends as crate::graph::TypedEdgeEnds>::A>,
+        <E::Ends as crate::graph::TypedEdgeEnds>::A: crate::graph::EntityEndpointSpec,
+    {
+        self.watch_query_windowed(E::neighbors_query(endpoint), window)
     }
 
     /// Watch the live number of edges at endpoint A without transferring edge

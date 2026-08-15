@@ -170,6 +170,39 @@ impl QueryBuildContext {
         ))
     }
 
+    /// Build a routed live view of the distinct entities adjacent through an
+    /// undirected edge type.
+    #[doc(hidden)]
+    pub fn graph_neighbors_at<E, T>(
+        &self,
+        endpoint: &crate::graph::EndpointValue,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        T: crate::graph::EntityEndpointSpec,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        let edges = graph
+            .watch_incident(E::ENTITY_NAME_STATIC, endpoint)
+            .map_err(|error| error.to_string())?;
+        let edges = crate::item::typed_map_arc_from_any_item::<E>(
+            edges,
+            "QueryBuildContext::graph_neighbors_at",
+        );
+        Ok(crate::graph::graph_neighbor_entity_watch::<E, T>(
+            &edges,
+            self.registry.as_ref(),
+            endpoint,
+        ))
+    }
+
     /// Build an index-seeded exact-pair graph watch for generated edge queries.
     #[doc(hidden)]
     pub fn graph_watch_between<E>(
