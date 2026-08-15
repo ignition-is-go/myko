@@ -20,7 +20,7 @@ use std::{
 
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable, Materialize, Mutable, Watchable,
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, MapDiff, Materialize, Mutable, Watchable,
     WeakCellMap,
 };
 use serde::de::DeserializeOwned;
@@ -149,9 +149,20 @@ struct TransitionKey {
     content_hash: u64,
 }
 
+enum PendingMutationKind {
+    Uniform {
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+    },
+    Replace {
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        expected_graph_generation: Option<u64>,
+    },
+}
+
 struct PendingMutation {
-    items: Vec<Arc<dyn AnyItem>>,
-    change: MEventType,
+    kind: PendingMutationKind,
     origin: Origin,
     mode: EdgeApplyMode,
     depth: usize,
@@ -849,6 +860,42 @@ impl MykoServerContext {
         self.submit_mutation(items, MEventType::DEL, Origin::Local)
     }
 
+    /// Atomically apply disjoint typed upserts and deletions as one final-state
+    /// reactive diff while retaining authoritative validation, causal loop
+    /// protection, and reduce-before-persist ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, reduction, or persistence fails.
+    pub fn replace_batch_any(
+        &self,
+        upserts: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+        deletes: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+    ) -> Result<(), PersistError> {
+        self.submit_replace_mutation(
+            upserts.into_iter().collect(),
+            deletes.into_iter().collect(),
+            Origin::Local,
+        )
+    }
+
+    /// Apply one mixed replacement only when the graph has not changed since
+    /// the caller planned it. A `false` result is a retry signal; no canonical
+    /// or projected state was changed.
+    pub(crate) fn replace_batch_any_if_graph_generation(
+        &self,
+        upserts: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+        deletes: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+        expected_graph_generation: u64,
+    ) -> Result<bool, PersistError> {
+        self.submit_replace_mutation_inner(
+            upserts.into_iter().collect(),
+            deletes.into_iter().collect(),
+            Origin::Local,
+            Some(expected_graph_generation),
+        )
+    }
+
     /// Apply pre-built raw events immediately (type-erased import path),
     /// bypassing the WS-ingest time-window buffer: each event is parsed to its
     /// typed item, then reduced + cascaded. Returns the number applied.
@@ -1207,8 +1254,119 @@ impl MykoServerContext {
                     .max_observed_depth
                     .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
                 state.queue.push_back(PendingMutation {
-                    items: accepted,
-                    change,
+                    kind: PendingMutationKind::Uniform {
+                        items: accepted,
+                        change,
+                    },
+                    origin,
+                    mode,
+                    depth,
+                    chain,
+                });
+            }
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn enqueue_causal_replace(
+        &self,
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        origin: Origin,
+        requested_mode: EdgeApplyMode,
+        expected_graph_generation: Option<u64>,
+    ) -> Result<(), PersistError> {
+        let Some(first) = upserts.first().or_else(|| deletes.first()).cloned() else {
+            return Ok(());
+        };
+        let limits = *self
+            .causal_limits
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        CAUSAL_STATE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(state) = slot.as_mut() else {
+                return Err(Self::causal_error(
+                    first.as_ref(),
+                    "internal causal state was not initialized".to_string(),
+                ));
+            };
+            let mode = state.current_mode.unwrap_or(requested_mode);
+            let depth = state
+                .current_depth
+                .map_or(0, |depth| depth.saturating_add(1));
+            let mut chain = state.current_chain.clone();
+            chain.push(format!("{origin:?}:REPLACE@{depth}"));
+            if depth > limits.max_depth {
+                self.causal_counters
+                    .budget_exhaustions
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(Self::causal_error(
+                    first.as_ref(),
+                    format!(
+                        "root={} exceeded max depth {}: {}",
+                        state.root_tx,
+                        limits.max_depth,
+                        chain.join(" -> ")
+                    ),
+                ));
+            }
+
+            let mut accept = |items: Vec<Arc<dyn AnyItem>>, change| {
+                let mut accepted = Vec::with_capacity(items.len());
+                for item in items {
+                    let key = Self::transition_key(item.as_ref(), change);
+                    if !state.seen.insert(key) {
+                        self.causal_counters
+                            .duplicate_transitions_suppressed
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            root_tx = %state.root_tx,
+                            entity_type = item.entity_type(),
+                            id = %item.id(),
+                            ?change,
+                            chain = %chain.join(" -> "),
+                            "suppressed repeated causal transition"
+                        );
+                        continue;
+                    }
+                    if depth > 0 {
+                        state.derived_count = state.derived_count.saturating_add(1);
+                        if state.derived_count > limits.max_derived_mutations {
+                            self.causal_counters
+                                .budget_exhaustions
+                                .fetch_add(1, Ordering::Relaxed);
+                            return Err(Self::causal_error(
+                                item.as_ref(),
+                                format!(
+                                    "root={} exceeded derived mutation budget {}: {}",
+                                    state.root_tx,
+                                    limits.max_derived_mutations,
+                                    chain.join(" -> ")
+                                ),
+                            ));
+                        }
+                        self.causal_counters
+                            .derived_mutations
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    accepted.push(item);
+                }
+                Ok(accepted)
+            };
+            let deletes = accept(deletes, MEventType::DEL)?;
+            let upserts = accept(upserts, MEventType::SET)?;
+            if !upserts.is_empty() || !deletes.is_empty() {
+                self.causal_counters
+                    .max_observed_depth
+                    .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
+                state.queue.push_back(PendingMutation {
+                    kind: PendingMutationKind::Replace {
+                        upserts,
+                        deletes,
+                        expected_graph_generation,
+                    },
                     origin,
                     mode,
                     depth,
@@ -1290,21 +1448,136 @@ impl MykoServerContext {
                     pending
                 });
                 let Some(pending) = pending else { break };
-                if pending.items.len() == 1 {
-                    let Some(item) = pending.items.into_iter().next() else {
-                        continue;
-                    };
-                    self.emit_one(item, pending.change, pending.origin, pending.mode)?;
-                } else {
-                    self.emit_grouped(
-                        &pending.items,
-                        pending.change,
-                        pending.origin,
-                        pending.mode,
-                    )?;
+                match pending.kind {
+                    PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
+                        let Some(item) = items.into_iter().next() else {
+                            continue;
+                        };
+                        self.emit_one(item, change, pending.origin, pending.mode)?;
+                    }
+                    PendingMutationKind::Uniform { items, change } => {
+                        self.emit_grouped(&items, change, pending.origin, pending.mode)?;
+                    }
+                    PendingMutationKind::Replace {
+                        upserts,
+                        deletes,
+                        expected_graph_generation,
+                    } => {
+                        let applied = self.emit_replace_grouped(
+                            &upserts,
+                            &deletes,
+                            pending.origin,
+                            pending.mode,
+                            expected_graph_generation,
+                        )?;
+                        debug_assert!(applied, "unconditional replacement must apply");
+                    }
                 }
             }
             Ok(())
+        })();
+        CAUSAL_STATE.with(|slot| drop(slot.borrow_mut().take()));
+        result
+    }
+
+    fn submit_replace_mutation(
+        &self,
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        let applied = self.submit_replace_mutation_inner(upserts, deletes, origin, None)?;
+        debug_assert!(applied, "unconditional replacement must apply");
+        Ok(())
+    }
+
+    fn submit_replace_mutation_inner(
+        &self,
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        origin: Origin,
+        expected_graph_generation: Option<u64>,
+    ) -> Result<bool, PersistError> {
+        if upserts.is_empty() && deletes.is_empty() {
+            return Ok(true);
+        }
+        if CAUSAL_STATE.with(|slot| slot.borrow().is_some()) {
+            if expected_graph_generation.is_some() {
+                return Ok(false);
+            }
+            self.enqueue_causal_replace(
+                upserts,
+                deletes,
+                origin,
+                EdgeApplyMode::Authoritative,
+                None,
+            )?;
+            return Ok(true);
+        }
+
+        self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
+        CAUSAL_STATE.with(|slot| {
+            *slot.borrow_mut() = Some(CausalState {
+                root_tx: Uuid::new_v4(),
+                queue: VecDeque::new(),
+                seen: HashSet::new(),
+                derived_count: 0,
+                current_depth: None,
+                current_mode: None,
+                current_chain: Vec::new(),
+            });
+        });
+
+        let result = (|| {
+            self.enqueue_causal_replace(
+                upserts,
+                deletes,
+                origin,
+                EdgeApplyMode::Authoritative,
+                expected_graph_generation,
+            )?;
+            loop {
+                let pending = CAUSAL_STATE.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let state = slot.as_mut()?;
+                    let pending = state.queue.pop_front();
+                    if let Some(pending) = &pending {
+                        state.current_depth = Some(pending.depth);
+                        state.current_mode = Some(pending.mode);
+                        state.current_chain.clone_from(&pending.chain);
+                    }
+                    pending
+                });
+                let Some(pending) = pending else { break };
+                match pending.kind {
+                    PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
+                        let Some(item) = items.into_iter().next() else {
+                            continue;
+                        };
+                        self.emit_one(item, change, pending.origin, pending.mode)?;
+                    }
+                    PendingMutationKind::Uniform { items, change } => {
+                        self.emit_grouped(&items, change, pending.origin, pending.mode)?;
+                    }
+                    PendingMutationKind::Replace {
+                        upserts,
+                        deletes,
+                        expected_graph_generation,
+                    } => {
+                        let applied = self.emit_replace_grouped(
+                            &upserts,
+                            &deletes,
+                            pending.origin,
+                            pending.mode,
+                            expected_graph_generation,
+                        )?;
+                        if !applied {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            Ok(true)
         })();
         CAUSAL_STATE.with(|slot| drop(slot.borrow_mut().take()));
         result
@@ -1610,6 +1883,214 @@ impl MykoServerContext {
             self.apply_effects(group, change, origin, true)?;
         }
         self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade)
+    }
+
+    /// Mixed final-state batch used by authoritative graph reconciliation.
+    /// Every entity type emits one `MapDiff::Batch`, even when that type has
+    /// both deletions and upserts.
+    #[allow(clippy::too_many_lines)]
+    fn emit_replace_grouped(
+        &self,
+        upserts: &[Arc<dyn AnyItem>],
+        deletes: &[Arc<dyn AnyItem>],
+        origin: Origin,
+        mode: EdgeApplyMode,
+        expected_graph_generation: Option<u64>,
+    ) -> Result<bool, PersistError> {
+        let Some(first_item) = upserts.first().or_else(|| deletes.first()) else {
+            return Ok(true);
+        };
+        let mut seen = HashSet::new();
+        for item in deletes.iter().chain(upserts) {
+            if !seen.insert((item.entity_type(), item.id())) {
+                return Err(Self::graph_error(
+                    item.as_ref(),
+                    "replacement batch contains the same entity ID more than once",
+                ));
+            }
+        }
+
+        let coordinated_graph = self.graph_index.as_ref().filter(|graph| {
+            deletes
+                .iter()
+                .any(|item| graph.coordinates(item.as_ref(), MEventType::DEL))
+                || upserts
+                    .iter()
+                    .any(|item| graph.coordinates(item.as_ref(), MEventType::SET))
+        });
+        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        if let (Some(graph), Some(expected)) = (coordinated_graph, expected_graph_generation)
+            && graph.generation() != expected
+        {
+            return Ok(false);
+        }
+        let mut old_by_key = HashMap::new();
+        let mut effective_deletes = Vec::with_capacity(deletes.len());
+        let mut graph_cascades = Vec::new();
+        for item in deletes {
+            let old = self.canonical_item(item.as_ref());
+            if old.is_none() {
+                old_by_key.insert((item.entity_type(), item.id()), None);
+                continue;
+            }
+            if let Some(graph) = coordinated_graph {
+                graph_cascades.extend(
+                    graph
+                        .endpoint_delete_plan(&crate::graph::EntityRef::new(
+                            item.entity_type(),
+                            item.id(),
+                        ))
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?
+                        .cascade_edges,
+                );
+            }
+            old_by_key.insert((item.entity_type(), item.id()), old);
+            effective_deletes.push(item.clone());
+        }
+        for item in upserts {
+            old_by_key.insert(
+                (item.entity_type(), item.id()),
+                self.canonical_item(item.as_ref()),
+            );
+        }
+        if let Some(graph) = coordinated_graph {
+            graph
+                .preflight_replace_batch(upserts, &effective_deletes, mode)
+                .map_err(|error| Self::graph_error(first_item.as_ref(), error))?;
+        }
+
+        let graph_watch_changes = coordinated_graph
+            .filter(|graph| graph.has_watch_subscribers())
+            .map_or_else(Vec::new, |graph| {
+                effective_deletes
+                    .iter()
+                    .filter(|item| graph.registration(item.entity_type()).is_some())
+                    .filter_map(|item| {
+                        old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .cloned()
+                            .flatten()
+                            .map(|old| (Some(old), None))
+                    })
+                    .chain(
+                        upserts
+                            .iter()
+                            .filter(|item| graph.registration(item.entity_type()).is_some())
+                            .map(|item| {
+                                let old = old_by_key
+                                    .get(&(item.entity_type(), item.id()))
+                                    .cloned()
+                                    .flatten();
+                                (old, Some(item.clone()))
+                            }),
+                    )
+                    .collect()
+            });
+
+        let mut by_type = std::collections::BTreeMap::<
+            &'static str,
+            (Vec<Arc<dyn AnyItem>>, Vec<Arc<dyn AnyItem>>),
+        >::new();
+        for item in &effective_deletes {
+            by_type
+                .entry(item.entity_type())
+                .or_default()
+                .0
+                .push(item.clone());
+        }
+        for item in upserts {
+            by_type
+                .entry(item.entity_type())
+                .or_default()
+                .1
+                .push(item.clone());
+        }
+
+        hyphae::batch(|| -> Result<(), PersistError> {
+            for (entity_type, (type_deletes, type_upserts)) in &by_type {
+                let store = self.registry.get_or_create(entity_type);
+                let mut changes =
+                    Vec::with_capacity(type_deletes.len().saturating_add(type_upserts.len()));
+                for item in type_deletes {
+                    let Some(old_value) = old_by_key
+                        .get(&(item.entity_type(), item.id()))
+                        .cloned()
+                        .flatten()
+                    else {
+                        continue;
+                    };
+                    crate::server::entity_set_stats::record_del(entity_type);
+                    changes.push(MapDiff::Remove {
+                        key: item.id(),
+                        old_value,
+                    });
+                }
+                for item in type_upserts {
+                    crate::server::entity_set_stats::record_set(entity_type);
+                    let key = item.id();
+                    changes.push(
+                        old_by_key
+                            .get(&(item.entity_type(), key.clone()))
+                            .cloned()
+                            .flatten()
+                            .map_or_else(
+                                || MapDiff::Insert {
+                                    key: key.clone(),
+                                    value: item.clone(),
+                                },
+                                |old_value| MapDiff::Update {
+                                    key: key.clone(),
+                                    old_value,
+                                    new_value: item.clone(),
+                                },
+                            ),
+                    );
+                }
+                store.apply_batch(changes);
+            }
+
+            for item in &effective_deletes {
+                if let Some(graph) = coordinated_graph {
+                    let old = old_by_key
+                        .get(&(item.entity_type(), item.id()))
+                        .and_then(Option::as_deref);
+                    graph
+                        .apply(old, None)
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                }
+                if origin.should_produce() {
+                    self.persist_del_dyn(item)?;
+                }
+            }
+            for item in upserts {
+                if let Some(graph) = coordinated_graph {
+                    let old = old_by_key
+                        .get(&(item.entity_type(), item.id()))
+                        .and_then(Option::as_deref);
+                    graph
+                        .apply(old, Some(item.as_ref()))
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                }
+                if origin.should_produce() {
+                    self.persist_set_dyn(item)?;
+                }
+            }
+            if !graph_watch_changes.is_empty()
+                && let Some(graph) = coordinated_graph
+            {
+                graph
+                    .publish_watch_changes(graph_watch_changes)
+                    .map_err(|error| Self::graph_error(first_item.as_ref(), error))?;
+            }
+            Ok(())
+        })?;
+
+        for (type_deletes, type_upserts) in by_type.values() {
+            self.apply_effects(type_deletes, MEventType::DEL, origin, true)?;
+            self.apply_effects(type_upserts, MEventType::SET, origin, true)?;
+        }
+        self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade)?;
+        Ok(true)
     }
 
     /// Shared post-reduce tail: search index, relationship cascade (gated by

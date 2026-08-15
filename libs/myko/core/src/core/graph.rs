@@ -1472,6 +1472,19 @@ pub struct TraversalReportOptions {
     pub scope: Option<serde_json::Value>,
 }
 
+/// Summary returned by an authoritative endpoint reconciliation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize, crate::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(crate = "crate::ts_rs")]
+pub struct GraphSyncResult {
+    pub inserted: usize,
+    pub updated: usize,
+    pub deleted: usize,
+    pub unchanged: usize,
+}
+
+crate::register_typegen_type!(GraphSyncResult);
+
 /// Generated live bounded-traversal reports for one registered edge item.
 ///
 /// Kept separate from [`GraphClientAggregates`] so downstream manual graph
@@ -1533,6 +1546,31 @@ pub trait GraphClientMutations: GraphEdge + crate::common::with_id::WithTypedId 
     fn ensure_command(edge: &Self) -> Self::EnsureCommand;
     fn disconnect_command(id: &Self::Id) -> Self::DisconnectCommand;
     fn disconnect_many_command(ids: &[Self::Id]) -> Self::DisconnectManyCommand;
+}
+
+/// Generated exact-set endpoint reconciliation commands.
+///
+/// Separate from [`GraphClientMutations`] so existing manual implementations
+/// remain source-compatible.
+pub trait GraphClientSync: GraphEdge {
+    type SyncFromCommand: crate::command::CommandParams<Result = GraphSyncResult>;
+    type SyncToCommand: crate::command::CommandParams<Result = GraphSyncResult>;
+
+    fn sync_from_command(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        scope: Option<serde_json::Value>,
+        edges: &[Self],
+    ) -> Self::SyncFromCommand
+    where
+        Self::Ends: TypedEdgeEnds;
+
+    fn sync_to_command(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+        scope: Option<serde_json::Value>,
+        edges: &[Self],
+    ) -> Self::SyncToCommand
+    where
+        Self::Ends: TypedEdgeEnds;
 }
 
 /// Endpoint-specific projection policy emitted separately from the legacy
@@ -1816,10 +1854,16 @@ impl EdgeIds {
         }
     }
 
-    fn conflicting_id(&self, candidate: &str) -> Option<&Arc<str>> {
+    fn conflicting_id_ignoring(
+        &self,
+        candidate: &str,
+        ignored: &HashSet<Arc<str>>,
+    ) -> Option<&Arc<str>> {
         match self {
-            Self::One(id) => (id.as_ref() != candidate).then_some(id),
-            Self::Many(ids) => ids.iter().find(|id| id.as_ref() != candidate),
+            Self::One(id) => (id.as_ref() != candidate && !ignored.contains(id)).then_some(id),
+            Self::Many(ids) => ids
+                .iter()
+                .find(|id| id.as_ref() != candidate && !ignored.contains(*id)),
         }
     }
 }
@@ -2451,6 +2495,16 @@ impl GraphIndex {
         new: Option<&dyn AnyItem>,
         mode: EdgeApplyMode,
     ) -> Result<()> {
+        self.preflight_ignoring(old, new, mode, &HashSet::new())
+    }
+
+    fn preflight_ignoring(
+        &self,
+        old: Option<&dyn AnyItem>,
+        new: Option<&dyn AnyItem>,
+        mode: EdgeApplyMode,
+        ignored_pair_ids: &HashSet<Arc<str>>,
+    ) -> Result<()> {
         let item = new
             .or(old)
             .context("graph mutation has no canonical item")?;
@@ -2502,7 +2556,8 @@ impl GraphIndex {
                     .edge_types
                     .get(registration.edge_type)
                     .and_then(|edge_type| edge_type.pairs.get(&key))
-                    && let Some(existing_id) = existing_ids.conflicting_id(candidate.id().as_ref())
+                    && let Some(existing_id) = existing_ids
+                        .conflicting_id_ignoring(candidate.id().as_ref(), ignored_pair_ids)
                 {
                     bail!(
                         "{} pair is already occupied by edge {}",
@@ -2530,6 +2585,34 @@ impl GraphIndex {
                 return Err(error);
             }
             tracing::warn!(edge_type = item.entity_type(), %error, "retaining invalid graph history");
+        }
+        Ok(())
+    }
+
+    /// Validate an atomic replacement against the final pair occupancy rather
+    /// than rejecting desired edges whose conflicting predecessor is deleted
+    /// by the same batch.
+    pub fn preflight_replace_batch(
+        &self,
+        upserts: &[Arc<dyn AnyItem>],
+        deletes: &[Arc<dyn AnyItem>],
+        mode: EdgeApplyMode,
+    ) -> Result<()> {
+        let ignored_by_type = deletes.iter().fold(
+            HashMap::<&'static str, HashSet<Arc<str>>>::new(),
+            |mut ignored, item| {
+                ignored
+                    .entry(item.entity_type())
+                    .or_default()
+                    .insert(item.id());
+                ignored
+            },
+        );
+        self.preflight_batch(upserts, mode)?;
+        let empty = HashSet::new();
+        for item in upserts {
+            let ignored = ignored_by_type.get(item.entity_type()).unwrap_or(&empty);
+            self.preflight_ignoring(None, Some(item.as_ref()), mode, ignored)?;
         }
         Ok(())
     }
@@ -4975,7 +5058,7 @@ mod tests {
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
 
-    use super::EdgeIds;
+    use super::{EdgeIds, GraphSyncResult};
     use crate::prelude::*;
     use crate::{
         search::SearchIndex,
@@ -5044,7 +5127,10 @@ mod tests {
             const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
         }
     }
-    use assignment::{ConnectTagAssignment, EnsureTagAssignment, TagAssignment, TagAssignmentId};
+    use assignment::{
+        ConnectTagAssignment, EnsureTagAssignment, SyncTagAssignmentsFrom, TagAssignment,
+        TagAssignmentId,
+    };
 
     mod scoped_assignment {
         use super::{Article, ArticleId, GraphScope, GraphScopeId, Tag, TagId};
@@ -5075,7 +5161,7 @@ mod tests {
     }
     use scoped_assignment::{
         EnsureScopedTagAssignment, ScopedTagAssignment, ScopedTagAssignmentGraphTraverseFrom,
-        ScopedTagAssignmentId,
+        ScopedTagAssignmentId, SyncScopedTagAssignmentsFrom,
     };
 
     mod restricted_edge {
@@ -7205,6 +7291,166 @@ mod tests {
                 .count_between(&concurrent_tag.id, &EntityRef::from(&concurrent_article))
                 .expect("count concurrently ensured pair"),
             1
+        );
+    }
+
+    #[test]
+    fn generated_endpoint_sync_is_atomic_minimal_and_allows_unique_replacement() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "sync".into(),
+            id: TagId::from("tag-sync"),
+        };
+        let articles = (0..3)
+            .map(|index| Article {
+                title: format!("Sync {index}").into(),
+                id: ArticleId::from(format!("article-sync-{index}")),
+            })
+            .collect::<Vec<_>>();
+        assert!(context.set(&tag).is_ok());
+        for article in &articles {
+            assert!(context.set(article).is_ok());
+        }
+        let retained = TagAssignment {
+            tag_id: tag.id.clone(),
+            target: EntityRef::from(&articles[0]),
+            id: TagAssignmentId::from("edge-sync-retained"),
+        };
+        let replaced = TagAssignment {
+            tag_id: tag.id.clone(),
+            target: EntityRef::from(&articles[1]),
+            id: TagAssignmentId::from("edge-sync-old"),
+        };
+        assert!(
+            context
+                .batch_set(&[retained.clone(), replaced.clone()])
+                .is_ok()
+        );
+
+        let watched = context
+            .edges::<TagAssignment>()
+            .watch_from(&tag.id)
+            .expect("watch endpoint");
+        let diffs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = diffs.clone();
+        let _guard = watched.subscribe_diffs(move |diff| {
+            captured
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(diff.clone());
+        });
+        diffs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        let replacement = TagAssignment {
+            id: TagAssignmentId::from("edge-sync-new"),
+            ..replaced
+        };
+        let inserted = TagAssignment {
+            tag_id: tag.id.clone(),
+            target: EntityRef::from(&articles[2]),
+            id: TagAssignmentId::from("edge-sync-inserted"),
+        };
+        let request = Arc::new(crate::request::RequestContext::from_client(
+            Uuid::new_v4().to_string().into(),
+            "graph-sync-test".into(),
+            context.host_id,
+        ));
+        let result = SyncTagAssignmentsFrom {
+            endpoint: tag.id.clone(),
+            scope: None,
+            edges: vec![retained.clone(), replacement.clone(), inserted.clone()],
+        }
+        .execute(CommandContext::new(
+            "SyncTagAssignmentsFrom".into(),
+            request,
+            Arc::new(context.clone()),
+        ))
+        .expect("sync endpoint");
+        assert_eq!(
+            result,
+            GraphSyncResult {
+                inserted: 2,
+                updated: 0,
+                deleted: 1,
+                unchanged: 1,
+            }
+        );
+        assert_eq!(watched.snapshot().len(), 3);
+        let diffs = diffs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(diffs.len(), 1, "one final-state reactive notification");
+        assert!(matches!(
+            diffs.first(),
+            Some(hyphae::MapDiff::Batch { changes }) if changes.len() == 3
+        ));
+    }
+
+    #[test]
+    fn generated_endpoint_sync_isolated_by_scope() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "scoped sync".into(),
+            id: TagId::from("tag-scoped-sync"),
+        };
+        let article = Article {
+            title: "Scoped sync".into(),
+            id: ArticleId::from("article-scoped-sync"),
+        };
+        let scopes = [
+            GraphScope {
+                name: "a".into(),
+                id: GraphScopeId::from("scope-sync-a"),
+            },
+            GraphScope {
+                name: "b".into(),
+                id: GraphScopeId::from("scope-sync-b"),
+            },
+        ];
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article).is_ok());
+        for scope in &scopes {
+            assert!(context.set(scope).is_ok());
+        }
+        let edges = scopes
+            .iter()
+            .enumerate()
+            .map(|(index, scope)| ScopedTagAssignment {
+                scope_id: scope.id.clone(),
+                tag_id: tag.id.clone(),
+                article_id: article.id.clone(),
+                id: ScopedTagAssignmentId::from(format!("scoped-sync-edge-{index}")),
+            })
+            .collect::<Vec<_>>();
+        assert!(context.batch_set(&edges).is_ok());
+        let request = Arc::new(crate::request::RequestContext::from_client(
+            Uuid::new_v4().to_string().into(),
+            "graph-scoped-sync-test".into(),
+            context.host_id,
+        ));
+        let result = SyncScopedTagAssignmentsFrom {
+            endpoint: tag.id.clone(),
+            scope: Some(serde_json::json!(scopes[0].id)),
+            edges: Vec::new(),
+        }
+        .execute(CommandContext::new(
+            "SyncScopedTagAssignmentsFrom".into(),
+            request,
+            Arc::new(context.clone()),
+        ))
+        .expect("sync one scope");
+        assert_eq!(result.deleted, 1);
+        assert_eq!(
+            context
+                .edges::<ScopedTagAssignment>()
+                .from(&tag.id)
+                .expect("remaining scoped edge"),
+            vec![Arc::new(edges[1].clone())]
         );
     }
 

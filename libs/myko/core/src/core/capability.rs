@@ -350,6 +350,28 @@ pub trait EventPublishing: ServerScoped {
             .map_err(|e| self.__emit_err(e))
     }
 
+    /// Atomically reconcile disjoint typed upserts and deletions as one
+    /// final-state reactive batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authoritative validation or persistence fails.
+    fn emit_replace_batch<T>(&self, upserts: &[T], deletes: &[Arc<T>]) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
+        let upserts = upserts
+            .iter()
+            .map(|item| -> Arc<dyn crate::item::AnyItem> { Arc::new(item.clone()) });
+        let deletes = deletes
+            .iter()
+            .cloned()
+            .map(|item| -> Arc<dyn crate::item::AnyItem> { item });
+        self.__server_ctx()
+            .replace_batch_any(upserts, deletes)
+            .map_err(|e| self.__emit_err(e))
+    }
+
     /// Apply a batch of pre-built raw events (SET or DEL), applied immediately.
     ///
     /// The one raw-`MEvent` path — for type-erased imports where the caller

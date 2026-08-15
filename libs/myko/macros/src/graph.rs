@@ -704,6 +704,10 @@ fn graph_mutation_tokens(
     let delete_result = format_ident!("Delete{}Result", edge_name);
     let delete_many = format_ident!("Delete{}s", edge_name);
     let delete_many_result = format_ident!("Delete{}sResult", edge_name);
+    let sync_from = format_ident!("Sync{}sFrom", edge_name);
+    let sync_to = format_ident!("Sync{}sTo", edge_name);
+    let a_address = format_ident!("{}AAddress", edge_name);
+    let b_address = format_ident!("{}BAddress", edge_name);
 
     quote! {
         /// Authoritative graph upsert using Myko's ordinary command protocol.
@@ -735,6 +739,40 @@ fn graph_mutation_tokens(
                 let affected = self.edges.len();
                 #krate::prelude::EventPublishing::emit_set_batch(&ctx, &self.edges)?;
                 Ok(affected)
+            }
+        }
+
+        /// Atomically make these the exact edges at endpoint A and scope.
+        #[#krate::myko_command(#krate::graph::GraphSyncResult)]
+        pub struct #sync_from {
+            pub endpoint: #a_address,
+            pub scope: Option<#krate::serde_json::Value>,
+            pub edges: Vec<#edge_type>,
+        }
+
+        impl #krate::command::CommandHandler for #sync_from {
+            fn execute(
+                self,
+                ctx: #krate::prelude::CommandContext,
+            ) -> Result<#krate::graph::GraphSyncResult, #krate::prelude::CommandError> {
+                ctx.graph_sync_from::<#edge_type>(&self.endpoint, self.scope.as_ref(), &self.edges)
+            }
+        }
+
+        /// Atomically make these the exact edges at endpoint B and scope.
+        #[#krate::myko_command(#krate::graph::GraphSyncResult)]
+        pub struct #sync_to {
+            pub endpoint: #b_address,
+            pub scope: Option<#krate::serde_json::Value>,
+            pub edges: Vec<#edge_type>,
+        }
+
+        impl #krate::command::CommandHandler for #sync_to {
+            fn execute(
+                self,
+                ctx: #krate::prelude::CommandContext,
+            ) -> Result<#krate::graph::GraphSyncResult, #krate::prelude::CommandError> {
+                ctx.graph_sync_to::<#edge_type>(&self.endpoint, self.scope.as_ref(), &self.edges)
             }
         }
 
@@ -833,6 +871,27 @@ fn graph_mutation_tokens(
 
             fn disconnect_many_command(ids: &[Self::Id]) -> Self::DisconnectManyCommand {
                 #delete_many { ids: ids.to_vec() }
+            }
+        }
+
+        impl #krate::graph::GraphClientSync for #edge_type {
+            type SyncFromCommand = #sync_from;
+            type SyncToCommand = #sync_to;
+
+            fn sync_from_command(
+                endpoint: &#a_address,
+                scope: Option<#krate::serde_json::Value>,
+                edges: &[Self],
+            ) -> Self::SyncFromCommand {
+                #sync_from { endpoint: endpoint.clone(), scope, edges: edges.to_vec() }
+            }
+
+            fn sync_to_command(
+                endpoint: &#b_address,
+                scope: Option<#krate::serde_json::Value>,
+                edges: &[Self],
+            ) -> Self::SyncToCommand {
+                #sync_to { endpoint: endpoint.clone(), scope, edges: edges.to_vec() }
             }
         }
     }

@@ -89,6 +89,36 @@ impl MykoClient {
         self.send_command(&E::connect_many_command(edges))
     }
 
+    /// Atomically make `edges` the exact set at endpoint A. Pass the scope's
+    /// ordinary serialized value for scoped graphs and `None` for unscoped
+    /// graphs.
+    pub fn sync_graph_from<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        scope: Option<serde_json::Value>,
+        edges: &[E],
+    ) -> hyphae::Cell<Option<Result<crate::graph::GraphSyncResult, String>>, hyphae::CellImmutable>
+    where
+        E: crate::graph::GraphClientSync,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.send_command(&E::sync_from_command(endpoint, scope, edges))
+    }
+
+    /// Atomically make `edges` the exact set at endpoint B.
+    pub fn sync_graph_to<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        scope: Option<serde_json::Value>,
+        edges: &[E],
+    ) -> hyphae::Cell<Option<Result<crate::graph::GraphSyncResult, String>>, hyphae::CellImmutable>
+    where
+        E: crate::graph::GraphClientSync,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.send_command(&E::sync_to_command(endpoint, scope, edges))
+    }
+
     /// Ensure a unique edge pair exists without replacing an existing edge.
     ///
     /// The generated server command retries the indexed pair lookup after a

@@ -55,6 +55,18 @@ const graph = {
     report<TraversalResult>('EdgeGraphTraverseTo', { start, ...options }),
   connect: (edge: Edge) => command<void>('ConnectEdge', { edge }),
   connectMany: (edges: Edge[]) => command<number>('ConnectEdges', { edges }),
+  syncFrom: (endpoint: string, edges: Edge[]) =>
+    command<{ inserted: number }>('SyncEdgesFrom', {
+      endpoint,
+      scope: null,
+      edges,
+    }),
+  syncTo: (endpoint: string, edges: Edge[]) =>
+    command<{ inserted: number }>('SyncEdgesTo', {
+      endpoint,
+      scope: null,
+      edges,
+    }),
   ensure: (edge: Edge) => command<Edge>('EnsureEdge', { edge }),
   disconnect: (id: string) => command<boolean>('DeleteEdge', { id }),
   disconnectMany: (ids: string[]) => command<number>('DeleteEdges', { ids }),
@@ -131,6 +143,7 @@ describe('bindGraph', () => {
     expect(await firstValueFrom(traversed)).toBe(3 as unknown as TraversalResult)
 
     const edge: Edge = { id: 'edge-a-b', fromId: 'node-a', toId: 'node-b' }
+    await scoped.sync([edge], { timeoutMs: 125 })
     await bound.connect(edge, { timeoutMs: 250 })
     expect(calls).toEqual([
       { kind: 'query', id: 'EdgeGraphFrom', payload: { endpoint: 'node-a' } },
@@ -151,11 +164,45 @@ describe('bindGraph', () => {
       },
       {
         kind: 'command',
+        id: 'SyncEdgesFrom',
+        payload: { endpoint: 'node-a', scope: null, edges: [edge] },
+        options: { timeoutMs: 125 },
+      },
+      {
+        kind: 'command',
         id: 'ConnectEdge',
         payload: { edge },
         options: { timeoutMs: 250 },
       },
     ])
+  })
+
+  test('requires and forwards a scope for scoped endpoint reconciliation', async () => {
+    const calls: Command<unknown>[] = []
+    const scopedGraph = {
+      ...graph,
+      syncFrom: (endpoint: string, scope: string, edges: Edge[]) =>
+        command<{ inserted: number }>('SyncEdgesFrom', {
+          endpoint,
+          scope,
+          edges,
+        }),
+    } as const
+    const client = {
+      sendCommand(value: Command<unknown>) {
+        calls.push(value)
+        return Promise.resolve({ inserted: 1 })
+      },
+    } as unknown as MykoClient
+    const edge: Edge = { id: 'edge-a-b', fromId: 'node-a', toId: 'node-b' }
+    await bindGraph(client, scopedGraph).from('node-a').sync([edge], 'tenant-a')
+    expect(calls[0]).toEqual(
+      command('SyncEdgesFrom', {
+        endpoint: 'node-a',
+        scope: 'tenant-a',
+        edges: [edge],
+      }),
+    )
   })
 
   test('exposes one batched state query for many endpoints', async () => {

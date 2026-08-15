@@ -128,6 +128,25 @@ type RelatedScope<G, K extends PropertyKey, Name extends string> = K extends key
     }
   : object
 
+type SyncScope<G, K extends PropertyKey> = K extends keyof G
+  ? MethodArgs<G, K> extends [unknown, infer Edges]
+    ? {
+        sync: (
+          edges: Edges,
+          options?: CommandOptions,
+        ) => CommandPromise<MethodResult<G, K>>
+      }
+    : MethodArgs<G, K> extends [unknown, infer Scope, infer Edges]
+      ? {
+          sync: (
+            edges: Edges,
+            scope: Scope,
+            options?: CommandOptions,
+          ) => CommandPromise<MethodResult<G, K>>
+        }
+      : object
+  : object
+
 type EndpointScope<
   G,
   EdgeKey extends PropertyKey,
@@ -136,6 +155,7 @@ type EndpointScope<
   RelatedName extends string,
   CountKey extends PropertyKey,
   TraversalKey extends PropertyKey,
+  SyncKey extends PropertyKey,
 > = {
   readonly plan: GraphQueryPlan
   edges: (options?: QueryWatchOptions) => QueryState<MethodResult<G, EdgeKey>>
@@ -170,6 +190,7 @@ type EndpointScope<
         ) => ReportState<MethodResult<G, TraversalKey>>
       }
     : object) &
+  SyncScope<G, SyncKey> &
   RelatedScope<G, RelatedKey, RelatedName>
 
 type BetweenScope<G> = {
@@ -199,10 +220,10 @@ type BatchScopes<G> = 'fromMany' extends keyof G
   ? {
       fromMany: (
         endpoints: MethodFirstArg<G, 'fromMany'>,
-      ) => EndpointScope<G, 'fromMany', never, 'targetsFromMany', 'targets', never, never>
+      ) => EndpointScope<G, 'fromMany', never, 'targetsFromMany', 'targets', never, never, never>
       toMany: (
         endpoints: MethodFirstArg<G, 'toMany'>,
-      ) => EndpointScope<G, 'toMany', never, 'sourcesToMany', 'sources', never, never>
+      ) => EndpointScope<G, 'toMany', never, 'sourcesToMany', 'sources', never, never, never>
     }
   : object
 
@@ -211,10 +232,10 @@ export type BoundGraph<G> = {
   readonly schema: GraphDescriptorSchema | null
   from: (
     endpoint: MethodFirstArg<G, 'from'>,
-  ) => EndpointScope<G, 'from', 'fromIds', 'targetsFrom', 'targets', 'countFrom', 'traverseFrom'>
+  ) => EndpointScope<G, 'from', 'fromIds', 'targetsFrom', 'targets', 'countFrom', 'traverseFrom', 'syncFrom'>
   to: (
     endpoint: MethodFirstArg<G, 'to'>,
-  ) => EndpointScope<G, 'to', 'toIds', 'sourcesTo', 'sources', 'countTo', 'traverseTo'>
+  ) => EndpointScope<G, 'to', 'toIds', 'sourcesTo', 'sources', 'countTo', 'traverseTo', 'syncTo'>
   between: (
     a: MethodFirstArg<G, 'between'>,
     b: MethodArgs<G, 'between'> extends [unknown, infer B, ...unknown[]]
@@ -422,6 +443,7 @@ export function bindGraph<G extends object>(
     relatedName: 'targets' | 'sources',
     countKey: string | null,
     traversalKey: string | null,
+    syncKey: string | null,
     args: unknown[],
     plan: GraphQueryPlan,
   ) => {
@@ -480,6 +502,18 @@ export function bindGraph<G extends object>(
       scope.traverse = (options: unknown) =>
         reportState(traversalKey, [...args, options])
     }
+    if (syncKey && syncKey in graph) {
+      scope.sync = (
+        edges: unknown,
+        scopeOrOptions?: unknown,
+        maybeOptions?: CommandOptions,
+      ) => {
+        const syncFactory = factory(graph, syncKey)
+        return syncFactory.length === 2
+          ? command(syncKey, [args[0], edges], scopeOrOptions as CommandOptions)
+          : command(syncKey, [args[0], scopeOrOptions, edges], maybeOptions)
+      }
+    }
     return scope
   }
 
@@ -494,6 +528,7 @@ export function bindGraph<G extends object>(
         'targets',
         'countFrom',
         'traverseFrom',
+        'syncFrom',
         [value],
         plans.a,
       ),
@@ -506,6 +541,7 @@ export function bindGraph<G extends object>(
         'sources',
         'countTo',
         'traverseTo',
+        'syncTo',
         [value],
         plans.b,
       ),
@@ -557,6 +593,7 @@ export function bindGraph<G extends object>(
         'targets',
         null,
         null,
+        null,
         [values],
         plans.a,
       )
@@ -567,6 +604,7 @@ export function bindGraph<G extends object>(
         null,
         'sourcesToMany',
         'sources',
+        null,
         null,
         null,
         [values],

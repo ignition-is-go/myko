@@ -130,6 +130,29 @@ fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String
         || "never".to_string(),
         |entity_type| format!("__MykoGraph{entity_type}Id"),
     );
+    let (sync_from_helper, sync_to_helper) = if (edge.scope_type)().is_some() {
+        (
+            format!(
+                "  syncFrom: (endpoint: {}AAddress, scope: {scope_type}, edges: {}[]) => new Sync{}sFrom({{ endpoint, scope, edges }}),\n",
+                edge.edge_type, edge.edge_type, edge.edge_type
+            ),
+            format!(
+                "  syncTo: (endpoint: {}BAddress, scope: {scope_type}, edges: {}[]) => new Sync{}sTo({{ endpoint, scope, edges }}),\n",
+                edge.edge_type, edge.edge_type, edge.edge_type
+            ),
+        )
+    } else {
+        (
+            format!(
+                "  syncFrom: (endpoint: {}AAddress, edges: {}[]) => new Sync{}sFrom({{ endpoint, scope: null, edges }}),\n",
+                edge.edge_type, edge.edge_type, edge.edge_type
+            ),
+            format!(
+                "  syncTo: (endpoint: {}BAddress, edges: {}[]) => new Sync{}sTo({{ endpoint, scope: null, edges }}),\n",
+                edge.edge_type, edge.edge_type, edge.edge_type
+            ),
+        )
+    };
     let related_queries = edge.related_queries();
     let targets_from = match (related_queries.targets_from, (b.requirement)()) {
         (true, EndpointRequirement::Concrete(entity_type)) => {
@@ -333,13 +356,15 @@ export const {edge}Graph = {{
   }}),
   connect: (edge: {edge}) => new Connect{edge}({{ edge }}),
   connectMany: (edges: {edge}[]) => new Connect{edge}s({{ edges }}),
-  ensure: (edge: {edge}) => new Ensure{edge}({{ edge }}),
+{sync_from_helper}{sync_to_helper}  ensure: (edge: {edge}) => new Ensure{edge}({{ edge }}),
   disconnect: (id: __MykoGraph{edge}Id) => new Delete{edge}({{ id }}),
   disconnectMany: (ids: __MykoGraph{edge}Id[]) => new Delete{edge}s({{ ids }}),
 }} as const;"#,
         edge = edge.edge_type,
         edge_literal = ts_literal(edge.edge_type),
         scope_type = scope_type,
+        sync_from_helper = sync_from_helper,
+        sync_to_helper = sync_to_helper,
     )
 }
 
@@ -1360,6 +1385,13 @@ mod tests {
         assert!(rendered.contains("queryId = \"TagAssignmentGraphBetween\""));
         assert!(rendered.contains("queryId = \"TagAssignmentGraphBetweenId\""));
         assert!(rendered.contains("connect: (edge: TagAssignment) => new ConnectTagAssignment"));
+        assert!(
+            rendered
+                .contains("syncFrom: (endpoint: TagAssignmentAAddress, edges: TagAssignment[])")
+        );
+        assert!(rendered.contains(
+            "syncFrom: (endpoint: ScopedTagAssignmentAAddress, scope: __MykoGraphGraphScopeId, edges: ScopedTagAssignment[])"
+        ));
         assert!(rendered.contains("ensure: (edge: TagAssignment) => new EnsureTagAssignment"));
         assert!(
             rendered.contains(
