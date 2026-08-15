@@ -1847,6 +1847,21 @@ downstream notifications for broadcasting every revision, versus 2.871 ms and
 fewer downstream notifications. With no listeners, the ordinary diff path
 does not allocate changed-ID routing state.
 
+When an item selection is the only consumer, generated descriptors route it
+through additive `fromId`, `toId`, or `betweenId` queries. These queries build
+from the canonical store's reactive per-key cell and then apply the normal
+endpoint/pair predicate, so a scoped lookup does not hydrate every incident
+edge merely to retain one row. Endpoint-changing updates still move the item
+into or out of the result, and undirected pair matching retains its symmetric
+semantics. `bindGraph` feature-detects the exact helpers and falls back to the
+broad query plus keyed client selection for older or hand-written descriptors.
+
+`graph/high_degree_exact_edge_initialization` compares a lone exact selection
+at a 10,000-edge endpoint. A development-machine run on 2026-08-15 measured
+1.456 ms for endpoint hydration versus 17.431 µs for the direct-key scoped
+query: about 83.5× faster, with retained result cardinality reduced from 10,000
+edges to at most one.
+
 ### 21.3 Batched endpoint watches and client-bound graph scopes
 
 List and matrix UIs commonly watch the same relationship at hundreds of source
@@ -2076,6 +2091,10 @@ The graph-edge feature is acceptable when:
     immutable-selection APIs share the existing wire/state subscription,
     dispatch keyed changes only to affected listeners, suppress equal derived
     values, and add no changed-ID routing allocation when no selector is active.
+21. Generated bound-graph `edge(id)` and `hasEdge(id)` helpers use a reactive
+    direct-key server query when available, retain endpoint/pair filtering and
+    undirected semantics, and safely fall back to broad-query selection for
+    descriptors generated before the exact helpers existed.
 
 ## 24. Decision
 

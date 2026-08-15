@@ -50,6 +50,16 @@ const graph = {
   disconnectMany: (ids: string[]) => command<number>('DeleteEdges', { ids }),
 } as const
 
+const exactGraph = {
+  ...graph,
+  fromId: (endpoint: string, id: string) =>
+    query<Edge>('EdgeGraphFromId', { endpoint, id }),
+  toId: (endpoint: string, id: string) =>
+    query<Edge>('EdgeGraphToId', { endpoint, id }),
+  betweenId: (a: string, b: string, id: string) =>
+    query<Edge>('EdgeGraphBetweenId', { a, b, id }),
+} as const
+
 const eagerGraph = {
   ...graph,
   $schema: {
@@ -202,20 +212,53 @@ describe('bindGraph', () => {
       },
     } as unknown as MykoClient
 
-    const from = bindGraph(client, graph).from('node-a')
+    const bound = bindGraph(client, exactGraph)
+    const from = bound.from('node-a')
     expect(await firstValueFrom(from.selectEdges((state) => state.size))).toBe(1)
     expect(await firstValueFrom(from.edge(edge.id))).toBe(edge)
     expect(await firstValueFrom(from.hasEdge('missing'))).toBe(false)
     expect(await firstValueFrom(from.selectTargets((state) => state.size))).toBe(1)
     expect(await firstValueFrom(from.target(target.id))).toBe(target)
     expect(await firstValueFrom(from.hasTarget('missing'))).toBe(false)
+    expect(await firstValueFrom(bound.to('node-b').edge(edge.id))).toBe(edge)
+    expect(
+      await firstValueFrom(bound.between('node-a', 'node-b').hasEdge(edge.id)),
+    ).toBe(true)
     expect(calls).toEqual([
       'select:EdgeGraphFrom',
-      'item:EdgeGraphFrom:edge-a-b',
-      'has:EdgeGraphFrom:missing',
+      'item:EdgeGraphFromId:edge-a-b',
+      'has:EdgeGraphFromId:missing',
       'select:EdgeGraphTargetsFrom',
       'item:EdgeGraphTargetsFrom:node-b',
       'has:EdgeGraphTargetsFrom:missing',
+      'item:EdgeGraphToId:edge-a-b',
+      'has:EdgeGraphBetweenId:edge-a-b',
+    ])
+  })
+
+  test('falls back to broad graph queries for legacy descriptors', async () => {
+    const calls: string[] = []
+    const client = {
+      watchQueryItem(value: Query<unknown>) {
+        calls.push(value.queryId)
+        return of(undefined)
+      },
+      watchQueryHas(value: Query<unknown>) {
+        calls.push(value.queryId)
+        return of(false)
+      },
+    } as unknown as MykoClient
+
+    const bound = bindGraph(client, graph)
+    await firstValueFrom(bound.from('node-a').edge('edge-a-b'))
+    await firstValueFrom(bound.to('node-b').hasEdge('edge-a-b'))
+    await firstValueFrom(
+      bound.between('node-a', 'node-b').edge('edge-a-b'),
+    )
+    expect(calls).toEqual([
+      'EdgeGraphFrom',
+      'EdgeGraphTo',
+      'EdgeGraphBetween',
     ])
   })
 

@@ -375,12 +375,17 @@ export function bindGraph<G extends object>(
 
   const endpoint = (
     edgeKey: string,
+    exactEdgeKey: string | null,
     relatedKey: string,
     relatedName: 'targets' | 'sources',
     countKey: string | null,
     args: unknown[],
     plan: GraphQueryPlan,
   ) => {
+    const exactEdgeQuery = (id: string) =>
+      exactEdgeKey && exactEdgeKey in graph
+        ? { key: exactEdgeKey, args: [...args, id] }
+        : { key: edgeKey, args }
     const scope: Record<string, unknown> = {
       plan,
       edges: (options?: QueryWatchOptions) => queryState(edgeKey, args, options),
@@ -388,10 +393,14 @@ export function bindGraph<G extends object>(
         select: (state: LiveCollection<{ id: string }>) => S,
         options?: QuerySelectionOptions<S>,
       ) => querySelection(edgeKey, args, select, options),
-      edge: (id: string, options?: QueryWatchOptions) =>
-        queryItem(edgeKey, args, id, options),
-      hasEdge: (id: string, options?: QueryWatchOptions) =>
-        queryHas(edgeKey, args, id, options),
+      edge: (id: string, options?: QueryWatchOptions) => {
+        const exact = exactEdgeQuery(id)
+        return queryItem(exact.key, exact.args, id, options)
+      },
+      hasEdge: (id: string, options?: QueryWatchOptions) => {
+        const exact = exactEdgeQuery(id)
+        return queryHas(exact.key, exact.args, id, options)
+      },
       edgesWindowed: (window: QueryWindow) => windowed(edgeKey, args, window),
       edgesBy: <T extends { id: string }, K>(
         keyOf: (item: T) => K,
@@ -428,6 +437,7 @@ export function bindGraph<G extends object>(
     from: (value: unknown) =>
       endpoint(
         'from',
+        'fromId',
         'targetsFrom',
         'targets',
         'countFrom',
@@ -437,6 +447,7 @@ export function bindGraph<G extends object>(
     to: (value: unknown) =>
       endpoint(
         'to',
+        'toId',
         'sourcesTo',
         'sources',
         'countTo',
@@ -452,9 +463,13 @@ export function bindGraph<G extends object>(
         options?: QuerySelectionOptions<S>,
       ) => querySelection('between', [a, b], select, options),
       edge: (id: string, options?: QueryWatchOptions) =>
-        queryItem('between', [a, b], id, options),
+        'betweenId' in graph
+          ? queryItem('betweenId', [a, b, id], id, options)
+          : queryItem('between', [a, b], id, options),
       hasEdge: (id: string, options?: QueryWatchOptions) =>
-        queryHas('between', [a, b], id, options),
+        'betweenId' in graph
+          ? queryHas('betweenId', [a, b, id], id, options)
+          : queryHas('between', [a, b], id, options),
       edgesWindowed: (window: QueryWindow) =>
         windowed('between', [a, b], window),
       count: () => reportState('countBetween', [a, b]),
@@ -475,6 +490,7 @@ export function bindGraph<G extends object>(
     bound.fromMany = (values: unknown) =>
       endpoint(
         'fromMany',
+        null,
         'targetsFromMany',
         'targets',
         null,
@@ -484,6 +500,7 @@ export function bindGraph<G extends object>(
     bound.toMany = (values: unknown) =>
       endpoint(
         'toMany',
+        null,
         'sourcesToMany',
         'sources',
         null,
