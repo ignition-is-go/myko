@@ -99,6 +99,10 @@ export const {edge}Graph = {{
   from: (endpoint: {edge}AAddress) => new {edge}GraphFrom(endpoint),
   to: (endpoint: {edge}BAddress) => new {edge}GraphTo(endpoint),
   between: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphBetween(a, b),
+  countFrom: (endpoint: {edge}AAddress) => new {edge}GraphCountFrom({{ endpoint }}),
+  countTo: (endpoint: {edge}BAddress) => new {edge}GraphCountTo({{ endpoint }}),
+  countBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphCountBetween({{ a, b }}),
+  existsBetween: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphExistsBetween({{ a, b }}),
   connect: (edge: {edge}) => new Connect{edge}({{ edge }}),
   connectMany: (edges: {edge}[]) => new Connect{edge}s({{ edges }}),
   ensure: (edge: {edge}) => new Ensure{edge}({{ edge }}),
@@ -1124,10 +1128,40 @@ mod tests {
         );
         assert!(rendered.contains("from: (endpoint: TagAssignmentAAddress)"));
         assert!(rendered.contains("new TagAssignmentGraphFrom(endpoint)"));
+        assert!(rendered.contains("countFrom: (endpoint: TagAssignmentAAddress)"));
+        assert!(rendered.contains("new TagAssignmentGraphCountFrom({ endpoint })"));
+        assert!(rendered.contains("new TagAssignmentGraphExistsBetween({ a, b })"));
         assert!(rendered.contains("pairPolicy"));
         assert!(rendered.contains("aAdjacency"));
         assert!(rendered.contains("bAdjacency"));
         assert!(rendered.contains("category"));
+    }
+
+    #[test]
+    fn generated_graph_aggregate_helpers_resolve_to_report_classes() {
+        let _serial = typegen_test_serial();
+        let dir = unique_bindings_dir("graph-aggregates");
+        let Some(dir_str) = dir.to_str() else {
+            return;
+        };
+        let catalog = TypegenCatalog::collect(env!("CARGO_CRATE_NAME"));
+        let graph = GraphSchemaCatalog::collect(env!("CARGO_CRATE_NAME"));
+        assert!(generate_item_types_for_catalogs(dir_str, &catalog, &graph).is_ok());
+        let index = fs::read_to_string(dir.join("index.ts"));
+        assert!(
+            index.is_ok(),
+            "generated TypeScript index should be readable"
+        );
+        let Ok(index) = index else {
+            return;
+        };
+        assert!(index.contains("export class TagAssignmentGraphCountFrom"));
+        assert!(index.contains("declare readonly $res: () => number"));
+        assert!(index.contains("export class TagAssignmentGraphExistsBetween"));
+        assert!(index.contains("declare readonly $res: () => boolean"));
+        assert!(index.contains("new TagAssignmentGraphCountFrom({ endpoint },)"));
+        assert!(index.contains("new TagAssignmentGraphExistsBetween({ a, b },)"));
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// Regression test for the myko 5.0 stale-generated-file bug: a type

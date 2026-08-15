@@ -1007,6 +1007,8 @@ use incident/between. There are no manually supplied role or qualifier names.
 ctx.edges::<TagAssignment>().watch_from(&tag_id);
 ctx.edges::<TagAssignment>().watch_to(&target_ref);
 ctx.edges::<TagAssignment>().watch_between(&tag_id, &target_ref);
+ctx.edges::<TagAssignment>().watch_count_from(&tag_id);
+ctx.edges::<TagAssignment>().watch_count_between(&tag_id, &target_ref);
 ctx.edges::<WorkflowConnection>().watch_to_at(&address);
 ctx.edges::<Friendship>().watch_incident(&person_id);
 ```
@@ -1032,12 +1034,22 @@ TypeScript codegen emits endpoint-aware query classes behind a compact helper:
 ```typescript
 client.watchQuery(TagAssignmentGraph.from(tagId));
 client.watchQuery(TagAssignmentGraph.between(tagId, targetRef));
+client.watchReport(TagAssignmentGraph.countFrom(tagId));
+client.watchReport(TagAssignmentGraph.existsBetween(tagId, targetRef));
 ```
 
 These are registrations in the existing query dispatcher, not graph-specific
 wire messages. They therefore inherit query reconnect, cancellation, sequence
 validation, readiness, windowing, and subscription deduplication without a
 second client protocol.
+
+The generated `countFrom`, `countTo`, `countBetween`, and `existsBetween`
+reports are scalar projections. Eager endpoints seed directly from index bucket
+cardinality and canonical diffs adjust the server-side scalar by ±1. They do
+not materialize matching edge items or transfer edge payloads merely to answer
+badge, presence, and empty-state questions. Rust exposes the same operations as
+`watch_graph_count_from`, `watch_graph_count_to`,
+`watch_graph_count_between`, and `watch_graph_exists_between`.
 
 One-shot and reactive APIs return edge items so payload remains available and
 ordinary Myko semantics remain explicit.
@@ -1728,6 +1740,7 @@ warmup, 200 ms measurement) produced:
 | sparse endpoint-delete planning among 10,000 edges with 10 incident | 419.3–421.3 µs conservative typed scan | 828.8–833.3 ns eager incidence | about 506× faster; the baseline scans only the populated store and is cheaper than the replaced dynamic all-registration path |
 | 1,000-edge batch write | 309.1–310.2 µs plain | 1.815–1.823 ms projected | about 5.9× write cost for validation, causal hashing, and four maintained projections; inline singleton pair IDs improved the projected path by about 1.1%, within the benchmark's noise threshold |
 | Sparse reactive watch initialization, 10,000 edges / 1,000 sources | 447.68–451.34 µs canonical select | 20.411–20.561 µs typed index-seeded; 10.448–10.536 µs ordinary query factory | about 22× faster for the typed in-process watch and 43× for the erased server query path; all remain live incremental maps |
+| Sparse reactive count initialization, 10,000 edges / 1,000 sources | 443.57–445.22 µs canonical select; 20.051–20.167 µs full-edge typed watch | 1.2925–1.3078 µs direct scalar watch; 2.6583–2.6669 µs generated report pipeline | direct count is about 15.5× faster than the full-edge indexed watch and about 340× faster than canonical selection; the remotely consumable report pipeline is about 7.5× and 167× faster respectively, before its much larger payload reduction |
 | 1,000-edge projected batch, both ends versus A only | 1.817–1.832 ms both ends | 1.621–1.630 ms A only | one-sided projection is about 10.9% faster and omits the cold endpoint and entity-incidence maps |
 | sparse hot-end lookup, both ends versus A only | 121.1–122.4 ns both ends | 123.0–123.8 ns A only | hot-end lookup remains within 2%; the write/memory saving does not trade away lookup complexity |
 | singleton-inline incidence buckets | 1.815–1.823 ms prior 1,000-edge projected batch | 1.802–1.812 ms inline incidence | write time remains within noise while singleton endpoint buckets no longer allocate a tree; sparse hot-end lookup remains 121.2–121.6 ns |

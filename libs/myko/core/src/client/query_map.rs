@@ -166,6 +166,58 @@ impl MykoClient {
         self.watch_query_map_state(E::between_query(a, b))
     }
 
+    /// Watch the live number of edges at endpoint A without transferring edge
+    /// payloads to the client.
+    pub fn watch_graph_count_from<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+    ) -> Cell<Option<usize>, CellImmutable>
+    where
+        E: crate::graph::GraphClientAggregates,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_report::<E::CountFromReport, usize>(E::count_from_report(endpoint))
+    }
+
+    /// Watch the live number of edges at endpoint B without transferring edge
+    /// payloads to the client.
+    pub fn watch_graph_count_to<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+    ) -> Cell<Option<usize>, CellImmutable>
+    where
+        E: crate::graph::GraphClientAggregates,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_report::<E::CountToReport, usize>(E::count_to_report(endpoint))
+    }
+
+    /// Watch the live number of edges matching one exact endpoint pair.
+    pub fn watch_graph_count_between<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+    ) -> Cell<Option<usize>, CellImmutable>
+    where
+        E: crate::graph::GraphClientAggregates,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_report::<E::CountBetweenReport, usize>(E::count_between_report(a, b))
+    }
+
+    /// Watch whether any edge matches one exact endpoint pair.
+    pub fn watch_graph_exists_between<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+    ) -> Cell<Option<bool>, CellImmutable>
+    where
+        E: crate::graph::GraphClientAggregates,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_report::<E::ExistsBetweenReport, bool>(E::exists_between_report(a, b))
+    }
+
     /// Watch a query with per-entity reactive granularity.
     ///
     /// Unlike `watch_query` which returns `Cell<Vec<Arc<Item>>>` (re-notifies

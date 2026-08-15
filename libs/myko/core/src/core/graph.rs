@@ -600,6 +600,39 @@ where
     ) -> Self::BetweenQuery;
 }
 
+/// Generated live aggregate reports for one registered edge item.
+///
+/// These reports keep graph cardinality checks on the server and send only a
+/// scalar update to remote clients when the answer changes.
+pub trait GraphClientAggregates: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds,
+{
+    type CountFromReport: crate::report::ReportParams
+        + crate::report::ReportOutputType<Output = usize>;
+    type CountToReport: crate::report::ReportParams
+        + crate::report::ReportOutputType<Output = usize>;
+    type CountBetweenReport: crate::report::ReportParams
+        + crate::report::ReportOutputType<Output = usize>;
+    type ExistsBetweenReport: crate::report::ReportParams
+        + crate::report::ReportOutputType<Output = bool>;
+
+    fn count_from_report(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Self::CountFromReport;
+    fn count_to_report(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Self::CountToReport;
+    fn count_between_report(
+        a: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Self::CountBetweenReport;
+    fn exists_between_report(
+        a: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Self::ExistsBetweenReport;
+}
+
 /// Generated command types for authoritative graph mutations.
 ///
 /// These commands use Myko's ordinary command protocol, so callers receive the
@@ -1769,6 +1802,108 @@ impl GraphIndex {
         Ok(result.lock())
     }
 
+    fn apply_watch_count_diff(
+        registration: &EdgeRegistration,
+        matches_endpoints: &impl Fn(&EdgeEndpoints) -> bool,
+        diff: &GraphWatchDiff,
+        count: &mut usize,
+    ) {
+        let matches = |item: &Arc<dyn AnyItem>| {
+            (registration.extract)(item.as_ref())
+                .is_ok_and(|endpoints| matches_endpoints(&endpoints))
+        };
+        match diff {
+            GraphWatchDiff::Initial { entries } => {
+                *count = entries.iter().filter(|(_, item)| matches(item)).count();
+            }
+            GraphWatchDiff::Insert { value, .. } => {
+                if matches(value) {
+                    *count = count.saturating_add(1);
+                }
+            }
+            GraphWatchDiff::Remove { old_value, .. } => {
+                if matches(old_value) {
+                    *count = count.saturating_sub(1);
+                }
+            }
+            GraphWatchDiff::Update {
+                old_value,
+                new_value,
+                ..
+            } => match (matches(old_value), matches(new_value)) {
+                (true, false) => *count = count.saturating_sub(1),
+                (false, true) => *count = count.saturating_add(1),
+                (true, true) | (false, false) => {}
+            },
+            GraphWatchDiff::Batch { changes } => {
+                for change in changes {
+                    Self::apply_watch_count_diff(registration, matches_endpoints, change, count);
+                }
+            }
+        }
+    }
+
+    /// Build a live scalar cardinality with an index-seeded initial value.
+    ///
+    /// Unlike [`Self::watch_matching`], this never loads matching edge items
+    /// merely to count them. Canonical diffs adjust the scalar incrementally.
+    fn watch_count_matching<F>(
+        &self,
+        edge_type: &str,
+        initial_count: impl FnOnce(&Self) -> usize,
+        matches_endpoints: F,
+    ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>>
+    where
+        F: Fn(&EdgeEndpoints) -> bool + Send + Sync + 'static,
+    {
+        use hyphae::{Materialize, Mutable, Signal, Watchable};
+
+        let registration = self
+            .registration(edge_type)
+            .context("edge type is not registered")?;
+        let store = self.registry.get_or_create(edge_type);
+        let _authority = self.lock_authority();
+        let initial_count = initial_count(self);
+        let result = hyphae::Cell::new(initial_count);
+        let result_weak = result.downgrade();
+        let count = Arc::new(Mutex::new(initial_count));
+        let store_keepalive = store.clone();
+        let diffs = store.diffs().materialize();
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let guard = diffs.subscribe(move |signal| {
+            let _ = &store_keepalive;
+            if first.load(std::sync::atomic::Ordering::Relaxed)
+                && first.swap(false, std::sync::atomic::Ordering::AcqRel)
+            {
+                return;
+            }
+            let Signal::Value(diff) = signal else {
+                return;
+            };
+            let Some(result) = result_weak.upgrade() else {
+                return;
+            };
+            let next = {
+                let mut count = count
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let previous = *count;
+                Self::apply_watch_count_diff(
+                    registration,
+                    &matches_endpoints,
+                    diff.as_ref(),
+                    &mut count,
+                );
+                (*count != previous).then_some(*count)
+            };
+            if let Some(next) = next {
+                result.set(next);
+            }
+        });
+        result.own(guard);
+        Ok(result.lock())
+    }
+
     /// Build a live canonical edge map at one endpoint.
     pub(crate) fn watch_at(
         &self,
@@ -1781,6 +1916,27 @@ impl GraphIndex {
         self.watch_matching(
             edge_type,
             move |graph| graph.edge_ids_at(edge_type, position, &endpoint_for_seed),
+            move |endpoints| {
+                let candidate = match position {
+                    EndPosition::A => &endpoints.a,
+                    EndPosition::B => &endpoints.b,
+                };
+                *candidate == endpoint_for_diffs
+            },
+        )
+    }
+
+    pub(crate) fn watch_count_at(
+        &self,
+        edge_type: &str,
+        position: EndPosition,
+        endpoint: &EndpointValue,
+    ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>> {
+        let endpoint_for_seed = endpoint.clone();
+        let endpoint_for_diffs = endpoint.clone();
+        self.watch_count_matching(
+            edge_type,
+            move |graph| graph.edge_count_at(edge_type, position, &endpoint_for_seed),
             move |endpoints| {
                 let candidate = match position {
                     EndPosition::A => &endpoints.a,
@@ -1808,6 +1964,28 @@ impl GraphIndex {
         self.watch_matching(
             edge_type,
             move |graph| graph.edge_ids_between(edge_type, &a_for_seed, &b_for_seed),
+            move |endpoints| {
+                Self::endpoints_match(registration, endpoints, &a_for_diffs, &b_for_diffs)
+            },
+        )
+    }
+
+    pub(crate) fn watch_count_between(
+        &self,
+        edge_type: &str,
+        a: &EndpointValue,
+        b: &EndpointValue,
+    ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>> {
+        let a_for_seed = a.clone();
+        let b_for_seed = b.clone();
+        let a_for_diffs = a.clone();
+        let b_for_diffs = b.clone();
+        let registration = self
+            .registration(edge_type)
+            .context("edge type is not registered")?;
+        self.watch_count_matching(
+            edge_type,
+            move |graph| graph.edge_count_between(edge_type, &a_for_seed, &b_for_seed),
             move |endpoints| {
                 Self::endpoints_match(registration, endpoints, &a_for_diffs, &b_for_diffs)
             },
@@ -2654,6 +2832,16 @@ where
         self.watch_at(EndPosition::A, &endpoint)
     }
 
+    /// Reactive cardinality counterpart of [`Self::count_from`].
+    pub fn watch_count_from(
+        &self,
+        value: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>> {
+        let endpoint = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(value)?;
+        self.graph()?
+            .watch_count_at(E::ENTITY_NAME_STATIC, EndPosition::A, &endpoint)
+    }
+
     /// Reactive counterpart of [`Self::to`].
     pub fn watch_to(
         &self,
@@ -2661,6 +2849,16 @@ where
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
         let endpoint = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(value)?;
         self.watch_at(EndPosition::B, &endpoint)
+    }
+
+    /// Reactive cardinality counterpart of [`Self::count_to`].
+    pub fn watch_count_to(
+        &self,
+        value: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>> {
+        let endpoint = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(value)?;
+        self.graph()?
+            .watch_count_at(E::ENTITY_NAME_STATIC, EndPosition::B, &endpoint)
     }
 
     /// Reactive counterpart of [`Self::between`].
@@ -2676,6 +2874,18 @@ where
             selected,
             "EdgeQuery::watch_between",
         ))
+    }
+
+    /// Reactive cardinality counterpart of [`Self::count_between`].
+    pub fn watch_count_between(
+        &self,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<hyphae::Cell<usize, hyphae::CellImmutable>> {
+        let a = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(a)?;
+        let b = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(b)?;
+        self.graph()?
+            .watch_count_between(E::ENTITY_NAME_STATIC, &a, &b)
     }
 
     /// Qualified-address spelling for [`Self::watch_from`].
@@ -2931,6 +3141,8 @@ mod tests {
     }
     use forward_indexed_edge::{
         ForwardIndexedAssignment, ForwardIndexedAssignmentGraphBetween,
+        ForwardIndexedAssignmentGraphCountBetween, ForwardIndexedAssignmentGraphCountFrom,
+        ForwardIndexedAssignmentGraphCountTo, ForwardIndexedAssignmentGraphExistsBetween,
         ForwardIndexedAssignmentGraphFrom, ForwardIndexedAssignmentGraphTo,
         ForwardIndexedAssignmentId,
     };
@@ -3006,6 +3218,16 @@ mod tests {
         assert!(
             handlers
                 .query("ForwardIndexedAssignmentGraphBetween")
+                .is_some()
+        );
+        assert!(
+            handlers
+                .report("ForwardIndexedAssignmentGraphCountFrom")
+                .is_some()
+        );
+        assert!(
+            handlers
+                .report("ForwardIndexedAssignmentGraphExistsBetween")
                 .is_some()
         );
     }
@@ -3245,7 +3467,115 @@ mod tests {
             &ArticleId,
         ) -> QueryMapWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_between::<ForwardIndexedAssignment>;
-        std::hint::black_box((from, to, between));
+        let count_from: fn(
+            &MykoClient,
+            &TagId,
+        ) -> hyphae::Cell<Option<usize>, hyphae::CellImmutable> =
+            MykoClient::watch_graph_count_from::<ForwardIndexedAssignment>;
+        let count_to: fn(
+            &MykoClient,
+            &ArticleId,
+        ) -> hyphae::Cell<Option<usize>, hyphae::CellImmutable> =
+            MykoClient::watch_graph_count_to::<ForwardIndexedAssignment>;
+        let count_between: fn(
+            &MykoClient,
+            &TagId,
+            &ArticleId,
+        ) -> hyphae::Cell<Option<usize>, hyphae::CellImmutable> =
+            MykoClient::watch_graph_count_between::<ForwardIndexedAssignment>;
+        let exists_between: fn(
+            &MykoClient,
+            &TagId,
+            &ArticleId,
+        ) -> hyphae::Cell<Option<bool>, hyphae::CellImmutable> =
+            MykoClient::watch_graph_exists_between::<ForwardIndexedAssignment>;
+        std::hint::black_box((
+            from,
+            to,
+            between,
+            count_from,
+            count_to,
+            count_between,
+            exists_between,
+        ));
+    }
+
+    #[test]
+    fn generated_graph_aggregates_track_canonical_endpoint_changes() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "aggregate".into(),
+            id: TagId::from("tag-aggregate"),
+        };
+        let other_tag = Tag {
+            name: "aggregate-other".into(),
+            id: TagId::from("tag-aggregate-other"),
+        };
+        let article = Article {
+            title: "Aggregate report".into(),
+            id: ArticleId::from("article-aggregate"),
+        };
+        let edge = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("aggregate-edge"),
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&other_tag).is_ok());
+        assert!(context.set(&article).is_ok());
+        assert!(context.set(&edge).is_ok());
+
+        let request = || {
+            Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "graph-aggregate-test".into(),
+                context.host_id,
+            ))
+        };
+        let count_from = context.report(
+            ForwardIndexedAssignmentGraphCountFrom {
+                endpoint: tag.id.clone(),
+            },
+            request(),
+        );
+        let count_to = context.report(
+            ForwardIndexedAssignmentGraphCountTo {
+                endpoint: article.id.clone(),
+            },
+            request(),
+        );
+        let count_between = context.report(
+            ForwardIndexedAssignmentGraphCountBetween {
+                a: tag.id.clone(),
+                b: article.id.clone(),
+            },
+            request(),
+        );
+        let exists_between = context.report(
+            ForwardIndexedAssignmentGraphExistsBetween {
+                a: tag.id.clone(),
+                b: article.id.clone(),
+            },
+            request(),
+        );
+        assert_eq!(*count_from.get(), 1);
+        assert_eq!(*count_to.get(), 1);
+        assert_eq!(*count_between.get(), 1);
+        assert!(*exists_between.get());
+
+        let moved = ForwardIndexedAssignment {
+            tag_id: other_tag.id.clone(),
+            ..edge.clone()
+        };
+        assert!(context.set(&moved).is_ok());
+        assert_eq!(*count_from.get(), 0);
+        assert_eq!(*count_to.get(), 1);
+        assert_eq!(*count_between.get(), 0);
+        assert!(!*exists_between.get());
+
+        assert!(context.del(&moved).is_ok());
+        assert_eq!(*count_to.get(), 0);
     }
 
     #[test]

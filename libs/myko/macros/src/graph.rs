@@ -53,6 +53,154 @@ fn graph_query_common(
 }
 
 #[allow(clippy::too_many_lines)]
+fn graph_aggregate_tokens(
+    ctx: &crate::DeriveCtx,
+    edge_name: &syn::Ident,
+    edge_type: &Type,
+) -> TokenStream {
+    let krate = &ctx.krate;
+    let a_address = format_ident!("{}AAddress", edge_name);
+    let b_address = format_ident!("{}BAddress", edge_name);
+    let count_from = format_ident!("{}GraphCountFrom", edge_name);
+    let count_to = format_ident!("{}GraphCountTo", edge_name);
+    let count_between = format_ident!("{}GraphCountBetween", edge_name);
+    let exists_between = format_ident!("{}GraphExistsBetween", edge_name);
+
+    quote! {
+        /// Live number of edges whose A endpoint matches `endpoint`.
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_report(usize)]
+        pub struct #count_from {
+            pub endpoint: #a_address,
+        }
+
+        impl #krate::prelude::ReportHandler for #count_from {
+            type Output = usize;
+
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Materialize<
+                std::sync::Arc<Self::Output>,
+                #krate::prelude::Definite,
+            > {
+                use #krate::prelude::{GraphQuerying, MapExt};
+                ctx.edges::<#edge_type>()
+                    .watch_count_from(&self.endpoint)
+                    .unwrap_or_else(|_| #krate::hyphae::Cell::new(0).lock())
+                    .map(|count| std::sync::Arc::new(*count))
+            }
+        }
+
+        /// Live number of edges whose B endpoint matches `endpoint`.
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_report(usize)]
+        pub struct #count_to {
+            pub endpoint: #b_address,
+        }
+
+        impl #krate::prelude::ReportHandler for #count_to {
+            type Output = usize;
+
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Materialize<
+                std::sync::Arc<Self::Output>,
+                #krate::prelude::Definite,
+            > {
+                use #krate::prelude::{GraphQuerying, MapExt};
+                ctx.edges::<#edge_type>()
+                    .watch_count_to(&self.endpoint)
+                    .unwrap_or_else(|_| #krate::hyphae::Cell::new(0).lock())
+                    .map(|count| std::sync::Arc::new(*count))
+            }
+        }
+
+        /// Live number of edges matching one exact A/B pair.
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_report(usize)]
+        pub struct #count_between {
+            pub a: #a_address,
+            pub b: #b_address,
+        }
+
+        impl #krate::prelude::ReportHandler for #count_between {
+            type Output = usize;
+
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Materialize<
+                std::sync::Arc<Self::Output>,
+                #krate::prelude::Definite,
+            > {
+                use #krate::prelude::{GraphQuerying, MapExt};
+                ctx.edges::<#edge_type>()
+                    .watch_count_between(&self.a, &self.b)
+                    .unwrap_or_else(|_| #krate::hyphae::Cell::new(0).lock())
+                    .map(|count| std::sync::Arc::new(*count))
+            }
+        }
+
+        /// Live existence check for one exact A/B pair.
+        #[#krate::myko_non_hash_cache_key]
+        #[#krate::myko_report(bool)]
+        pub struct #exists_between {
+            pub a: #a_address,
+            pub b: #b_address,
+        }
+
+        impl #krate::prelude::ReportHandler for #exists_between {
+            type Output = bool;
+
+            fn compute(
+                &self,
+                ctx: #krate::prelude::ReportContext,
+            ) -> impl #krate::prelude::Materialize<
+                std::sync::Arc<Self::Output>,
+                #krate::prelude::Definite,
+            > {
+                use #krate::prelude::{GraphQuerying, MapExt};
+                ctx.edges::<#edge_type>()
+                    .watch_count_between(&self.a, &self.b)
+                    .unwrap_or_else(|_| #krate::hyphae::Cell::new(0).lock())
+                    .map(|count| std::sync::Arc::new(*count != 0))
+            }
+        }
+
+        impl #krate::graph::GraphClientAggregates for #edge_type {
+            type CountFromReport = #count_from;
+            type CountToReport = #count_to;
+            type CountBetweenReport = #count_between;
+            type ExistsBetweenReport = #exists_between;
+
+            fn count_from_report(endpoint: &#a_address) -> Self::CountFromReport {
+                #count_from { endpoint: endpoint.clone() }
+            }
+
+            fn count_to_report(endpoint: &#b_address) -> Self::CountToReport {
+                #count_to { endpoint: endpoint.clone() }
+            }
+
+            fn count_between_report(
+                a: &#a_address,
+                b: &#b_address,
+            ) -> Self::CountBetweenReport {
+                #count_between { a: a.clone(), b: b.clone() }
+            }
+
+            fn exists_between_report(
+                a: &#a_address,
+                b: &#b_address,
+            ) -> Self::ExistsBetweenReport {
+                #exists_between { a: a.clone(), b: b.clone() }
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_lines)]
 fn graph_mutation_tokens(
     ctx: &crate::DeriveCtx,
     edge_name: &syn::Ident,
@@ -483,6 +631,11 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
         .map_or_else(TokenStream::new, |edge_name| {
             graph_mutation_tokens(&ctx, edge_name, &edge_type)
         });
+    let graph_aggregates = edge_name
+        .as_ref()
+        .map_or_else(TokenStream::new, |edge_name| {
+            graph_aggregate_tokens(&ctx, edge_name, &edge_type)
+        });
 
     quote! {
         #input
@@ -490,6 +643,7 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
         #address_aliases
         #graph_queries
         #graph_mutations
+        #graph_aggregates
 
         #krate::submit! {
             #krate::graph::EdgeRegistration {

@@ -29,6 +29,7 @@ use myko::{
 
 const N: usize = 1_000;
 type BenchGraphFromQuery = <BenchGraphEdge as GraphClientQueries>::FromQuery;
+type BenchGraphCountFromReport = <BenchGraphEdge as GraphClientAggregates>::CountFromReport;
 
 fn context(graph: bool) -> MykoServerContext {
     let context = MykoServerContext::new(
@@ -310,6 +311,8 @@ fn bench_watch_initialization(c: &mut Criterion) {
         request.tx.clone(),
     ));
     let server = Arc::new(context.clone());
+    let report_context = ReportContext::new(request.clone(), server.clone());
+    let count_report = BenchGraphEdge::count_from_report(&from);
 
     let mut group = c.benchmark_group("graph/sparse_watch_initialization");
     group.bench_function("canonical_select", |b| {
@@ -329,6 +332,25 @@ fn bench_watch_initialization(c: &mut Criterion) {
                 .watch_from(&from)
                 .expect("index-seeded watch");
             black_box(watched.snapshot().len())
+        });
+    });
+    group.bench_function("index_seeded_count", |b| {
+        b.iter(|| {
+            let watched = context
+                .edges::<BenchGraphEdge>()
+                .watch_count_from(&from)
+                .expect("index-seeded count watch");
+            black_box(watched.get())
+        });
+    });
+    group.bench_function("aggregate_report_pipeline", |b| {
+        b.iter(|| {
+            let watched = <BenchGraphCountFromReport as ReportHandler>::compute(
+                &count_report,
+                report_context.clone(),
+            )
+            .materialize();
+            black_box(watched.get())
         });
     });
     group.bench_function("ordinary_query_factory", |b| {
