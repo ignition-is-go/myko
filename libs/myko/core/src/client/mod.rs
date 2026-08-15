@@ -102,6 +102,58 @@ pub type QueryWatch<T> = ListWatch<Arc<T>>;
 /// A view list watch with authoritative response readiness.
 pub type ViewWatch<T> = ListWatch<T>;
 
+/// A coherent snapshot of a live windowed query for direct UI consumption.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+pub struct WindowedQueryState<T: CellValue> {
+    pub items: Vec<Arc<T>>,
+    pub ready: bool,
+    pub total_count: Option<usize>,
+    pub window: Option<QueryWindow>,
+    /// Zero-based page index when the acknowledged window has a non-zero limit.
+    pub page_index: Option<usize>,
+    /// Total number of pages when both the count and a non-zero limit are known.
+    pub page_count: Option<usize>,
+    pub has_previous_page: bool,
+    pub has_next_page: bool,
+}
+
+impl<T: CellValue> WindowedQueryState<T> {
+    fn new(
+        items: Vec<Arc<T>>,
+        ready: bool,
+        total_count: Option<usize>,
+        window: Option<QueryWindow>,
+    ) -> Self {
+        let page_index = window
+            .as_ref()
+            .and_then(|window| window.offset.checked_div(window.limit));
+        let page_count = total_count
+            .zip(window.as_ref())
+            .and_then(|(total, window)| (window.limit > 0).then(|| total.div_ceil(window.limit)));
+        let has_previous_page = ready
+            && window
+                .as_ref()
+                .is_some_and(|window| window.limit > 0 && window.offset > 0);
+        let has_next_page = ready
+            && total_count
+                .zip(window.as_ref())
+                .is_some_and(|(total, window)| {
+                    window.limit > 0 && window.offset.saturating_add(window.limit) < total
+                });
+        Self {
+            items,
+            ready,
+            total_count,
+            window,
+            page_index,
+            page_count,
+            has_previous_page,
+            has_next_page,
+        }
+    }
+}
+
 /// A live ordered query page with authoritative pagination metadata.
 #[derive(Clone)]
 pub struct WindowedQueryWatch<T: CellValue> {
@@ -109,6 +161,7 @@ pub struct WindowedQueryWatch<T: CellValue> {
     ready: Cell<bool, CellImmutable>,
     total_count: Cell<Option<usize>, CellImmutable>,
     window: Cell<Option<QueryWindow>, CellImmutable>,
+    state: Cell<WindowedQueryState<T>, CellImmutable>,
     tx: Arc<str>,
     client: MykoClient,
 }
@@ -132,6 +185,12 @@ impl<T: CellValue> WindowedQueryWatch<T> {
     #[must_use]
     pub const fn window(&self) -> &Cell<Option<QueryWindow>, CellImmutable> {
         &self.window
+    }
+
+    /// One coherent reactive value for rendering the page and its controls.
+    #[must_use]
+    pub const fn state(&self) -> &Cell<WindowedQueryState<T>, CellImmutable> {
+        &self.state
     }
 
     /// Move this live subscription to another window without resubscribing.
@@ -167,16 +226,14 @@ impl<T: CellValue> WindowedQueryWatch<T> {
     ///
     /// Returns an error if the control message cannot be encoded.
     pub fn next_page(&self) -> Result<bool, String> {
-        let Some(window) = self.window.get() else {
+        let state = self.state.get();
+        let Some(window) = state.window else {
             return Ok(false);
         };
-        let Some(total_count) = self.total_count.get() else {
-            return Ok(false);
-        };
-        let next_offset = window.offset.saturating_add(window.limit);
-        if window.limit == 0 || next_offset >= total_count {
+        if !state.has_next_page {
             return Ok(false);
         }
+        let next_offset = window.offset.saturating_add(window.limit);
         self.set_page(next_offset, window.limit)?;
         Ok(true)
     }
@@ -187,14 +244,74 @@ impl<T: CellValue> WindowedQueryWatch<T> {
     ///
     /// Returns an error if the control message cannot be encoded.
     pub fn previous_page(&self) -> Result<bool, String> {
-        let Some(window) = self.window.get() else {
+        let state = self.state.get();
+        let Some(window) = state.window else {
             return Ok(false);
         };
-        if window.limit == 0 || window.offset == 0 {
+        if !state.has_previous_page {
             return Ok(false);
         }
         self.set_page(window.offset.saturating_sub(window.limit), window.limit)?;
         Ok(true)
+    }
+
+    /// Request the first page when the acknowledged window is not first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn first_page(&self) -> Result<bool, String> {
+        let state = self.state.get();
+        let Some(window) = state.window else {
+            return Ok(false);
+        };
+        if !state.has_previous_page {
+            return Ok(false);
+        }
+        self.set_page(0, window.limit)?;
+        Ok(true)
+    }
+
+    /// Request a zero-based page index when it is within the known result set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn set_page_index(&self, page_index: usize) -> Result<bool, String> {
+        let state = self.state.get();
+        if !state.ready {
+            return Ok(false);
+        }
+        let Some(window) = state.window.as_ref() else {
+            return Ok(false);
+        };
+        let Some(page_count) = state.page_count else {
+            return Ok(false);
+        };
+        if window.limit == 0 || page_index >= page_count || state.page_index == Some(page_index) {
+            return Ok(false);
+        }
+        let Some(offset) = page_index.checked_mul(window.limit) else {
+            return Ok(false);
+        };
+        self.set_page(offset, window.limit)?;
+        Ok(true)
+    }
+
+    /// Request the final page when its position is known and not already active.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn last_page(&self) -> Result<bool, String> {
+        let state = self.state.get();
+        let Some(page_count) = state.page_count else {
+            return Ok(false);
+        };
+        let Some(last_page) = page_count.checked_sub(1) else {
+            return Ok(false);
+        };
+        self.set_page_index(last_page)
     }
 }
 
@@ -458,6 +575,7 @@ struct ClientWindowWatchCacheEntry<T: CellValue> {
     ready: hyphae::cell::WeakCell<bool, CellImmutable>,
     total_count: hyphae::cell::WeakCell<Option<usize>, CellImmutable>,
     window: hyphae::cell::WeakCell<Option<QueryWindow>, CellImmutable>,
+    state: hyphae::cell::WeakCell<WindowedQueryState<T>, CellImmutable>,
 }
 
 impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
@@ -468,6 +586,7 @@ impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
             ready: watch.ready.downgrade(),
             total_count: watch.total_count.downgrade(),
             window: watch.window.downgrade(),
+            state: watch.state.downgrade(),
         }
     }
 
@@ -477,6 +596,7 @@ impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
             ready: self.ready.upgrade()?,
             total_count: self.total_count.upgrade()?,
             window: self.window.upgrade()?,
+            state: self.state.upgrade()?,
             tx: self.tx.clone(),
             client,
         })

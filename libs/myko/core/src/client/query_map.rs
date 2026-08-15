@@ -508,11 +508,19 @@ impl MykoClient {
         let total_count = Cell::new(None).with_name(format!("query_window_total_count:{query_id}"));
         let window = Cell::new(Some(initial_window.clone()))
             .with_name(format!("query_window_state:{query_id}"));
+        let page_state = Cell::new(super::WindowedQueryState::new(
+            Vec::new(),
+            false,
+            None,
+            Some(initial_window.clone()),
+        ))
+        .with_name(format!("query_window_page_state:{query_id}"));
         let early_watch = WindowedQueryWatch {
             items: items.clone().lock(),
             ready: ready.clone().lock(),
             total_count: total_count.clone().lock(),
             window: window.clone().lock(),
+            state: page_state.clone().lock(),
             tx: tx.clone(),
             client: self.clone(),
         };
@@ -535,6 +543,7 @@ impl MykoClient {
         let ready_for_handler = ready.clone();
         let total_count_for_handler = total_count.clone();
         let window_for_handler = window.clone();
+        let page_state_for_handler = page_state.clone();
         let handler: super::QueryHandler = Box::new(move |response_value: Value| {
             let Some(items_writer) = items_weak.upgrade() else {
                 return;
@@ -592,7 +601,7 @@ impl MykoClient {
             for (id, item) in upserts {
                 state.insert(id, item);
             }
-            let next_items = order.map_or_else(
+            let next_items: Vec<Arc<Q::Item>> = order.map_or_else(
                 || {
                     let mut ids: Vec<_> = state.keys().cloned().collect();
                     ids.sort_unstable();
@@ -608,12 +617,20 @@ impl MykoClient {
                 },
             );
             drop(state);
+            let next_ready = ready_for_handler.get() || is_initial;
+            let next_page_state = super::WindowedQueryState::new(
+                next_items.clone(),
+                next_ready,
+                response.total_count,
+                response.window.clone(),
+            );
             items_writer.set(next_items);
             total_count_for_handler.set(response.total_count);
             window_for_handler.set(response.window);
             if is_initial {
                 ready_for_handler.set(true);
             }
+            page_state_for_handler.set(next_page_state);
         });
         if !self.try_register_query_handler(tx.clone(), handler) {
             error!("Refusing duplicate windowed query transaction {tx}");
@@ -622,6 +639,7 @@ impl MykoClient {
 
         let inner = self.inner.clone();
         let ready_for_status = ready.downgrade();
+        let page_state_for_status = page_state.downgrade();
         let window_for_status = window.clone().lock();
         let wrapped_for_status = wrapped;
         let status_cell = self.connection_status();
@@ -645,6 +663,15 @@ impl MykoClient {
                 if let Some(writer) = ready_for_status.upgrade() {
                     writer.set(false);
                 }
+                if let Some(writer) = page_state_for_status.upgrade() {
+                    let current = writer.get();
+                    writer.set(super::WindowedQueryState::new(
+                        current.items,
+                        false,
+                        current.total_count,
+                        current.window,
+                    ));
+                }
             }
         });
 
@@ -653,6 +680,7 @@ impl MykoClient {
         items.own(super::retain_cell_guard(ready.clone().lock()));
         items.own(super::retain_cell_guard(total_count.clone().lock()));
         items.own(super::retain_cell_guard(window.clone().lock()));
+        items.own(super::retain_cell_guard(page_state.clone().lock()));
         items.own(super::list_watch_cache_guard(
             cache_key.clone(),
             tx,
@@ -663,6 +691,7 @@ impl MykoClient {
             ready: ready.lock(),
             total_count: total_count.lock(),
             window: window.lock(),
+            state: page_state.lock(),
             tx: early_watch.tx,
             client: early_watch.client,
         };
@@ -1088,8 +1117,24 @@ mod tests {
                 .is_some_and(|item| item.id.as_ref() == "client-b")
         );
         assert_eq!(second.total_count().get(), Some(3));
+        assert_eq!(
+            first.state().get(),
+            crate::client::WindowedQueryState {
+                items: first.items().get(),
+                ready: true,
+                total_count: Some(3),
+                window: Some(QueryWindow {
+                    offset: 0,
+                    limit: 1,
+                }),
+                page_index: Some(0),
+                page_count: Some(3),
+                has_previous_page: false,
+                has_next_page: true,
+            }
+        );
 
-        assert!(first.set_page(1, 1).is_ok());
+        assert_eq!(first.next_page(), Ok(true));
         let window_messages: Vec<QueryWindowUpdate> = transport
             .sent_frames()
             .iter()
@@ -1156,8 +1201,34 @@ mod tests {
                 limit: 1
             })
         );
+        let moved_state = second.state().get();
+        assert_eq!(moved_state.page_index, Some(1));
+        assert_eq!(moved_state.page_count, Some(3));
+        assert!(moved_state.has_previous_page);
+        assert!(moved_state.has_next_page);
+        assert_eq!(first.last_page(), Ok(true));
+        assert_eq!(first.set_page_index(3), Ok(false));
+        let last_window_message = transport.sent_frames().iter().rev().find_map(|frame| {
+            let WsFrame::Text(text) = frame else {
+                return None;
+            };
+            let value: serde_json::Value = serde_json::from_str(text).ok()?;
+            (value.get("event")?.as_str()? == "ws:m:query-window")
+                .then(|| {
+                    serde_json::from_value::<QueryWindowUpdate>(value.get("data")?.clone()).ok()
+                })
+                .flatten()
+        });
+        assert_eq!(
+            last_window_message.and_then(|message| message.window),
+            Some(QueryWindow {
+                offset: 2,
+                limit: 1,
+            })
+        );
 
         transport.set_status(SocketConnectionStatus::Disconnected);
+        assert!(!first.state().get().ready);
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
         let frames = transport.sent_frames();
         let resumed = frames.iter().rev().find_map(|frame| {
