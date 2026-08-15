@@ -19,6 +19,41 @@ use hyphae::SwitchMapExt;
 
 use crate::prelude::*;
 
+pub use graph_edge::{BenchGraphEdge, BenchGraphEdgeId};
+pub use graph_node::{BenchGraphNode, BenchGraphNodeId};
+
+mod graph_node {
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchGraphNode {
+        pub ordinal: i64,
+    }
+}
+
+mod graph_edge {
+    use super::{BenchGraphNode, BenchGraphNodeId};
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchGraphEdge {
+        pub from_id: BenchGraphNodeId,
+        pub to_id: BenchGraphNodeId,
+    }
+
+    #[myko_edge]
+    impl GraphEdge for BenchGraphEdge {
+        type Ends = Directed<ConcreteEndpoint<BenchGraphNode>, ConcreteEndpoint<BenchGraphNode>>;
+
+        fn ends(&self) -> (BenchGraphNodeId, BenchGraphNodeId) {
+            (self.from_id.clone(), self.to_id.clone())
+        }
+
+        const ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
+        const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
+    }
+}
+
 /// A simple entity for benchmarking with category-based filtering.
 #[myko_item]
 pub struct BenchItem {
@@ -312,7 +347,8 @@ impl ReportHandler for SwitchMapReport {
                 category: Some(StringFilter::Eq(category.into())),
                 ..Default::default()
             }))
-            .items();
+            .items()
+            .materialize();
 
         // switch_map + nested query_map — the leak pattern
         items.switch_map(move |items| {

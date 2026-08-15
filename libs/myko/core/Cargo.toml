@@ -93,6 +93,11 @@ name = "advanced_query_filters"
 harness = false
 required-features = ["bench"]
 
+[[bench]]
+name = "graph"
+harness = false
+required-features = ["bench"]
+
 [features]
 default = []
 # Canonical domain used only by integration demos and examples. Keeping it
