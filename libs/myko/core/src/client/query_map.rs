@@ -143,6 +143,20 @@ impl MykoClient {
         self.watch_query_map_state(E::from_query(endpoint))
     }
 
+    /// Watch the distinct union of edges at several endpoint-A addresses with
+    /// one wire subscription.
+    pub fn watch_graph_from_many<E>(
+        &self,
+        endpoints: &[<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value],
+    ) -> QueryMapWatch<E>
+    where
+        E: crate::graph::GraphClientBatchQueries + WithTypedId,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
+    {
+        self.watch_query_map_state(E::from_many_query(endpoints))
+    }
+
     /// Watch edges at endpoint B through the generated ordinary query.
     pub fn watch_graph_to<E>(
         &self,
@@ -154,6 +168,20 @@ impl MykoClient {
         <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
     {
         self.watch_query_map_state(E::to_query(endpoint))
+    }
+
+    /// Watch the distinct union of edges at several endpoint-B addresses with
+    /// one wire subscription.
+    pub fn watch_graph_to_many<E>(
+        &self,
+        endpoints: &[<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value],
+    ) -> QueryMapWatch<E>
+    where
+        E: crate::graph::GraphClientBatchQueries + WithTypedId,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
+    {
+        self.watch_query_map_state(E::to_many_query(endpoints))
     }
 
     /// Watch distinct typed entities reached from endpoint A.
@@ -181,6 +209,29 @@ impl MykoClient {
         self.watch_query_map_state(E::targets_from_query(endpoint))
     }
 
+    /// Watch the distinct union of typed entities reached from several A
+    /// endpoints with one wire subscription.
+    pub fn watch_graph_targets_from_many<E>(
+        &self,
+        endpoints: &[<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value],
+    ) -> QueryMapWatch<
+        <<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EntityEndpointSpec>::Entity,
+    >
+    where
+        E: crate::graph::GraphClientTargetsFromMany,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E::Ends as crate::graph::TypedEdgeEnds>::B: crate::graph::EntityEndpointSpec,
+        <<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EntityEndpointSpec>::Entity:
+            WithTypedId,
+        <<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EntityEndpointSpec>::Entity as WithTypedId>::Id:
+            hyphae::IdFor<
+                <<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EntityEndpointSpec>::Entity,
+                MapKey = Arc<str>,
+            >,
+    {
+        self.watch_query_map_state(E::targets_from_many_query(endpoints))
+    }
+
     /// Watch distinct typed entities that reach endpoint B.
     pub fn watch_graph_sources_to<E>(
         &self,
@@ -201,6 +252,29 @@ impl MykoClient {
             >,
     {
         self.watch_query_map_state(E::sources_to_query(endpoint))
+    }
+
+    /// Watch the distinct union of typed entities reaching several B
+    /// endpoints with one wire subscription.
+    pub fn watch_graph_sources_to_many<E>(
+        &self,
+        endpoints: &[<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value],
+    ) -> QueryMapWatch<
+        <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
+    >
+    where
+        E: crate::graph::GraphClientSourcesToMany,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E::Ends as crate::graph::TypedEdgeEnds>::A: crate::graph::EntityEndpointSpec,
+        <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity:
+            WithTypedId,
+        <<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity as WithTypedId>::Id:
+            hyphae::IdFor<
+                <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
+                MapKey = Arc<str>,
+            >,
+    {
+        self.watch_query_map_state(E::sources_to_many_query(endpoints))
     }
 
     /// Watch distinct typed entities adjacent through an undirected edge.

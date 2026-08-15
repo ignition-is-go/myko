@@ -144,6 +144,29 @@ impl QueryBuildContext {
             .map_err(|error| error.to_string())
     }
 
+    /// Build one index-seeded graph watch for a union of endpoint addresses.
+    #[doc(hidden)]
+    pub fn graph_watch_many_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoints: &[crate::graph::EndpointValue],
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_many_at(E::ENTITY_NAME_STATIC, position, endpoints)
+            .map_err(|error| error.to_string())
+    }
+
     /// Build a routed live view of one concrete entity type reached through
     /// matching graph edges.
     #[doc(hidden)]
@@ -162,6 +185,32 @@ impl QueryBuildContext {
         let edges = crate::item::typed_map_arc_from_any_item::<E>(
             edges,
             "QueryBuildContext::graph_related_at",
+        );
+        Ok(crate::graph::graph_related_entity_watch::<E, T>(
+            &edges,
+            self.registry.as_ref(),
+            related_position,
+        ))
+    }
+
+    /// Build a routed live union of one concrete entity type reached through
+    /// any of several endpoint addresses.
+    #[doc(hidden)]
+    pub fn graph_related_many_at<E, T>(
+        &self,
+        edge_position: crate::graph::EndPosition,
+        endpoints: &[crate::graph::EndpointValue],
+        related_position: crate::graph::EndPosition,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        T: crate::graph::EntityEndpointSpec,
+    {
+        let edges = self.graph_watch_many_at::<E>(edge_position, endpoints)?;
+        let edges = crate::item::typed_map_arc_from_any_item::<E>(
+            edges,
+            "QueryBuildContext::graph_related_many_at",
         );
         Ok(crate::graph::graph_related_entity_watch::<E, T>(
             &edges,

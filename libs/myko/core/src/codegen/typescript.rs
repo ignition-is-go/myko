@@ -79,6 +79,25 @@ fn graph_related_query_class(
     )
 }
 
+fn graph_related_many_query_class(
+    edge: &str,
+    suffix: &str,
+    entity_type: &str,
+    address_position: char,
+) -> String {
+    format!(
+        r#"export class {edge}Graph{suffix}Many {{
+  static readonly queryId = "{edge}Graph{suffix}Many" as const;
+  static readonly queryItemType = "{entity_type}" as const;
+  readonly queryId = "{edge}Graph{suffix}Many" as const;
+  readonly queryItemType = "{entity_type}" as const;
+  readonly query: {{ endpoints: {edge}{address_position}Address[] }};
+  declare readonly $res: () => __MykoGraph{entity_type}[];
+  constructor(endpoints: {edge}{address_position}Address[]) {{ this.query = {{ endpoints: [...endpoints] }}; }}
+}}"#,
+    )
+}
+
 fn graph_related_query_helper(
     edge: &str,
     helper: &str,
@@ -90,6 +109,18 @@ fn graph_related_query_helper(
     )
 }
 
+fn graph_related_many_query_helper(
+    edge: &str,
+    helper: &str,
+    suffix: &str,
+    address_position: char,
+) -> String {
+    format!(
+        "  {helper}Many: (endpoints: {edge}{address_position}Address[]) => new {edge}Graph{suffix}Many(endpoints),\n"
+    )
+}
+
+#[allow(clippy::too_many_lines)]
 fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String {
     let a = &edge.endpoints[0];
     let b = &edge.endpoints[1];
@@ -98,13 +129,21 @@ fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String
     let related_queries = edge.related_queries();
     let targets_from = match (related_queries.targets_from, (b.requirement)()) {
         (true, EndpointRequirement::Concrete(entity_type)) => {
-            graph_related_query_class(edge.edge_type, "TargetsFrom", entity_type, 'A')
+            format!(
+                "{}\n{}",
+                graph_related_query_class(edge.edge_type, "TargetsFrom", entity_type, 'A'),
+                graph_related_many_query_class(edge.edge_type, "TargetsFrom", entity_type, 'A')
+            )
         }
         _ => String::new(),
     };
     let sources_to = match (related_queries.sources_to, (a.requirement)()) {
         (true, EndpointRequirement::Concrete(entity_type)) => {
-            graph_related_query_class(edge.edge_type, "SourcesTo", entity_type, 'B')
+            format!(
+                "{}\n{}",
+                graph_related_query_class(edge.edge_type, "SourcesTo", entity_type, 'B'),
+                graph_related_many_query_class(edge.edge_type, "SourcesTo", entity_type, 'B')
+            )
         }
         _ => String::new(),
     };
@@ -116,13 +155,21 @@ fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String
     };
     let targets_from_helper = match (related_queries.targets_from, (b.requirement)()) {
         (true, EndpointRequirement::Concrete(_)) => {
-            graph_related_query_helper(edge.edge_type, "targetsFrom", "TargetsFrom", 'A')
+            format!(
+                "{}{}",
+                graph_related_query_helper(edge.edge_type, "targetsFrom", "TargetsFrom", 'A'),
+                graph_related_many_query_helper(edge.edge_type, "targetsFrom", "TargetsFrom", 'A')
+            )
         }
         _ => String::new(),
     };
     let sources_to_helper = match (related_queries.sources_to, (a.requirement)()) {
         (true, EndpointRequirement::Concrete(_)) => {
-            graph_related_query_helper(edge.edge_type, "sourcesTo", "SourcesTo", 'B')
+            format!(
+                "{}{}",
+                graph_related_query_helper(edge.edge_type, "sourcesTo", "SourcesTo", 'B'),
+                graph_related_many_query_helper(edge.edge_type, "sourcesTo", "SourcesTo", 'B')
+            )
         }
         _ => String::new(),
     };
@@ -144,6 +191,15 @@ export class {edge}GraphFrom {{
   declare readonly $res: () => {edge}[];
   constructor(endpoint: {edge}AAddress) {{ this.query = {{ endpoint }}; }}
 }}
+export class {edge}GraphFromMany {{
+  static readonly queryId = "{edge}GraphFromMany" as const;
+  static readonly queryItemType = "{edge}" as const;
+  readonly queryId = "{edge}GraphFromMany" as const;
+  readonly queryItemType = "{edge}" as const;
+  readonly query: {{ endpoints: {edge}AAddress[] }};
+  declare readonly $res: () => {edge}[];
+  constructor(endpoints: {edge}AAddress[]) {{ this.query = {{ endpoints: [...endpoints] }}; }}
+}}
 export class {edge}GraphTo {{
   static readonly queryId = "{edge}GraphTo" as const;
   static readonly queryItemType = "{edge}" as const;
@@ -152,6 +208,15 @@ export class {edge}GraphTo {{
   readonly query: {{ endpoint: {edge}BAddress }};
   declare readonly $res: () => {edge}[];
   constructor(endpoint: {edge}BAddress) {{ this.query = {{ endpoint }}; }}
+}}
+export class {edge}GraphToMany {{
+  static readonly queryId = "{edge}GraphToMany" as const;
+  static readonly queryItemType = "{edge}" as const;
+  readonly queryId = "{edge}GraphToMany" as const;
+  readonly queryItemType = "{edge}" as const;
+  readonly query: {{ endpoints: {edge}BAddress[] }};
+  declare readonly $res: () => {edge}[];
+  constructor(endpoints: {edge}BAddress[]) {{ this.query = {{ endpoints: [...endpoints] }}; }}
 }}
 export class {edge}GraphBetween {{
   static readonly queryId = "{edge}GraphBetween" as const;
@@ -167,7 +232,9 @@ export class {edge}GraphBetween {{
 {neighbors}
 export const {edge}Graph = {{
   from: (endpoint: {edge}AAddress) => new {edge}GraphFrom(endpoint),
+  fromMany: (endpoints: {edge}AAddress[]) => new {edge}GraphFromMany(endpoints),
   to: (endpoint: {edge}BAddress) => new {edge}GraphTo(endpoint),
+  toMany: (endpoints: {edge}BAddress[]) => new {edge}GraphToMany(endpoints),
   between: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphBetween(a, b),
 {targets_from_helper}{sources_to_helper}{neighbors_helper}  countFrom: (endpoint: {edge}AAddress) => new {edge}GraphCountFrom({{ endpoint }}),
   countTo: (endpoint: {edge}BAddress) => new {edge}GraphCountTo({{ endpoint }}),
@@ -1193,6 +1260,7 @@ mod tests {
         assert!(rendered.contains("TagId as __MykoGraphTagId"));
         assert!(rendered.contains("EntityRef as __MykoGraphEntityRef"));
         assert!(rendered.contains("export class TagAssignmentGraphFrom"));
+        assert!(rendered.contains("export class TagAssignmentGraphFromMany"));
         assert!(rendered.contains("queryId = \"TagAssignmentGraphBetween\""));
         assert!(rendered.contains("connect: (edge: TagAssignment) => new ConnectTagAssignment"));
         assert!(rendered.contains("ensure: (edge: TagAssignment) => new EnsureTagAssignment"));
@@ -1202,12 +1270,15 @@ mod tests {
             )
         );
         assert!(rendered.contains("from: (endpoint: TagAssignmentAAddress)"));
+        assert!(rendered.contains("fromMany: (endpoints: TagAssignmentAAddress[])"));
         assert!(rendered.contains("new TagAssignmentGraphFrom(endpoint)"));
         assert!(rendered.contains("export class TagAssignmentGraphSourcesTo"));
         assert!(rendered.contains("sourcesTo: (endpoint: TagAssignmentBAddress)"));
         assert!(!rendered.contains("export class TagAssignmentGraphTargetsFrom"));
         assert!(rendered.contains("export class ScopedTagAssignmentGraphTargetsFrom"));
+        assert!(rendered.contains("export class ScopedTagAssignmentGraphTargetsFromMany"));
         assert!(rendered.contains("targetsFrom: (endpoint: ScopedTagAssignmentAAddress)"));
+        assert!(rendered.contains("targetsFromMany: (endpoints: ScopedTagAssignmentAAddress[])"));
         assert!(!rendered.contains("export class AliasedEndpointAssignmentGraphTargetsFrom"));
         assert!(rendered.contains("export class ArticleLinkGraphNeighbors"));
         assert!(rendered.contains("neighbors: (endpoint: ArticleLinkAAddress)"));

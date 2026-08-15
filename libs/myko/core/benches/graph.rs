@@ -414,6 +414,89 @@ fn bench_watch_initialization(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_many_endpoint_watch_initialization(c: &mut Criterion) {
+    let edge_count = 10_000_usize;
+    let source_count = 1_000_usize;
+    let selected_count = 100_usize;
+    let context = context(true);
+    context
+        .batch_set(&nodes(edge_count.saturating_add(source_count)))
+        .expect("seed many-endpoint graph nodes");
+    context
+        .batch_set(&distributed_edges(edge_count, source_count))
+        .expect("seed many-endpoint graph edges");
+    let a_endpoints = (0..selected_count)
+        .map(|ordinal| BenchGraphNodeId::from(format!("node-{ordinal}")))
+        .collect::<Vec<_>>();
+    let b_endpoints = (0..selected_count)
+        .map(|ordinal| BenchGraphNodeId::from(format!("node-{}", source_count + ordinal)))
+        .collect::<Vec<_>>();
+
+    let mut group = c.benchmark_group("graph/many_endpoint_watch_initialization");
+    group.throughput(Throughput::Elements(
+        u64::try_from(selected_count).unwrap_or(u64::MAX),
+    ));
+    group.bench_function("eager_individual_subscriptions", |b| {
+        b.iter(|| {
+            let watches = a_endpoints
+                .iter()
+                .map(|endpoint| {
+                    context
+                        .edges::<BenchGraphEdge>()
+                        .watch_from(endpoint)
+                        .expect("individual endpoint watch")
+                })
+                .collect::<Vec<_>>();
+            black_box(
+                watches
+                    .iter()
+                    .map(|watch| watch.snapshot())
+                    .map(|items| items.len())
+                    .sum::<usize>(),
+            )
+        });
+    });
+    group.bench_function("eager_one_union_subscription", |b| {
+        b.iter(|| {
+            let watched = context
+                .edges::<BenchGraphEdge>()
+                .watch_from_many(&a_endpoints)
+                .expect("many endpoint watch");
+            black_box(watched.snapshot().len())
+        });
+    });
+    group.bench_function("demand_individual_subscriptions", |b| {
+        b.iter(|| {
+            let watches = b_endpoints
+                .iter()
+                .map(|endpoint| {
+                    context
+                        .edges::<BenchGraphEdge>()
+                        .watch_to(endpoint)
+                        .expect("individual demand endpoint watch")
+                })
+                .collect::<Vec<_>>();
+            black_box(
+                watches
+                    .iter()
+                    .map(|watch| watch.snapshot())
+                    .map(|items| items.len())
+                    .sum::<usize>(),
+            )
+        });
+    });
+    group.bench_function("demand_one_union_subscription", |b| {
+        b.iter(|| {
+            let watched = context
+                .edges::<BenchGraphEdge>()
+                .watch_to_many(&b_endpoints)
+                .expect("many demand endpoint watch");
+            black_box(watched.snapshot().len())
+        });
+    });
+    group.finish();
+}
+
 fn bench_related_entity_initialization(c: &mut Criterion) {
     let edge_count = 10_000_usize;
     let source_count = 1_000_usize;
@@ -1089,6 +1172,7 @@ criterion_group!(
     bench_projection_write,
     bench_adjacency_lookup,
     bench_watch_initialization,
+    bench_many_endpoint_watch_initialization,
     bench_related_entity_initialization,
     bench_dense_undirected_neighbor_initialization,
     bench_sparse_undirected_neighbor_initialization,

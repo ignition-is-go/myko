@@ -112,6 +112,7 @@ fn undirected_neighbor_endpoint(input: &ItemImpl) -> Option<(Type, Type)> {
 
 struct RelatedQuerySpec<'a> {
     query_ident: syn::Ident,
+    many_query_ident: syn::Ident,
     address_ident: syn::Ident,
     source_endpoint: &'a Type,
     target_endpoint: &'a Type,
@@ -120,8 +121,11 @@ struct RelatedQuerySpec<'a> {
     related_position: TokenStream,
     client_trait: TokenStream,
     client_method: syn::Ident,
+    many_client_trait: TokenStream,
+    many_client_method: syn::Ident,
 }
 
+#[allow(clippy::too_many_lines)]
 fn graph_related_query_tokens(
     ctx: &crate::DeriveCtx,
     edge_type: &Type,
@@ -132,6 +136,7 @@ fn graph_related_query_tokens(
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
     let RelatedQuerySpec {
         query_ident,
+        many_query_ident,
         address_ident,
         source_endpoint,
         target_endpoint,
@@ -140,8 +145,11 @@ fn graph_related_query_tokens(
         related_position,
         client_trait,
         client_method,
+        many_client_trait,
+        many_client_method,
     } = spec;
     let common = graph_query_common(krate, &query_ident, target_entity);
+    let many_common = graph_query_common(krate, &many_query_ident, target_entity);
 
     quote! {
         /// Ordinary Myko query for typed entities reached through matching edges.
@@ -211,6 +219,68 @@ fn graph_related_query_tokens(
 
             fn #client_method(endpoint: &#address_ident) -> Self::Query {
                 #query_ident::new(endpoint.clone())
+            }
+        }
+
+        /// Ordinary Myko union query for typed entities reached through any
+        /// of several matching edge endpoints.
+        #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+        #serde_rename_attr
+        pub struct #many_query_ident {
+            pub endpoints: Vec<#address_ident>,
+        }
+
+        impl #many_query_ident {
+            #[must_use]
+            pub fn new(endpoints: Vec<#address_ident>) -> Self {
+                Self { endpoints }
+            }
+        }
+
+        #many_common
+
+        impl #krate::graph::GraphWindowQueryFactory for #many_query_ident {
+            fn window_cell_factory(
+                _query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                _registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                _request: std::sync::Arc<#krate::request::RequestContext>,
+                _server: std::sync::Arc<#krate::server::MykoServerContext>,
+                _window: #krate::wire::QueryWindow,
+            ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                Ok(None)
+            }
+        }
+
+        impl #krate::query::QueryHandler for #many_query_ident {
+            #[cfg(not(target_arch = "wasm32"))]
+            fn build_view(
+                ctx: #krate::query::QueryBuildArgs<Self>,
+            ) -> Option<impl #krate::prelude::MapQuery<
+                Key = std::sync::Arc<str>,
+                Value = std::sync::Arc<dyn #krate::item::AnyItem>,
+            >>
+            where
+                Self: Send + Sync + 'static,
+            {
+                let endpoints = ctx.query.endpoints.iter()
+                    .map(<#source_endpoint as #krate::graph::EndpointSpec>::erase)
+                    .collect::<Result<Vec<_>, _>>()
+                    .ok()?;
+                ctx.query_context
+                    .graph_related_many_at::<#edge_type, #target_endpoint>(
+                        #edge_position,
+                        &endpoints,
+                        #related_position,
+                    )
+                    .ok()
+            }
+        }
+
+        impl #many_client_trait for #edge_type {
+            type Query = #many_query_ident;
+
+            fn #many_client_method(endpoints: &[#address_ident]) -> Self::Query {
+                #many_query_ident::new(endpoints.to_vec())
             }
         }
     }
@@ -697,10 +767,14 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
         let a_address = format_ident!("{}AAddress", edge_name);
         let b_address = format_ident!("{}BAddress", edge_name);
         let from_query = format_ident!("{}GraphFrom", edge_name);
+        let from_many_query = format_ident!("{}GraphFromMany", edge_name);
         let to_query = format_ident!("{}GraphTo", edge_name);
+        let to_many_query = format_ident!("{}GraphToMany", edge_name);
         let between_query = format_ident!("{}GraphBetween", edge_name);
         let from_common = graph_query_common(krate, &from_query, &edge_type);
+        let from_many_common = graph_query_common(krate, &from_many_query, &edge_type);
         let to_common = graph_query_common(krate, &to_query, &edge_type);
+        let to_many_common = graph_query_common(krate, &to_many_query, &edge_type);
         let between_common = graph_query_common(krate, &between_query, &edge_type);
 
         quote! {
@@ -769,6 +843,68 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 }
             }
 
+            /// Ordinary Myko union query for edges whose A endpoint matches
+            /// any supplied address.
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+            #serde_rename_attr
+            pub struct #from_many_query {
+                pub endpoints: Vec<#a_address>,
+            }
+
+            impl #from_many_query {
+                #[must_use]
+                pub fn new(endpoints: Vec<#a_address>) -> Self {
+                    Self { endpoints }
+                }
+            }
+
+            #from_many_common
+
+            impl #krate::graph::GraphWindowQueryFactory for #from_many_query {
+                fn window_cell_factory(
+                    _query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                    _registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                    _request: std::sync::Arc<#krate::request::RequestContext>,
+                    _server: std::sync::Arc<#krate::server::MykoServerContext>,
+                    _window: #krate::wire::QueryWindow,
+                ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                    Ok(None)
+                }
+            }
+
+            impl #krate::query::QueryHandler for #from_many_query {
+                fn test_entity(ctx: #krate::query::QueryTestContext<Self>) -> bool {
+                    let Ok(actual) =
+                        <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&ctx.item.ends())
+                    else {
+                        return false;
+                    };
+                    ctx.query.endpoints.iter().any(|endpoint| {
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(endpoint)
+                            .is_ok_and(|expected| actual.a == expected)
+                    })
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                fn build_view(
+                    ctx: #krate::query::QueryBuildArgs<Self>,
+                ) -> Option<impl #krate::prelude::MapQuery<
+                    Key = std::sync::Arc<str>,
+                    Value = std::sync::Arc<dyn #krate::item::AnyItem>,
+                >>
+                where
+                    Self: Send + Sync + 'static,
+                {
+                    let endpoints = ctx.query.endpoints.iter()
+                        .map(<<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase)
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()?;
+                    ctx.query_context
+                        .graph_watch_many_at::<#edge_type>(#krate::graph::EndPosition::A, &endpoints)
+                        .ok()
+                }
+            }
+
             /// Ordinary Myko query for edges whose B endpoint matches `endpoint`.
             #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
             #serde_rename_attr
@@ -830,6 +966,68 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                         <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).ok()?;
                     ctx.query_context
                         .graph_watch_at::<#edge_type>(#krate::graph::EndPosition::B, &endpoint)
+                        .ok()
+                }
+            }
+
+            /// Ordinary Myko union query for edges whose B endpoint matches
+            /// any supplied address.
+            #[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
+            #serde_rename_attr
+            pub struct #to_many_query {
+                pub endpoints: Vec<#b_address>,
+            }
+
+            impl #to_many_query {
+                #[must_use]
+                pub fn new(endpoints: Vec<#b_address>) -> Self {
+                    Self { endpoints }
+                }
+            }
+
+            #to_many_common
+
+            impl #krate::graph::GraphWindowQueryFactory for #to_many_query {
+                fn window_cell_factory(
+                    _query: std::sync::Arc<dyn #krate::query::AnyQuery>,
+                    _registry: std::sync::Arc<#krate::store::StoreRegistry>,
+                    _request: std::sync::Arc<#krate::request::RequestContext>,
+                    _server: std::sync::Arc<#krate::server::MykoServerContext>,
+                    _window: #krate::wire::QueryWindow,
+                ) -> Result<Option<#krate::query::WindowedQuerySource>, String> {
+                    Ok(None)
+                }
+            }
+
+            impl #krate::query::QueryHandler for #to_many_query {
+                fn test_entity(ctx: #krate::query::QueryTestContext<Self>) -> bool {
+                    let Ok(actual) =
+                        <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&ctx.item.ends())
+                    else {
+                        return false;
+                    };
+                    ctx.query.endpoints.iter().any(|endpoint| {
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(endpoint)
+                            .is_ok_and(|expected| actual.b == expected)
+                    })
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                fn build_view(
+                    ctx: #krate::query::QueryBuildArgs<Self>,
+                ) -> Option<impl #krate::prelude::MapQuery<
+                    Key = std::sync::Arc<str>,
+                    Value = std::sync::Arc<dyn #krate::item::AnyItem>,
+                >>
+                where
+                    Self: Send + Sync + 'static,
+                {
+                    let endpoints = ctx.query.endpoints.iter()
+                        .map(<<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase)
+                        .collect::<Result<Vec<_>, _>>()
+                        .ok()?;
+                    ctx.query_context
+                        .graph_watch_many_at::<#edge_type>(#krate::graph::EndPosition::B, &endpoints)
                         .ok()
                 }
             }
@@ -930,6 +1128,19 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     #between_query::new(a.clone(), b.clone())
                 }
             }
+
+            impl #krate::graph::GraphClientBatchQueries for #edge_type {
+                type FromManyQuery = #from_many_query;
+                type ToManyQuery = #to_many_query;
+
+                fn from_many_query(endpoints: &[#a_address]) -> Self::FromManyQuery {
+                    #from_many_query::new(endpoints.to_vec())
+                }
+
+                fn to_many_query(endpoints: &[#b_address]) -> Self::ToManyQuery {
+                    #to_many_query::new(endpoints.to_vec())
+                }
+            }
         }
     });
     let related_endpoint_types = edge_endpoint_types(&input);
@@ -956,6 +1167,7 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     &edge_type,
                     RelatedQuerySpec {
                         query_ident: format_ident!("{}GraphTargetsFrom", edge_name),
+                        many_query_ident: format_ident!("{}GraphTargetsFromMany", edge_name),
                         address_ident: a_address,
                         source_endpoint: a_endpoint,
                         target_endpoint: b_endpoint,
@@ -964,6 +1176,8 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                         related_position: quote!(#krate::graph::EndPosition::B),
                         client_trait: quote!(#krate::graph::GraphClientTargetsFrom),
                         client_method: format_ident!("targets_from_query"),
+                        many_client_trait: quote!(#krate::graph::GraphClientTargetsFromMany),
+                        many_client_method: format_ident!("targets_from_many_query"),
                     },
                 ));
             }
@@ -973,6 +1187,7 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     &edge_type,
                     RelatedQuerySpec {
                         query_ident: format_ident!("{}GraphSourcesTo", edge_name),
+                        many_query_ident: format_ident!("{}GraphSourcesToMany", edge_name),
                         address_ident: b_address,
                         source_endpoint: b_endpoint,
                         target_endpoint: a_endpoint,
@@ -981,6 +1196,8 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                         related_position: quote!(#krate::graph::EndPosition::A),
                         client_trait: quote!(#krate::graph::GraphClientSourcesTo),
                         client_method: format_ident!("sources_to_query"),
+                        many_client_trait: quote!(#krate::graph::GraphClientSourcesToMany),
+                        many_client_method: format_ident!("sources_to_many_query"),
                     },
                 ));
             }

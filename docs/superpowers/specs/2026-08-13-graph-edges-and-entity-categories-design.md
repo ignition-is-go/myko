@@ -1806,6 +1806,50 @@ decoding, and framework rendering. It demonstrates why generated graph clients
 should default row-oriented APIs to keyed state while retaining arrays as an
 explicit compatibility or presentation boundary.
 
+### 21.3 Batched endpoint watches and client-bound graph scopes
+
+List and matrix UIs commonly watch the same relationship at hundreds of source
+endpoints. Starting one ordinary query per row creates an N+1 subscription
+shape even though every query is individually routed. Generated graph bindings
+therefore provide additive `fromMany`, `toMany`, `targetsFromMany`, and
+`sourcesToMany` union queries. A many-endpoint query:
+
+- deduplicates repeated endpoint addresses;
+- hydrates the union of projected edge IDs before reading the entity store;
+- registers one logical graph callback under every selected routing key;
+- uses one callback ID across those keys, so an endpoint-changing SET whose old
+  and new addresses are both selected still dispatches once;
+- uses the ordinary cached query, diff, reconnect, and cancellation protocol.
+
+The TypeScript client can bind a generated graph descriptor once and reuse the
+endpoint across related operations:
+
+```ts
+const assignments = client.graph(TagAssignmentGraph)
+const tag = assignments.from(tagId)
+
+const edges$ = tag.edges()
+const articles$ = tag.targets()
+const count$ = tag.count()
+
+const visibleArticles$ = assignments.fromMany(visibleTagIds).targets()
+```
+
+Existing generated constructors and `watchQuery*` APIs remain unchanged. The
+scoped methods return diff-native `LiveCollection` state, while aggregate and
+mutation methods continue through the existing report and command channels.
+
+`graph/many_endpoint_watch_initialization` measures 100 selected endpoints over
+10,000 edges distributed across 1,000 sources. A 2026-08-15 development-machine
+run measured:
+
+| endpoint strategy | 100 individual watches | one union watch | result |
+| --- | ---: | ---: | --- |
+| eager projected endpoint | 2.018–2.052 ms | 418.8–422.5 µs | about 4.8× faster |
+| demand-driven endpoint | 1.672–1.731 ms | 89.6–91.2 µs | about 18.8× faster; scans the canonical store once for the endpoint set rather than once per endpoint |
+
+Both cases collapse 100 client/wire subscriptions to one logical subscription.
+
 ## 22. Delivery phases
 
 ### Phase 1: schema and reflection
@@ -1895,6 +1939,11 @@ The graph-edge feature is acceptable when:
 14. Generated clients can consume large graph results as stable keyed state with
     work proportional to each diff, explicit lifecycle/error metadata, and lazy
     array materialization; existing full-array APIs remain source-compatible.
+15. Generated clients can watch the distinct union of many graph endpoints with
+    one ordinary subscription, without duplicate callback delivery when a
+    mutation touches several selected routes, and can bind endpoint-scoped
+    edge/related/aggregate/mutation operations without handwritten query or
+    command construction.
 
 ## 24. Decision
 

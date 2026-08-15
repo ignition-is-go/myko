@@ -758,6 +758,25 @@ where
     ) -> Self::BetweenQuery;
 }
 
+/// Generated union queries for batches of endpoint addresses.
+///
+/// Kept separate from [`GraphClientQueries`] so existing third-party trait
+/// implementations remain source-compatible.
+pub trait GraphClientBatchQueries: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds,
+{
+    type FromManyQuery: crate::query::QueryParams + crate::query::QueryItemType<Item = Self>;
+    type ToManyQuery: crate::query::QueryParams + crate::query::QueryItemType<Item = Self>;
+
+    fn from_many_query(
+        endpoints: &[<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value],
+    ) -> Self::FromManyQuery;
+    fn to_many_query(
+        endpoints: &[<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value],
+    ) -> Self::ToManyQuery;
+}
+
 /// Generated query for typed entities reached from endpoint A.
 pub trait GraphClientTargetsFrom: GraphEdge
 where
@@ -774,6 +793,22 @@ where
     ) -> Self::Query;
 }
 
+/// Generated union query for typed entities reached from several A endpoints.
+pub trait GraphClientTargetsFromMany: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds,
+    <Self::Ends as TypedEdgeEnds>::B: EntityEndpointSpec,
+{
+    type Query: crate::query::QueryParams
+        + crate::query::QueryItemType<
+            Item = <<Self::Ends as TypedEdgeEnds>::B as EntityEndpointSpec>::Entity,
+        >;
+
+    fn targets_from_many_query(
+        endpoints: &[<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value],
+    ) -> Self::Query;
+}
+
 /// Generated query for typed entities reaching endpoint B.
 pub trait GraphClientSourcesTo: GraphEdge
 where
@@ -787,6 +822,22 @@ where
 
     fn sources_to_query(
         endpoint: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Self::Query;
+}
+
+/// Generated union query for typed entities reaching several B endpoints.
+pub trait GraphClientSourcesToMany: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds,
+    <Self::Ends as TypedEdgeEnds>::A: EntityEndpointSpec,
+{
+    type Query: crate::query::QueryParams
+        + crate::query::QueryItemType<
+            Item = <<Self::Ends as TypedEdgeEnds>::A as EntityEndpointSpec>::Entity,
+        >;
+
+    fn sources_to_many_query(
+        endpoints: &[<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value],
     ) -> Self::Query;
 }
 
@@ -1707,36 +1758,62 @@ impl GraphWatchRouter {
     fn subscribe(
         self: &Arc<Self>,
         route: GraphWatchRoute,
-        callback: Arc<GraphWatchCallback>,
+        callback: &Arc<GraphWatchCallback>,
     ) -> hyphae::SubscriptionGuard {
+        self.subscribe_many([route], callback)
+    }
+
+    /// Register one logical subscription against several routing keys.
+    ///
+    /// Every route receives the same subscription ID, so a mutation that
+    /// touches more than one selected endpoint still invokes the callback
+    /// exactly once. The returned guard removes the subscription atomically
+    /// from every route.
+    fn subscribe_many(
+        self: &Arc<Self>,
+        routes: impl IntoIterator<Item = GraphWatchRoute>,
+        callback: &Arc<GraphWatchCallback>,
+    ) -> hyphae::SubscriptionGuard {
+        let routes = routes.into_iter().collect::<HashSet<_>>();
+        if routes.is_empty() {
+            return hyphae::SubscriptionGuard::from_callback(|| {});
+        }
         let id = self
             .next_id
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.routes
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .entry(route.clone())
-            .or_default()
-            .insert(id, callback);
+        {
+            let mut route_map = self
+                .routes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for route in &routes {
+                route_map
+                    .entry(route.clone())
+                    .or_default()
+                    .insert(id, callback.clone());
+            }
+        }
         self.active_subscriptions
             .fetch_add(1, std::sync::atomic::Ordering::Release);
         let weak_router = Arc::downgrade(self);
         hyphae::SubscriptionGuard::from_callback(move || {
-            let Some(router) = weak_router.upgrade() else {
+            let Some(watch_router) = weak_router.upgrade() else {
                 return;
             };
-            let mut route_map = router
+            let mut route_map = watch_router
                 .routes
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let remove_route = route_map.get_mut(&route).is_some_and(|listeners| {
-                listeners.remove(&id);
-                listeners.is_empty()
-            });
-            if remove_route {
-                route_map.remove(&route);
+            for route in &routes {
+                let remove_route = route_map.get_mut(route).is_some_and(|listeners| {
+                    listeners.remove(&id);
+                    listeners.is_empty()
+                });
+                if remove_route {
+                    route_map.remove(route);
+                }
             }
-            router
+            watch_router
                 .active_subscriptions
                 .fetch_sub(1, std::sync::atomic::Ordering::Release);
         })
@@ -2155,6 +2232,14 @@ impl GraphIndex {
     #[must_use]
     pub fn routed_watch_callbacks(&self) -> u64 {
         self.watch_router.dispatched_callbacks()
+    }
+
+    #[cfg(any(test, feature = "bench"))]
+    #[must_use]
+    pub fn routed_watch_subscriptions(&self) -> u64 {
+        self.watch_router
+            .active_subscriptions
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub(crate) fn has_watch_subscribers(&self) -> bool {
@@ -2711,6 +2796,57 @@ impl GraphIndex {
         map.get(endpoint).map_or_else(Vec::new, EdgeIds::ids)
     }
 
+    fn edge_ids_many_at(
+        &self,
+        edge_type: &str,
+        position: EndPosition,
+        endpoints: &HashSet<EndpointValue>,
+    ) -> Vec<Arc<str>> {
+        if endpoints.is_empty() {
+            return Vec::new();
+        }
+        let Some(registration) = self.registration(edge_type) else {
+            return Vec::new();
+        };
+        if !self.projects_endpoint(edge_type, position) {
+            // The demand-driven end deliberately has no adjacency buckets.
+            // Scan the canonical store once for the whole endpoint set rather
+            // than repeating the scan once per requested endpoint.
+            return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
+                store
+                    .snapshot()
+                    .into_iter()
+                    .filter_map(|(_, item)| {
+                        let edge_endpoints = (registration.extract)(item.as_ref()).ok()?;
+                        let candidate = match position {
+                            EndPosition::A => edge_endpoints.a,
+                            EndPosition::B => edge_endpoints.b,
+                        };
+                        endpoints.contains(&candidate).then(|| item.id())
+                    })
+                    .collect()
+            });
+        }
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(edges) = state.edge_types.get(edge_type) else {
+            return Vec::new();
+        };
+        let map = match position {
+            EndPosition::A => &edges.a,
+            EndPosition::B => &edges.b,
+        };
+        let mut ids = BTreeSet::new();
+        for endpoint in endpoints {
+            if let Some(bucket) = map.get(endpoint) {
+                bucket.extend_cloned(&mut ids);
+            }
+        }
+        ids.into_iter().collect()
+    }
+
     fn watch_diff_matching(
         registration: &EdgeRegistration,
         matches_endpoints: &impl Fn(&EdgeEndpoints) -> bool,
@@ -2868,7 +3004,7 @@ impl GraphIndex {
             };
             snapshots.set(Arc::new(next));
         });
-        let guard = self.watch_router.subscribe(route, callback);
+        let guard = self.watch_router.subscribe(route, &callback);
         snapshots.own(guard);
 
         let snapshots_weak = snapshots.downgrade();
@@ -2981,7 +3117,7 @@ impl GraphIndex {
     fn watch_matching<F>(
         &self,
         edge_type: &'static str,
-        route: GraphWatchRoute,
+        routes: impl IntoIterator<Item = GraphWatchRoute>,
         initial_ids: impl FnOnce(&Self) -> Vec<Arc<str>>,
         matches_endpoints: F,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>>
@@ -3009,7 +3145,7 @@ impl GraphIndex {
                 result.apply_diff_owned(diff);
             }
         });
-        let guard = self.watch_router.subscribe(route, callback);
+        let guard = self.watch_router.subscribe_many(routes, &callback);
         result.own(guard);
         Ok(result.lock())
     }
@@ -3095,7 +3231,7 @@ impl GraphIndex {
                 result.set(next);
             }
         });
-        let guard = self.watch_router.subscribe(route, callback);
+        let guard = self.watch_router.subscribe(route, &callback);
         result.own(guard);
         Ok(result.lock())
     }
@@ -3111,11 +3247,11 @@ impl GraphIndex {
         let endpoint_for_diffs = endpoint.clone();
         self.watch_matching(
             edge_type,
-            GraphWatchRoute::Endpoint {
+            [GraphWatchRoute::Endpoint {
                 edge_type,
                 position,
                 endpoint: endpoint.clone(),
-            },
+            }],
             move |graph| graph.edge_ids_at(edge_type, position, &endpoint_for_seed),
             move |endpoints| {
                 let candidate = match position {
@@ -3123,6 +3259,44 @@ impl GraphIndex {
                     EndPosition::B => &endpoints.b,
                 };
                 *candidate == endpoint_for_diffs
+            },
+        )
+    }
+
+    /// Build one live canonical edge map for the union of several endpoints.
+    ///
+    /// This is one logical subscription even though the router indexes it
+    /// under every selected endpoint. Initial hydration unions projected edge
+    /// IDs before touching the entity store, and each mutation callback is
+    /// deduplicated by subscription ID across all matching routes.
+    pub(crate) fn watch_many_at(
+        &self,
+        edge_type: &'static str,
+        position: EndPosition,
+        endpoints: &[EndpointValue],
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
+        let endpoints = endpoints.iter().cloned().collect::<HashSet<_>>();
+        let routes = endpoints
+            .iter()
+            .cloned()
+            .map(|endpoint| GraphWatchRoute::Endpoint {
+                edge_type,
+                position,
+                endpoint,
+            })
+            .collect::<Vec<_>>();
+        let endpoints_for_seed = endpoints.clone();
+        let endpoints_for_diffs = endpoints;
+        self.watch_matching(
+            edge_type,
+            routes,
+            move |graph| graph.edge_ids_many_at(edge_type, position, &endpoints_for_seed),
+            move |edge_endpoints| {
+                let candidate = match position {
+                    EndPosition::A => &edge_endpoints.a,
+                    EndPosition::B => &edge_endpoints.b,
+                };
+                endpoints_for_diffs.contains(candidate)
             },
         )
     }
@@ -3203,7 +3377,7 @@ impl GraphIndex {
             .context("edge type is not registered")?;
         self.watch_matching(
             edge_type,
-            Self::pair_watch_route(registration, a, b),
+            [Self::pair_watch_route(registration, a, b)],
             move |graph| graph.edge_ids_between(edge_type, &a_for_seed, &b_for_seed),
             move |endpoints| {
                 Self::endpoints_match(registration, endpoints, &a_for_diffs, &b_for_diffs)
@@ -3275,10 +3449,10 @@ impl GraphIndex {
         let endpoint_for_diffs = endpoint.clone();
         self.watch_matching(
             edge_type,
-            GraphWatchRoute::Incident {
+            [GraphWatchRoute::Incident {
                 edge_type,
                 endpoint: endpoint.clone(),
-            },
+            }],
             move |graph| {
                 let mut ids = graph.edge_ids_at(edge_type, EndPosition::A, &endpoint_for_seed);
                 ids.extend(graph.edge_ids_at(edge_type, EndPosition::B, &endpoint_for_seed));
@@ -4109,6 +4283,24 @@ where
         self.watch_at(EndPosition::A, &endpoint)
     }
 
+    /// Reactive union of edges whose A endpoint matches any supplied value.
+    pub fn watch_from_many(
+        &self,
+        values: &[<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value],
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
+        let endpoints = values
+            .iter()
+            .map(<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase)
+            .collect::<Result<Vec<_>>>()?;
+        let selected =
+            self.graph()?
+                .watch_many_at(E::ENTITY_NAME_STATIC, EndPosition::A, &endpoints)?;
+        Ok(crate::item::typed_map_arc_from_any_item(
+            selected,
+            "EdgeQuery::watch_from_many",
+        ))
+    }
+
     /// Reactive cardinality counterpart of [`Self::count_from`].
     pub fn watch_count_from(
         &self,
@@ -4126,6 +4318,24 @@ where
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
         let endpoint = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(value)?;
         self.watch_at(EndPosition::B, &endpoint)
+    }
+
+    /// Reactive union of edges whose B endpoint matches any supplied value.
+    pub fn watch_to_many(
+        &self,
+        values: &[<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value],
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
+        let endpoints = values
+            .iter()
+            .map(<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase)
+            .collect::<Result<Vec<_>>>()?;
+        let selected =
+            self.graph()?
+                .watch_many_at(E::ENTITY_NAME_STATIC, EndPosition::B, &endpoints)?;
+        Ok(crate::item::typed_map_arc_from_any_item(
+            selected,
+            "EdgeQuery::watch_to_many",
+        ))
     }
 
     /// Reactive cardinality counterpart of [`Self::count_to`].
@@ -4424,8 +4634,8 @@ mod tests {
         ForwardIndexedAssignmentGraphCountBetween, ForwardIndexedAssignmentGraphCountFrom,
         ForwardIndexedAssignmentGraphCountTo, ForwardIndexedAssignmentGraphExistsBetween,
         ForwardIndexedAssignmentGraphFrom, ForwardIndexedAssignmentGraphSourcesTo,
-        ForwardIndexedAssignmentGraphTargetsFrom, ForwardIndexedAssignmentGraphTo,
-        ForwardIndexedAssignmentId,
+        ForwardIndexedAssignmentGraphTargetsFrom, ForwardIndexedAssignmentGraphTargetsFromMany,
+        ForwardIndexedAssignmentGraphTo, ForwardIndexedAssignmentId,
     };
 
     mod article_link {
@@ -5561,15 +5771,135 @@ mod tests {
     }
 
     #[test]
+    fn generated_many_endpoint_queries_share_one_live_routed_watch() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tags = [
+            Tag {
+                name: "many-a".into(),
+                id: TagId::from("tag-many-a"),
+            },
+            Tag {
+                name: "many-b".into(),
+                id: TagId::from("tag-many-b"),
+            },
+            Tag {
+                name: "many-other".into(),
+                id: TagId::from("tag-many-other"),
+            },
+        ];
+        let articles = [
+            Article {
+                title: "many-a".into(),
+                id: ArticleId::from("article-many-a"),
+            },
+            Article {
+                title: "many-b".into(),
+                id: ArticleId::from("article-many-b"),
+            },
+            Article {
+                title: "many-c".into(),
+                id: ArticleId::from("article-many-c"),
+            },
+        ];
+        assert!(context.batch_set(&tags).is_ok());
+        assert!(context.batch_set(&articles).is_ok());
+        let edges = [
+            ForwardIndexedAssignment {
+                tag_id: tags[0].id.clone(),
+                article_id: articles[0].id.clone(),
+                id: ForwardIndexedAssignmentId::from("edge-many-a"),
+            },
+            ForwardIndexedAssignment {
+                tag_id: tags[1].id.clone(),
+                article_id: articles[1].id.clone(),
+                id: ForwardIndexedAssignmentId::from("edge-many-b"),
+            },
+            ForwardIndexedAssignment {
+                tag_id: tags[2].id.clone(),
+                article_id: articles[2].id.clone(),
+                id: ForwardIndexedAssignmentId::from("edge-many-other"),
+            },
+        ];
+        assert!(context.batch_set(&edges).is_ok());
+
+        let watched = context
+            .edges::<ForwardIndexedAssignment>()
+            .watch_from_many(&[tags[0].id.clone(), tags[1].id.clone(), tags[0].id.clone()])
+            .expect("many-endpoint watch");
+        let graph = context.graph_index().expect("graph index");
+        assert_eq!(watched.snapshot().len(), 2);
+        assert_eq!(graph.routed_watch_subscriptions(), 1);
+
+        // Moving one edge between two selected endpoints routes through both
+        // keys, but one logical subscription receives the batch only once.
+        let callbacks = graph.routed_watch_callbacks();
+        assert!(
+            context
+                .set(&ForwardIndexedAssignment {
+                    tag_id: tags[1].id.clone(),
+                    ..edges[0].clone()
+                })
+                .is_ok()
+        );
+        assert_eq!(graph.routed_watch_callbacks(), callbacks + 1);
+        assert_eq!(watched.snapshot().len(), 2);
+
+        let demand_watched = context
+            .edges::<ForwardIndexedAssignment>()
+            .watch_to_many(&[articles[0].id.clone(), articles[1].id.clone()])
+            .expect("many demand-endpoint watch");
+        assert_eq!(demand_watched.snapshot().len(), 2);
+
+        let related = context.query_map_by_str(
+            ForwardIndexedAssignmentGraphTargetsFromMany::new(vec![
+                tags[0].id.clone(),
+                tags[1].id.clone(),
+            ]),
+            Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "graph-many-related-test".into(),
+                context.host_id,
+            )),
+        );
+        assert_eq!(related.snapshot().len(), 2);
+        assert!(related.get_value(&articles[0].id()).is_some());
+        assert!(related.get_value(&articles[1].id()).is_some());
+        assert!(related.get_value(&articles[2].id()).is_none());
+
+        let sources = context.query_map_by_str(
+            forward_indexed_edge::ForwardIndexedAssignmentGraphSourcesToMany::new(vec![
+                articles[0].id.clone(),
+                articles[1].id.clone(),
+            ]),
+            Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "graph-many-sources-test".into(),
+                context.host_id,
+            )),
+        );
+        assert_eq!(sources.snapshot().len(), 1);
+        assert!(sources.get_value(&tags[1].id()).is_some());
+    }
+
+    #[test]
     fn generated_graph_client_helpers_preserve_endpoint_and_item_types() {
         let from: fn(&MykoClient, &TagId) -> QueryMapWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_from::<ForwardIndexedAssignment>;
+        let from_many: fn(&MykoClient, &[TagId]) -> QueryMapWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_from_many::<ForwardIndexedAssignment>;
         let to: fn(&MykoClient, &ArticleId) -> QueryMapWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_to::<ForwardIndexedAssignment>;
+        let to_many: fn(&MykoClient, &[ArticleId]) -> QueryMapWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_to_many::<ForwardIndexedAssignment>;
         let targets_from: fn(&MykoClient, &TagId) -> QueryMapWatch<Article> =
             MykoClient::watch_graph_targets_from::<ForwardIndexedAssignment>;
+        let targets_from_many: fn(&MykoClient, &[TagId]) -> QueryMapWatch<Article> =
+            MykoClient::watch_graph_targets_from_many::<ForwardIndexedAssignment>;
         let sources_to: fn(&MykoClient, &ArticleId) -> QueryMapWatch<Tag> =
             MykoClient::watch_graph_sources_to::<ForwardIndexedAssignment>;
+        let sources_to_many: fn(&MykoClient, &[ArticleId]) -> QueryMapWatch<Tag> =
+            MykoClient::watch_graph_sources_to_many::<ForwardIndexedAssignment>;
         let neighbors: fn(&MykoClient, &ArticleId) -> QueryMapWatch<Article> =
             MykoClient::watch_graph_neighbors::<ArticleLink>;
         let between: fn(
@@ -5642,9 +5972,13 @@ mod tests {
             MykoClient::watch_graph_exists_between::<ForwardIndexedAssignment>;
         std::hint::black_box((
             from,
+            from_many,
             to,
+            to_many,
             targets_from,
+            targets_from_many,
             sources_to,
+            sources_to_many,
             neighbors,
             between,
             from_windowed,
