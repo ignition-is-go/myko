@@ -3925,89 +3925,142 @@ impl GraphIndex {
             .is_empty()
     }
 
-    fn traversal_neighbors(
+    fn traversal_uses_projection(
         &self,
         edge_type: &str,
+        registration: &EdgeRegistration,
+        direction: Direction,
+    ) -> bool {
+        let undirected = registration.shape == EdgeShapeKind::Undirected;
+        let needs_a = direction != Direction::Reverse || undirected;
+        let needs_b = direction != Direction::Forward || undirected;
+        (!needs_a || self.projects_endpoint(edge_type, EndPosition::A))
+            && (!needs_b || self.projects_endpoint(edge_type, EndPosition::B))
+    }
+
+    fn projected_traversal_neighbors(
+        registration: &EdgeRegistration,
+        edges: &EdgeTypeState,
         node: &EntityRef,
         direction: Direction,
         scope: Option<&IndexValue>,
-    ) -> Vec<(Arc<str>, EntityRef)> {
-        let Some(registration) = self.registration(edge_type) else {
-            return Vec::new();
-        };
-        let shape = registration.shape;
-        let needs_a = direction != Direction::Reverse || shape == EdgeShapeKind::Undirected;
-        let needs_b = direction != Direction::Forward || shape == EdgeShapeKind::Undirected;
-        let can_use_projection = (!needs_a || self.projects_endpoint(edge_type, EndPosition::A))
-            && (!needs_b || self.projects_endpoint(edge_type, EndPosition::B));
-        if !can_use_projection {
-            return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
-                store
-                    .snapshot()
-                    .into_iter()
-                    .filter_map(|(_, item)| {
-                        let endpoints = (registration.extract)(item.as_ref()).ok()?;
-                        let edge_scope = (registration.extract_scope)(item.as_ref()).ok()?;
-                        if scope.is_some() && edge_scope.as_ref() != scope {
-                            return None;
-                        }
-                        let neighbor = if endpoints.a.entity == *node
-                            && (direction != Direction::Reverse
-                                || registration.shape == EdgeShapeKind::Undirected)
-                        {
-                            endpoints.b.entity
-                        } else if endpoints.b.entity == *node
-                            && (direction != Direction::Forward
-                                || registration.shape == EdgeShapeKind::Undirected)
-                        {
-                            endpoints.a.entity
-                        } else {
-                            return None;
-                        };
-                        Some((item.id(), neighbor))
-                    })
-                    .collect()
-            });
-        }
-        let state = self
-            .state
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(edges) = state.edge_types.get(edge_type) else {
-            return Vec::new();
-        };
+        output: &mut Vec<(Arc<str>, EntityRef)>,
+    ) {
+        let undirected = registration.shape == EdgeShapeKind::Undirected;
         let mut candidates = BTreeSet::new();
-        if (direction != Direction::Reverse || shape == EdgeShapeKind::Undirected)
+        if (direction != Direction::Reverse || undirected)
             && let Some(ids) = edges.a_entities.get(node)
         {
             ids.extend_cloned(&mut candidates);
         }
-        if (direction != Direction::Forward || shape == EdgeShapeKind::Undirected)
+        if (direction != Direction::Forward || undirected)
             && let Some(ids) = edges.b_entities.get(node)
         {
             ids.extend_cloned(&mut candidates);
         }
-        candidates
-            .into_iter()
-            .filter_map(|id| {
-                let edge = edges.edges.get(&id)?;
-                if scope.is_some() && edge.scope.as_ref() != scope {
-                    return None;
-                }
-                let neighbor = if edge.endpoints.a.entity == *node
-                    && (direction != Direction::Reverse || shape == EdgeShapeKind::Undirected)
-                {
-                    edge.endpoints.b.entity.clone()
-                } else if edge.endpoints.b.entity == *node
-                    && (direction != Direction::Forward || shape == EdgeShapeKind::Undirected)
-                {
-                    edge.endpoints.a.entity.clone()
-                } else {
-                    return None;
-                };
-                Some((id, neighbor))
-            })
-            .collect()
+        output.extend(candidates.into_iter().filter_map(|id| {
+            let edge = edges.edges.get(&id)?;
+            if scope.is_some() && edge.scope.as_ref() != scope {
+                return None;
+            }
+            let neighbor = if edge.endpoints.a.entity == *node
+                && (direction != Direction::Reverse || undirected)
+            {
+                edge.endpoints.b.entity.clone()
+            } else if edge.endpoints.b.entity == *node
+                && (direction != Direction::Forward || undirected)
+            {
+                edge.endpoints.a.entity.clone()
+            } else {
+                return None;
+            };
+            Some((id, neighbor))
+        }));
+        // The traversal loop pops from the reusable scratch buffer. Reverse
+        // here so its observable tie order remains ascending by edge ID.
+        output.reverse();
+    }
+
+    fn demand_traversal_adjacency(
+        &self,
+        registration: &EdgeRegistration,
+        direction: Direction,
+        scope: Option<&IndexValue>,
+    ) -> HashMap<EntityRef, Vec<(Arc<str>, EntityRef)>> {
+        let mut adjacency: HashMap<EntityRef, Vec<(Arc<str>, EntityRef)>> = HashMap::new();
+        let Some(store) = self.registry.get(registration.edge_type) else {
+            return adjacency;
+        };
+        let undirected = registration.shape == EdgeShapeKind::Undirected;
+        for (_, item) in store.snapshot() {
+            let Ok(endpoints) = (registration.extract)(item.as_ref()) else {
+                continue;
+            };
+            let Ok(edge_scope) = (registration.extract_scope)(item.as_ref()) else {
+                continue;
+            };
+            if scope.is_some() && edge_scope.as_ref() != scope {
+                continue;
+            }
+            let id = item.id();
+            if direction != Direction::Reverse || undirected {
+                adjacency
+                    .entry(endpoints.a.entity.clone())
+                    .or_default()
+                    .push((id.clone(), endpoints.b.entity.clone()));
+            }
+            if (direction != Direction::Forward || undirected)
+                && endpoints.a.entity != endpoints.b.entity
+            {
+                adjacency
+                    .entry(endpoints.b.entity)
+                    .or_default()
+                    .push((id, endpoints.a.entity));
+            }
+        }
+        for neighbors in adjacency.values_mut() {
+            neighbors.sort_unstable_by(|a, b| b.cmp(a));
+        }
+        adjacency
+    }
+
+    fn traverse_bounded(&self, edge_type: &str, request: &TraversalRequest) -> TraversalRun {
+        let Some(registration) = self.registration(edge_type) else {
+            return TraversalRun::empty_at(&request.start, request.target.as_ref());
+        };
+        if self.traversal_uses_projection(edge_type, registration, request.direction) {
+            let state = self
+                .state
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let Some(edges) = state.edge_types.get(edge_type) else {
+                return TraversalRun::empty_at(&request.start, request.target.as_ref());
+            };
+            return run_bounded_traversal(request, |node, output| {
+                Self::projected_traversal_neighbors(
+                    registration,
+                    edges,
+                    node,
+                    request.direction,
+                    request.scope.as_ref(),
+                    output,
+                );
+            });
+        }
+
+        // Demand-driven edges intentionally retain no adjacency. Build one
+        // request-local map from one canonical snapshot instead of rescanning
+        // the entire edge store once for every visited node.
+        let adjacency = self.demand_traversal_adjacency(
+            registration,
+            request.direction,
+            request.scope.as_ref(),
+        );
+        run_bounded_traversal(request, |node, output| {
+            if let Some(neighbors) = adjacency.get(node) {
+                output.extend(neighbors.iter().cloned());
+            }
+        })
     }
 }
 
@@ -4020,10 +4073,171 @@ pub enum Direction {
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TraversalPath {
+    /// Ordered nodes from the traversal start through the matched target.
+    pub nodes: Vec<EntityRef>,
+    /// Ordered edge IDs connecting consecutive entries in [`Self::nodes`].
+    pub edge_ids: Vec<Arc<str>>,
+}
+
+impl TraversalPath {
+    #[must_use]
+    pub const fn depth(&self) -> usize {
+        self.edge_ids.len()
+    }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct TraversalResult {
     pub nodes: Vec<EntityRef>,
     pub edge_ids: Vec<Arc<str>>,
     pub truncated: bool,
+}
+
+impl TraversalResult {
+    #[must_use]
+    pub fn contains(&self, node: &EntityRef) -> bool {
+        self.nodes.contains(node)
+    }
+
+    #[must_use]
+    pub const fn node_count(&self) -> usize {
+        self.nodes.len()
+    }
+
+    #[must_use]
+    pub const fn edge_count(&self) -> usize {
+        self.edge_ids.len()
+    }
+}
+
+#[derive(Default)]
+struct TraversalRun {
+    result: TraversalResult,
+    path: Option<TraversalPath>,
+    matched: bool,
+}
+
+impl TraversalRun {
+    fn empty_at(start: &EntityRef, target: Option<&EntityRef>) -> Self {
+        Self {
+            matched: target.is_some_and(|target| target == start),
+            path: target
+                .filter(|target| *target == start)
+                .map(|_| TraversalPath {
+                    nodes: vec![start.clone()],
+                    edge_ids: Vec::new(),
+                }),
+            ..Self::default()
+        }
+    }
+}
+
+struct TraversalRequest {
+    start: EntityRef,
+    direction: Direction,
+    scope: Option<IndexValue>,
+    max_depth: usize,
+    max_nodes: usize,
+    max_edges: usize,
+    collect_edges: bool,
+    target: Option<EntityRef>,
+    record_path: bool,
+}
+
+fn traversal_path(
+    start: &EntityRef,
+    target: &EntityRef,
+    predecessors: &HashMap<EntityRef, (EntityRef, Arc<str>)>,
+) -> TraversalPath {
+    let mut nodes = vec![target.clone()];
+    let mut edge_ids = Vec::new();
+    let mut cursor = target;
+    while cursor != start {
+        let Some((previous, edge_id)) = predecessors.get(cursor) else {
+            break;
+        };
+        edge_ids.push(edge_id.clone());
+        nodes.push(previous.clone());
+        cursor = previous;
+    }
+    nodes.reverse();
+    edge_ids.reverse();
+    TraversalPath { nodes, edge_ids }
+}
+
+fn run_bounded_traversal(
+    request: &TraversalRequest,
+    mut neighbors: impl FnMut(&EntityRef, &mut Vec<(Arc<str>, EntityRef)>),
+) -> TraversalRun {
+    if request
+        .target
+        .as_ref()
+        .is_some_and(|target| target == &request.start)
+    {
+        return TraversalRun::empty_at(&request.start, request.target.as_ref());
+    }
+
+    let mut visited = HashSet::from([request.start.clone()]);
+    let mut queue = std::collections::VecDeque::from([(request.start.clone(), 0_usize)]);
+    let mut result_edges = BTreeSet::new();
+    let mut predecessors = request.record_path.then(HashMap::new);
+    let mut scratch = Vec::new();
+    let mut traversed_edges = 0_usize;
+    let mut truncated = false;
+    let mut matched = None;
+
+    'search: while let Some((node, depth)) = queue.pop_front() {
+        if depth >= request.max_depth {
+            continue;
+        }
+        scratch.clear();
+        neighbors(&node, &mut scratch);
+        while let Some((edge_id, neighbor)) = scratch.pop() {
+            if traversed_edges >= request.max_edges {
+                truncated = true;
+                break 'search;
+            }
+            traversed_edges = traversed_edges.saturating_add(1);
+            if request.collect_edges {
+                result_edges.insert(edge_id.clone());
+            }
+            if visited.contains(&neighbor) {
+                continue;
+            }
+            if visited.len().saturating_sub(1) >= request.max_nodes {
+                truncated = true;
+                break 'search;
+            }
+            visited.insert(neighbor.clone());
+            if let Some(predecessors) = predecessors.as_mut() {
+                predecessors.insert(neighbor.clone(), (node.clone(), edge_id));
+            }
+            if request.target.as_ref() == Some(&neighbor) {
+                matched = Some(neighbor);
+                break 'search;
+            }
+            queue.push_back((neighbor, depth.saturating_add(1)));
+        }
+    }
+
+    let path = matched.as_ref().and_then(|target| {
+        predecessors
+            .as_ref()
+            .map(|predecessors| traversal_path(&request.start, target, predecessors))
+    });
+    visited.remove(&request.start);
+    let mut nodes = visited.into_iter().collect::<Vec<_>>();
+    nodes.sort_unstable();
+    TraversalRun {
+        result: TraversalResult {
+            nodes,
+            edge_ids: result_edges.into_iter().collect(),
+            truncated,
+        },
+        path,
+        matched: matched.is_some(),
+    }
 }
 
 pub struct TraversalBuilder<'a, E>
@@ -4037,6 +4251,8 @@ where
     scope: Option<IndexValue>,
     max_depth: Option<usize>,
     max_nodes: Option<usize>,
+    max_edges: Option<usize>,
+    collect_edges: bool,
     marker: PhantomData<E>,
 }
 
@@ -4053,6 +4269,8 @@ where
             scope: None,
             max_depth: None,
             max_nodes: None,
+            max_edges: None,
+            collect_edges: true,
             marker: PhantomData,
         }
     }
@@ -4110,52 +4328,108 @@ where
         self
     }
 
-    /// Execute a bounded breadth-first traversal.
-    pub fn execute(self) -> Result<TraversalResult> {
+    /// Bound examined edge incidences, protecting traversal across dense hubs.
+    #[must_use]
+    pub const fn max_edges(mut self, max_edges: usize) -> Self {
+        self.max_edges = Some(max_edges);
+        self
+    }
+
+    /// Return reached nodes without retaining every examined edge ID.
+    #[must_use]
+    pub const fn nodes_only(mut self) -> Self {
+        self.collect_edges = false;
+        self
+    }
+
+    fn execute_internal(
+        self,
+        target: Option<EntityRef>,
+        record_path: bool,
+    ) -> Result<TraversalRun> {
         let start = self.start.context("traversal start endpoint is invalid")?;
         let max_depth = self.max_depth.context("traversal max_depth is required")?;
         let max_nodes = self.max_nodes.context("traversal max_nodes is required")?;
         if max_nodes == 0 {
             bail!("traversal max_nodes must be greater than zero");
         }
+        let max_edges = self.max_edges.unwrap_or(usize::MAX);
+        if max_edges == 0 {
+            bail!("traversal max_edges must be greater than zero");
+        }
         let graph = self
             .context
             .graph_index()
             .map(AsRef::as_ref)
             .context("application has no graph registrations")?;
-        let mut visited = HashSet::from([start.clone()]);
-        let mut queue = std::collections::VecDeque::from([(start.clone(), 0_usize)]);
-        let mut edge_ids = BTreeSet::new();
-        let mut truncated = false;
-        while let Some((node, depth)) = queue.pop_front() {
-            if depth >= max_depth {
-                continue;
-            }
-            for (edge_id, neighbor) in graph.traversal_neighbors(
-                E::ENTITY_NAME_STATIC,
-                &node,
-                self.direction,
-                self.scope.as_ref(),
-            ) {
-                edge_ids.insert(edge_id);
-                if visited.insert(neighbor.clone()) {
-                    if visited.len() >= max_nodes {
-                        truncated = true;
-                        queue.clear();
-                        break;
-                    }
-                    queue.push_back((neighbor, depth.saturating_add(1)));
-                }
-            }
-        }
-        visited.remove(&start);
-        let mut nodes = visited.into_iter().collect::<Vec<_>>();
-        nodes.sort();
-        Ok(TraversalResult {
-            nodes,
-            edge_ids: edge_ids.into_iter().collect(),
-            truncated,
-        })
+        Ok(graph.traverse_bounded(
+            E::ENTITY_NAME_STATIC,
+            &TraversalRequest {
+                start,
+                direction: self.direction,
+                scope: self.scope,
+                max_depth,
+                max_nodes,
+                max_edges,
+                collect_edges: self.collect_edges,
+                target,
+                record_path,
+            },
+        ))
+    }
+
+    /// Execute a bounded breadth-first traversal.
+    pub fn execute(self) -> Result<TraversalResult> {
+        Ok(self.execute_internal(None, false)?.result)
+    }
+
+    /// Test reachability to an erased endpoint and stop at the first match.
+    pub fn is_reachable(mut self, target: &EntityRef) -> Result<bool> {
+        self.collect_edges = false;
+        Ok(self.execute_internal(Some(target.clone()), false)?.matched)
+    }
+
+    /// Return the shortest path to an erased endpoint, if one is within bounds.
+    pub fn path(mut self, target: &EntityRef) -> Result<Option<TraversalPath>> {
+        self.collect_edges = false;
+        self.execute_internal(Some(target.clone()), true)
+            .map(|run| run.path)
+    }
+
+    /// Typed reachability helper for endpoint B.
+    pub fn is_reachable_to(
+        self,
+        target: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<bool> {
+        let target = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(target)?.entity;
+        self.is_reachable(&target)
+    }
+
+    /// Typed shortest-path helper for endpoint B.
+    pub fn path_to(
+        self,
+        target: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<Option<TraversalPath>> {
+        let target = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(target)?.entity;
+        self.path(&target)
+    }
+
+    /// Typed reachability helper for endpoint A, useful in reverse traversal.
+    pub fn is_reachable_from(
+        self,
+        target: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Result<bool> {
+        let target = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(target)?.entity;
+        self.is_reachable(&target)
+    }
+
+    /// Typed shortest-path helper for endpoint A, useful in reverse traversal.
+    pub fn path_from(
+        self,
+        target: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Result<Option<TraversalPath>> {
+        let target = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(target)?.entity;
+        self.path(&target)
     }
 }
 
@@ -5094,6 +5368,162 @@ mod tests {
         assert!(projected.a.is_empty());
         assert!(projected.a_entities.is_empty());
         assert!(projected.edges.is_empty());
+    }
+
+    #[test]
+    fn bounded_traversal_finds_paths_and_enforces_work_limits() {
+        let context = context();
+        let articles = (0..6)
+            .map(|ordinal| Article {
+                title: format!("article {ordinal}").into(),
+                id: ArticleId::from(format!("article-path-{ordinal}")),
+            })
+            .collect::<Vec<_>>();
+        let links = (0..5)
+            .map(|ordinal| ArticleLink {
+                article_a_id: articles[ordinal].id.clone(),
+                article_b_id: articles[ordinal + 1].id.clone(),
+                id: ArticleLinkId::from(format!("article-link-{ordinal}")),
+            })
+            .collect::<Vec<_>>();
+        assert!(context.batch_set(&articles).is_ok());
+        assert!(context.batch_set(&links).is_ok());
+
+        let path = context
+            .traverse::<ArticleLink>()
+            .start(articles[0].id.clone())
+            .max_depth(5)
+            .max_nodes(5)
+            .max_edges(20)
+            .path_to(&articles[4].id)
+            .expect("demand-driven shortest path")
+            .expect("target is reachable");
+        assert_eq!(path.depth(), 4);
+        assert_eq!(
+            path.nodes,
+            articles[..=4]
+                .iter()
+                .map(EntityRef::from)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            path.edge_ids,
+            links[..4].iter().map(WithId::id).collect::<Vec<_>>()
+        );
+
+        assert!(
+            context
+                .traverse::<ArticleLink>()
+                .start(articles[0].id.clone())
+                .max_depth(4)
+                .max_nodes(5)
+                .is_reachable_to(&articles[4].id)
+                .expect("bounded reachability")
+        );
+        assert!(
+            !context
+                .traverse::<ArticleLink>()
+                .start(articles[0].id.clone())
+                .max_depth(3)
+                .max_nodes(5)
+                .is_reachable_to(&articles[4].id)
+                .expect("depth-limited reachability")
+        );
+        assert_eq!(
+            context
+                .traverse::<ArticleLink>()
+                .start(articles[0].id.clone())
+                .max_depth(1)
+                .max_nodes(1)
+                .path_to(&articles[0].id)
+                .expect("zero-hop path")
+                .expect("start reaches itself")
+                .nodes,
+            vec![EntityRef::from(&articles[0])]
+        );
+
+        let nodes_only = context
+            .traverse::<ArticleLink>()
+            .start(articles[0].id.clone())
+            .max_depth(5)
+            .max_nodes(2)
+            .nodes_only()
+            .execute()
+            .expect("node-limited traversal");
+        assert_eq!(nodes_only.node_count(), 2);
+        assert_eq!(nodes_only.edge_count(), 0);
+        assert!(nodes_only.contains(&EntityRef::from(&articles[2])));
+        assert!(nodes_only.truncated);
+
+        let edge_limited = context
+            .traverse::<ArticleLink>()
+            .start(articles[0].id.clone())
+            .max_depth(5)
+            .max_nodes(5)
+            .max_edges(1)
+            .execute()
+            .expect("edge-limited traversal");
+        assert_eq!(edge_limited.edge_count(), 1);
+        assert!(edge_limited.truncated);
+    }
+
+    #[test]
+    fn bounded_traversal_filters_one_canonical_snapshot_by_scope() {
+        let context = context();
+        let tag = Tag {
+            name: "scoped traversal".into(),
+            id: TagId::from("tag-scoped-traversal"),
+        };
+        let articles = [
+            Article {
+                title: "included".into(),
+                id: ArticleId::from("article-scoped-included"),
+            },
+            Article {
+                title: "excluded".into(),
+                id: ArticleId::from("article-scoped-excluded"),
+            },
+        ];
+        let scopes = [
+            GraphScope {
+                name: "selected".to_string(),
+                id: GraphScopeId::from("scope-selected"),
+            },
+            GraphScope {
+                name: "other".to_string(),
+                id: GraphScopeId::from("scope-other"),
+            },
+        ];
+        let edges = [
+            ScopedTagAssignment {
+                scope_id: scopes[0].id.clone(),
+                tag_id: tag.id.clone(),
+                article_id: articles[0].id.clone(),
+                id: ScopedTagAssignmentId::from("scoped-edge-included"),
+            },
+            ScopedTagAssignment {
+                scope_id: scopes[1].id.clone(),
+                tag_id: tag.id.clone(),
+                article_id: articles[1].id.clone(),
+                id: ScopedTagAssignmentId::from("scoped-edge-excluded"),
+            },
+        ];
+        assert!(context.set(&tag).is_ok());
+        assert!(context.batch_set(&articles).is_ok());
+        assert!(context.batch_set(&scopes).is_ok());
+        assert!(context.batch_set(&edges).is_ok());
+
+        let result = context
+            .traverse::<ScopedTagAssignment>()
+            .start(tag.id.clone())
+            .within_scope(scopes[0].id.clone())
+            .expect("typed traversal scope")
+            .max_depth(1)
+            .max_nodes(10)
+            .execute()
+            .expect("scoped demand traversal");
+        assert_eq!(result.nodes, vec![EntityRef::from(&articles[0])]);
+        assert_eq!(result.edge_ids, vec![edges[0].id()]);
     }
 
     #[test]

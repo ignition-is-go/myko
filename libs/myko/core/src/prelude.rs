@@ -56,7 +56,8 @@ pub use crate::{
             GraphDiagnostics, GraphEdge, GraphIndex, GraphReadiness, GraphSchemaCatalog,
             InCategory, IndexValue, ItemCategoryRegistration, NoEdgeValidator, NoScope,
             OneOfEndpoint, PairPolicy, PairProjectionPolicy, QualifiedAddress, QualifiedEndpoint,
-            SelfLoopPolicy, TraversalBuilder, TraversalResult, TypedEdgeEnds, Undirected,
+            SelfLoopPolicy, TraversalBuilder, TraversalPath, TraversalResult, TypedEdgeEnds,
+            Undirected,
         },
         item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
