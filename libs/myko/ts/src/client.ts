@@ -5,19 +5,6 @@
  * When the current server disconnects, instantly switches to another open connection.
  */
 
-import {
-  GetPeerServers,
-  MykoEvent,
-  type JsonValue,
-  type MEvent,
-  type MykoMessage,
-  type PingData,
-  type Server,
-  type WrappedItem,
-  type WrappedQuery,
-  type WrappedReport,
-  type WrappedView,
-} from './generated'
 import { Decoder, Encoder } from 'cbor-x'
 import {
   bufferCount,
@@ -33,13 +20,27 @@ import {
   Observable,
   of,
   ReplaySubject,
+  Subject,
+  type Subscription,
   scan,
   shareReplay,
-  Subject,
-  Subscription,
   switchMap,
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
+import {
+  GetPeerServers,
+  type JsonValue,
+  type MEvent,
+  MykoEvent,
+  type MykoMessage,
+  type PingData,
+  type Server,
+  type WrappedItem,
+  type WrappedQuery,
+  type WrappedReport,
+  type WrappedView,
+} from './generated'
+import { type BoundGraph, bindGraph } from './graph-client.js'
 import { LiveCollection } from './live-collection.js'
 
 // cbor-x's defaults emit several non-standard extensions (the "records" structure
@@ -1498,6 +1499,14 @@ export class MykoClient {
 
       this.send({ event: MykoEvent.Command, data: wrappedCommand })
     })
+  }
+
+  /**
+   * Bind a generated `*Graph` descriptor into endpoint-scoped live state,
+   * aggregate, and mutation helpers.
+   */
+  graph<G extends object>(graph: G): BoundGraph<G> {
+    return bindGraph(this, graph)
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
