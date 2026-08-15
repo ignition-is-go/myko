@@ -120,6 +120,52 @@ impl QueryBuildContext {
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.registry.clone()
     }
+
+    /// Build an index-seeded graph watch for generated edge queries.
+    #[doc(hidden)]
+    pub fn graph_watch_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoint: &crate::graph::EndpointValue,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_at(E::ENTITY_NAME_STATIC, position, endpoint)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Build an index-seeded exact-pair graph watch for generated edge queries.
+    #[doc(hidden)]
+    pub fn graph_watch_between<E>(
+        &self,
+        a: &crate::graph::EndpointValue,
+        b: &crate::graph::EndpointValue,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_between(E::ENTITY_NAME_STATIC, a, b)
+            .map_err(|error| error.to_string())
+    }
 }
 
 // Query build keeps its own `query`/`report` (fallible over an optional

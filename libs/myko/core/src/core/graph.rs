@@ -213,7 +213,7 @@ pub struct EndpointValue {
 }
 
 pub trait EndpointSpec: Send + Sync + 'static {
-    type Value;
+    type Value: Clone + Debug + Serialize + DeserializeOwned + Send + Sync + 'static;
 
     fn requirement() -> EndpointRequirement;
     #[must_use]
@@ -228,7 +228,7 @@ pub struct ConcreteEndpoint<T>(PhantomData<T>);
 impl<T> EndpointSpec for ConcreteEndpoint<T>
 where
     T: Eventable + WithTypedId,
-    T::Id: Clone + Into<Arc<str>>,
+    T::Id: Clone + Debug + Serialize + DeserializeOwned + Send + Sync + Into<Arc<str>> + 'static,
 {
     type Value = T::Id;
 
@@ -331,7 +331,7 @@ pub struct QualifiedAddress<I, Q> {
 impl<T, Q> EndpointSpec for QualifiedEndpoint<T, Q>
 where
     T: Eventable + WithTypedId,
-    T::Id: Clone + Into<Arc<str>>,
+    T::Id: Clone + Debug + Serialize + DeserializeOwned + Send + Sync + Into<Arc<str>> + 'static,
     Q: EndpointQualifier,
 {
     type Value = QualifiedAddress<T::Id, Q>;
@@ -560,6 +560,45 @@ pub struct EdgeRegistration {
 }
 
 inventory::collect!(EdgeRegistration);
+
+/// Ordinary query-protocol registration generated for graph edge operations.
+///
+/// Kept separate from [`crate::query::QueryRegistration`] so graph query
+/// parameter types do not need to participate in the general binding catalog;
+/// graph codegen renders its more ergonomic endpoint-aware helpers directly.
+pub struct GraphQueryRegistration {
+    pub query_id: &'static str,
+    pub edge_type: &'static str,
+    pub parse: crate::query::QueryParseFn,
+    pub cell_factory: crate::query::QueryCellFactory,
+}
+
+inventory::collect!(GraphQueryRegistration);
+
+/// Generated client-query types for one registered edge item.
+///
+/// The `#[myko_edge]` macro implements this trait, allowing generic Rust client
+/// helpers to construct the same ordinary queries emitted by TypeScript graph
+/// codegen without exposing query names at call sites.
+pub trait GraphClientQueries: GraphEdge
+where
+    Self::Ends: TypedEdgeEnds,
+{
+    type FromQuery: crate::query::QueryParams + crate::query::QueryItemType<Item = Self>;
+    type ToQuery: crate::query::QueryParams + crate::query::QueryItemType<Item = Self>;
+    type BetweenQuery: crate::query::QueryParams + crate::query::QueryItemType<Item = Self>;
+
+    fn from_query(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+    ) -> Self::FromQuery;
+    fn to_query(
+        endpoint: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Self::ToQuery;
+    fn between_query(
+        a: &<<Self::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<Self::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Self::BetweenQuery;
+}
 
 /// Endpoint-specific projection policy emitted separately from the legacy
 /// edge registration so existing manual `EdgeRegistration` literals remain
@@ -1572,20 +1611,14 @@ impl GraphIndex {
         map.get(endpoint).map_or_else(Vec::new, EdgeIds::ids)
     }
 
-    fn watch_diff_at(
+    fn watch_diff_matching(
         registration: &EdgeRegistration,
-        position: EndPosition,
-        endpoint: &EndpointValue,
+        matches_endpoints: &impl Fn(&EdgeEndpoints) -> bool,
         diff: &GraphWatchDiff,
     ) -> Option<GraphWatchDiff> {
         let matches = |item: &Arc<dyn AnyItem>| {
-            (registration.extract)(item.as_ref()).is_ok_and(|endpoints| {
-                let candidate = match position {
-                    EndPosition::A => endpoints.a,
-                    EndPosition::B => endpoints.b,
-                };
-                candidate == *endpoint
-            })
+            (registration.extract)(item.as_ref())
+                .is_ok_and(|endpoints| matches_endpoints(&endpoints))
         };
         match diff {
             GraphWatchDiff::Initial { entries } => Some(GraphWatchDiff::Initial {
@@ -1631,7 +1664,7 @@ impl GraphIndex {
                 let changes = changes
                     .iter()
                     .filter_map(|change| {
-                        Self::watch_diff_at(registration, position, endpoint, change)
+                        Self::watch_diff_matching(registration, matches_endpoints, change)
                     })
                     .collect::<Vec<_>>();
                 (!changes.is_empty()).then_some(GraphWatchDiff::Batch { changes })
@@ -1645,12 +1678,15 @@ impl GraphIndex {
     /// canonical mutation pipeline. Eager endpoints seed in O(bucket) time;
     /// demand-driven endpoints retain scan-equivalent behavior. Subsequent
     /// canonical diffs are routed by their old/new endpoints without rescanning.
-    fn watch_at(
+    fn watch_matching<F>(
         &self,
         edge_type: &str,
-        position: EndPosition,
-        endpoint: &EndpointValue,
-    ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
+        initial_ids: impl FnOnce(&Self) -> Vec<Arc<str>>,
+        matches_endpoints: F,
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>>
+    where
+        F: Fn(&EdgeEndpoints) -> bool + Send + Sync + 'static,
+    {
         use hyphae::{Materialize, Signal, Watchable};
 
         let registration = self
@@ -1658,9 +1694,9 @@ impl GraphIndex {
             .context("edge type is not registered")?;
         let store = self.registry.get_or_create(edge_type);
         let _authority = self.lock_authority();
+        let initial_ids = initial_ids(self);
         let result = GraphWatchMap::new();
         let result_weak = result.downgrade();
-        let endpoint_for_diffs = endpoint.clone();
         let store_keepalive = store.clone();
         let diffs = store.diffs().materialize();
         let first = Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -1678,20 +1714,85 @@ impl GraphIndex {
                 return;
             };
             if let Some(diff) =
-                Self::watch_diff_at(registration, position, &endpoint_for_diffs, diff.as_ref())
+                Self::watch_diff_matching(registration, &matches_endpoints, diff.as_ref())
             {
                 result.apply_diff_owned(diff);
             }
         });
         result.own(guard);
 
-        let entries = self
-            .edge_ids_at(edge_type, position, endpoint)
+        let entries = initial_ids
             .into_iter()
             .filter_map(|id| store.get_value(&id).map(|item| (id, item)))
             .collect();
         result.apply_diff_owned(GraphWatchDiff::Initial { entries });
         Ok(result.lock())
+    }
+
+    /// Build a live canonical edge map at one endpoint.
+    pub(crate) fn watch_at(
+        &self,
+        edge_type: &str,
+        position: EndPosition,
+        endpoint: &EndpointValue,
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
+        let endpoint_for_seed = endpoint.clone();
+        let endpoint_for_diffs = endpoint.clone();
+        self.watch_matching(
+            edge_type,
+            move |graph| graph.edge_ids_at(edge_type, position, &endpoint_for_seed),
+            move |endpoints| {
+                let candidate = match position {
+                    EndPosition::A => &endpoints.a,
+                    EndPosition::B => &endpoints.b,
+                };
+                *candidate == endpoint_for_diffs
+            },
+        )
+    }
+
+    /// Build a live canonical edge map for one exact endpoint pair.
+    pub(crate) fn watch_between(
+        &self,
+        edge_type: &str,
+        a: &EndpointValue,
+        b: &EndpointValue,
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
+        let a_for_seed = a.clone();
+        let b_for_seed = b.clone();
+        let a_for_diffs = a.clone();
+        let b_for_diffs = b.clone();
+        let registration = self
+            .registration(edge_type)
+            .context("edge type is not registered")?;
+        self.watch_matching(
+            edge_type,
+            move |graph| graph.edge_ids_between(edge_type, &a_for_seed, &b_for_seed),
+            move |endpoints| {
+                Self::endpoints_match(registration, endpoints, &a_for_diffs, &b_for_diffs)
+            },
+        )
+    }
+
+    /// Build a live canonical edge map incident to an endpoint on either side.
+    pub(crate) fn watch_incident(
+        &self,
+        edge_type: &str,
+        endpoint: &EndpointValue,
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, hyphae::CellImmutable>> {
+        let endpoint_for_seed = endpoint.clone();
+        let endpoint_for_diffs = endpoint.clone();
+        self.watch_matching(
+            edge_type,
+            move |graph| {
+                let mut ids = graph.edge_ids_at(edge_type, EndPosition::A, &endpoint_for_seed);
+                ids.extend(graph.edge_ids_at(edge_type, EndPosition::B, &endpoint_for_seed));
+                ids.sort();
+                ids.dedup();
+                ids
+            },
+            move |endpoints| endpoints.a == endpoint_for_diffs || endpoints.b == endpoint_for_diffs,
+        )
     }
 
     #[must_use]
@@ -2522,6 +2623,21 @@ where
         self.watch_at(EndPosition::B, &endpoint)
     }
 
+    /// Reactive counterpart of [`Self::between`].
+    pub fn watch_between(
+        &self,
+        a: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
+        b: &<<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::Value,
+    ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
+        let a = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(a)?;
+        let b = <<E::Ends as TypedEdgeEnds>::B as EndpointSpec>::erase(b)?;
+        let selected = self.graph()?.watch_between(E::ENTITY_NAME_STATIC, &a, &b)?;
+        Ok(crate::item::typed_map_arc_from_any_item(
+            selected,
+            "EdgeQuery::watch_between",
+        ))
+    }
+
     /// Qualified-address spelling for [`Self::watch_from`].
     pub fn watch_from_at(
         &self,
@@ -2563,18 +2679,10 @@ where
         &self,
         value: &<<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::Value,
     ) -> Result<hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>> {
-        use hyphae::{MapQuery, SelectExt};
-
         let endpoint = <<E::Ends as TypedEdgeEnds>::A as EndpointSpec>::erase(value)?;
-        let registration = self
+        let selected = self
             .graph()?
-            .registration(E::ENTITY_NAME_STATIC)
-            .context("edge type is not registered")?;
-        let store = self.context.registry.get_or_create(E::ENTITY_NAME_STATIC);
-        let selected = MapQuery::materialize((*store).clone().select(move |item| {
-            (registration.extract)(item.as_ref())
-                .is_ok_and(|ends| ends.a == endpoint || ends.b == endpoint)
-        }));
+            .watch_incident(E::ENTITY_NAME_STATIC, &endpoint)?;
         Ok(crate::item::typed_map_arc_from_any_item(
             selected,
             "EdgeQuery::watch_incident",
@@ -2779,7 +2887,11 @@ mod tests {
             const A_ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
         }
     }
-    use forward_indexed_edge::{ForwardIndexedAssignment, ForwardIndexedAssignmentId};
+    use forward_indexed_edge::{
+        ForwardIndexedAssignment, ForwardIndexedAssignmentGraphBetween,
+        ForwardIndexedAssignmentGraphFrom, ForwardIndexedAssignmentGraphTo,
+        ForwardIndexedAssignmentId,
+    };
     use restricted_edge::{RestrictedTagAssignment, RestrictedTagAssignmentId};
     use retained_edge::{RetainedTagAssignment, RetainedTagAssignmentId};
 
@@ -2840,6 +2952,19 @@ mod tests {
         assert_eq!(
             forward.endpoint_adjacency(),
             [AdjacencyPolicy::Eager, AdjacencyPolicy::DemandDriven]
+        );
+
+        let handlers = HandlerRegistry::new();
+        assert!(
+            handlers
+                .query("ForwardIndexedAssignmentGraphFrom")
+                .is_some()
+        );
+        assert!(handlers.query("ForwardIndexedAssignmentGraphTo").is_some());
+        assert!(
+            handlers
+                .query("ForwardIndexedAssignmentGraphBetween")
+                .is_some()
         );
     }
 
@@ -2991,6 +3116,94 @@ mod tests {
 
         assert!(context.del(&edge).is_ok());
         assert!(watched.snapshot().is_empty());
+    }
+
+    #[test]
+    fn generated_graph_queries_use_the_live_indexed_path() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "query".into(),
+            id: TagId::from("tag-query"),
+        };
+        let other_tag = Tag {
+            name: "other".into(),
+            id: TagId::from("tag-query-other"),
+        };
+        let article = Article {
+            title: "Generated query".into(),
+            id: ArticleId::from("article-query"),
+        };
+        let edge = ForwardIndexedAssignment {
+            tag_id: tag.id.clone(),
+            article_id: article.id.clone(),
+            id: ForwardIndexedAssignmentId::from("generated-query-edge"),
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&other_tag).is_ok());
+        assert!(context.set(&article).is_ok());
+        assert!(context.set(&edge).is_ok());
+
+        let request = || {
+            Arc::new(crate::request::RequestContext::from_client(
+                Uuid::new_v4().to_string().into(),
+                "graph-test".into(),
+                context.host_id,
+            ))
+        };
+        let from_request = request();
+        let handlers = HandlerRegistry::new();
+        let from_handler = handlers
+            .query("ForwardIndexedAssignmentGraphFrom")
+            .expect("generated graph query handler");
+        let encoded = serde_json::to_value(crate::query::QueryRequest::with_tx(
+            ForwardIndexedAssignmentGraphFrom::new(tag.id.clone()),
+            from_request.tx.clone(),
+        ))
+        .expect("serialize generated graph query");
+        let parsed = (from_handler.parse)(encoded).expect("parse generated graph query");
+        let from = (from_handler.cell_factory)(
+            parsed,
+            context.registry.clone(),
+            from_request,
+            Some(Arc::new(context.clone())),
+        )
+        .expect("dispatch generated graph query");
+        let to = context.query_map_by_str(
+            ForwardIndexedAssignmentGraphTo::new(article.id.clone()),
+            request(),
+        );
+        let between = context.query_map_by_str(
+            ForwardIndexedAssignmentGraphBetween::new(tag.id.clone(), article.id.clone()),
+            request(),
+        );
+        assert_eq!(from.snapshot().len(), 1);
+        assert_eq!(to.snapshot().len(), 1);
+        assert_eq!(between.snapshot().len(), 1);
+
+        let moved = ForwardIndexedAssignment {
+            tag_id: other_tag.id.clone(),
+            ..edge.clone()
+        };
+        assert!(context.set(&moved).is_ok());
+        assert!(from.snapshot().is_empty());
+        assert_eq!(to.snapshot().len(), 1);
+        assert!(between.snapshot().is_empty());
+    }
+
+    #[test]
+    fn generated_graph_client_helpers_preserve_endpoint_and_item_types() {
+        let from: fn(&MykoClient, &TagId) -> QueryMapWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_from::<ForwardIndexedAssignment>;
+        let to: fn(&MykoClient, &ArticleId) -> QueryMapWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_to::<ForwardIndexedAssignment>;
+        let between: fn(
+            &MykoClient,
+            &TagId,
+            &ArticleId,
+        ) -> QueryMapWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_between::<ForwardIndexedAssignment>;
+        std::hint::black_box((from, to, between));
     }
 
     #[test]

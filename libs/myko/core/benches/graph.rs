@@ -18,6 +18,8 @@ use myko::{
     },
     core::item::downcast_any_item_arc,
     prelude::*,
+    query::QueryRequest,
+    request::RequestContext,
     search::SearchIndex,
     server::{
         HandlerRegistry, MykoServerContext, MykoServerRuntime, PersisterRouter, RelationshipManager,
@@ -26,6 +28,7 @@ use myko::{
 };
 
 const N: usize = 1_000;
+type BenchGraphFromQuery = <BenchGraphEdge as GraphClientQueries>::FromQuery;
 
 fn context(graph: bool) -> MykoServerContext {
     let context = MykoServerContext::new(
@@ -297,6 +300,16 @@ fn bench_watch_initialization(c: &mut Criterion) {
         .expect("seed watch graph edges");
     let store = context.registry.get_or_create("BenchGraphEdge");
     let from = BenchGraphNodeId::from("node-0");
+    let request = Arc::new(RequestContext::from_client(
+        "graph-benchmark".into(),
+        "graph-benchmark-client".into(),
+        context.host_id,
+    ));
+    let query: Arc<dyn AnyQuery> = Arc::new(QueryRequest::with_tx(
+        BenchGraphEdge::from_query(&from),
+        request.tx.clone(),
+    ));
+    let server = Arc::new(context.clone());
 
     let mut group = c.benchmark_group("graph/sparse_watch_initialization");
     group.bench_function("canonical_select", |b| {
@@ -315,6 +328,18 @@ fn bench_watch_initialization(c: &mut Criterion) {
                 .edges::<BenchGraphEdge>()
                 .watch_from(&from)
                 .expect("index-seeded watch");
+            black_box(watched.snapshot().len())
+        });
+    });
+    group.bench_function("ordinary_query_factory", |b| {
+        b.iter(|| {
+            let watched = <BenchGraphFromQuery as QueryFactory>::cell_factory(
+                query.clone(),
+                context.registry.clone(),
+                request.clone(),
+                Some(server.clone()),
+            )
+            .expect("generated graph query");
             black_box(watched.snapshot().len())
         });
     });

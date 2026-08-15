@@ -60,6 +60,50 @@ impl<T: hyphae::CellValue> QueryMapWatch<T> {
 }
 
 impl MykoClient {
+    /// Watch edges at endpoint A through the generated ordinary query.
+    ///
+    /// The returned state includes an authoritative readiness signal and
+    /// shares its decoded map and wire subscription with identical watches.
+    pub fn watch_graph_from<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+    ) -> QueryMapWatch<E>
+    where
+        E: crate::graph::GraphClientQueries + WithTypedId,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
+    {
+        self.watch_query_map_state(E::from_query(endpoint))
+    }
+
+    /// Watch edges at endpoint B through the generated ordinary query.
+    pub fn watch_graph_to<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+    ) -> QueryMapWatch<E>
+    where
+        E: crate::graph::GraphClientQueries + WithTypedId,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
+    {
+        self.watch_query_map_state(E::to_query(endpoint))
+    }
+
+    /// Watch edges matching one exact endpoint pair through the generated
+    /// ordinary query.
+    pub fn watch_graph_between<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+    ) -> QueryMapWatch<E>
+    where
+        E: crate::graph::GraphClientQueries + WithTypedId,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        <E as WithTypedId>::Id: hyphae::IdFor<E, MapKey = Arc<str>>,
+    {
+        self.watch_query_map_state(E::between_query(a, b))
+    }
+
     /// Watch a query with per-entity reactive granularity.
     ///
     /// Unlike `watch_query` which returns `Cell<Vec<Arc<Item>>>` (re-notifies

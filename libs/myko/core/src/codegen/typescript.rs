@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     path::Path,
 };
@@ -30,10 +30,10 @@ fn ts_literal<T: serde::Serialize + ?Sized>(value: &T) -> String {
 
 fn endpoint_address_type(requirement: EndpointRequirement, qualified: bool) -> String {
     let entity = match requirement {
-        EndpointRequirement::Concrete(entity_type) => format!("{entity_type}Id"),
+        EndpointRequirement::Concrete(entity_type) => format!("__MykoGraph{entity_type}Id"),
         EndpointRequirement::OneOf(_)
         | EndpointRequirement::Category(_)
-        | EndpointRequirement::AnyRegisteredItem => "EntityRef".to_string(),
+        | EndpointRequirement::AnyRegisteredItem => "__MykoGraphEntityRef".to_string(),
     };
     if qualified {
         format!("{{ entity: {entity}; qualifier: unknown }}")
@@ -60,6 +60,50 @@ fn endpoint_requirement_literal(requirement: EndpointRequirement) -> String {
     }
 }
 
+fn generate_graph_query_helpers(edge: &crate::graph::EdgeRegistration) -> String {
+    let a = &edge.endpoints[0];
+    let b = &edge.endpoints[1];
+    let a_type = endpoint_address_type((a.requirement)(), (a.qualifier_type)().is_some());
+    let b_type = endpoint_address_type((b.requirement)(), (b.qualifier_type)().is_some());
+    format!(
+        r#"export type {edge}AAddress = {a_type};
+export type {edge}BAddress = {b_type};
+export class {edge}GraphFrom {{
+  static readonly queryId = "{edge}GraphFrom" as const;
+  static readonly queryItemType = "{edge}" as const;
+  readonly queryId = "{edge}GraphFrom" as const;
+  readonly queryItemType = "{edge}" as const;
+  readonly query: {{ endpoint: {edge}AAddress }};
+  declare readonly $res: () => {edge}[];
+  constructor(endpoint: {edge}AAddress) {{ this.query = {{ endpoint }}; }}
+}}
+export class {edge}GraphTo {{
+  static readonly queryId = "{edge}GraphTo" as const;
+  static readonly queryItemType = "{edge}" as const;
+  readonly queryId = "{edge}GraphTo" as const;
+  readonly queryItemType = "{edge}" as const;
+  readonly query: {{ endpoint: {edge}BAddress }};
+  declare readonly $res: () => {edge}[];
+  constructor(endpoint: {edge}BAddress) {{ this.query = {{ endpoint }}; }}
+}}
+export class {edge}GraphBetween {{
+  static readonly queryId = "{edge}GraphBetween" as const;
+  static readonly queryItemType = "{edge}" as const;
+  readonly queryId = "{edge}GraphBetween" as const;
+  readonly queryItemType = "{edge}" as const;
+  readonly query: {{ a: {edge}AAddress; b: {edge}BAddress }};
+  declare readonly $res: () => {edge}[];
+  constructor(a: {edge}AAddress, b: {edge}BAddress) {{ this.query = {{ a, b }}; }}
+}}
+export const {edge}Graph = {{
+  from: (endpoint: {edge}AAddress) => new {edge}GraphFrom(endpoint),
+  to: (endpoint: {edge}BAddress) => new {edge}GraphTo(endpoint),
+  between: (a: {edge}AAddress, b: {edge}BAddress) => new {edge}GraphBetween(a, b),
+}} as const;"#,
+        edge = edge.edge_type,
+    )
+}
+
 fn generate_graph_schema(catalog: &GraphSchemaCatalog) -> String {
     if catalog.entity_categories.is_empty()
         && catalog.item_categories.is_empty()
@@ -67,6 +111,8 @@ fn generate_graph_schema(catalog: &GraphSchemaCatalog) -> String {
     {
         return "export const graphSchema = { categories: {}, memberships: [], edges: {} } as const;\nexport type GraphEdgeType = never;".to_string();
     }
+
+    let endpoint_imports = generate_graph_endpoint_imports(catalog);
 
     let categories = catalog
         .entity_categories
@@ -121,33 +167,53 @@ fn generate_graph_schema(catalog: &GraphSchemaCatalog) -> String {
     let helpers = catalog
         .edges
         .iter()
-        .map(|edge| {
-            let a = &edge.endpoints[0];
-            let b = &edge.endpoints[1];
-            let a_type = endpoint_address_type((a.requirement)(), (a.qualifier_type)().is_some());
-            let b_type = endpoint_address_type((b.requirement)(), (b.qualifier_type)().is_some());
-            format!(
-                "export type {}AAddress = {};\nexport type {}BAddress = {};\nexport const {}Graph = {{ from: (endpoint: {}AAddress) => ({{ edgeType: {} as const, position: \"a\" as const, endpoint }}), to: (endpoint: {}BAddress) => ({{ edgeType: {} as const, position: \"b\" as const, endpoint }}), between: (a: {}AAddress, b: {}BAddress) => ({{ edgeType: {} as const, a, b }}) }};",
-                edge.edge_type,
-                a_type,
-                edge.edge_type,
-                b_type,
-                edge.edge_type,
-                edge.edge_type,
-                ts_literal(edge.edge_type),
-                edge.edge_type,
-                ts_literal(edge.edge_type),
-                edge.edge_type,
-                edge.edge_type,
-                ts_literal(edge.edge_type),
-            )
-        })
+        .map(|edge| generate_graph_query_helpers(edge))
         .collect::<Vec<_>>()
         .join("\n");
 
     format!(
-        "export const graphSchema = {{ categories: {{ {categories} }}, memberships: [{memberships}], edges: {{ {edges} }} }} as const;\nexport type GraphEdgeType = keyof typeof graphSchema.edges;\n{helpers}"
+        "{endpoint_imports}\nexport const graphSchema = {{ categories: {{ {categories} }}, memberships: [{memberships}], edges: {{ {edges} }} }} as const;\nexport type GraphEdgeType = keyof typeof graphSchema.edges;\n{helpers}"
     )
+}
+
+fn generate_graph_endpoint_imports(catalog: &GraphSchemaCatalog) -> String {
+    let concrete_endpoint_types = catalog
+        .edges
+        .iter()
+        .flat_map(|edge| edge.endpoints.iter())
+        .filter_map(|endpoint| match (endpoint.requirement)() {
+            EndpointRequirement::Concrete(entity_type) => Some(entity_type),
+            EndpointRequirement::OneOf(_)
+            | EndpointRequirement::Category(_)
+            | EndpointRequirement::AnyRegisteredItem => None,
+        })
+        .collect::<BTreeSet<_>>();
+    let uses_entity_ref = catalog
+        .edges
+        .iter()
+        .flat_map(|edge| edge.endpoints.iter())
+        .any(|endpoint| {
+            matches!(
+                (endpoint.requirement)(),
+                EndpointRequirement::OneOf(_)
+                    | EndpointRequirement::Category(_)
+                    | EndpointRequirement::AnyRegisteredItem
+            )
+        });
+    let mut endpoint_imports = concrete_endpoint_types
+        .into_iter()
+        .map(|entity_type| {
+            format!(
+                "import type {{ {entity_type}Id as __MykoGraph{entity_type}Id }} from \"./{entity_type}Id\";"
+            )
+        })
+        .collect::<Vec<_>>();
+    if uses_entity_ref {
+        endpoint_imports.push(
+            "import type { EntityRef as __MykoGraphEntityRef } from \"./EntityRef\";".to_string(),
+        );
+    }
+    endpoint_imports.join("\n")
 }
 
 #[derive(serde::Serialize)]
@@ -1034,6 +1100,12 @@ mod tests {
         assert!(rendered.contains("export const graphSchema"));
         assert!(rendered.contains("TagAssignment"));
         assert!(rendered.contains("TagAssignmentAAddress"));
+        assert!(rendered.contains("TagId as __MykoGraphTagId"));
+        assert!(rendered.contains("EntityRef as __MykoGraphEntityRef"));
+        assert!(rendered.contains("export class TagAssignmentGraphFrom"));
+        assert!(rendered.contains("queryId = \"TagAssignmentGraphBetween\""));
+        assert!(rendered.contains("from: (endpoint: TagAssignmentAAddress)"));
+        assert!(rendered.contains("new TagAssignmentGraphFrom(endpoint)"));
         assert!(rendered.contains("pairPolicy"));
         assert!(rendered.contains("aAdjacency"));
         assert!(rendered.contains("bAdjacency"));

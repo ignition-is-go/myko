@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use crate::{
     command::CommandHandlerRegistration,
+    graph::GraphQueryRegistration,
     item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
     query::{QueryCellFactory, QueryParseFn, QueryRegistration},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
@@ -106,6 +107,19 @@ impl HandlerRegistry {
             let data = StoredQueryData {
                 query_id: registration.query_id.into(),
                 query_item_type: registration.query_item_type.into(),
+                parse: registration.parse,
+                cell_factory: registration.cell_factory,
+            };
+            query_data.insert(data.query_id.clone(), data);
+        }
+
+        // Graph operations use the ordinary query wire/runtime but render
+        // endpoint-aware bindings from the separate graph catalog.
+        for registration in inventory::iter::<GraphQueryRegistration> {
+            tracing::trace!("Registered graph query: {}", registration.query_id);
+            let data = StoredQueryData {
+                query_id: registration.query_id.into(),
+                query_item_type: registration.edge_type.into(),
                 parse: registration.parse,
                 cell_factory: registration.cell_factory,
             };
