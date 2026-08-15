@@ -15,12 +15,137 @@ mod typegen_typescript;
 
 use crate::{
     codegen_types::{TypegenCatalog, TypegenConstValue},
+    graph::{EndpointRequirement, GraphSchemaCatalog},
     operation_index::{
         collect_ts_binding_files, extract_exported_object_type_body, parse_object_type_fields,
     },
     typegen_typescript::TypeExportRegistration,
     wire::MessageEventRegistration,
 };
+
+fn ts_literal<T: serde::Serialize + ?Sized>(value: &T) -> String {
+    serde_json::to_string(value)
+        .unwrap_or_else(|error| format!("\"<serialization error: {error}>\""))
+}
+
+fn endpoint_address_type(requirement: EndpointRequirement, qualified: bool) -> String {
+    let entity = match requirement {
+        EndpointRequirement::Concrete(entity_type) => format!("{entity_type}Id"),
+        EndpointRequirement::OneOf(_)
+        | EndpointRequirement::Category(_)
+        | EndpointRequirement::AnyRegisteredItem => "EntityRef".to_string(),
+    };
+    if qualified {
+        format!("{{ entity: {entity}; qualifier: unknown }}")
+    } else {
+        entity
+    }
+}
+
+fn endpoint_requirement_literal(requirement: EndpointRequirement) -> String {
+    match requirement {
+        EndpointRequirement::Concrete(entity_type) => format!(
+            "{{ kind: \"concrete\", entityType: {} }}",
+            ts_literal(entity_type)
+        ),
+        EndpointRequirement::OneOf(entity_types) => format!(
+            "{{ kind: \"oneOf\", entityTypes: {} }}",
+            ts_literal(entity_types)
+        ),
+        EndpointRequirement::Category(category) => format!(
+            "{{ kind: \"category\", category: {} }}",
+            ts_literal(category)
+        ),
+        EndpointRequirement::AnyRegisteredItem => "{ kind: \"anyRegisteredItem\" }".to_string(),
+    }
+}
+
+fn generate_graph_schema(catalog: &GraphSchemaCatalog) -> String {
+    if catalog.entity_categories.is_empty()
+        && catalog.item_categories.is_empty()
+        && catalog.edges.is_empty()
+    {
+        return "export const graphSchema = { categories: {}, memberships: [], edges: {} } as const;\nexport type GraphEdgeType = never;".to_string();
+    }
+
+    let categories = catalog
+        .entity_categories
+        .iter()
+        .map(|category| {
+            format!(
+                "{}: {{ id: {}, name: {} }}",
+                ts_literal(category.name),
+                ts_literal(category.id),
+                ts_literal(category.name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let memberships = catalog
+        .item_categories
+        .iter()
+        .map(|membership| {
+            format!(
+                "{{ entityType: {}, category: {} }}",
+                ts_literal(membership.item_type),
+                ts_literal(membership.entity_category_id)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let edges = catalog
+        .edges
+        .iter()
+        .map(|edge| {
+            let a = &edge.endpoints[0];
+            let b = &edge.endpoints[1];
+            format!(
+                "{}: {{ shape: {}, pairPolicy: {}, pairProjection: {}, adjacency: {}, selfLoops: {}, endpoints: {{ a: {{ requirement: {}, qualifierType: {} }}, b: {{ requirement: {}, qualifierType: {} }} }} }}",
+                ts_literal(edge.edge_type),
+                ts_literal(&edge.shape),
+                ts_literal(&edge.pair_policy),
+                ts_literal(&edge.pair_projection),
+                ts_literal(&edge.adjacency),
+                ts_literal(&edge.self_loops),
+                endpoint_requirement_literal((a.requirement)()),
+                ts_literal(&(a.qualifier_type)()),
+                endpoint_requirement_literal((b.requirement)()),
+                ts_literal(&(b.qualifier_type)()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let helpers = catalog
+        .edges
+        .iter()
+        .map(|edge| {
+            let a = &edge.endpoints[0];
+            let b = &edge.endpoints[1];
+            let a_type = endpoint_address_type((a.requirement)(), (a.qualifier_type)().is_some());
+            let b_type = endpoint_address_type((b.requirement)(), (b.qualifier_type)().is_some());
+            format!(
+                "export type {}AAddress = {};\nexport type {}BAddress = {};\nexport const {}Graph = {{ from: (endpoint: {}AAddress) => ({{ edgeType: {} as const, position: \"a\" as const, endpoint }}), to: (endpoint: {}BAddress) => ({{ edgeType: {} as const, position: \"b\" as const, endpoint }}), between: (a: {}AAddress, b: {}BAddress) => ({{ edgeType: {} as const, a, b }}) }};",
+                edge.edge_type,
+                a_type,
+                edge.edge_type,
+                b_type,
+                edge.edge_type,
+                edge.edge_type,
+                ts_literal(edge.edge_type),
+                edge.edge_type,
+                ts_literal(edge.edge_type),
+                edge.edge_type,
+                edge.edge_type,
+                ts_literal(edge.edge_type),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    format!(
+        "export const graphSchema = {{ categories: {{ {categories} }}, memberships: [{memberships}], edges: {{ {edges} }} }} as const;\nexport type GraphEdgeType = keyof typeof graphSchema.edges;\n{helpers}"
+    )
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -386,7 +511,11 @@ pub fn generate_item_types(directory_path: &str) -> Result<(), anyhow::Error> {
         .context("CARGO_PKG_NAME environment variable not found")?
         .replace('-', "_");
     println!("The current crate name is: {crate_name}");
-    generate_item_types_for_catalog(directory_path, &TypegenCatalog::collect(&crate_name))
+    generate_item_types_for_catalogs(
+        directory_path,
+        &TypegenCatalog::collect(&crate_name),
+        &GraphSchemaCatalog::collect(&crate_name),
+    )
 }
 
 /// Generate TypeScript bindings for an explicitly collected catalog.
@@ -400,6 +529,25 @@ pub fn generate_item_types(directory_path: &str) -> Result<(), anyhow::Error> {
 pub fn generate_item_types_for_catalog(
     directory_path: &str,
     catalog: &TypegenCatalog,
+) -> Result<(), anyhow::Error> {
+    let crates = catalog_crate_roots(catalog);
+    let graph_catalog = GraphSchemaCatalog::collect_crates(crates);
+    generate_item_types_for_catalogs(directory_path, catalog, &graph_catalog)
+}
+
+/// Generate TypeScript bindings from separate public type and graph catalogs.
+///
+/// Keeping these inputs separate preserves the public shape of
+/// [`TypegenCatalog`] while allowing aggregate applications to select graph
+/// metadata explicitly.
+///
+/// # Errors
+///
+/// Returns an error when bindings cannot be generated or written.
+pub fn generate_item_types_for_catalogs(
+    directory_path: &str,
+    catalog: &TypegenCatalog,
+    graph_catalog: &GraphSchemaCatalog,
 ) -> Result<(), anyhow::Error> {
     let file_name = "index.ts";
 
@@ -445,6 +593,7 @@ pub fn generate_item_types_for_catalog(
     ] = generate_class_sections(catalog);
     let const_exports = generate_const_exports(catalog)?;
     let message_events = generate_message_events();
+    let graph_schema = generate_graph_schema(graph_catalog);
 
     let code = [
         "// Auto-generated by type_gen - do not edit manually".to_string(),
@@ -453,6 +602,9 @@ pub fn generate_item_types_for_catalog(
         "/** Entity identifier type. In Rust this is Arc<str>, serialized as string. */"
             .to_string(),
         "export type ID = string;".to_string(),
+        String::new(),
+        "// Graph schema and typed endpoint helpers".to_string(),
+        graph_schema,
         String::new(),
         "// Re-export ts-rs generated types".to_string(),
         binding_exports,
@@ -870,6 +1022,17 @@ mod tests {
         let catalog = TypegenCatalog::collect(env!("CARGO_CRATE_NAME"));
         assert!(generate_item_types_for_catalog(dir_str, &catalog).is_ok());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn graph_catalog_renders_separately_from_typegen_catalog() {
+        let graph = GraphSchemaCatalog::collect(env!("CARGO_CRATE_NAME"));
+        let rendered = generate_graph_schema(&graph);
+        assert!(rendered.contains("export const graphSchema"));
+        assert!(rendered.contains("TagAssignment"));
+        assert!(rendered.contains("TagAssignmentAAddress"));
+        assert!(rendered.contains("pairPolicy"));
+        assert!(rendered.contains("category"));
     }
 
     /// Regression test for the myko 5.0 stale-generated-file bug: a type

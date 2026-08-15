@@ -209,6 +209,27 @@ pub trait Querying: ServerScoped {
     }
 }
 
+/// Read-only graph access, granted exactly alongside canonical querying.
+pub trait GraphQuerying: ServerScoped {
+    /// Select a registered edge type for typed one-hop and reactive lookups.
+    fn edges<E>(&self) -> crate::graph::EdgeQuery<'_, E>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.__server_ctx().edges::<E>()
+    }
+
+    /// Start a bounded traversal over one registered edge type.
+    fn traverse<E>(&self) -> crate::graph::TraversalBuilder<'_, E>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.__server_ctx().traverse::<E>()
+    }
+}
+
 /// Full-text search over `#[searchable]` fields.
 pub trait Searching: ServerScoped {
     /// Matching entity ids (up to `limit`), backed by the per-type search index.

@@ -20,8 +20,8 @@ pub use crate::client::entity_sync::{EntityStoreSync, EntityStoreSyncOptions};
 // query_map/report/view/search/peer_*/replay_store) into scope for handler
 // bodies. See `core::capability`.
 pub use crate::core::capability::{
-    CommandSending, EventPublishing, Querying, RegistryScoped, Reporting, RequestScoped, Searching,
-    ServerScoped,
+    CommandSending, EventPublishing, GraphQuerying, Querying, RegistryScoped, Reporting,
+    RequestScoped, Searching, ServerScoped,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::core::capability::{PeerAccess, Replaying, Viewing};
@@ -43,6 +43,17 @@ pub use crate::{
     },
     core::{
         common::content_hash::ContentHash,
+        graph::{
+            AdjacencyPolicy, AnyItemEndpoint, CategoryEndpoint, ConcreteEndpoint, ConcreteScope,
+            Directed, Direction, EdgeApplyMode, EdgeEndpointRegistration, EdgeEnds, EdgeQuery,
+            EdgeRegistration, EdgeScope, EdgeShapeKind, EdgeValidationContext, EdgeValidator,
+            EndPosition, EndpointDeletePolicy, EndpointQualifier, EndpointRequirement,
+            EndpointSpec, EndpointValue, EntityCategory, EntityCategoryRegistration, EntityRef,
+            GraphDiagnostics, GraphEdge, GraphIndex, GraphReadiness, GraphSchemaCatalog,
+            InCategory, IndexValue, ItemCategoryRegistration, NoEdgeValidator, NoScope,
+            OneOfEndpoint, PairPolicy, PairProjectionPolicy, QualifiedAddress, QualifiedEndpoint,
+            SelfLoopPolicy, TraversalBuilder, TraversalResult, TypedEdgeEnds, Undirected,
+        },
         item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
             ItemRegistration,
@@ -76,6 +87,6 @@ pub use crate::{
     search::{
         EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
     },
-    server::MykoServerContext,
+    server::{CausalDiagnostics, CausalLimits, MykoServerContext},
     view::{ViewFactory, ViewRegistration},
 };

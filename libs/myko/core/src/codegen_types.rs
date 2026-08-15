@@ -258,6 +258,7 @@ pub fn registration_belongs_to_crate_family(registration_path: &str, family: &st
 
 #[cfg(test)]
 mod tests {
+    #[cfg(feature = "typegen")]
     use std::collections::HashSet;
 
     use super::{
@@ -344,6 +345,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "typegen")]
     #[test]
     fn framework_types_compose_without_framework_operations_or_duplicates() {
         let framework = TypegenCatalog::collect_framework_types();
@@ -356,7 +358,9 @@ mod tests {
         assert!(type_names.contains("IdFilter<Arc<str>>"));
         assert!(type_names.contains("StringFilter"));
         assert!(type_names.contains("ClientId"));
-        assert_eq!(type_names.len(), 6);
+        assert!(type_names.contains("EntityRef"));
+        assert!(type_names.contains("PairPolicy"));
+        assert_eq!(type_names.len(), 14);
         assert!(framework.items.is_empty());
         assert!(framework.queries.is_empty());
         assert!(framework.commands.is_empty());

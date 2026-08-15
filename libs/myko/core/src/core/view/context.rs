@@ -2,7 +2,8 @@ use std::sync::Arc;
 
 use crate::{
     core::capability::{
-        Querying, RegistryScoped, Reporting, RequestScoped, Searching, ServerScoped, Viewing,
+        GraphQuerying, Querying, RegistryScoped, Reporting, RequestScoped, Searching, ServerScoped,
+        Viewing,
     },
     request::RequestContext,
     server::MykoServerContext,
@@ -54,6 +55,7 @@ impl ServerScoped for ViewContext {
 // views — but NOT command emission. Every capability compiles on both targets;
 // see `core::capability` for why none of these may be `#[cfg]`-gated.
 impl Querying for ViewContext {}
+impl GraphQuerying for ViewContext {}
 impl Searching for ViewContext {}
 impl Reporting for ViewContext {}
 impl Viewing for ViewContext {}
@@ -107,6 +109,7 @@ impl ServerScoped for ViewBuildContext {
 // `server_ctx().search_index()` call it replaces, so the built cell tracks the
 // query results, not the index.
 impl Querying for ViewBuildContext {}
+impl GraphQuerying for ViewBuildContext {}
 impl Reporting for ViewBuildContext {}
 impl Searching for ViewBuildContext {}
 impl Viewing for ViewBuildContext {}

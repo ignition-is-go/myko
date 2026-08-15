@@ -6,8 +6,8 @@ use serde::{Serialize, de::DeserializeOwned};
 use crate::{
     common::to_value::ToValue,
     core::capability::{
-        PeerAccess, Querying, RegistryScoped, Replaying, Reporting, RequestScoped, Searching,
-        ServerScoped, Viewing,
+        GraphQuerying, PeerAccess, Querying, RegistryScoped, Replaying, Reporting, RequestScoped,
+        Searching, ServerScoped, Viewing,
     },
     request::RequestContext,
     server::MykoServerContext,
@@ -67,6 +67,7 @@ impl ServerScoped for ReportContext {
 // Cross-platform: authored once, compiled for wasm too (where the bodies are
 // `unreachable!` — reports only run server-side).
 impl Querying for ReportContext {}
+impl GraphQuerying for ReportContext {}
 impl Searching for ReportContext {}
 impl Reporting for ReportContext {}
 

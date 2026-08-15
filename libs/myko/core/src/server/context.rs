@@ -7,8 +7,13 @@
 
 use std::{
     any::Any,
-    collections::HashMap,
-    sync::{Arc, Mutex},
+    cell::RefCell,
+    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::Duration,
 };
@@ -36,6 +41,7 @@ use crate::{
         AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc, typed_map_arc_from_any_item,
         typed_map_from_any_item_with_typed_id,
     },
+    graph::{EdgeApplyMode, GraphIndex},
     query::{
         FilteredCellMap, LiveFilterQuery, QueryContext, QueryFactory, QueryHandler, QueryParams,
         QueryRequest, QueryTestContext,
@@ -98,6 +104,72 @@ impl Origin {
         let _ = self;
         true
     }
+}
+
+/// Per-root bounds for synchronously derived relationship/graph work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CausalLimits {
+    pub max_depth: usize,
+    pub max_derived_mutations: usize,
+}
+
+impl Default for CausalLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 64,
+            max_derived_mutations: 100_000,
+        }
+    }
+}
+
+/// Lifetime counters for mutation-loop protection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CausalDiagnostics {
+    pub roots: u64,
+    pub derived_mutations: u64,
+    pub duplicate_transitions_suppressed: u64,
+    pub budget_exhaustions: u64,
+    pub max_observed_depth: u64,
+}
+
+#[derive(Default)]
+struct CausalCounters {
+    roots: AtomicU64,
+    derived_mutations: AtomicU64,
+    duplicate_transitions_suppressed: AtomicU64,
+    budget_exhaustions: AtomicU64,
+    max_observed_depth: AtomicU64,
+}
+
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+struct TransitionKey {
+    entity_type: &'static str,
+    id: Arc<str>,
+    operation: u8,
+    content_hash: u64,
+}
+
+struct PendingMutation {
+    items: Vec<Arc<dyn AnyItem>>,
+    change: MEventType,
+    origin: Origin,
+    mode: EdgeApplyMode,
+    depth: usize,
+    chain: Vec<String>,
+}
+
+struct CausalState {
+    root_tx: Uuid,
+    queue: VecDeque<PendingMutation>,
+    seen: HashSet<TransitionKey>,
+    derived_count: usize,
+    current_depth: Option<usize>,
+    current_mode: Option<EdgeApplyMode>,
+    current_chain: Vec<String>,
+}
+
+thread_local! {
+    static CAUSAL_STATE: RefCell<Option<CausalState>> = const { RefCell::new(None) };
 }
 
 /// Weak-ref report cache entry. The cell stays alive as long as someone is
@@ -259,6 +331,10 @@ pub struct MykoServerContext {
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>, ahash::RandomState>>,
     /// Optional history replay provider for point-in-time snapshots.
     history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+    /// Present only when graph metadata was registered by the application.
+    graph_index: Option<Arc<GraphIndex>>,
+    causal_limits: Arc<RwLock<CausalLimits>>,
+    causal_counters: Arc<CausalCounters>,
 }
 
 pub struct MykoServerRuntime {
@@ -284,6 +360,12 @@ impl MykoServerContext {
             event_sink,
             history_replay,
         } = runtime;
+        let graph_index = GraphIndex::from_inventory(registry.clone()).map(Arc::new);
+        if let Some(graph) = &graph_index
+            && let Err(error) = graph.rebuild()
+        {
+            tracing::error!(%error, "initial graph projection rebuild failed");
+        }
         Self {
             host_id,
             host_id_str: Arc::from(host_id.to_string()),
@@ -301,6 +383,9 @@ impl MykoServerContext {
             compute_gates: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
+            graph_index,
+            causal_limits: Arc::new(RwLock::new(CausalLimits::default())),
+            causal_counters: Arc::new(CausalCounters::default()),
         }
     }
 
@@ -496,8 +581,7 @@ impl MykoServerContext {
         T: Eventable + 'static,
     {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-        self.reduce_one(&item, MEventType::SET);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin, false)
+        self.submit_mutation(vec![item], MEventType::SET, origin)
     }
 
     /// Delete an entity (DEL) with default options.
@@ -519,8 +603,7 @@ impl MykoServerContext {
         T: Eventable + Clone + 'static,
     {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-        self.reduce_one(&item, MEventType::DEL);
-        self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin, false)
+        self.submit_mutation(vec![item], MEventType::DEL, origin)
     }
 
     /// Publish a batch of entities (SET) with default options.
@@ -553,7 +636,7 @@ impl MykoServerContext {
             .iter()
             .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
             .collect();
-        self.emit_grouped(&items, MEventType::SET, origin)
+        self.submit_mutation(items, MEventType::SET, origin)
     }
 
     /// Delete a batch of entities (DEL) with default options.
@@ -586,7 +669,7 @@ impl MykoServerContext {
             .iter()
             .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
             .collect();
-        self.emit_grouped(&items, MEventType::DEL, origin)
+        self.submit_mutation(items, MEventType::DEL, origin)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -609,11 +692,7 @@ impl MykoServerContext {
         item: Arc<dyn AnyItem>,
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.reduce_one(&item, MEventType::SET);
-        let result =
-            self.apply_effects(std::slice::from_ref(&item), MEventType::SET, origin, false);
-        drop(item);
-        result
+        self.submit_mutation(vec![item], MEventType::SET, origin)
     }
 
     /// Publish a batch of dynamic items (SET).
@@ -630,7 +709,7 @@ impl MykoServerContext {
         items: &[Arc<dyn AnyItem>],
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.emit_grouped(items, MEventType::SET, origin)
+        self.submit_mutation(items.to_vec(), MEventType::SET, origin)
     }
 
     /// Delete a dynamic item (DEL) with default options.
@@ -649,11 +728,7 @@ impl MykoServerContext {
         item: Arc<dyn AnyItem>,
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.reduce_one(&item, MEventType::DEL);
-        let result =
-            self.apply_effects(std::slice::from_ref(&item), MEventType::DEL, origin, false);
-        drop(item);
-        result
+        self.submit_mutation(vec![item], MEventType::DEL, origin)
     }
 
     /// Publish a batch of dynamic items (DEL).
@@ -670,7 +745,7 @@ impl MykoServerContext {
         items: &[Arc<dyn AnyItem>],
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.emit_grouped(items, MEventType::DEL, origin)
+        self.submit_mutation(items.to_vec(), MEventType::DEL, origin)
     }
 
     /// Delete an entity by type/id and publish DEL even if the item is not present locally.
@@ -757,7 +832,7 @@ impl MykoServerContext {
         items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
     ) -> Result<(), PersistError> {
         let items: Vec<Arc<dyn AnyItem>> = items.into_iter().collect();
-        self.emit_grouped(&items, MEventType::SET, Origin::Local)
+        self.submit_mutation(items, MEventType::SET, Origin::Local)
     }
 
     /// Emit a batch of typed DEL events, applied immediately. DEL counterpart of
@@ -771,7 +846,7 @@ impl MykoServerContext {
         items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
     ) -> Result<(), PersistError> {
         let items: Vec<Arc<dyn AnyItem>> = items.into_iter().collect();
-        self.emit_grouped(&items, MEventType::DEL, Origin::Local)
+        self.submit_mutation(items, MEventType::DEL, Origin::Local)
     }
 
     /// Apply pre-built raw events immediately (type-erased import path),
@@ -865,8 +940,18 @@ impl MykoServerContext {
         // `emit_grouped` itself opens the `hyphae::batch` window (scoped to
         // just its reduce loop — see the comment there for why).
         let emit = || -> Result<(), PersistError> {
-            self.emit_grouped(&set_items, MEventType::SET, Origin::Local)?;
-            self.emit_grouped(&del_items, MEventType::DEL, Origin::Local)?;
+            self.submit_mutation_mode(
+                set_items.clone(),
+                MEventType::SET,
+                Origin::Local,
+                EdgeApplyMode::Import,
+            )?;
+            self.submit_mutation_mode(
+                del_items.clone(),
+                MEventType::DEL,
+                Origin::Local,
+                EdgeApplyMode::Import,
+            )?;
             Ok(())
         };
         emit()?;
@@ -975,6 +1060,340 @@ impl MykoServerContext {
     // shared emission pipeline (batch is first-class; single is a thin wrapper)
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// Replace loop-protection budgets for subsequently started root mutations.
+    pub fn set_causal_limits(&self, limits: CausalLimits) {
+        *self
+            .causal_limits
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = limits;
+    }
+
+    /// Snapshot lifetime causal-loop counters.
+    #[must_use]
+    pub fn causal_diagnostics(&self) -> CausalDiagnostics {
+        CausalDiagnostics {
+            roots: self.causal_counters.roots.load(Ordering::Relaxed),
+            derived_mutations: self
+                .causal_counters
+                .derived_mutations
+                .load(Ordering::Relaxed),
+            duplicate_transitions_suppressed: self
+                .causal_counters
+                .duplicate_transitions_suppressed
+                .load(Ordering::Relaxed),
+            budget_exhaustions: self
+                .causal_counters
+                .budget_exhaustions
+                .load(Ordering::Relaxed),
+            max_observed_depth: self
+                .causal_counters
+                .max_observed_depth
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    fn transition_key(item: &dyn AnyItem, change: MEventType) -> TransitionKey {
+        let mut hasher = DefaultHasher::new();
+        match serde_json::to_vec(item) {
+            Ok(bytes) => bytes.hash(&mut hasher),
+            Err(_) => item.id().hash(&mut hasher),
+        }
+        TransitionKey {
+            entity_type: item.entity_type(),
+            id: item.id(),
+            operation: match change {
+                MEventType::SET => 1,
+                MEventType::DEL => 2,
+            },
+            content_hash: hasher.finish(),
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn causal_error(item: &dyn AnyItem, message: String) -> PersistError {
+        PersistError {
+            entity_type: Arc::from(item.entity_type()),
+            message: format!("causal loop protection: {message}"),
+        }
+    }
+
+    fn enqueue_causal(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+        requested_mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let Some(first) = items.first().cloned() else {
+            return Ok(());
+        };
+        let limits = *self
+            .causal_limits
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        CAUSAL_STATE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(state) = slot.as_mut() else {
+                return Err(Self::causal_error(
+                    first.as_ref(),
+                    "internal causal state was not initialized".to_string(),
+                ));
+            };
+            let mode = state.current_mode.unwrap_or(requested_mode);
+            let depth = state
+                .current_depth
+                .map_or(0, |depth| depth.saturating_add(1));
+            let mut chain = state.current_chain.clone();
+            chain.push(format!("{origin:?}:{change:?}@{depth}"));
+            if depth > limits.max_depth {
+                self.causal_counters
+                    .budget_exhaustions
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(Self::causal_error(
+                    first.as_ref(),
+                    format!(
+                        "root={} exceeded max depth {}: {}",
+                        state.root_tx,
+                        limits.max_depth,
+                        chain.join(" -> ")
+                    ),
+                ));
+            }
+
+            let mut accepted = Vec::with_capacity(items.len());
+            for item in items {
+                let key = Self::transition_key(item.as_ref(), change);
+                if !state.seen.insert(key) {
+                    self.causal_counters
+                        .duplicate_transitions_suppressed
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        root_tx = %state.root_tx,
+                        entity_type = item.entity_type(),
+                        id = %item.id(),
+                        ?change,
+                        chain = %chain.join(" -> "),
+                        "suppressed repeated causal transition"
+                    );
+                    continue;
+                }
+                if depth > 0 {
+                    state.derived_count = state.derived_count.saturating_add(1);
+                    if state.derived_count > limits.max_derived_mutations {
+                        self.causal_counters
+                            .budget_exhaustions
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Err(Self::causal_error(
+                            item.as_ref(),
+                            format!(
+                                "root={} exceeded derived mutation budget {}: {}",
+                                state.root_tx,
+                                limits.max_derived_mutations,
+                                chain.join(" -> ")
+                            ),
+                        ));
+                    }
+                    self.causal_counters
+                        .derived_mutations
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                accepted.push(item);
+            }
+            if !accepted.is_empty() {
+                self.causal_counters
+                    .max_observed_depth
+                    .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
+                state.queue.push_back(PendingMutation {
+                    items: accepted,
+                    change,
+                    origin,
+                    mode,
+                    depth,
+                    chain,
+                });
+            }
+            Ok(())
+        })
+    }
+
+    /// Submit into the active root's FIFO queue, or establish and drain a new
+    /// root transaction. Derived calls therefore never recurse through the
+    /// mutation pipeline.
+    fn submit_mutation(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        self.submit_mutation_mode(items, change, origin, EdgeApplyMode::Authoritative)
+    }
+
+    fn submit_mutation_mode(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        let nested = CAUSAL_STATE.with(|slot| slot.borrow().is_some());
+        if nested {
+            return self.enqueue_causal(items, change, origin, mode);
+        }
+        let needs_causal_root = origin.should_cascade(change)
+            && items.iter().any(|item| {
+                self.relationship_manager
+                    .coordinates(item.entity_type(), change)
+                    || self
+                        .graph_index
+                        .as_ref()
+                        .is_some_and(|graph| graph.coordinates(item.as_ref(), change))
+            });
+        if !needs_causal_root {
+            return if items.len() == 1 {
+                let Some(item) = items.into_iter().next() else {
+                    return Ok(());
+                };
+                self.emit_one(item, change, origin, mode)
+            } else {
+                self.emit_grouped(&items, change, origin, mode)
+            };
+        }
+
+        self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
+        CAUSAL_STATE.with(|slot| {
+            *slot.borrow_mut() = Some(CausalState {
+                root_tx: Uuid::new_v4(),
+                queue: VecDeque::new(),
+                seen: HashSet::new(),
+                derived_count: 0,
+                current_depth: None,
+                current_mode: None,
+                current_chain: Vec::new(),
+            });
+        });
+
+        let result = (|| {
+            self.enqueue_causal(items, change, origin, mode)?;
+            loop {
+                let pending = CAUSAL_STATE.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let state = slot.as_mut()?;
+                    let pending = state.queue.pop_front();
+                    if let Some(pending) = &pending {
+                        state.current_depth = Some(pending.depth);
+                        state.current_mode = Some(pending.mode);
+                        state.current_chain.clone_from(&pending.chain);
+                    }
+                    pending
+                });
+                let Some(pending) = pending else { break };
+                if pending.items.len() == 1 {
+                    let Some(item) = pending.items.into_iter().next() else {
+                        continue;
+                    };
+                    self.emit_one(item, pending.change, pending.origin, pending.mode)?;
+                } else {
+                    self.emit_grouped(
+                        &pending.items,
+                        pending.change,
+                        pending.origin,
+                        pending.mode,
+                    )?;
+                }
+            }
+            Ok(())
+        })();
+        CAUSAL_STATE.with(|slot| drop(slot.borrow_mut().take()));
+        result
+    }
+
+    /// Return the graph projection when this application registered graph metadata.
+    #[must_use]
+    pub const fn graph_index(&self) -> Option<&Arc<GraphIndex>> {
+        self.graph_index.as_ref()
+    }
+
+    /// Benchmark-only control context that removes graph coordination while
+    /// retaining every other server component.
+    #[cfg(feature = "bench")]
+    #[must_use]
+    pub fn without_graph_for_benchmark(mut self) -> Self {
+        self.graph_index = None;
+        self
+    }
+
+    fn graph_error(item: &dyn AnyItem, error: impl std::fmt::Display) -> PersistError {
+        PersistError {
+            entity_type: Arc::from(item.entity_type()),
+            message: format!("graph mutation rejected: {error}"),
+        }
+    }
+
+    fn canonical_item(&self, item: &dyn AnyItem) -> Option<Arc<dyn AnyItem>> {
+        self.registry
+            .get(item.entity_type())
+            .and_then(|store| store.get_value(&item.id()))
+    }
+
+    /// Single authoritative mutation. Reduction, projection, and persistence
+    /// enqueue occur inside one closed Hyphae batch; downstream effects drain
+    /// only after persistence has been attempted.
+    fn emit_one(
+        &self,
+        item: Arc<dyn AnyItem>,
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        let coordinated_graph = self
+            .graph_index
+            .as_ref()
+            .filter(|graph| graph.coordinates(item.as_ref(), change));
+        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        let old = self.canonical_item(item.as_ref());
+        let mut graph_cascades = Vec::new();
+        if let Some(graph) = coordinated_graph {
+            if change == MEventType::DEL {
+                graph_cascades = graph
+                    .endpoint_delete_plan(&crate::graph::EntityRef::new(
+                        item.entity_type(),
+                        item.id(),
+                    ))
+                    .map_err(|error| Self::graph_error(item.as_ref(), error))?
+                    .cascade_edges;
+            }
+            let new = (change == MEventType::SET).then_some(item.as_ref());
+            graph
+                .preflight(old.as_deref(), new, mode)
+                .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+        }
+
+        hyphae::batch(|| -> Result<(), PersistError> {
+            self.reduce_one(&item, change);
+            if let Some(graph) = coordinated_graph {
+                let new = (change == MEventType::SET).then_some(item.as_ref());
+                graph
+                    .apply(old.as_deref(), new)
+                    .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+            }
+            if origin.should_produce() {
+                match change {
+                    MEventType::SET => self.persist_set_dyn(&item)?,
+                    MEventType::DEL => self.persist_del_dyn(&item)?,
+                }
+            }
+            Ok(())
+        })?;
+
+        self.apply_effects(std::slice::from_ref(&item), change, origin, true)?;
+        let result = self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade);
+        drop(item);
+        result
+    }
+
     /// Single-item store reduce — **no allocation**. Records the stat and applies
     /// the store insert/remove for one item. Paired with
     /// `apply_effects(slice::from_ref(&item), …)` by the single-item entry points
@@ -1011,15 +1430,20 @@ impl MykoServerContext {
     /// Every batch entry point and the wire-ingest path funnel through here. The
     /// single-item entry points deliberately do **not** — they call
     /// `reduce_one` + `apply_effects` directly to avoid the grouping/Vec cost.
+    #[allow(clippy::too_many_lines)]
     fn emit_grouped(
         &self,
         items: &[Arc<dyn AnyItem>],
         change: MEventType,
         origin: Origin,
+        mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
         if items.is_empty() {
             return Ok(());
         }
+        let Some(first_item) = items.first() else {
+            return Ok(());
+        };
 
         let mut by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
             std::collections::BTreeMap::new();
@@ -1030,19 +1454,44 @@ impl MykoServerContext {
                 .push(item.clone());
         }
 
-        // Enqueue durable events before opening the reactive batch. A large
-        // import can spend substantial time draining downstream query work; if
-        // the process is restarted during that drain, the already-reduced state
-        // must still be replayable. The saga sink remains post-reduce so sagas
-        // never observe an event before its item is visible in the registry.
-        if origin.should_produce() {
-            for group in by_type.values() {
-                for item in group {
-                    match change {
-                        MEventType::SET => self.persist_set_dyn(item)?,
-                        MEventType::DEL => self.persist_del_dyn(item)?,
+        let coordinated_graph = self.graph_index.as_ref().filter(|graph| {
+            by_type
+                .values()
+                .flatten()
+                .any(|item| graph.coordinates(item.as_ref(), change))
+        });
+        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        if change == MEventType::SET
+            && let Some(graph) = coordinated_graph
+        {
+            graph
+                .preflight_batch(items, mode)
+                .map_err(|error| Self::graph_error(first_item.as_ref(), error))?;
+        }
+
+        let mut old_by_key = HashMap::new();
+        let mut graph_cascades = Vec::new();
+        for group in by_type.values() {
+            for item in group {
+                let old = self.canonical_item(item.as_ref());
+                if let Some(graph) = coordinated_graph {
+                    if change == MEventType::DEL {
+                        graph_cascades.extend(
+                            graph
+                                .endpoint_delete_plan(&crate::graph::EntityRef::new(
+                                    item.entity_type(),
+                                    item.id(),
+                                ))
+                                .map_err(|error| Self::graph_error(item.as_ref(), error))?
+                                .cascade_edges,
+                        );
                     }
+                    let new = (change == MEventType::SET).then_some(item.as_ref());
+                    graph
+                        .preflight(old.as_deref(), new, mode)
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
+                old_by_key.insert((item.entity_type(), item.id()), old);
             }
         }
 
@@ -1064,7 +1513,7 @@ impl MykoServerContext {
         // window — running effects outside the batch means that recursive call
         // opens its own fresh window instead of joining (and colliding with)
         // this one.
-        hyphae::batch(|| {
+        hyphae::batch(|| -> Result<(), PersistError> {
             for (entity_type, group) in &by_type {
                 let store = self.registry.get_or_create(entity_type);
                 match change {
@@ -1087,13 +1536,36 @@ impl MykoServerContext {
                     }
                 }
             }
-        });
+
+            // Canonical state is now locally visible inside the closed batch.
+            // Keep projection and durability enqueue ahead of reactive drain.
+            for group in by_type.values() {
+                for item in group {
+                    if let Some(graph) = coordinated_graph {
+                        let old = old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .and_then(Option::as_deref);
+                        let new = (change == MEventType::SET).then_some(item.as_ref());
+                        graph
+                            .apply(old, new)
+                            .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                    }
+                    if origin.should_produce() {
+                        match change {
+                            MEventType::SET => self.persist_set_dyn(item)?,
+                            MEventType::DEL => self.persist_del_dyn(item)?,
+                        }
+                    }
+                }
+            }
+            Ok(())
+        })?;
 
         // Effects: search + cascade + produce, per same-type group.
         for group in by_type.values() {
             self.apply_effects(group, change, origin, true)?;
         }
-        Ok(())
+        self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade)
     }
 
     /// Shared post-reduce tail: search index, relationship cascade (gated by
@@ -1702,7 +2174,7 @@ mod tests {
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hyphae::{Gettable, Materialize},
+        hyphae::{Gettable, Materialize, ReactiveKeys},
         search::SearchIndex,
         server::{
             HandlerRegistry, PersistError, Persister, RelationshipManager,
@@ -1832,34 +2304,49 @@ mod tests {
         )
     }
 
-    struct PreReducePersister {
+    struct OrderingPersister {
         registry: Arc<StoreRegistry>,
         calls: AtomicUsize,
-        all_before_reduce: AtomicBool,
+        all_after_reduce: AtomicBool,
+        reactive_drained: Arc<AtomicBool>,
+        all_before_reactive_drain: AtomicBool,
     }
 
-    impl Persister for PreReducePersister {
+    impl Persister for OrderingPersister {
         fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
             if self
                 .registry
                 .get("ImmediateTestItem")
-                .is_some_and(|store| !store.snapshot().is_empty())
+                .is_none_or(|store| store.snapshot().is_empty())
             {
-                self.all_before_reduce.store(false, Ordering::Relaxed);
+                self.all_after_reduce.store(false, Ordering::Relaxed);
+            }
+            if self.reactive_drained.load(Ordering::Relaxed) {
+                self.all_before_reactive_drain
+                    .store(false, Ordering::Relaxed);
             }
             Ok(())
         }
     }
 
     #[test]
-    fn batch_persistence_is_enqueued_before_reactive_reduce() {
+    fn batch_reduces_before_persistence_and_before_reactive_drain() {
         let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
-        let persister = Arc::new(PreReducePersister {
+        let store = registry.get_or_create("ImmediateTestItem");
+        let reactive_drained = Arc::new(AtomicBool::new(false));
+        let drained_for_subscription = reactive_drained.clone();
+        let _subscription = store.subscribe_keys(move |_| {
+            drained_for_subscription.store(true, Ordering::Relaxed);
+        });
+        reactive_drained.store(false, Ordering::Relaxed);
+        let persister = Arc::new(OrderingPersister {
             registry: registry.clone(),
             calls: AtomicUsize::new(0),
-            all_before_reduce: AtomicBool::new(true),
+            all_after_reduce: AtomicBool::new(true),
+            reactive_drained: reactive_drained.clone(),
+            all_before_reactive_drain: AtomicBool::new(true),
         });
         let mut router = PersisterRouter::default();
         router.set_default(Some(persister.clone()));
@@ -1889,7 +2376,9 @@ mod tests {
 
         assert!(ctx.batch_set(&items).is_ok());
         assert_eq!(persister.calls.load(Ordering::Relaxed), items.len());
-        assert!(persister.all_before_reduce.load(Ordering::Relaxed));
+        assert!(persister.all_after_reduce.load(Ordering::Relaxed));
+        assert!(persister.all_before_reactive_drain.load(Ordering::Relaxed));
+        assert!(reactive_drained.load(Ordering::Relaxed));
         assert_eq!(
             registry
                 .get("ImmediateTestItem")
