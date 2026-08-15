@@ -327,6 +327,19 @@ impl MykoClient {
         self.watch_query_windowed(E::from_query(endpoint), window)
     }
 
+    /// Watch one ordered page over the union of several endpoint-A addresses.
+    pub fn watch_graph_from_many_windowed<E>(
+        &self,
+        endpoints: &[<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value],
+        window: QueryWindow,
+    ) -> WindowedQueryWatch<E>
+    where
+        E: crate::graph::GraphClientBatchQueries,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_query_windowed(E::from_many_query(endpoints), window)
+    }
+
     /// Watch one ordered page of edges at endpoint B.
     pub fn watch_graph_to_windowed<E>(
         &self,
@@ -338,6 +351,19 @@ impl MykoClient {
         E::Ends: crate::graph::TypedEdgeEnds,
     {
         self.watch_query_windowed(E::to_query(endpoint), window)
+    }
+
+    /// Watch one ordered page over the union of several endpoint-B addresses.
+    pub fn watch_graph_to_many_windowed<E>(
+        &self,
+        endpoints: &[<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value],
+        window: QueryWindow,
+    ) -> WindowedQueryWatch<E>
+    where
+        E: crate::graph::GraphClientBatchQueries,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_query_windowed(E::to_many_query(endpoints), window)
     }
 
     /// Watch one ordered page of edges matching an exact endpoint pair.

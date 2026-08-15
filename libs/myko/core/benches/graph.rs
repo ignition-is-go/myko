@@ -23,6 +23,7 @@ use myko::{
         BenchUndirectedGraphEdgeId, EnsureBenchGraphEdge,
     },
     core::item::downcast_any_item_arc,
+    graph::GraphWindowQueryFactory,
     prelude::*,
     query::QueryRequest,
     request::RequestContext,
@@ -31,10 +32,12 @@ use myko::{
         HandlerRegistry, MykoServerContext, MykoServerRuntime, PersisterRouter, RelationshipManager,
     },
     store::StoreRegistry,
+    wire::QueryWindow,
 };
 
 const N: usize = 1_000;
 type BenchGraphFromQuery = <BenchGraphEdge as GraphClientQueries>::FromQuery;
+type BenchGraphFromManyQuery = <BenchGraphEdge as GraphClientBatchQueries>::FromManyQuery;
 type BenchGraphCountFromReport = <BenchGraphEdge as GraphClientAggregates>::CountFromReport;
 
 fn context(graph: bool) -> MykoServerContext {
@@ -431,6 +434,16 @@ fn bench_many_endpoint_watch_initialization(c: &mut Criterion) {
     let b_endpoints = (0..selected_count)
         .map(|ordinal| BenchGraphNodeId::from(format!("node-{}", source_count + ordinal)))
         .collect::<Vec<_>>();
+    let window_request = Arc::new(RequestContext::from_client(
+        "many-window-bench".into(),
+        "many-window-bench-client".into(),
+        context.host_id,
+    ));
+    let window_query: Arc<dyn myko::query::AnyQuery> = Arc::new(QueryRequest::with_tx(
+        BenchGraphEdge::from_many_query(&a_endpoints),
+        window_request.tx.clone(),
+    ));
+    let window_server = Arc::new(context.clone());
 
     let mut group = c.benchmark_group("graph/many_endpoint_watch_initialization");
     group.throughput(Throughput::Elements(
@@ -463,6 +476,24 @@ fn bench_many_endpoint_watch_initialization(c: &mut Criterion) {
                 .watch_from_many(&a_endpoints)
                 .expect("many endpoint watch");
             black_box(watched.snapshot().len())
+        });
+    });
+    group.bench_function("eager_one_union_window_25", |b| {
+        b.iter(|| {
+            let watched =
+                <BenchGraphFromManyQuery as GraphWindowQueryFactory>::window_cell_factory(
+                    window_query.clone(),
+                    context.registry.clone(),
+                    window_request.clone(),
+                    window_server.clone(),
+                    QueryWindow {
+                        offset: 250,
+                        limit: 25,
+                    },
+                )
+                .expect("many endpoint window watch")
+                .expect("eager endpoint window pushdown");
+            black_box(watched.snapshots().get().entries.len())
         });
     });
     group.bench_function("demand_individual_subscriptions", |b| {

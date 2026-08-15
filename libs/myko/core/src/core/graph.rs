@@ -11,7 +11,8 @@
 
 use std::{
     any::type_name,
-    collections::{BTreeSet, HashMap, HashSet},
+    cmp::Reverse,
+    collections::{BTreeSet, BinaryHeap, HashMap, HashSet},
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
@@ -647,6 +648,32 @@ where
     let query_context = std::sync::Arc::new(crate::query::QueryContext { req: request });
     crate::query::QueryBuildContext::new(query_context, registry, Some(server))
         .graph_window_at::<E>(position, &endpoint, window)
+}
+
+/// Type-erased factory helper used by generated many-endpoint graph queries.
+#[doc(hidden)]
+pub fn graph_window_query_many_at<Q, E, F>(
+    query: &std::sync::Arc<dyn crate::query::AnyQuery>,
+    registry: std::sync::Arc<crate::store::StoreRegistry>,
+    request: std::sync::Arc<crate::request::RequestContext>,
+    server: std::sync::Arc<crate::server::MykoServerContext>,
+    window: crate::wire::QueryWindow,
+    position: EndPosition,
+    endpoints: F,
+) -> Result<Option<crate::query::WindowedQuerySource>, String>
+where
+    Q: crate::query::QueryParams + Clone,
+    E: GraphEdge,
+    E::Ends: TypedEdgeEnds,
+    F: FnOnce(&Q) -> Result<Vec<EndpointValue>>,
+{
+    let any_ref: &dyn std::any::Any = query.as_ref();
+    let query: crate::query::QueryRequest<Q> =
+        crate::common::downcast::downcast_request(any_ref, "graph many window query payload")?;
+    let endpoints = endpoints(&query.query).map_err(|error| error.to_string())?;
+    let query_context = std::sync::Arc::new(crate::query::QueryContext { req: request });
+    crate::query::QueryBuildContext::new(query_context, registry, Some(server))
+        .graph_window_many_at::<E>(position, &endpoints, window)
 }
 
 /// Type-erased factory helper used by generated exact-pair graph queries.
@@ -2944,7 +2971,7 @@ impl GraphIndex {
     fn watch_window_matching<F, M>(
         self: &Arc<Self>,
         edge_type: &'static str,
-        route: GraphWatchRoute,
+        routes: impl IntoIterator<Item = GraphWatchRoute>,
         initial_window: crate::wire::QueryWindow,
         select: F,
         matches_endpoints: M,
@@ -3003,7 +3030,7 @@ impl GraphIndex {
             };
             snapshots.set(Arc::new(next));
         });
-        let guard = self.watch_router.subscribe(route, &callback);
+        let guard = self.watch_router.subscribe_many(routes, &callback);
         snapshots.own(guard);
 
         let snapshots_weak = snapshots.downgrade();
@@ -3056,6 +3083,78 @@ impl GraphIndex {
             });
         let total_count = ids.map_or(0, EdgeIds::len);
         let selected = ids.map_or_else(Vec::new, |ids| ids.window(window));
+        drop(state);
+        let store = self.registry.get_or_create(edge_type);
+        let entries = selected
+            .into_iter()
+            .filter_map(|id| store.get_value(&id).map(|item| (id, item)))
+            .collect();
+        crate::query::WindowedQuerySnapshot {
+            entries,
+            total_count,
+            window: window.cloned(),
+        }
+    }
+
+    fn window_snapshot_many_at(
+        &self,
+        edge_type: &str,
+        position: EndPosition,
+        endpoints: &HashSet<EndpointValue>,
+        window: Option<&crate::wire::QueryWindow>,
+    ) -> crate::query::WindowedQuerySnapshot {
+        let state = self
+            .state
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let map = state.edge_types.get(edge_type).map(|edges| match position {
+            EndPosition::A => &edges.a,
+            EndPosition::B => &edges.b,
+        });
+        let buckets = map.map_or_else(Vec::new, |map| {
+            endpoints
+                .iter()
+                .filter_map(|endpoint| map.get(endpoint))
+                .collect::<Vec<_>>()
+        });
+        let (offset, limit) =
+            window.map_or((0, usize::MAX), |window| (window.offset, window.limit));
+        // Merge the already-sorted endpoint buckets. Only the requested page
+        // is retained, while traversing the merge also yields an exact distinct
+        // total and defensively deduplicates IDs across buckets. Memory is
+        // O(endpoint count + page size), not O(total union size).
+        let mut iterators = buckets
+            .iter()
+            .map(|ids| -> Box<dyn Iterator<Item = &Arc<str>>> {
+                match ids {
+                    EdgeIds::One(id) => Box::new(std::iter::once(id)),
+                    EdgeIds::Many(ids) => Box::new(ids.iter()),
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut pending = BinaryHeap::new();
+        for (index, iterator) in iterators.iter_mut().enumerate() {
+            if let Some(id) = iterator.next() {
+                pending.push(Reverse((id.clone(), index)));
+            }
+        }
+        let mut total_count = 0_usize;
+        let mut previous: Option<Arc<str>> = None;
+        let mut selected = Vec::with_capacity(window.map_or(0, |window| window.limit.min(4_096)));
+        while let Some(Reverse((id, index))) = pending.pop() {
+            if previous.as_ref() != Some(&id) {
+                if total_count >= offset && selected.len() < limit {
+                    selected.push(id.clone());
+                }
+                total_count = total_count.saturating_add(1);
+                previous = Some(id);
+            }
+            if let Some(next) = iterators.get_mut(index).and_then(Iterator::next) {
+                pending.push(Reverse((next.clone(), index)));
+            }
+        }
+        drop(iterators);
+        drop(buckets);
         drop(state);
         let store = self.registry.get_or_create(edge_type);
         let entries = selected
@@ -3340,11 +3439,11 @@ impl GraphIndex {
         let endpoint_for_diffs = endpoint.clone();
         self.watch_window_matching(
             edge_type,
-            GraphWatchRoute::Endpoint {
+            [GraphWatchRoute::Endpoint {
                 edge_type,
                 position,
                 endpoint: endpoint.clone(),
-            },
+            }],
             window,
             move |graph, window| {
                 graph.window_snapshot_at(edge_type, position, &endpoint_for_select, window)
@@ -3355,6 +3454,46 @@ impl GraphIndex {
                     EndPosition::B => &endpoints.b,
                 };
                 *candidate == endpoint_for_diffs
+            },
+        )
+        .map(Some)
+    }
+
+    pub(crate) fn watch_window_many_at(
+        self: &Arc<Self>,
+        edge_type: &'static str,
+        position: EndPosition,
+        endpoints: &[EndpointValue],
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<crate::query::WindowedQuerySource>> {
+        if !self.projects_endpoint(edge_type, position) {
+            return Ok(None);
+        }
+        let endpoints = endpoints.iter().cloned().collect::<HashSet<_>>();
+        let routes = endpoints
+            .iter()
+            .cloned()
+            .map(|endpoint| GraphWatchRoute::Endpoint {
+                edge_type,
+                position,
+                endpoint,
+            })
+            .collect::<Vec<_>>();
+        let endpoints_for_select = endpoints.clone();
+        let endpoints_for_diffs = endpoints;
+        self.watch_window_matching(
+            edge_type,
+            routes,
+            window,
+            move |graph, window| {
+                graph.window_snapshot_many_at(edge_type, position, &endpoints_for_select, window)
+            },
+            move |edge_endpoints| {
+                let candidate = match position {
+                    EndPosition::A => &edge_endpoints.a,
+                    EndPosition::B => &edge_endpoints.b,
+                };
+                endpoints_for_diffs.contains(candidate)
             },
         )
         .map(Some)
@@ -3426,7 +3565,7 @@ impl GraphIndex {
         let b_for_diffs = b.clone();
         self.watch_window_matching(
             edge_type,
-            Self::pair_watch_route(registration, a, b),
+            [Self::pair_watch_route(registration, a, b)],
             window,
             move |graph, window| {
                 graph.window_snapshot_between(edge_type, &a_for_select, &b_for_select, window)
@@ -5157,11 +5296,11 @@ mod tests {
         let source = graph
             .watch_window_matching(
                 ForwardIndexedAssignment::ENTITY_NAME_STATIC,
-                super::GraphWatchRoute::Endpoint {
+                [super::GraphWatchRoute::Endpoint {
                     edge_type: ForwardIndexedAssignment::ENTITY_NAME_STATIC,
                     position: EndPosition::A,
                     endpoint,
-                },
+                }],
                 crate::wire::QueryWindow {
                     offset: 1,
                     limit: 1,
@@ -5863,6 +6002,64 @@ mod tests {
             .expect("many demand-endpoint watch");
         assert_eq!(demand_watched.snapshot().len(), 2);
 
+        let window_request = Arc::new(crate::request::RequestContext::from_client(
+            "graph-many-window-query".into(),
+            "graph-many-window-client".into(),
+            context.host_id,
+        ));
+        let window_query: Arc<dyn crate::query::AnyQuery> =
+            Arc::new(crate::query::QueryRequest::with_tx(
+                forward_indexed_edge::ForwardIndexedAssignmentGraphFromMany::new(vec![
+                    tags[0].id.clone(),
+                    tags[1].id.clone(),
+                    tags[0].id.clone(),
+                ]),
+                window_request.tx.clone(),
+            ));
+        let windowed = <forward_indexed_edge::ForwardIndexedAssignmentGraphFromMany as super::GraphWindowQueryFactory>::window_cell_factory(
+            window_query,
+            context.registry.clone(),
+            window_request,
+            Arc::new(context.clone()),
+            crate::wire::QueryWindow { offset: 1, limit: 1 },
+        )
+        .expect("many window factory")
+        .expect("eager many window pushdown");
+        let page = windowed.snapshots().get();
+        assert_eq!(page.total_count, 2);
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].0.as_ref(), "edge-many-b");
+        windowed.set_window(Some(crate::wire::QueryWindow {
+            offset: 0,
+            limit: 1,
+        }));
+        assert_eq!(
+            windowed.snapshots().get().entries[0].0.as_ref(),
+            "edge-many-a"
+        );
+
+        let demand_window_request = Arc::new(crate::request::RequestContext::from_client(
+            "graph-many-demand-window-query".into(),
+            "graph-many-demand-window-client".into(),
+            context.host_id,
+        ));
+        let demand_window_query: Arc<dyn crate::query::AnyQuery> =
+            Arc::new(crate::query::QueryRequest::with_tx(
+                forward_indexed_edge::ForwardIndexedAssignmentGraphToMany::new(vec![
+                    articles[0].id.clone(),
+                ]),
+                demand_window_request.tx.clone(),
+            ));
+        let demand_windowed = <forward_indexed_edge::ForwardIndexedAssignmentGraphToMany as super::GraphWindowQueryFactory>::window_cell_factory(
+            demand_window_query,
+            context.registry.clone(),
+            demand_window_request,
+            Arc::new(context.clone()),
+            crate::wire::QueryWindow { offset: 0, limit: 1 },
+        )
+        .expect("many demand window fallback");
+        assert!(demand_windowed.is_none());
+
         let related = context.query_map_by_str(
             ForwardIndexedAssignmentGraphTargetsFromMany::new(vec![
                 tags[0].id.clone(),
@@ -5927,6 +6124,13 @@ mod tests {
         )
             -> crate::client::WindowedQueryWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_from_windowed::<ForwardIndexedAssignment>;
+        let from_many_windowed: fn(
+            &MykoClient,
+            &[TagId],
+            crate::wire::QueryWindow,
+        )
+            -> crate::client::WindowedQueryWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_from_many_windowed::<ForwardIndexedAssignment>;
         let to_windowed: fn(
             &MykoClient,
             &ArticleId,
@@ -5934,6 +6138,13 @@ mod tests {
         )
             -> crate::client::WindowedQueryWatch<ForwardIndexedAssignment> =
             MykoClient::watch_graph_to_windowed::<ForwardIndexedAssignment>;
+        let to_many_windowed: fn(
+            &MykoClient,
+            &[ArticleId],
+            crate::wire::QueryWindow,
+        )
+            -> crate::client::WindowedQueryWatch<ForwardIndexedAssignment> =
+            MykoClient::watch_graph_to_many_windowed::<ForwardIndexedAssignment>;
         let between_windowed: fn(
             &MykoClient,
             &TagId,
@@ -5994,7 +6205,9 @@ mod tests {
             neighbors,
             between,
             from_windowed,
+            from_many_windowed,
             to_windowed,
+            to_many_windowed,
             between_windowed,
             targets_from_windowed,
             sources_to_windowed,

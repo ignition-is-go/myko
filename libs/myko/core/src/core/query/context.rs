@@ -300,6 +300,30 @@ impl QueryBuildContext {
             .map_err(|error| error.to_string())
     }
 
+    /// Build one bounded, index-backed union watch for several endpoints.
+    #[doc(hidden)]
+    pub fn graph_window_many_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoints: &[crate::graph::EndpointValue],
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<super::WindowedQuerySource>, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_window_many_at(E::ENTITY_NAME_STATIC, position, endpoints, window)
+            .map_err(|error| error.to_string())
+    }
+
     /// Build a bounded, index-backed exact-pair graph watch.
     #[doc(hidden)]
     pub fn graph_window_between<E>(

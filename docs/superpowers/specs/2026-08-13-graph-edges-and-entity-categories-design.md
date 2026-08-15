@@ -1856,6 +1856,18 @@ run measured:
 
 Both cases collapse 100 client/wire subscriptions to one logical subscription.
 
+Windowed `fromMany` and `toMany` queries push eager-endpoint page selection into
+the graph index. The index performs a k-way merge over already sorted endpoint
+buckets, retaining only O(endpoint count + page size) IDs and hydrating only the
+visible edge payloads. It still traverses the merged IDs to report an exact
+distinct total. Demand-driven endpoints retain the existing materialized-query
+fallback, avoiding a rescan-on-every-diff regression.
+
+With the same 10,000-edge/100-endpoint benchmark and a 25-edge page at offset
+250, full union initialization measured 403.3–404.6 µs while pushed window
+initialization measured 112.6–113.1 µs, about 3.6× faster, with 25 rather than
+1,000 edge payloads hydrated.
+
 ### 21.4 Incremental client-side graph indexes
 
 A batched edge union often feeds a list, tree, or matrix grouped by one endpoint.
@@ -1986,6 +1998,10 @@ The graph-edge feature is acceptable when:
 16. Client applications can maintain stable endpoint-grouped graph results with
     work proportional to changed memberships, lazy per-bucket arrays, and a
     safe authoritative rebuild after any skipped revision.
+17. Windowed many-endpoint edge queries over eagerly projected endpoints merge
+    sorted buckets without materializing the full ID union, hydrate only the
+    visible page, preserve exact distinct totals and live page shifts, and fall
+    back safely for demand-driven endpoints.
 
 ## 24. Decision
 
