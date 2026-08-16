@@ -770,6 +770,51 @@ fn bench_high_degree_window_initialization(c: &mut Criterion) {
             black_box(source.snapshots().get().entries.len())
         });
     });
+    let source =
+        <BenchGraphFromQuery as myko::graph::GraphWindowQueryFactory>::window_cell_factory(
+            query,
+            context.registry.clone(),
+            request,
+            server,
+            myko::wire::QueryWindow {
+                offset: 9_000,
+                limit: 50,
+            },
+        )
+        .expect("bounded graph query")
+        .expect("eager graph projection");
+    let mut sorted_ids = edges(edge_count)
+        .into_iter()
+        .map(|edge| edge.id())
+        .collect::<Vec<_>>();
+    sorted_ids.sort_unstable();
+    let cursor_9_000 = sorted_ids.get(8_999).expect("deep cursor exists").clone();
+    let cursor_9_500 = sorted_ids.get(9_499).expect("deep cursor exists").clone();
+    let mut alternate = false;
+    group.bench_function("deep_offset_update_limit_50", |b| {
+        b.iter(|| {
+            alternate = !alternate;
+            source.set_window(Some(myko::wire::QueryWindow {
+                offset: if alternate { 9_000 } else { 9_500 },
+                limit: 50,
+            }));
+            black_box(source.snapshots().get().entries.len())
+        });
+    });
+    group.bench_function("deep_cursor_update_limit_50", |b| {
+        b.iter(|| {
+            alternate = !alternate;
+            source.set_cursor_window(myko::wire::QueryCursorWindow::after(
+                if alternate {
+                    cursor_9_000.clone()
+                } else {
+                    cursor_9_500.clone()
+                },
+                50,
+            ));
+            black_box(source.snapshots().get().entries.len())
+        });
+    });
     group.finish();
 }
 

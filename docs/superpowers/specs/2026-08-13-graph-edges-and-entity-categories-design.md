@@ -2013,7 +2013,53 @@ page.setWindow({ offset: 275, limit: 25 })
 Legacy or hand-authored graph descriptors remain bindable; their plan is
 reported as `unknown` rather than guessing about server execution.
 
-### 21.4 Incremental client-side graph indexes
+### 21.4 Cursor pages, connection projections, and observed plans
+
+Cursor pagination is an additive control protocol alongside `QueryWindow`.
+`QueryCursorWindow` selects the first page or an exclusive `after`/`before`
+ID keyset in canonical ascending result-ID order. It does not add fields to
+`WrappedQuery`, `QueryWindow`, or query responses. An initial ordinary window
+opens the subscription; `ws:m:query-cursor-window` then moves that same live
+subscription without resubscribing. Materialized queries use binary partition
+points, while eager graph buckets use `BTreeSet` ranges. Pushed windows retain
+only the requested page and continue to emit the existing ordered-ID change.
+
+Rust exposes cursor controls on `WindowedQueryWatch` plus generated graph
+helpers such as `watch_graph_from_cursor`. The TypeScript client exposes
+`watchQueryCursor`; bound graph scopes expose `edgesCursor`:
+
+```ts
+const page = assignments.from(tagId).edgesCursor(50)
+page.setWindow({ after: lastEdgeId, limit: 50 })
+page.setWindow({ before: firstEdgeId, limit: 50 })
+```
+
+At 10,000 edges, moving a 50-row deep eager graph page by offset measured
+21.278–21.586 µs. Moving the equivalent ID-keyset page measured
+2.067–2.086 µs, about 10.3× faster. First-page index pushdown remained
+3.628–3.660 µs.
+
+Concrete related-entity scopes also expose `connections`, a typed live
+projection that pairs every edge with the current entity at its opposite end.
+The caller supplies the generated edge's related-ID accessor once; Myko owns
+the two live subscriptions and join updates:
+
+```ts
+const rows$ = assignments
+  .from(tagId)
+  .connections((edge) => edge.articleId)
+// Observable<readonly { edge: TagAssignment; entity: Article }[]>
+```
+
+Finally, `GraphIndex::plan_telemetry()` snapshots per-edge/per-end demand-driven
+lookup counts, canonical edges scanned, rows returned, and an explicit eager
+projection recommendation. The heuristic recommends eager adjacency only after
+at least eight lookups and 10,000 cumulative scanned edges; it never changes
+policy at runtime. Eager hot paths deliberately carry no telemetry atomics or
+map lookup. The existing eager one-hop benchmark measured 32.730–33.072 µs
+after that choice, with no statistically detectable change from its baseline.
+
+### 21.5 Incremental client-side graph indexes
 
 A batched edge union often feeds a list, tree, or matrix grouped by one endpoint.
 Re-running `groupBy` over the entire union for every one-edge diff turns an
