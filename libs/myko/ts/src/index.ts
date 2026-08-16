@@ -108,6 +108,8 @@ export {
   type QueryWatchOptions,
   type QueryWindow,
   type QueryWindowInfo,
+  type QueryCursorWindow,
+  type QueryCursorPageInfo,
   type Report,
   type ReportResult,
   type View,

@@ -37,8 +37,9 @@ use crate::{
     report::{ReportIdStatic, ReportParams, ReportRequest},
     view::{ViewParams, ViewRequest},
     wire::{
-        MEvent, MykoMessage, PingData, QueryWindow, QueryWindowUpdate, WrappedQuery, WrappedReport,
-        WrappedView, wrap_command_request, wrap_view,
+        MEvent, MykoMessage, PingData, QueryCursorWindow, QueryCursorWindowUpdate, QueryWindow,
+        QueryWindowUpdate, WrappedQuery, WrappedReport, WrappedView, wrap_command_request,
+        wrap_view,
     },
 };
 
@@ -101,6 +102,9 @@ impl<T: CellValue> ListWatch<T> {
 pub type QueryWatch<T> = ListWatch<Arc<T>>;
 /// A view list watch with authoritative response readiness.
 pub type ViewWatch<T> = ListWatch<T>;
+/// A keyset-paginated query watch. Cursor controls are available on
+/// [`WindowedQueryWatch`] without introducing another subscription type.
+pub type CursorQueryWatch<T> = WindowedQueryWatch<T>;
 
 /// A coherent snapshot of a live windowed query for direct UI consumption.
 #[derive(Clone, Debug, PartialEq)]
@@ -162,6 +166,7 @@ pub struct WindowedQueryWatch<T: CellValue> {
     total_count: Cell<Option<usize>, CellImmutable>,
     window: Cell<Option<QueryWindow>, CellImmutable>,
     state: Cell<WindowedQueryState<T>, CellImmutable>,
+    cursor_window: Arc<std::sync::Mutex<Option<QueryCursorWindow>>>,
     tx: Arc<str>,
     client: MykoClient,
 }
@@ -204,8 +209,73 @@ impl<T: CellValue> WindowedQueryWatch<T> {
             window,
         });
         let frame = self.client.encode_message(&message)?;
+        *self
+            .cursor_window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.client.send_or_queue(frame);
         Ok(())
+    }
+
+    /// Move this live subscription to an exclusive ID-keyset page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid cursor or when encoding fails.
+    pub fn set_cursor_window(&self, window: QueryCursorWindow) -> Result<(), String> {
+        window.validate()?;
+        let message = MykoMessage::QueryCursorWindow(QueryCursorWindowUpdate {
+            tx: self.tx.to_string(),
+            window: window.clone(),
+        });
+        let frame = self.client.encode_message(&message)?;
+        *self
+            .cursor_window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(window);
+        self.client.send_or_queue(frame);
+        Ok(())
+    }
+
+    /// Request the first keyset page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding the control message fails.
+    pub fn first_cursor_page(&self, limit: usize) -> Result<(), String> {
+        self.set_cursor_window(QueryCursorWindow::first(limit))
+    }
+
+    /// Request the keyset page immediately after the last visible item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding the control message fails.
+    pub fn next_cursor_page(&self, limit: usize) -> Result<bool, String>
+    where
+        T: WithId,
+    {
+        let Some(cursor) = self.items.get().last().map(|item| item.id()) else {
+            return Ok(false);
+        };
+        self.set_cursor_window(QueryCursorWindow::after(cursor, limit))?;
+        Ok(true)
+    }
+
+    /// Request the keyset page immediately before the first visible item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding the control message fails.
+    pub fn previous_cursor_page(&self, limit: usize) -> Result<bool, String>
+    where
+        T: WithId,
+    {
+        let Some(cursor) = self.items.get().first().map(|item| item.id()) else {
+            return Ok(false);
+        };
+        self.set_cursor_window(QueryCursorWindow::before(cursor, limit))?;
+        Ok(true)
     }
 
     /// Select a page using an absolute offset and limit.
@@ -576,6 +646,7 @@ struct ClientWindowWatchCacheEntry<T: CellValue> {
     total_count: hyphae::cell::WeakCell<Option<usize>, CellImmutable>,
     window: hyphae::cell::WeakCell<Option<QueryWindow>, CellImmutable>,
     state: hyphae::cell::WeakCell<WindowedQueryState<T>, CellImmutable>,
+    cursor_window: Arc<std::sync::Mutex<Option<QueryCursorWindow>>>,
 }
 
 impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
@@ -587,6 +658,7 @@ impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
             total_count: watch.total_count.downgrade(),
             window: watch.window.downgrade(),
             state: watch.state.downgrade(),
+            cursor_window: watch.cursor_window.clone(),
         }
     }
 
@@ -597,6 +669,7 @@ impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
             total_count: self.total_count.upgrade()?,
             window: self.window.upgrade()?,
             state: self.state.upgrade()?,
+            cursor_window: self.cursor_window.clone(),
             tx: self.tx.clone(),
             client,
         })

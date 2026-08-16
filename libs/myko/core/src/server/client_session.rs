@@ -19,8 +19,8 @@ use crate::{
     query::{WindowedQuerySnapshot, WindowedQuerySource},
     report::AnyOutput,
     wire::{
-        EncodedCommandMessage, ErasedWrappedItem, MykoMessage, QueryChange, QueryResponse,
-        QueryWindow, ReportError, ReportResponse,
+        EncodedCommandMessage, ErasedWrappedItem, MykoMessage, QueryChange, QueryCursorWindow,
+        QueryResponse, QueryWindow, ReportError, ReportResponse,
     },
 };
 
@@ -155,6 +155,7 @@ enum QuerySubscriptionKind {
 struct QuerySubscriptionState {
     sequence: u64,
     window: Option<QueryWindow>,
+    cursor_window: Option<QueryCursorWindow>,
     all_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
     visible_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
 }
@@ -500,6 +501,38 @@ impl<W: WsWriter> ClientSession<W> {
         );
     }
 
+    /// Move an active query to an exclusive ID-keyset page.
+    pub fn update_query_cursor_window(&mut self, tx: &Arc<str>, window: QueryCursorWindow) {
+        if window.validate().is_err() {
+            tracing::warn!(tx = %tx, "rejected invalid query cursor window");
+            return;
+        }
+        let Some(SubscriptionEntry::Query(sub)) = self.subscriptions.get(tx) else {
+            return;
+        };
+        let response = match &sub.control {
+            QueryWindowControl::Materialized(state) => {
+                let Ok(mut state) = state.lock() else {
+                    tracing::error!(tx = %tx, "query cursor state poisoned");
+                    return;
+                };
+                state.window = None;
+                state.apply_cursor_window_update(window, tx.clone())
+            }
+            QueryWindowControl::Pushed(source) => {
+                source.set_cursor_window(window);
+                return;
+            }
+        };
+        let Some(response) = response else {
+            return;
+        };
+        match sub.kind {
+            QuerySubscriptionKind::Query => self.writer.send_query_response(response, false),
+            QuerySubscriptionKind::View => self.writer.send_query_response(response, true),
+        }
+    }
+
     /// Update window for an active view subscription.
     pub fn update_view_window(&mut self, tx: &Arc<str>, window: Option<QueryWindow>) {
         tracing::trace!(
@@ -598,7 +631,7 @@ impl QuerySubscriptionState {
         diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
         tx: Arc<str>,
     ) -> Option<PendingQueryResponse> {
-        if self.window.is_none() {
+        if self.window.is_none() && self.cursor_window.is_none() {
             return self.apply_source_diff_unwindowed(diff, tx);
         }
 
@@ -743,7 +776,8 @@ impl QuerySubscriptionState {
             return None;
         }
 
-        let was_windowed = self.window.is_some();
+        let was_windowed = self.window.is_some() || self.cursor_window.is_some();
+        self.cursor_window = None;
         self.window = window;
 
         // Leaving windowed mode must replace the client's partial page with
@@ -764,6 +798,24 @@ impl QuerySubscriptionState {
         )
     }
 
+    fn apply_cursor_window_update(
+        &mut self,
+        window: QueryCursorWindow,
+        tx: Arc<str>,
+    ) -> Option<PendingQueryResponse> {
+        if self.cursor_window.as_ref() == Some(&window) {
+            return None;
+        }
+        self.cursor_window = Some(window);
+        self.compute_windowed_response(
+            tx,
+            &HashSet::new(),
+            &HashSet::new(),
+            self.all_items.len(),
+            true,
+        )
+    }
+
     fn compute_windowed_response(
         &mut self,
         tx: Arc<str>,
@@ -772,7 +824,7 @@ impl QuerySubscriptionState {
         previous_total_count: usize,
         force_emit: bool,
     ) -> Option<PendingQueryResponse> {
-        if self.window.is_none() {
+        if self.window.is_none() && self.cursor_window.is_none() {
             return self.compute_unwindowed_response(
                 tx,
                 changed_ids,
@@ -869,7 +921,27 @@ impl QuerySubscriptionState {
         let mut ordered_ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
         ordered_ids.sort_unstable();
 
-        let visible_ids: Vec<Arc<str>> = if let Some(window) = &self.window {
+        let visible_ids: Vec<Arc<str>> = if let Some(cursor) = &self.cursor_window {
+            let (start, end) = cursor.after.as_ref().map_or_else(
+                || {
+                    cursor.before.as_ref().map_or_else(
+                        || (0, cursor.limit.min(ordered_ids.len())),
+                        |before| {
+                            let end = ordered_ids.partition_point(|id| id < before);
+                            (end.saturating_sub(cursor.limit), end)
+                        },
+                    )
+                },
+                |after| {
+                    let start = ordered_ids.partition_point(|id| id <= after);
+                    (
+                        start,
+                        start.saturating_add(cursor.limit).min(ordered_ids.len()),
+                    )
+                },
+            );
+            ordered_ids.get(start..end).unwrap_or_default().to_vec()
+        } else if let Some(window) = &self.window {
             if window.limit == 0 {
                 Vec::new()
             } else {
@@ -952,7 +1024,8 @@ impl QuerySubscriptionState {
             deletes,
             total_count,
             window: self.window.clone(),
-            window_order_ids: self.window.as_ref().map(|_| visible_ids),
+            window_order_ids: (self.window.is_some() || self.cursor_window.is_some())
+                .then_some(visible_ids),
         })
     }
 }
@@ -1381,6 +1454,62 @@ mod tests {
         assert!(matches!(
             response.changes.as_slice(),
             [QueryChange::WindowOrder { ids, .. }] if ids == &[Arc::<str>::from("b")]
+        ));
+    }
+
+    #[test]
+    fn cursor_windows_are_exclusive_and_bidirectional() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        for id in ["a", "b", "c", "d"] {
+            store.insert(id.into(), make_entity(id, id));
+        }
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-cursor".into();
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+        session.subscribe_query(
+            tx.clone(),
+            "query-cursor".into(),
+            cellmap,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 2,
+            }),
+        );
+
+        session.update_query_cursor_window(&tx, QueryCursorWindow::after("b", 2));
+        let forward_message = mock.last_message();
+        assert!(matches!(
+            forward_message,
+            Some(MykoMessage::QueryResponse(_))
+        ));
+        let Some(MykoMessage::QueryResponse(forward)) = forward_message else {
+            return;
+        };
+        assert!(forward.window.is_none());
+        assert!(matches!(
+            forward.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }]
+                if ids == &[Arc::<str>::from("c"), Arc::<str>::from("d")]
+        ));
+
+        session.update_query_cursor_window(&tx, QueryCursorWindow::before("c", 2));
+        let backward_message = mock.last_message();
+        assert!(matches!(
+            backward_message,
+            Some(MykoMessage::QueryResponse(_))
+        ));
+        let Some(MykoMessage::QueryResponse(backward)) = backward_message else {
+            return;
+        };
+        assert!(matches!(
+            backward.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }]
+                if ids == &[Arc::<str>::from("a"), Arc::<str>::from("b")]
         ));
     }
 

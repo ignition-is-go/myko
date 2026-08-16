@@ -32,8 +32,8 @@ use myko::{
     },
     wire::{
         CancelSubscription, CommandError, CommandResponse, EncodedCommandMessage, MEvent,
-        MEventType, MykoMessage, QueryWindowUpdate, ViewError, ViewWindowUpdate, WrappedQuery,
-        WrappedView,
+        MEventType, MykoMessage, QueryCursorWindowUpdate, QueryWindowUpdate, ViewError,
+        ViewWindowUpdate, WrappedQuery, WrappedView,
     },
 };
 use tokio::{
@@ -1147,6 +1147,7 @@ impl WsHandler {
             }
             message @ (MykoMessage::QueryCancel(_)
             | MykoMessage::QueryWindow(_)
+            | MykoMessage::QueryCursorWindow(_)
             | MykoMessage::ViewCancel(_)
             | MykoMessage::ViewWindow(_)
             | MykoMessage::ReportCancel(_)) => {
@@ -1204,6 +1205,9 @@ impl WsHandler {
             }
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
                 session.update_query_window(&Arc::from(tx), window);
+            }
+            MykoMessage::QueryCursorWindow(QueryCursorWindowUpdate { tx, window }) => {
+                session.update_query_cursor_window(&Arc::from(tx), window);
             }
             MykoMessage::ViewCancel(CancelSubscription { tx }) => {
                 let tx: Arc<str> = tx.into();

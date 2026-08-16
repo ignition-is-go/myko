@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::{
     command::{CommandError, CommandResponse, WrappedCommand},
     event::MEvent,
-    query::{QueryError, QueryResponse, QueryWindowUpdate, WrappedQuery},
+    query::{QueryCursorWindowUpdate, QueryError, QueryResponse, QueryWindowUpdate, WrappedQuery},
     report::{ReportError, ReportResponse, WrappedReport},
     view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView},
 };
@@ -48,6 +48,8 @@ pub enum MykoMessage {
     QueryCancel(CancelSubscription),
     #[serde(rename = "ws:m:query-window")]
     QueryWindow(QueryWindowUpdate),
+    #[serde(rename = "ws:m:query-cursor-window")]
+    QueryCursorWindow(QueryCursorWindowUpdate),
     #[serde(rename = "ws:m:view")]
     View(WrappedView),
     #[serde(rename = "ws:m:view-response")]

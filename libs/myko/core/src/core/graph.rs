@@ -16,7 +16,10 @@ use std::{
     fmt::Debug,
     hash::Hash,
     marker::PhantomData,
-    sync::{Arc, Mutex, MutexGuard, RwLock, Weak},
+    sync::{
+        Arc, Mutex, MutexGuard, RwLock, Weak,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 
 use anyhow::{Context, Result, bail};
@@ -90,7 +93,9 @@ pub enum EdgeShapeKind {
     Undirected,
 }
 
-#[derive(Clone, Copy, Debug, Hash, Eq, PartialEq, Serialize, Deserialize, crate::TS)]
+#[derive(
+    Clone, Copy, Debug, Hash, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::TS,
+)]
 #[serde(rename_all = "camelCase")]
 #[ts(crate = "crate::ts_rs")]
 pub enum EndPosition {
@@ -1746,6 +1751,30 @@ pub struct GraphDiagnostics {
     pub uniqueness_rejections: u64,
 }
 
+/// Observed endpoint-query work and an actionable projection recommendation.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, crate::TS)]
+#[serde(rename_all = "camelCase")]
+#[ts(crate = "crate::ts_rs")]
+pub struct GraphPlanTelemetry {
+    pub edge_type: String,
+    pub position: EndPosition,
+    pub policy: AdjacencyPolicy,
+    pub lookups: u64,
+    pub scanned_edges: u64,
+    pub returned_edges: u64,
+    pub recommend_eager: bool,
+    pub reason: String,
+}
+crate::register_typegen_type!(GraphPlanTelemetry);
+crate::mark_framework_typegen_type!(GraphPlanTelemetry);
+
+#[derive(Default)]
+struct GraphPlanCounters {
+    lookups: AtomicU64,
+    scanned_edges: AtomicU64,
+    returned_edges: AtomicU64,
+}
+
 /// Derived work required before an endpoint can be deleted.
 #[derive(Default)]
 pub struct EndpointDeletePlan {
@@ -1770,6 +1799,21 @@ struct IndexedEdge {
 enum EdgeIds {
     One(Arc<str>),
     Many(BTreeSet<Arc<str>>),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum GraphWindowSelection {
+    Offset(Option<crate::wire::QueryWindow>),
+    Cursor(crate::wire::QueryCursorWindow),
+}
+
+impl GraphWindowSelection {
+    const fn offset_window(&self) -> Option<&crate::wire::QueryWindow> {
+        match self {
+            Self::Offset(window) => window.as_ref(),
+            Self::Cursor(_) => None,
+        }
+    }
 }
 
 impl EdgeIds {
@@ -1817,6 +1861,47 @@ impl EdgeIds {
         match self {
             Self::One(id) => (offset == 0).then(|| id.clone()).into_iter().collect(),
             Self::Many(ids) => ids.iter().skip(offset).take(limit).cloned().collect(),
+        }
+    }
+
+    fn cursor_window(&self, window: &crate::wire::QueryCursorWindow) -> Vec<Arc<str>> {
+        use std::ops::Bound::{Excluded, Unbounded};
+
+        if window.limit == 0 {
+            return Vec::new();
+        }
+        match self {
+            Self::One(id) => {
+                let after_matches = window.after.as_ref().is_none_or(|after| id > after);
+                let before_matches = window.before.as_ref().is_none_or(|before| id < before);
+                (after_matches && before_matches)
+                    .then(|| id.clone())
+                    .into_iter()
+                    .collect()
+            }
+            Self::Many(ids) => window.after.as_ref().map_or_else(
+                || {
+                    window.before.as_ref().map_or_else(
+                        || ids.iter().take(window.limit).cloned().collect(),
+                        |before| {
+                            let mut selected = ids
+                                .range::<Arc<str>, _>(..before)
+                                .rev()
+                                .take(window.limit)
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            selected.reverse();
+                            selected
+                        },
+                    )
+                },
+                |after| {
+                    ids.range::<Arc<str>, _>((Excluded(after), Unbounded))
+                        .take(window.limit)
+                        .cloned()
+                        .collect()
+                },
+            ),
         }
     }
 
@@ -2036,6 +2121,7 @@ pub struct GraphIndex {
     state: RwLock<GraphState>,
     authority: Mutex<()>,
     watch_router: Arc<GraphWatchRouter>,
+    plan_counters: HashMap<(&'static str, EndPosition), Arc<GraphPlanCounters>>,
 }
 
 impl GraphIndex {
@@ -2088,6 +2174,17 @@ impl GraphIndex {
                 .or_default()
                 .insert(membership.item_type);
         }
+        let plan_counters = registrations
+            .keys()
+            .flat_map(|edge_type| {
+                [EndPosition::A, EndPosition::B].map(|position| {
+                    (
+                        (*edge_type, position),
+                        Arc::new(GraphPlanCounters::default()),
+                    )
+                })
+            })
+            .collect();
         Some(Self {
             registrations,
             endpoint_adjacency,
@@ -2096,6 +2193,7 @@ impl GraphIndex {
             state: RwLock::new(GraphState::default()),
             authority: Mutex::new(()),
             watch_router: Arc::new(GraphWatchRouter::default()),
+            plan_counters,
         })
     }
 
@@ -2836,6 +2934,82 @@ impl GraphIndex {
         }
     }
 
+    fn record_plan_observation(
+        &self,
+        edge_type: &str,
+        position: EndPosition,
+        scanned_edges: usize,
+        returned_edges: usize,
+    ) {
+        let Some(counters) = self.plan_counters.get(&(edge_type, position)) else {
+            return;
+        };
+        counters.lookups.fetch_add(1, Ordering::Relaxed);
+        counters.scanned_edges.fetch_add(
+            u64::try_from(scanned_edges).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+        counters.returned_edges.fetch_add(
+            u64::try_from(returned_edges).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Snapshot observed query-plan work without changing graph policy.
+    #[must_use]
+    pub fn plan_telemetry(&self) -> Vec<GraphPlanTelemetry> {
+        let mut telemetry = self
+            .plan_counters
+            .iter()
+            .map(|((edge_type, position), counters)| {
+                let policies = self
+                    .endpoint_adjacency
+                    .get(edge_type)
+                    .copied()
+                    .unwrap_or([AdjacencyPolicy::DemandDriven; 2]);
+                let [a_policy, b_policy] = policies;
+                let policy = match position {
+                    EndPosition::A => a_policy,
+                    EndPosition::B => b_policy,
+                };
+                let lookups = counters.lookups.load(Ordering::Relaxed);
+                let scanned_edges = counters.scanned_edges.load(Ordering::Relaxed);
+                let returned_edges = counters.returned_edges.load(Ordering::Relaxed);
+                let recommend_eager = policy == AdjacencyPolicy::DemandDriven
+                    && lookups >= 8
+                    && scanned_edges >= 10_000;
+                let reason = if recommend_eager {
+                    format!(
+                        "{lookups} endpoint lookups scanned {scanned_edges} edges to return {returned_edges}; eager adjacency would replace repeated scans with bucket lookups"
+                    )
+                } else if policy == AdjacencyPolicy::Eager {
+                    "eager adjacency already avoids canonical scans; counters stay disabled on this hot path"
+                        .to_string()
+                } else {
+                    format!(
+                        "{lookups} endpoint lookups scanned {scanned_edges} edges; recommendation threshold is 8 lookups and 10000 scanned edges"
+                    )
+                };
+                GraphPlanTelemetry {
+                    edge_type: (*edge_type).to_string(),
+                    position: *position,
+                    policy,
+                    lookups,
+                    scanned_edges,
+                    returned_edges,
+                    recommend_eager,
+                    reason,
+                }
+            })
+            .collect::<Vec<_>>();
+        telemetry.sort_unstable_by(|left, right| {
+            left.edge_type
+                .cmp(&right.edge_type)
+                .then_with(|| left.position.cmp(&right.position))
+        });
+        telemetry
+    }
+
     /// Enforce restrict/cascade policies for an authoritative endpoint DEL.
     #[allow(clippy::too_many_lines)]
     pub fn endpoint_delete_plan(&self, endpoint: &EntityRef) -> Result<EndpointDeletePlan> {
@@ -2969,9 +3143,10 @@ impl GraphIndex {
             return Vec::new();
         };
         if !self.projects_endpoint(edge_type, position) {
-            return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
-                store
-                    .snapshot()
+            let result = self.registry.get(edge_type).map_or_else(Vec::new, |store| {
+                let snapshot = store.snapshot();
+                let scanned = snapshot.len();
+                let result = snapshot
                     .into_iter()
                     .filter_map(|(_, item)| {
                         let endpoints = (registration.extract)(item.as_ref()).ok()?;
@@ -2981,8 +3156,11 @@ impl GraphIndex {
                         };
                         (candidate == *endpoint).then(|| item.id())
                     })
-                    .collect()
+                    .collect::<Vec<_>>();
+                self.record_plan_observation(edge_type, position, scanned, result.len());
+                result
             });
+            return result;
         }
         let state = self
             .state
@@ -3015,8 +3193,9 @@ impl GraphIndex {
             // Scan the canonical store once for the whole endpoint set rather
             // than repeating the scan once per requested endpoint.
             return self.registry.get(edge_type).map_or_else(Vec::new, |store| {
-                store
-                    .snapshot()
+                let snapshot = store.snapshot();
+                let scanned = snapshot.len();
+                let result = snapshot
                     .into_iter()
                     .filter_map(|(_, item)| {
                         let edge_endpoints = (registration.extract)(item.as_ref()).ok()?;
@@ -3026,7 +3205,9 @@ impl GraphIndex {
                         };
                         endpoints.contains(&candidate).then(|| item.id())
                     })
-                    .collect()
+                    .collect::<Vec<_>>();
+                self.record_plan_observation(edge_type, position, scanned, result.len());
+                result
             });
         }
         let state = self
@@ -3144,6 +3325,7 @@ impl GraphIndex {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn watch_window_matching<F, M>(
         self: &Arc<Self>,
         edge_type: &'static str,
@@ -3153,7 +3335,7 @@ impl GraphIndex {
         matches_endpoints: M,
     ) -> Result<crate::query::WindowedQuerySource>
     where
-        F: Fn(&Self, Option<&crate::wire::QueryWindow>) -> crate::query::WindowedQuerySnapshot
+        F: Fn(&Self, &GraphWindowSelection) -> crate::query::WindowedQuerySnapshot
             + Send
             + Sync
             + 'static,
@@ -3165,20 +3347,22 @@ impl GraphIndex {
             .registration(edge_type)
             .context("edge type is not registered")?;
         let _authority = self.lock_authority();
-        let window = Arc::new(Mutex::new(Some(initial_window)));
+        let selection = Arc::new(Mutex::new(GraphWindowSelection::Offset(Some(
+            initial_window,
+        ))));
         let select = Arc::new(select);
         let initial = {
-            let current = window
+            let current = selection
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            select(self, current.as_ref())
+            select(self, &current)
         };
         let snapshots = hyphae::Cell::new(Arc::new(initial));
         let dispatch = Arc::new(parking_lot::ReentrantMutex::new(()));
 
         let snapshots_weak = snapshots.downgrade();
         let graph_weak = Arc::downgrade(self);
-        let window_for_diffs = window.clone();
+        let selection_for_diffs = selection.clone();
         let select_for_diffs = select.clone();
         let dispatch_for_diffs = dispatch.clone();
         let callback: Arc<GraphWatchCallback> = Arc::new(move |diff| {
@@ -3199,10 +3383,10 @@ impl GraphIndex {
                 return;
             }
             let next = {
-                let window = window_for_diffs
+                let selection = selection_for_diffs
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                select_for_diffs(&graph, window.as_ref())
+                select_for_diffs(&graph, &selection)
             };
             snapshots.set(Arc::new(next));
         });
@@ -3211,7 +3395,9 @@ impl GraphIndex {
 
         let snapshots_weak = snapshots.downgrade();
         let graph_weak = Arc::downgrade(self);
-        let dispatch_for_window = dispatch;
+        let dispatch_for_window = dispatch.clone();
+        let selection_for_window = selection.clone();
+        let select_for_window = select.clone();
         let set_window = move |next: Option<crate::wire::QueryWindow>| {
             let _dispatch_guard = dispatch_for_window.lock();
             let Some(graph) = graph_weak.upgrade() else {
@@ -3219,23 +3405,52 @@ impl GraphIndex {
             };
             let next_snapshot = {
                 let _authority = graph.lock_authority();
-                let mut current = window
+                let mut current = selection_for_window
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let next = GraphWindowSelection::Offset(next);
                 if *current == next {
                     return;
                 }
                 *current = next;
-                select(&graph, current.as_ref())
+                select_for_window(&graph, &current)
             };
             if let Some(snapshots) = snapshots_weak.upgrade() {
                 snapshots.set(Arc::new(next_snapshot));
             }
         };
 
-        Ok(crate::query::WindowedQuerySource::new(
+        let snapshots_weak = snapshots.downgrade();
+        let graph_weak = Arc::downgrade(self);
+        let set_cursor_window = move |next: crate::wire::QueryCursorWindow| {
+            if next.validate().is_err() {
+                return;
+            }
+            let _dispatch_guard = dispatch.lock();
+            let Some(graph) = graph_weak.upgrade() else {
+                return;
+            };
+            let next_snapshot = {
+                let _authority = graph.lock_authority();
+                let mut current = selection
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let next = GraphWindowSelection::Cursor(next);
+                if *current == next {
+                    return;
+                }
+                *current = next;
+                select(&graph, &current)
+            };
+            if let Some(snapshots) = snapshots_weak.upgrade() {
+                snapshots.set(Arc::new(next_snapshot));
+            }
+        };
+
+        Ok(crate::query::WindowedQuerySource::new_with_cursor(
             snapshots.lock(),
             set_window,
+            set_cursor_window,
         ))
     }
 
@@ -3244,7 +3459,7 @@ impl GraphIndex {
         edge_type: &str,
         position: EndPosition,
         endpoint: &EndpointValue,
-        window: Option<&crate::wire::QueryWindow>,
+        selection: &GraphWindowSelection,
     ) -> crate::query::WindowedQuerySnapshot {
         let state = self
             .state
@@ -3258,7 +3473,10 @@ impl GraphIndex {
                 EndPosition::B => edges.b.get(endpoint),
             });
         let total_count = ids.map_or(0, EdgeIds::len);
-        let selected = ids.map_or_else(Vec::new, |ids| ids.window(window));
+        let selected = ids.map_or_else(Vec::new, |ids| match selection {
+            GraphWindowSelection::Offset(window) => ids.window(window.as_ref()),
+            GraphWindowSelection::Cursor(window) => ids.cursor_window(window),
+        });
         drop(state);
         let store = self.registry.get_or_create(edge_type);
         let entries = selected
@@ -3268,7 +3486,7 @@ impl GraphIndex {
         crate::query::WindowedQuerySnapshot {
             entries,
             total_count,
-            window: window.cloned(),
+            window: selection.offset_window().cloned(),
         }
     }
 
@@ -3277,7 +3495,7 @@ impl GraphIndex {
         edge_type: &str,
         position: EndPosition,
         endpoints: &HashSet<EndpointValue>,
-        window: Option<&crate::wire::QueryWindow>,
+        selection: &GraphWindowSelection,
     ) -> crate::query::WindowedQuerySnapshot {
         let state = self
             .state
@@ -3293,8 +3511,12 @@ impl GraphIndex {
                 .filter_map(|endpoint| map.get(endpoint))
                 .collect::<Vec<_>>()
         });
-        let (offset, limit) =
-            window.map_or((0, usize::MAX), |window| (window.offset, window.limit));
+        let (offset, limit) = match selection {
+            GraphWindowSelection::Offset(window) => window
+                .as_ref()
+                .map_or((0, usize::MAX), |window| (window.offset, window.limit)),
+            GraphWindowSelection::Cursor(window) => (0, window.limit),
+        };
         // Merge the already-sorted endpoint buckets. Only the requested page
         // is retained, while traversing the merge also yields an exact distinct
         // total and defensively deduplicates IDs across buckets. Memory is
@@ -3316,11 +3538,30 @@ impl GraphIndex {
         }
         let mut total_count = 0_usize;
         let mut previous: Option<Arc<str>> = None;
-        let mut selected = Vec::with_capacity(window.map_or(0, |window| window.limit.min(4_096)));
+        let mut selected = Vec::with_capacity(limit.min(4_096));
+        let mut before_selected = std::collections::VecDeque::with_capacity(limit.min(4_096));
         while let Some(Reverse((id, index))) = pending.pop() {
             if previous.as_ref() != Some(&id) {
-                if total_count >= offset && selected.len() < limit {
-                    selected.push(id.clone());
+                match selection {
+                    GraphWindowSelection::Offset(_) => {
+                        if total_count >= offset && selected.len() < limit {
+                            selected.push(id.clone());
+                        }
+                    }
+                    GraphWindowSelection::Cursor(window) => {
+                        if let Some(before) = &window.before {
+                            if limit > 0 && &id < before {
+                                if before_selected.len() == limit {
+                                    before_selected.pop_front();
+                                }
+                                before_selected.push_back(id.clone());
+                            }
+                        } else if window.after.as_ref().is_none_or(|after| &id > after)
+                            && selected.len() < limit
+                        {
+                            selected.push(id.clone());
+                        }
+                    }
                 }
                 total_count = total_count.saturating_add(1);
                 previous = Some(id);
@@ -3328,6 +3569,9 @@ impl GraphIndex {
             if let Some(next) = iterators.get_mut(index).and_then(Iterator::next) {
                 pending.push(Reverse((next.clone(), index)));
             }
+        }
+        if matches!(selection, GraphWindowSelection::Cursor(window) if window.before.is_some()) {
+            selected = before_selected.into_iter().collect();
         }
         drop(iterators);
         drop(buckets);
@@ -3340,7 +3584,7 @@ impl GraphIndex {
         crate::query::WindowedQuerySnapshot {
             entries,
             total_count,
-            window: window.cloned(),
+            window: selection.offset_window().cloned(),
         }
     }
 
@@ -3349,13 +3593,13 @@ impl GraphIndex {
         edge_type: &str,
         a: &EndpointValue,
         b: &EndpointValue,
-        window: Option<&crate::wire::QueryWindow>,
+        selection: &GraphWindowSelection,
     ) -> crate::query::WindowedQuerySnapshot {
         let Some(registration) = self.registration(edge_type) else {
             return crate::query::WindowedQuerySnapshot {
                 entries: Vec::new(),
                 total_count: 0,
-                window: window.cloned(),
+                window: selection.offset_window().cloned(),
             };
         };
         let key = Self::pair_key_from_values(registration, a, b, None);
@@ -3368,7 +3612,10 @@ impl GraphIndex {
             .get(edge_type)
             .and_then(|edges| edges.pairs.get(&key));
         let total_count = ids.map_or(0, EdgeIds::len);
-        let selected = ids.map_or_else(Vec::new, |ids| ids.window(window));
+        let selected = ids.map_or_else(Vec::new, |ids| match selection {
+            GraphWindowSelection::Offset(window) => ids.window(window.as_ref()),
+            GraphWindowSelection::Cursor(window) => ids.cursor_window(window),
+        });
         drop(state);
         let store = self.registry.get_or_create(edge_type);
         let entries = selected
@@ -3378,7 +3625,7 @@ impl GraphIndex {
         crate::query::WindowedQuerySnapshot {
             entries,
             total_count,
-            window: window.cloned(),
+            window: selection.offset_window().cloned(),
         }
     }
 
@@ -5855,6 +6102,33 @@ mod tests {
         assert_eq!(moved.entries.len(), 1);
         assert_eq!(moved.entries[0].0.as_ref(), "c");
 
+        source.set_cursor_window(crate::wire::QueryCursorWindow::after("b", 2));
+        let cursor_page = source.snapshots().get();
+        assert!(cursor_page.window.is_none());
+        assert_eq!(
+            cursor_page
+                .entries
+                .iter()
+                .map(|(id, _)| id.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["c", "d"]
+        );
+
+        source.set_cursor_window(crate::wire::QueryCursorWindow::before("c", 2));
+        let previous_cursor_page = source.snapshots().get();
+        assert_eq!(
+            previous_cursor_page
+                .entries
+                .iter()
+                .map(|(id, _)| id.as_ref())
+                .collect::<Vec<_>>(),
+            vec!["a", "b"]
+        );
+        source.set_window(Some(crate::wire::QueryWindow {
+            offset: 2,
+            limit: 1,
+        }));
+
         let replacement_article = Article {
             title: "replacement".into(),
             id: ArticleId::from("article-replacement"),
@@ -7492,6 +7766,31 @@ mod tests {
         assert!(!ids.remove(&first));
         assert_eq!(ids.ids(), vec![second.clone()]);
         assert!(ids.remove(&second));
+    }
+
+    #[test]
+    fn plan_telemetry_recommends_eager_after_repeated_large_scans() {
+        let context = context();
+        let graph = context.graph_index().expect("graph index");
+        let counters = graph
+            .plan_counters
+            .get(&(TagAssignment::ENTITY_NAME_STATIC, EndPosition::A))
+            .expect("demand-driven counters");
+        counters.lookups.store(8, Ordering::Relaxed);
+        counters.scanned_edges.store(10_000, Ordering::Relaxed);
+        counters.returned_edges.store(80, Ordering::Relaxed);
+
+        let telemetry = graph
+            .plan_telemetry()
+            .into_iter()
+            .find(|entry| {
+                entry.edge_type == TagAssignment::ENTITY_NAME_STATIC
+                    && entry.position == EndPosition::A
+            })
+            .expect("telemetry entry");
+        assert_eq!(telemetry.policy, AdjacencyPolicy::DemandDriven);
+        assert!(telemetry.recommend_eager);
+        assert!(telemetry.reason.contains("10000 edges"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { map, type Observable } from 'rxjs'
+import { combineLatest, map, type Observable } from 'rxjs'
 
 import type {
   Command,
@@ -7,6 +7,8 @@ import type {
   MykoClient,
   Query,
   QuerySelectionOptions,
+  QueryCursorPageInfo,
+  QueryCursorWindow,
   QueryWindow,
   QueryWindowInfo,
   QueryWatchOptions,
@@ -76,6 +78,20 @@ export type WindowedGraphQuery<Q> = {
   setWindow: (window: QueryWindow | null) => void
 }
 
+export type CursorGraphQuery<Q> = {
+  tx: string
+  results$: Observable<QueryEntity<Q>[]>
+  pageInfo$: Observable<QueryCursorPageInfo>
+  setWindow: (window: QueryCursorWindow) => void
+  firstPage: () => void
+}
+
+/** One edge paired with the currently-live entity at its opposite endpoint. */
+export type LiveConnection<Edge, Entity> = {
+  edge: Edge
+  entity: Entity
+}
+
 export type GraphDescriptorSchema = {
   pairProjection: 'intersectAdjacency' | 'eager'
   aAdjacency: 'demandDriven' | 'eager'
@@ -104,11 +120,28 @@ type CommandPromise<C> = C extends Command<unknown>
   ? Promise<CommandResult<C>>
   : never
 
-type RelatedScope<G, K extends PropertyKey, Name extends string> = K extends keyof G
+type RelatedScope<
+  G,
+  EdgeKey extends PropertyKey,
+  K extends PropertyKey,
+  Name extends string,
+> = K extends keyof G
   ? {
       [P in Name]: (
         options?: QueryWatchOptions,
       ) => QueryState<MethodResult<G, K>>
+    } & {
+      [P in 'connections']: (
+        relatedId: (edge: QueryEntity<MethodResult<G, EdgeKey>>) => string,
+        options?: QueryWatchOptions,
+      ) => Observable<
+        ReadonlyArray<
+          LiveConnection<
+            QueryEntity<MethodResult<G, EdgeKey>>,
+            QueryEntity<MethodResult<G, K>>
+          >
+        >
+      >
     } & {
       [P in `${Name}Windowed`]: (
         window: QueryWindow,
@@ -168,6 +201,7 @@ type EndpointScope<
   edgesWindowed: (
     window: QueryWindow,
   ) => WindowedGraphQuery<MethodResult<G, EdgeKey>>
+  edgesCursor: (limit: number) => CursorGraphQuery<MethodResult<G, EdgeKey>>
   edgesBy: <K>(
     keyOf: (edge: QueryEntity<MethodResult<G, EdgeKey>>) => K,
     options?: QueryWatchOptions,
@@ -191,7 +225,7 @@ type EndpointScope<
       }
     : object) &
   SyncScope<G, SyncKey> &
-  RelatedScope<G, RelatedKey, RelatedName>
+  RelatedScope<G, EdgeKey, RelatedKey, RelatedName>
 
 type BetweenScope<G> = {
   readonly plan: GraphQueryPlan
@@ -205,6 +239,7 @@ type BetweenScope<G> = {
   edgesWindowed: (
     window: QueryWindow,
   ) => WindowedGraphQuery<MethodResult<G, 'between'>>
+  edgesCursor: (limit: number) => CursorGraphQuery<MethodResult<G, 'between'>>
   count: () => ReportState<MethodResult<G, 'countBetween'>>
   exists: () => ReportState<MethodResult<G, 'existsBetween'>>
 } & ('betweenIds' extends keyof G
@@ -423,6 +458,11 @@ export function bindGraph<G extends object>(
       },
       { window },
     )
+  const cursor = (key: string, args: unknown[], limit: number) =>
+    client.watchQueryCursor(
+      factory(graph, key)(...args) as Query<{ id: string }>,
+      limit,
+    )
   const queryIndex = <T extends { id: string }, K>(
     key: string,
     args: unknown[],
@@ -467,6 +507,7 @@ export function bindGraph<G extends object>(
         return queryHas(exact.key, exact.args, id, options)
       },
       edgesWindowed: (window: QueryWindow) => windowed(edgeKey, args, window),
+      edgesCursor: (limit: number) => cursor(edgeKey, args, limit),
       edgesBy: <T extends { id: string }, K>(
         keyOf: (item: T) => K,
         options?: QueryWatchOptions,
@@ -494,6 +535,21 @@ export function bindGraph<G extends object>(
       ) => queryHas(relatedKey, args, id, options)
       scope[`${relatedName}Windowed`] = (window: QueryWindow) =>
         windowed(relatedKey, args, window)
+      scope.connections = (
+        relatedId: (edge: { id: string }) => string,
+        options?: QueryWatchOptions,
+      ) =>
+        combineLatest([
+          queryState(edgeKey, args, options),
+          queryState(relatedKey, args, options),
+        ]).pipe(
+          map(([edges, entities]) =>
+            edges.toArray().flatMap((edge) => {
+              const entity = entities.get(relatedId(edge))
+              return entity ? [{ edge, entity }] : []
+            }),
+          ),
+        )
     }
     if (countKey) {
       scope.count = () => reportState(countKey, args)
@@ -563,6 +619,7 @@ export function bindGraph<G extends object>(
           : queryHas('between', [a, b], id, options),
       edgesWindowed: (window: QueryWindow) =>
         windowed('between', [a, b], window),
+      edgesCursor: (limit: number) => cursor('between', [a, b], limit),
       count: () => reportState('countBetween', [a, b]),
       exists: () => reportState('existsBetween', [a, b]),
       ...('betweenIds' in graph

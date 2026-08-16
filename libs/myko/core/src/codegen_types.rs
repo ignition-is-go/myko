@@ -360,7 +360,8 @@ mod tests {
         assert!(type_names.contains("ClientId"));
         assert!(type_names.contains("EntityRef"));
         assert!(type_names.contains("PairPolicy"));
-        assert_eq!(type_names.len(), 14);
+        assert!(type_names.contains("GraphPlanTelemetry"));
+        assert_eq!(type_names.len(), 15);
         assert!(framework.items.is_empty());
         assert!(framework.queries.is_empty());
         assert!(framework.commands.is_empty());

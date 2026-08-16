@@ -26,8 +26,9 @@ pub use event::{MEvent, MEventType, intern_entity_type};
 pub use item::{ErasedWrappedItem, WrappedItem};
 pub use message::{CancelSubscription, MessageEventRegistration, MykoMessage, PingData};
 pub use query::{
-    ClientQueryChange, ClientQueryResponse, QueryChange, QueryError, QueryResponse, QueryResult,
-    QueryWindow, QueryWindowUpdate, WrappedQuery, wrap_query,
+    ClientQueryChange, ClientQueryResponse, QueryChange, QueryCursorWindow,
+    QueryCursorWindowUpdate, QueryError, QueryResponse, QueryResult, QueryWindow,
+    QueryWindowUpdate, WrappedQuery, wrap_query,
 };
 pub use report::{ReportError, ReportResponse, WrappedReport, wrap_report};
 pub use view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView, wrap_view};
@@ -47,6 +48,8 @@ crate::register_typegen_type!(
     query::QueryError,
     query::QueryWindow,
     query::QueryWindowUpdate,
+    query::QueryCursorWindow,
+    query::QueryCursorWindowUpdate,
     item::WrappedItem,
     report::ReportResponse,
     report::WrappedReport,

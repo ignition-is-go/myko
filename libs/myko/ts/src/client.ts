@@ -263,6 +263,21 @@ export type QueryWindow = {
   limit: number
 }
 
+/** Exclusive keyset window over the canonical ascending result-ID order. */
+export type QueryCursorWindow = {
+  after?: string
+  before?: string
+  limit: number
+}
+
+export type QueryCursorPageInfo = {
+  totalCount: number | null
+  startCursor: string | null
+  endCursor: string | null
+  hasPreviousPage: boolean
+  hasNextPage: boolean
+}
+
 export type QueryWatchOptions = {
   window?: QueryWindow | null
 }
@@ -487,6 +502,7 @@ export class MykoClient {
 
   // Subscription tracking
   private activeQueries = new Map<string, WrappedQuery>()
+  private activeQueryCursorWindows = new Map<string, QueryCursorWindow>()
   private activeViews = new Map<string, WrappedView>()
   private activeReports = new Map<string, WrappedReport>()
   private activeQueryNames = new Map<string, string>()
@@ -840,6 +856,7 @@ export class MykoClient {
           activeQueriesBefore: this.activeQueries.size,
         })
         this.activeQueries.delete(tx)
+        this.activeQueryCursorWindows.delete(tx)
         this.activeQueryNames.delete(tx)
         this.subscriptionStartMs.delete(tx)
         this.firstResponseLogged.delete(tx)
@@ -906,6 +923,19 @@ export class MykoClient {
     })
 
     this.send({ event: MykoEvent.QueryWindow, data: { tx, window } as unknown } as MykoMessage)
+  }
+
+  /** Move an active query to an exclusive ID-keyset page. */
+  setQueryCursorWindow(tx: string, window: QueryCursorWindow): void {
+    if (window.after !== undefined && window.before !== undefined) {
+      throw new Error('cursor window cannot contain both after and before')
+    }
+    if (!this.activeQueries.has(tx)) return
+    this.activeQueryCursorWindows.set(tx, window)
+    this.send({
+      event: 'ws:m:query-cursor-window',
+      data: { tx, window },
+    } as MykoMessage)
   }
 
   /** Start a view subscription, returns [tx, responses$] */
@@ -1482,6 +1512,53 @@ export class MykoClient {
       results$,
       windowInfo$,
       setWindow: (window) => this.setQueryWindow(tx, window),
+    }
+  }
+
+  /** Start a live query whose subsequent pages use stable ID keysets. */
+  watchQueryCursor<Q extends Query<{ id: string }>>(
+    query: Q,
+    limit: number,
+    options?: Omit<QueryWatchOptions, 'window'>,
+  ): {
+    tx: string
+    results$: Observable<QueryResult<Q>>
+    pageInfo$: Observable<QueryCursorPageInfo>
+    setWindow: (window: QueryCursorWindow) => void
+    firstPage: () => void
+  } {
+    const watch = this.watchQueryWindowed(query, {
+      ...options,
+      window: { offset: 0, limit },
+    })
+    let requested: QueryCursorWindow = { limit }
+    const pageInfo$ = combineLatest([watch.results$, watch.windowInfo$]).pipe(
+      map(([items, info]) => {
+        const rows = items as Array<{ id: string }>
+        const startCursor = rows.at(0)?.id ?? null
+        const endCursor = rows.at(-1)?.id ?? null
+        return {
+          totalCount: info.totalCount,
+          startCursor,
+          endCursor,
+          hasPreviousPage: requested.before !== undefined || requested.after !== undefined,
+          hasNextPage:
+            rows.length === requested.limit &&
+            (info.totalCount === null || rows.length < info.totalCount),
+        } satisfies QueryCursorPageInfo
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    const setWindow = (window: QueryCursorWindow) => {
+      requested = window
+      this.setQueryCursorWindow(watch.tx, window)
+    }
+    return {
+      tx: watch.tx,
+      results$: watch.results$,
+      pageInfo$,
+      setWindow,
+      firstPage: () => setWindow({ limit }),
     }
   }
 
@@ -2318,11 +2395,18 @@ export class MykoClient {
   }
 
   private resendSubscriptions(): void {
-    for (const q of this.activeQueries.values()) {
+    for (const [tx, q] of this.activeQueries) {
       this.send({
         event: MykoEvent.Query,
         data: this.withReconnectSequenceReset(q),
       })
+      const cursor = this.activeQueryCursorWindows.get(tx)
+      if (cursor) {
+        this.send({
+          event: 'ws:m:query-cursor-window',
+          data: { tx, window: cursor },
+        } as MykoMessage)
+      }
     }
     for (const v of this.activeViews.values()) {
       this.send({ event: MykoEvent.View, data: v })

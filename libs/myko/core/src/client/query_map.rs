@@ -445,6 +445,19 @@ impl MykoClient {
         self.watch_query_windowed(E::from_query(endpoint), window)
     }
 
+    /// Watch the first ID-keyset page of edges at endpoint A.
+    pub fn watch_graph_from_cursor<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        limit: usize,
+    ) -> crate::client::CursorQueryWatch<E>
+    where
+        E: crate::graph::GraphClientQueries,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_query_windowed(E::from_query(endpoint), QueryWindow { offset: 0, limit })
+    }
+
     /// Watch one ordered page over the union of several endpoint-A addresses.
     pub fn watch_graph_from_many_windowed<E>(
         &self,
@@ -469,6 +482,19 @@ impl MykoClient {
         E::Ends: crate::graph::TypedEdgeEnds,
     {
         self.watch_query_windowed(E::to_query(endpoint), window)
+    }
+
+    /// Watch the first ID-keyset page of edges at endpoint B.
+    pub fn watch_graph_to_cursor<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        limit: usize,
+    ) -> crate::client::CursorQueryWatch<E>
+    where
+        E: crate::graph::GraphClientQueries,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_query_windowed(E::to_query(endpoint), QueryWindow { offset: 0, limit })
     }
 
     /// Watch one ordered page over the union of several endpoint-B addresses.
@@ -496,6 +522,20 @@ impl MykoClient {
         E::Ends: crate::graph::TypedEdgeEnds,
     {
         self.watch_query_windowed(E::between_query(a, b), window)
+    }
+
+    /// Watch the first ID-keyset page of edges matching an endpoint pair.
+    pub fn watch_graph_between_cursor<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        limit: usize,
+    ) -> crate::client::CursorQueryWatch<E>
+    where
+        E: crate::graph::GraphClientQueries,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        self.watch_query_windowed(E::between_query(a, b), QueryWindow { offset: 0, limit })
     }
 
     /// Watch one ordered page of distinct typed entities reached from endpoint A.
@@ -880,12 +920,14 @@ impl MykoClient {
             Some(initial_window.clone()),
         ))
         .with_name(format!("query_window_page_state:{query_id}"));
+        let cursor_window = Arc::new(Mutex::new(None));
         let early_watch = WindowedQueryWatch {
             items: items.clone().lock(),
             ready: ready.clone().lock(),
             total_count: total_count.clone().lock(),
             window: window.clone().lock(),
             state: page_state.clone().lock(),
+            cursor_window: cursor_window.clone(),
             tx: tx.clone(),
             client: self.clone(),
         };
@@ -1007,14 +1049,24 @@ impl MykoClient {
         let page_state_for_status = page_state.downgrade();
         let window_for_status = window.clone().lock();
         let wrapped_for_status = wrapped;
+        let tx_for_status = tx.clone();
+        let cursor_for_status = cursor_window.clone();
         let status_cell = self.connection_status();
         let status_guard = status_cell.subscribe(move |signal| {
             let hyphae::Signal::Value(status) = signal else {
                 return;
             };
             if let ConnectionStatus::Connected(_) = &**status {
+                let cursor = cursor_for_status
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone();
                 let mut request = wrapped_for_status.clone();
-                request.window = window_for_status.get();
+                request.window = if cursor.is_some() {
+                    wrapped_for_status.window.clone()
+                } else {
+                    window_for_status.get()
+                };
                 let message = MykoMessage::Query(request);
                 match super::encode_protocol(&inner.protocol, &message)
                     .ok_or_else(|| "could not encode query".to_string())
@@ -1022,6 +1074,16 @@ impl MykoClient {
                 {
                     Ok(()) => debug!("Watching windowed query {query_id}"),
                     Err(error) => error!("Could not send windowed query: {error}"),
+                }
+                if let Some(window) = cursor {
+                    let message =
+                        MykoMessage::QueryCursorWindow(crate::wire::QueryCursorWindowUpdate {
+                            tx: tx_for_status.to_string(),
+                            window,
+                        });
+                    if let Some(frame) = super::encode_protocol(&inner.protocol, &message) {
+                        let _ = inner.socket.send(frame);
+                    }
                 }
             } else {
                 sequences.reset_epoch();
@@ -1057,6 +1119,7 @@ impl MykoClient {
             total_count: total_count.lock(),
             window: window.lock(),
             state: page_state.lock(),
+            cursor_window,
             tx: early_watch.tx,
             client: early_watch.client,
         };

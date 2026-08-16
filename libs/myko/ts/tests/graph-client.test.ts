@@ -387,6 +387,22 @@ describe('bindGraph', () => {
           setWindow() {},
         }
       },
+      watchQueryCursor(value: Query<unknown>, limit: number) {
+        calls.push({ id: value.queryId, window: { cursor: limit } })
+        return {
+          tx: `tx-${calls.length}`,
+          results$: of([]),
+          pageInfo$: of({
+            totalCount: 0,
+            startCursor: null,
+            endCursor: null,
+            hasPreviousPage: false,
+            hasNextPage: false,
+          }),
+          setWindow() {},
+          firstPage() {},
+        }
+      },
     } as unknown as MykoClient
 
     const bound = bindGraph(client, eagerGraph)
@@ -403,6 +419,7 @@ describe('bindGraph', () => {
     expect(Object.isFrozen(from.plan)).toBe(true)
     expect(from.edgesWindowed({ offset: 25, limit: 10 }).tx).toBe('tx-1')
     expect(from.targetsWindowed({ offset: 0, limit: 5 }).tx).toBe('tx-2')
+    expect(from.edgesCursor(20).tx).toBe('tx-3')
 
     const to = bound.to('node-b')
     expect(to.plan).toMatchObject({
@@ -423,6 +440,41 @@ describe('bindGraph', () => {
         id: 'EdgeGraphTargetsFromMany',
         window: { window: { offset: 0, limit: 5 } },
       },
+      { id: 'EdgeGraphFromMany', window: { cursor: 20 } },
+    ])
+  })
+
+  test('projects live entity-plus-edge connections', async () => {
+    const edges = new LiveCollection<Edge>().apply({
+      sequence: 0n,
+      deletes: [],
+      upserts: [
+        { id: 'edge-a-b', fromId: 'node-a', toId: 'node-b' },
+        { id: 'edge-a-c', fromId: 'node-a', toId: 'node-c' },
+      ],
+    })
+    const nodes = new LiveCollection<Node>().apply({
+      sequence: 0n,
+      deletes: [],
+      upserts: [
+        { id: 'node-b', label: 'B' },
+        { id: 'node-c', label: 'C' },
+      ],
+    })
+    const client = {
+      watchQueryState(value: Query<unknown>) {
+        return of(value.queryId.includes('Targets') ? nodes : edges)
+      },
+    } as unknown as MykoClient
+
+    const projected = await firstValueFrom(
+      bindGraph(client, graph)
+        .from('node-a')
+        .connections((edge) => edge.toId),
+    )
+    expect(projected).toEqual([
+      { edge: edges.get('edge-a-b'), entity: nodes.get('node-b') },
+      { edge: edges.get('edge-a-c'), entity: nodes.get('node-c') },
     ])
   })
 })
