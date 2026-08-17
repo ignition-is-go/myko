@@ -4453,6 +4453,8 @@ dependencies = [
  "hyphae-gpui",
  "myko",
  "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]
@@ -10025,3 +10027,15 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "gpui-node-graph"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "gpui-mullion"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "pulse-gpui"
+version = "0.1.0"

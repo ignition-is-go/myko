@@ -16,8 +16,10 @@ use myko::{
     },
     query::QueryParams,
     report::{ReportIdStatic, ReportParams},
+    wire::WrappedReport,
 };
 use serde::de::DeserializeOwned;
+use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::{client::myko, crud::CrudController};
 
@@ -237,7 +239,16 @@ where
 
 /// Live connection status, including the concrete transport state.
 pub fn connection_status(cx: &mut App) -> Entity<Remote<ConnectionStatus>> {
-    let client = myko(cx).client().clone();
+    let client = myko(cx).clone();
+    connection_status_in(&client, cx)
+}
+
+/// Live connection status for an explicitly owned Myko client.
+///
+/// Use this when one application talks to more than one Myko service and the
+/// secondary connection must not replace the application-global client.
+pub fn connection_status_in(myko: &crate::Myko, cx: &mut App) -> Entity<Remote<ConnectionStatus>> {
+    let client = myko.client().clone();
     bridge_cell(
         &client.connection_status(),
         &client,
@@ -263,7 +274,21 @@ where
     Q: QueryParams + Clone + Send + Sync + 'static,
     Q::Item: Eventable + WithId + DeserializeOwned + Clone + Debug + Send + Sync + 'static,
 {
-    let client = myko(cx).client().clone();
+    let client = myko(cx).clone();
+    live_query_in(&client, query, cx)
+}
+
+/// Subscribe to a typed query through an explicitly owned Myko client.
+pub fn live_query_in<Q>(
+    myko: &crate::Myko,
+    query: Q,
+    cx: &mut App,
+) -> Entity<Remote<Vec<Arc<Q::Item>>>>
+where
+    Q: QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: Eventable + WithId + DeserializeOwned + Clone + Debug + Send + Sync + 'static,
+{
+    let client = myko.client().clone();
     bridge_cell(
         &client.watch_query(query),
         &client,
@@ -751,7 +776,17 @@ where
     R: ReportParams + ReportIdStatic + Clone + Send + Sync + 'static,
     O: DeserializeOwned + Clone + Debug + PartialEq + Send + Sync + 'static,
 {
-    let client = myko(cx).client().clone();
+    let client = myko(cx).clone();
+    live_report_in(&client, report, cx)
+}
+
+/// Subscribe to a typed report through an explicitly owned Myko client.
+pub fn live_report_in<R, O>(myko: &crate::Myko, report: R, cx: &mut App) -> Entity<Remote<O>>
+where
+    R: ReportParams + ReportIdStatic + Clone + Send + Sync + 'static,
+    O: DeserializeOwned + Clone + Debug + PartialEq + Send + Sync + 'static,
+{
+    let client = myko.client().clone();
     bridge_cell(
         &client.watch_report::<R, O>(report),
         &client,
@@ -760,6 +795,58 @@ where
         Clone::clone,
         cx,
     )
+}
+
+/// A report contract whose server-side handler lives in a service crate the UI
+/// intentionally does not link. The associated output remains strongly typed;
+/// only the handler registration is resolved dynamically by report name.
+pub trait ClientReportSpec: Clone + Send + Sync + 'static {
+    type Output: DeserializeOwned + Clone + Debug + PartialEq + Send + Sync + 'static;
+
+    const REPORT_ID: &'static str;
+
+    fn parameters(&self) -> JsonMap<String, JsonValue> {
+        JsonMap::new()
+    }
+}
+
+/// Subscribe to a service-owned report without replacing the global Myko
+/// client or linking the service's server-only implementation dependencies.
+pub fn live_client_report_in<R>(
+    myko: &crate::Myko,
+    report: R,
+    cx: &mut App,
+) -> Entity<Remote<Result<R::Output, String>>>
+where
+    R: ClientReportSpec,
+{
+    let client = myko.client().clone();
+    let watch = client.watch_report_raw(wrap_client_report(&report));
+    bridge_cell(
+        &watch,
+        &client,
+        true,
+        true,
+        |value| {
+            value.as_ref().map(|value| {
+                serde_json::from_value(value.clone())
+                    .map_err(|error| format!("Could not decode {}: {error}", R::REPORT_ID))
+            })
+        },
+        cx,
+    )
+}
+
+fn wrap_client_report<R: ClientReportSpec>(report: &R) -> WrappedReport {
+    let mut parameters = report.parameters();
+    parameters.insert(
+        "tx".to_owned(),
+        JsonValue::String(uuid::Uuid::new_v4().to_string()),
+    );
+    WrappedReport {
+        report: JsonValue::Object(parameters),
+        report_id: R::REPORT_ID.to_owned(),
+    }
 }
 
 pub fn send_command<C, R>(command: &C, cx: &mut App) -> Entity<Remote<Result<R, String>>>
@@ -780,7 +867,8 @@ mod tests {
     use myko::hyphae::{Cell, CellMap, Mutable as _};
 
     use super::{
-        BridgeEvent, LoadState, Remote, build_store, build_store_with_status, observe_crud_store,
+        BridgeEvent, ClientReportSpec, LoadState, Remote, build_store, build_store_with_status,
+        observe_crud_store, wrap_client_report,
     };
     use crate::{CrudCommands, CrudController};
     use myko::client::ConnectionStatus;
@@ -789,12 +877,37 @@ mod tests {
         _observation: Subscription,
     }
 
+    #[derive(Clone)]
+    struct ServiceHealth;
+
+    impl ClientReportSpec for ServiceHealth {
+        type Output = serde_json::Value;
+
+        const REPORT_ID: &'static str = stringify!(ServiceHealth);
+
+        fn parameters(&self) -> serde_json::Map<String, serde_json::Value> {
+            serde_json::Map::from_iter([("detail".to_owned(), serde_json::json!(true))])
+        }
+    }
+
     fn state(value: u32) -> Remote<u32> {
         Remote {
             state: LoadState::Ready(std::sync::Arc::new(value)),
             _observations: Vec::new(),
             _sources: Vec::new(),
         }
+    }
+
+    #[test]
+    fn client_report_wrapper_preserves_typed_identity_parameters_and_transaction() {
+        let wrapped = wrap_client_report(&ServiceHealth);
+        assert_eq!(wrapped.report_id, stringify!(ServiceHealth));
+        assert_eq!(wrapped.report["detail"], serde_json::json!(true));
+        assert!(
+            wrapped.report["tx"]
+                .as_str()
+                .is_some_and(|tx| !tx.is_empty())
+        );
     }
 
     #[test]
