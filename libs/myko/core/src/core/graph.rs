@@ -2115,6 +2115,7 @@ impl GraphWatchRouter {
 /// the pre-graph mutation fast path for applications that do not opt in.
 pub struct GraphIndex {
     registrations: HashMap<&'static str, &'static EdgeRegistration>,
+    apply_modes: RwLock<HashMap<&'static str, EdgeApplyMode>>,
     endpoint_adjacency: HashMap<&'static str, [AdjacencyPolicy; 2]>,
     categories: HashMap<&'static str, HashSet<&'static str>>,
     registry: Arc<crate::store::StoreRegistry>,
@@ -2187,6 +2188,7 @@ impl GraphIndex {
             .collect();
         Some(Self {
             registrations,
+            apply_modes: RwLock::new(HashMap::new()),
             endpoint_adjacency,
             categories,
             registry,
@@ -2227,6 +2229,41 @@ impl GraphIndex {
     #[must_use]
     pub fn registration(&self, edge_type: &str) -> Option<&'static EdgeRegistration> {
         self.registrations.get(edge_type).copied()
+    }
+
+    /// Override authoritative validation for one registered edge type.
+    ///
+    /// Replay, import, and federated mutations retain their explicit modes.
+    /// This override applies only to ordinary authoritative mutations, which
+    /// lets an existing item type project and diagnose historical graph data
+    /// before the application begins enforcing the edge schema.
+    pub fn set_apply_mode<E: GraphEdge>(&self, mode: EdgeApplyMode) -> Result<()> {
+        let edge_type = E::ENTITY_NAME_STATIC;
+        anyhow::ensure!(
+            self.registrations.contains_key(edge_type),
+            "graph edge {edge_type} is not registered"
+        );
+        self.apply_modes
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(edge_type, mode);
+        Ok(())
+    }
+
+    fn effective_apply_mode(
+        &self,
+        edge_type: &'static str,
+        requested: EdgeApplyMode,
+    ) -> EdgeApplyMode {
+        if requested != EdgeApplyMode::Authoritative {
+            return requested;
+        }
+        self.apply_modes
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(edge_type)
+            .copied()
+            .unwrap_or(requested)
     }
 
     fn projects_endpoint(&self, edge_type: &str, position: EndPosition) -> bool {
@@ -2609,6 +2646,7 @@ impl GraphIndex {
         let Some(registration) = self.registration(item.entity_type()) else {
             return Ok(());
         };
+        let mode = self.effective_apply_mode(registration.edge_type, mode);
         let validate = || -> Result<()> {
             let candidate = new.context("edge deletion has no new value")?;
             let endpoints = (registration.extract)(candidate)?;
@@ -2722,6 +2760,7 @@ impl GraphIndex {
             let Some(registration) = self.registration(item.entity_type()) else {
                 continue;
             };
+            let mode = self.effective_apply_mode(registration.edge_type, mode);
             if registration.pair_policy != PairPolicy::Unique {
                 continue;
             }
@@ -8130,6 +8169,41 @@ mod tests {
                 .registry
                 .get("TagAssignment")
                 .is_none_or(|store| store.snapshot().is_empty())
+        );
+    }
+
+    #[test]
+    fn observational_edge_mode_retains_invalid_authoritative_mutations() {
+        let context = context();
+        context
+            .set_edge_apply_mode::<TagAssignment>(EdgeApplyMode::Observe)
+            .expect("configure observational edge");
+        let tag = Tag {
+            name: "rust".into(),
+            id: TagId::from("tag-observe"),
+        };
+        assert!(context.set(&tag).is_ok());
+        let invalid = TagAssignment {
+            tag_id: tag.id,
+            target: EntityRef::new("Tag", "tag-observe"),
+            id: TagAssignmentId::from("assignment-observe-invalid"),
+        };
+
+        assert!(context.set(&invalid).is_ok());
+        assert_eq!(
+            context
+                .registry
+                .get("TagAssignment")
+                .map_or(0, |store| store.snapshot().len()),
+            1
+        );
+        assert_eq!(
+            context
+                .graph_index()
+                .expect("graph index")
+                .diagnostics()
+                .invalid_mutations,
+            1
         );
     }
 

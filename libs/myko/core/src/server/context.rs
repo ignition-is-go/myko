@@ -1589,6 +1589,25 @@ impl MykoServerContext {
         self.graph_index.as_ref()
     }
 
+    /// Configure validation for one registered graph edge type.
+    ///
+    /// `Observe` retains ordinary mutations while recording diagnostics, so
+    /// existing item types can be introduced as edges without a flag day.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the edge type is not registered or the server has
+    /// no linked graph registrations.
+    pub fn set_edge_apply_mode<E: crate::graph::GraphEdge>(
+        &self,
+        mode: EdgeApplyMode,
+    ) -> anyhow::Result<()> {
+        self.graph_index
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no graph registrations are linked"))?
+            .set_apply_mode::<E>(mode)
+    }
+
     /// Benchmark-only control context that removes graph coordination while
     /// retaining every other server component.
     #[cfg(feature = "bench")]
