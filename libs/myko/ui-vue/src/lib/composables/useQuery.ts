@@ -1,6 +1,6 @@
-import { onUnmounted, computed, type ComputedRef, type Ref } from 'vue';
-import type { Query, QueryItem } from '@myko/core';
-import { getMykoClient, type ReactiveQuery } from '../services/vue-client';
+import { onUnmounted, computed, type ComputedRef, type Ref, type ShallowRef } from 'vue';
+import type { CollectionChanges, LiveCollectionStatus, Query, QueryItem } from '@myko/core';
+import { getMykoClient } from '../services/vue-client';
 
 export interface UseQueryReturn<Q extends Query<unknown>> {
 	/** Reactive map of items by ID */
@@ -11,6 +11,17 @@ export interface UseQueryReturn<Q extends Query<unknown>> {
 	resolved: Ref<boolean>;
 	/** Manually release the subscription (also called on unmount) */
 	release: () => void;
+}
+
+export interface UseQueryStateReturn<Q extends Query<unknown>> extends UseQueryReturn<Q> {
+	/** Loading, live, or terminal error state. */
+	status: Ref<LiveCollectionStatus>;
+	/** Latest subscription error while retaining the last live data. */
+	error: ShallowRef<Error | undefined>;
+	/** Monotonic local revision updated for each diff or error. */
+	revision: Ref<number>;
+	/** Latest reset/upsert/delete set for row-oriented consumers. */
+	changes: ShallowRef<CollectionChanges<QueryItem<Q> & { id: string }>>;
 }
 
 /**
@@ -35,11 +46,14 @@ export interface UseQueryReturn<Q extends Query<unknown>> {
  * </template>
  * ```
  */
-export function useQuery<Q extends Query<unknown>>(
-	queryFactory: Q
-): UseQueryReturn<Q> {
+export function useQuery<Q extends Query<unknown>>(queryFactory: Q): UseQueryReturn<Q> {
+	return useQueryState(queryFactory);
+}
+
+/** Vue query composable with explicit lifecycle and incremental change metadata. */
+export function useQueryState<Q extends Query<unknown>>(queryFactory: Q): UseQueryStateReturn<Q> {
 	const client = getMykoClient();
-	const result = client.query(queryFactory);
+	const result = client.queryState(queryFactory);
 
 	// Auto-release on unmount
 	onUnmounted(() => {
@@ -53,6 +67,10 @@ export function useQuery<Q extends Query<unknown>>(
 		items: result.items,
 		itemsArray,
 		resolved: result.resolved,
+		status: result.status,
+		error: result.error,
+		revision: result.revision,
+		changes: result.changes,
 		release: result.release
 	};
 }

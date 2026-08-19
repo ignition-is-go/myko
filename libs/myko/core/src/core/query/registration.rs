@@ -1347,6 +1347,27 @@ where
     })
 }
 
+/// Apply a typed predicate to an already-keyed source map.
+///
+/// This is useful when the source itself establishes key membership (for
+/// example, a direct multi-ID lookup) and the remaining predicate only needs
+/// to validate a secondary scope. Keeping key membership out of that hot
+/// predicate avoids turning M direct lookups into M scans of the requested ID
+/// list.
+pub fn filter_typed_source<T, F>(
+    source: FilteredCellMap,
+    predicate: F,
+) -> impl hyphae::MapQuery<Key = Arc<str>, Value = AnyItemArc>
+where
+    T: Eventable + WithId + Clone + std::fmt::Debug + Send + Sync + 'static,
+    F: Fn(&Arc<T>) -> bool + Send + Sync + 'static,
+{
+    source.select(move |item_any: &AnyItemArc| {
+        downcast_any_item_arc::<T>(item_any, "filter_typed_source")
+            .is_some_and(|item| predicate(&item))
+    })
+}
+
 /// Registration entry for a query type.
 /// Collected via inventory for automatic discovery.
 pub struct QueryRegistration {

@@ -272,7 +272,7 @@ impl QueryResponse {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryWindow {
     pub offset: usize,
@@ -285,6 +285,69 @@ pub struct QueryWindowUpdate {
     pub tx: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<QueryWindow>,
+}
+
+/// Keyset window over the canonical ascending result-ID order.
+///
+/// `after` and `before` are exclusive. Supplying neither selects the first
+/// page; supplying both is rejected by the server.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryCursorWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Arc<str>>,
+    pub limit: usize,
+}
+
+impl QueryCursorWindow {
+    #[must_use]
+    pub const fn first(limit: usize) -> Self {
+        Self {
+            after: None,
+            before: None,
+            limit,
+        }
+    }
+
+    #[must_use]
+    pub fn after(cursor: impl Into<Arc<str>>, limit: usize) -> Self {
+        Self {
+            after: Some(cursor.into()),
+            before: None,
+            limit,
+        }
+    }
+
+    #[must_use]
+    pub fn before(cursor: impl Into<Arc<str>>, limit: usize) -> Self {
+        Self {
+            after: None,
+            before: Some(cursor.into()),
+            limit,
+        }
+    }
+
+    /// Validate the mutually-exclusive cursor contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when both cursor directions are supplied.
+    pub const fn validate(&self) -> Result<(), &'static str> {
+        if self.after.is_some() && self.before.is_some() {
+            Err("cursor window cannot contain both after and before")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryCursorWindowUpdate {
+    pub tx: String,
+    pub window: QueryCursorWindow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]

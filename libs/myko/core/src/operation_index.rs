@@ -159,7 +159,7 @@ pub(crate) fn rust_type_to_ts(rust_type: &str) -> String {
         "()" => "void".to_string(),
         // serde_json::Value maps to JsonValue in ts-rs
         "Value" | "serde_json::Value" => "JsonValue".to_string(),
-        _ => canonical.to_string(),
+        _ => outer_leaf(canonical).to_string(),
     }
 }
 
@@ -506,10 +506,9 @@ mod tests {
         assert_eq!(rust_type_to_ts("Vec < u32 >"), "number[]");
         assert_eq!(rust_type_to_ts("Arc < str >"), "string");
         assert_eq!(rust_type_to_ts("bool"), "boolean");
-        // Unrecognized (non-primitive) types keep their full canonical path
-        // rather than being leaf-truncated — only the primitive-matching
-        // arm does that.
-        assert_eq!(rust_type_to_ts("MyCrate :: Widget"), "MyCrate::Widget");
+        // Rust module paths are not valid TypeScript type references; custom
+        // types use the exported leaf binding name.
+        assert_eq!(rust_type_to_ts("MyCrate :: Widget"), "Widget");
     }
 
     /// Exercises the whole macro → registration → index path against this

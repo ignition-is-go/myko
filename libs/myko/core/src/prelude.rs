@@ -20,8 +20,8 @@ pub use crate::client::entity_sync::{EntityStoreSync, EntityStoreSyncOptions};
 // query_map/report/view/search/peer_*/replay_store) into scope for handler
 // bodies. See `core::capability`.
 pub use crate::core::capability::{
-    CommandSending, EventPublishing, Querying, RegistryScoped, Reporting, RequestScoped, Searching,
-    ServerScoped,
+    CommandSending, EventPublishing, GraphQuerying, Querying, RegistryScoped, Reporting,
+    RequestScoped, Searching, ServerScoped,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::core::capability::{PeerAccess, Replaying, Viewing};
@@ -31,7 +31,7 @@ pub use crate::{
     cache::{
         CacheKey, serde_content_hash, write_hash_cache_key, write_serde_cache_key, write_str_key,
     },
-    client::{MykoClient, QueryMapWatch},
+    client::{ListWatch, MykoClient, QueryMapWatch, QueryWatch, ViewWatch},
     command::{
         AnyCommand, CommandContext, CommandHandler, CommandHandlerRegistration, CommandId,
         CommandIdStatic, CommandParams, CommandRequest, CommandResultType,
@@ -43,6 +43,22 @@ pub use crate::{
     },
     core::{
         common::content_hash::ContentHash,
+        graph::{
+            AdjacencyPolicy, AnyItemEndpoint, CategoryEndpoint, ConcreteEndpoint, ConcreteScope,
+            Directed, Direction, EdgeApplyMode, EdgeEndpointRegistration, EdgeEnds, EdgeQuery,
+            EdgeRegistration, EdgeScope, EdgeShapeKind, EdgeValidationContext, EdgeValidator,
+            EndPosition, EndpointDeletePolicy, EndpointQualifier, EndpointRequirement,
+            EndpointSpec, EndpointValue, EntityCategory, EntityCategoryRegistration,
+            EntityEndpointSpec, EntityRef, GraphClientAggregates, GraphClientBatchQueries,
+            GraphClientExactBatchQueries, GraphClientExactQueries, GraphClientMutations,
+            GraphClientNeighbors, GraphClientQueries, GraphClientSourcesTo,
+            GraphClientSourcesToMany, GraphClientTargetsFrom, GraphClientTargetsFromMany,
+            GraphClientTraversals, GraphDiagnostics, GraphEdge, GraphIndex, GraphPlanTelemetry,
+            GraphReadiness, GraphSchemaCatalog, InCategory, IndexValue, ItemCategoryRegistration,
+            NoEdgeValidator, NoScope, OneOfEndpoint, PairPolicy, PairProjectionPolicy,
+            QualifiedAddress, QualifiedEndpoint, SelfLoopPolicy, TraversalBuilder, TraversalPath,
+            TraversalReportOptions, TraversalResult, TypedEdgeEnds, Undirected,
+        },
         item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
             ItemRegistration,
@@ -76,6 +92,6 @@ pub use crate::{
     search::{
         EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
     },
-    server::MykoServerContext,
+    server::{CausalDiagnostics, CausalLimits, MykoServerContext},
     view::{ViewFactory, ViewRegistration},
 };

@@ -18,8 +18,8 @@ pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMutable, Gettable, MapExt, Materialize, Mutable, SubscriptionGuard,
-    Watchable,
+    Cell, CellImmutable, CellMap, CellMutable, CellValue, Gettable, MapExt, Materialize, Mutable,
+    SubscriptionGuard, Watchable, WeakCellMap,
 };
 pub use query_map::QueryMapWatch;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -37,8 +37,9 @@ use crate::{
     report::{ReportIdStatic, ReportParams, ReportRequest},
     view::{ViewParams, ViewRequest},
     wire::{
-        MEvent, MykoMessage, PingData, WrappedQuery, WrappedReport, WrappedView,
-        wrap_command_request, wrap_view,
+        MEvent, MykoMessage, PingData, QueryCursorWindow, QueryCursorWindowUpdate, QueryWindow,
+        QueryWindowUpdate, WrappedQuery, WrappedReport, WrappedView, wrap_command_request,
+        wrap_view,
     },
 };
 
@@ -69,6 +70,321 @@ impl From<MykoProtocol> for u8 {
     }
 }
 
+/// A live collection and the authoritative readiness of its current epoch.
+///
+/// `ready` is false until a valid sequence-zero snapshot arrives, resets on
+/// disconnect, and becomes true even when the authoritative result is empty.
+/// Existing list-only APIs remain available through [`Self::into_items`].
+#[derive(Clone)]
+pub struct ListWatch<T: CellValue> {
+    items: Cell<Vec<T>, CellImmutable>,
+    ready: Cell<bool, CellImmutable>,
+}
+
+impl<T: CellValue> ListWatch<T> {
+    #[must_use]
+    pub const fn items(&self) -> &Cell<Vec<T>, CellImmutable> {
+        &self.items
+    }
+
+    #[must_use]
+    pub const fn ready(&self) -> &Cell<bool, CellImmutable> {
+        &self.ready
+    }
+
+    #[must_use]
+    pub fn into_items(self) -> Cell<Vec<T>, CellImmutable> {
+        self.items
+    }
+}
+
+/// A query list watch with authoritative response readiness.
+pub type QueryWatch<T> = ListWatch<Arc<T>>;
+/// A view list watch with authoritative response readiness.
+pub type ViewWatch<T> = ListWatch<T>;
+/// A keyset-paginated query watch. Cursor controls are available on
+/// [`WindowedQueryWatch`] without introducing another subscription type.
+pub type CursorQueryWatch<T> = WindowedQueryWatch<T>;
+
+/// A coherent snapshot of a live windowed query for direct UI consumption.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(clippy::derive_partial_eq_without_eq)]
+pub struct WindowedQueryState<T: CellValue> {
+    pub items: Vec<Arc<T>>,
+    pub ready: bool,
+    pub total_count: Option<usize>,
+    pub window: Option<QueryWindow>,
+    /// Zero-based page index when the acknowledged window has a non-zero limit.
+    pub page_index: Option<usize>,
+    /// Total number of pages when both the count and a non-zero limit are known.
+    pub page_count: Option<usize>,
+    pub has_previous_page: bool,
+    pub has_next_page: bool,
+}
+
+impl<T: CellValue> WindowedQueryState<T> {
+    fn new(
+        items: Vec<Arc<T>>,
+        ready: bool,
+        total_count: Option<usize>,
+        window: Option<QueryWindow>,
+    ) -> Self {
+        let page_index = window
+            .as_ref()
+            .and_then(|window| window.offset.checked_div(window.limit));
+        let page_count = total_count
+            .zip(window.as_ref())
+            .and_then(|(total, window)| (window.limit > 0).then(|| total.div_ceil(window.limit)));
+        let has_previous_page = ready
+            && window
+                .as_ref()
+                .is_some_and(|window| window.limit > 0 && window.offset > 0);
+        let has_next_page = ready
+            && total_count
+                .zip(window.as_ref())
+                .is_some_and(|(total, window)| {
+                    window.limit > 0 && window.offset.saturating_add(window.limit) < total
+                });
+        Self {
+            items,
+            ready,
+            total_count,
+            window,
+            page_index,
+            page_count,
+            has_previous_page,
+            has_next_page,
+        }
+    }
+}
+
+/// A live ordered query page with authoritative pagination metadata.
+#[derive(Clone)]
+pub struct WindowedQueryWatch<T: CellValue> {
+    items: Cell<Vec<Arc<T>>, CellImmutable>,
+    ready: Cell<bool, CellImmutable>,
+    total_count: Cell<Option<usize>, CellImmutable>,
+    window: Cell<Option<QueryWindow>, CellImmutable>,
+    state: Cell<WindowedQueryState<T>, CellImmutable>,
+    cursor_window: Arc<std::sync::Mutex<Option<QueryCursorWindow>>>,
+    tx: Arc<str>,
+    client: MykoClient,
+}
+
+impl<T: CellValue> WindowedQueryWatch<T> {
+    #[must_use]
+    pub const fn items(&self) -> &Cell<Vec<Arc<T>>, CellImmutable> {
+        &self.items
+    }
+
+    #[must_use]
+    pub const fn ready(&self) -> &Cell<bool, CellImmutable> {
+        &self.ready
+    }
+
+    #[must_use]
+    pub const fn total_count(&self) -> &Cell<Option<usize>, CellImmutable> {
+        &self.total_count
+    }
+
+    #[must_use]
+    pub const fn window(&self) -> &Cell<Option<QueryWindow>, CellImmutable> {
+        &self.window
+    }
+
+    /// One coherent reactive value for rendering the page and its controls.
+    #[must_use]
+    pub const fn state(&self) -> &Cell<WindowedQueryState<T>, CellImmutable> {
+        &self.state
+    }
+
+    /// Move this live subscription to another window without resubscribing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn set_window(&self, window: Option<QueryWindow>) -> Result<(), String> {
+        let message = MykoMessage::QueryWindow(QueryWindowUpdate {
+            tx: self.tx.to_string(),
+            window,
+        });
+        let frame = self.client.encode_message(&message)?;
+        *self
+            .cursor_window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        self.client.send_or_queue(frame);
+        Ok(())
+    }
+
+    /// Move this live subscription to an exclusive ID-keyset page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid cursor or when encoding fails.
+    pub fn set_cursor_window(&self, window: QueryCursorWindow) -> Result<(), String> {
+        window.validate()?;
+        let message = MykoMessage::QueryCursorWindow(QueryCursorWindowUpdate {
+            tx: self.tx.to_string(),
+            window: window.clone(),
+        });
+        let frame = self.client.encode_message(&message)?;
+        *self
+            .cursor_window
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(window);
+        self.client.send_or_queue(frame);
+        Ok(())
+    }
+
+    /// Request the first keyset page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding the control message fails.
+    pub fn first_cursor_page(&self, limit: usize) -> Result<(), String> {
+        self.set_cursor_window(QueryCursorWindow::first(limit))
+    }
+
+    /// Request the keyset page immediately after the last visible item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding the control message fails.
+    pub fn next_cursor_page(&self, limit: usize) -> Result<bool, String>
+    where
+        T: WithId,
+    {
+        let Some(cursor) = self.items.get().last().map(|item| item.id()) else {
+            return Ok(false);
+        };
+        self.set_cursor_window(QueryCursorWindow::after(cursor, limit))?;
+        Ok(true)
+    }
+
+    /// Request the keyset page immediately before the first visible item.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when encoding the control message fails.
+    pub fn previous_cursor_page(&self, limit: usize) -> Result<bool, String>
+    where
+        T: WithId,
+    {
+        let Some(cursor) = self.items.get().first().map(|item| item.id()) else {
+            return Ok(false);
+        };
+        self.set_cursor_window(QueryCursorWindow::before(cursor, limit))?;
+        Ok(true)
+    }
+
+    /// Select a page using an absolute offset and limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn set_page(&self, offset: usize, limit: usize) -> Result<(), String> {
+        self.set_window(Some(QueryWindow { offset, limit }))
+    }
+
+    /// Request the next page when the acknowledged window has more rows.
+    ///
+    /// Returns `Ok(false)` when pagination metadata is not ready or the watch
+    /// is already on its final page.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn next_page(&self) -> Result<bool, String> {
+        let state = self.state.get();
+        let Some(window) = state.window else {
+            return Ok(false);
+        };
+        if !state.has_next_page {
+            return Ok(false);
+        }
+        let next_offset = window.offset.saturating_add(window.limit);
+        self.set_page(next_offset, window.limit)?;
+        Ok(true)
+    }
+
+    /// Request the previous page when the acknowledged window is not first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn previous_page(&self) -> Result<bool, String> {
+        let state = self.state.get();
+        let Some(window) = state.window else {
+            return Ok(false);
+        };
+        if !state.has_previous_page {
+            return Ok(false);
+        }
+        self.set_page(window.offset.saturating_sub(window.limit), window.limit)?;
+        Ok(true)
+    }
+
+    /// Request the first page when the acknowledged window is not first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn first_page(&self) -> Result<bool, String> {
+        let state = self.state.get();
+        let Some(window) = state.window else {
+            return Ok(false);
+        };
+        if !state.has_previous_page {
+            return Ok(false);
+        }
+        self.set_page(0, window.limit)?;
+        Ok(true)
+    }
+
+    /// Request a zero-based page index when it is within the known result set.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn set_page_index(&self, page_index: usize) -> Result<bool, String> {
+        let state = self.state.get();
+        if !state.ready {
+            return Ok(false);
+        }
+        let Some(window) = state.window.as_ref() else {
+            return Ok(false);
+        };
+        let Some(page_count) = state.page_count else {
+            return Ok(false);
+        };
+        if window.limit == 0 || page_index >= page_count || state.page_index == Some(page_index) {
+            return Ok(false);
+        }
+        let Some(offset) = page_index.checked_mul(window.limit) else {
+            return Ok(false);
+        };
+        self.set_page(offset, window.limit)?;
+        Ok(true)
+    }
+
+    /// Request the final page when its position is known and not already active.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the control message cannot be encoded.
+    pub fn last_page(&self) -> Result<bool, String> {
+        let state = self.state.get();
+        let Some(page_count) = state.page_count else {
+            return Ok(false);
+        };
+        let Some(last_page) = page_count.checked_sub(1) else {
+            return Ok(false);
+        };
+        self.set_page_index(last_page)
+    }
+}
+
 /// Response handler for incoming command responses (one-shot).
 type CommandResponseHandler = Box<dyn FnOnce(Result<Value, String>) + Send>;
 
@@ -79,6 +395,10 @@ type QueryHandler = Box<dyn Fn(Value) + Send + Sync>;
 type ReportHandler = Box<dyn Fn(Value) + Send + Sync>;
 
 type QueryState<T> = Arc<Mutex<HashMap<Arc<str>, Arc<T>>>>;
+type SharedMapWatchParts<T> = (
+    CellMap<Arc<str>, Arc<T>, CellImmutable>,
+    Cell<bool, CellImmutable>,
+);
 
 /// Handler for incoming command requests (from server).
 type CommandRequestHandler = Box<dyn Fn(Value, CommandResponder) + Send + Sync>;
@@ -202,6 +522,52 @@ fn report_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> Subscriptio
     })
 }
 
+fn list_watch_cache_guard(
+    cache_key: String,
+    tx: Arc<str>,
+    inner: Arc<MykoClientInner>,
+) -> SubscriptionGuard {
+    SubscriptionGuard::from_callback(move || {
+        let _gate = inner
+            .list_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let remove = inner
+            .list_watch_cache
+            .get(&cache_key)
+            .is_some_and(|entry| entry.tx() == tx.as_ref());
+        if remove {
+            inner.list_watch_cache.remove(&cache_key);
+        }
+    })
+}
+
+fn map_watch_cache_guard(
+    cache_key: String,
+    tx: Arc<str>,
+    inner: Arc<MykoClientInner>,
+) -> SubscriptionGuard {
+    SubscriptionGuard::from_callback(move || {
+        let _gate = inner
+            .map_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let remove = inner
+            .map_watch_cache
+            .get(&cache_key)
+            .is_some_and(|entry| entry.tx() == tx.as_ref());
+        if remove {
+            inner.map_watch_cache.remove(&cache_key);
+        }
+    })
+}
+
+fn retain_cell_guard<T: CellValue>(cell: Cell<T, CellImmutable>) -> SubscriptionGuard {
+    SubscriptionGuard::from_callback(move || {
+        let _ = &cell;
+    })
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Report cache — deduplicate identical report subscriptions over the wire
 // ─────────────────────────────────────────────────────────────────────────────
@@ -229,6 +595,133 @@ impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntry<T> {
 impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntryDyn for ClientReportCacheEntry<T> {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+// Query/view list watches cache both cells so readiness and data share one
+// server subscription. Entries are weak and are removed by the final watch's
+// ownership guard.
+trait ClientListWatchCacheEntryDyn: Any + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn tx(&self) -> &str;
+}
+
+struct ClientListWatchCacheEntry<T: CellValue> {
+    tx: Arc<str>,
+    items: hyphae::cell::WeakCell<Vec<T>, CellImmutable>,
+    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+}
+
+impl<T: CellValue> ClientListWatchCacheEntry<T> {
+    fn new(tx: Arc<str>, watch: &ListWatch<T>) -> Self {
+        Self {
+            tx,
+            items: watch.items.downgrade(),
+            ready: watch.ready.downgrade(),
+        }
+    }
+
+    fn get(&self) -> Option<ListWatch<T>> {
+        Some(ListWatch {
+            items: self.items.upgrade()?,
+            ready: self.ready.upgrade()?,
+        })
+    }
+}
+
+impl<T: CellValue> ClientListWatchCacheEntryDyn for ClientListWatchCacheEntry<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn tx(&self) -> &str {
+        &self.tx
+    }
+}
+
+struct ClientWindowWatchCacheEntry<T: CellValue> {
+    tx: Arc<str>,
+    items: hyphae::cell::WeakCell<Vec<Arc<T>>, CellImmutable>,
+    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+    total_count: hyphae::cell::WeakCell<Option<usize>, CellImmutable>,
+    window: hyphae::cell::WeakCell<Option<QueryWindow>, CellImmutable>,
+    state: hyphae::cell::WeakCell<WindowedQueryState<T>, CellImmutable>,
+    cursor_window: Arc<std::sync::Mutex<Option<QueryCursorWindow>>>,
+}
+
+impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
+    fn new(watch: &WindowedQueryWatch<T>) -> Self {
+        Self {
+            tx: watch.tx.clone(),
+            items: watch.items.downgrade(),
+            ready: watch.ready.downgrade(),
+            total_count: watch.total_count.downgrade(),
+            window: watch.window.downgrade(),
+            state: watch.state.downgrade(),
+            cursor_window: watch.cursor_window.clone(),
+        }
+    }
+
+    fn get(&self, client: MykoClient) -> Option<WindowedQueryWatch<T>> {
+        Some(WindowedQueryWatch {
+            items: self.items.upgrade()?,
+            ready: self.ready.upgrade()?,
+            total_count: self.total_count.upgrade()?,
+            window: self.window.upgrade()?,
+            state: self.state.upgrade()?,
+            cursor_window: self.cursor_window.clone(),
+            tx: self.tx.clone(),
+            client,
+        })
+    }
+}
+
+impl<T: CellValue> ClientListWatchCacheEntryDyn for ClientWindowWatchCacheEntry<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn tx(&self) -> &str {
+        &self.tx
+    }
+}
+
+trait ClientMapWatchCacheEntryDyn: Any + Send + Sync {
+    fn as_any(&self) -> &dyn Any;
+    fn tx(&self) -> &str;
+}
+
+struct ClientMapWatchCacheEntry<T: CellValue> {
+    tx: Arc<str>,
+    map: WeakCellMap<Arc<str>, Arc<T>>,
+    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+}
+
+impl<T: CellValue> ClientMapWatchCacheEntry<T> {
+    fn new(
+        tx: Arc<str>,
+        map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
+        ready: &Cell<bool, CellImmutable>,
+    ) -> Self {
+        Self {
+            tx,
+            map: map.downgrade(),
+            ready: ready.downgrade(),
+        }
+    }
+
+    fn get(&self) -> Option<SharedMapWatchParts<T>> {
+        Some((self.map.upgrade()?.lock(), self.ready.upgrade()?))
+    }
+}
+
+impl<T: CellValue> ClientMapWatchCacheEntryDyn for ClientMapWatchCacheEntry<T> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn tx(&self) -> &str {
+        &self.tx
     }
 }
 
@@ -279,6 +772,14 @@ struct MykoClientInner {
     // Report subscription cache — keyed by report_id:params_hash
     report_cache: DashMap<String, Box<dyn ClientReportCacheEntryDyn>>,
 
+    // Query/view list subscription cache — keyed by kind:id:item:params_hash.
+    list_watch_cache: DashMap<String, Box<dyn ClientListWatchCacheEntryDyn>>,
+    list_watch_cache_gate: Mutex<()>,
+
+    // Fine-grained map watches use a separate representation/cache namespace.
+    map_watch_cache: DashMap<String, Box<dyn ClientMapWatchCacheEntryDyn>>,
+    map_watch_cache_gate: Mutex<()>,
+
     // Frames queued while disconnected
     pending_sends: Mutex<Vec<WsFrame>>,
 
@@ -317,6 +818,61 @@ impl MykoClient {
             }
             dashmap::mapref::entry::Entry::Occupied(_) => false,
         }
+    }
+
+    fn cached_list_watch<T: CellValue>(&self, cache_key: &str) -> Option<ListWatch<T>> {
+        let existing = self.inner.list_watch_cache.get(cache_key)?;
+        existing
+            .as_any()
+            .downcast_ref::<ClientListWatchCacheEntry<T>>()?
+            .get()
+    }
+
+    fn cache_list_watch<T: CellValue>(
+        &self,
+        cache_key: String,
+        tx: Arc<str>,
+        watch: &ListWatch<T>,
+    ) {
+        self.inner.list_watch_cache.insert(
+            cache_key,
+            Box::new(ClientListWatchCacheEntry::new(tx, watch)),
+        );
+    }
+
+    fn cached_window_watch<T: CellValue>(&self, cache_key: &str) -> Option<WindowedQueryWatch<T>> {
+        let existing = self.inner.list_watch_cache.get(cache_key)?;
+        existing
+            .as_any()
+            .downcast_ref::<ClientWindowWatchCacheEntry<T>>()?
+            .get(self.clone())
+    }
+
+    fn cache_window_watch<T: CellValue>(&self, cache_key: String, watch: &WindowedQueryWatch<T>) {
+        self.inner
+            .list_watch_cache
+            .insert(cache_key, Box::new(ClientWindowWatchCacheEntry::new(watch)));
+    }
+
+    fn cached_map_watch<T: CellValue>(&self, cache_key: &str) -> Option<SharedMapWatchParts<T>> {
+        let existing = self.inner.map_watch_cache.get(cache_key)?;
+        existing
+            .as_any()
+            .downcast_ref::<ClientMapWatchCacheEntry<T>>()?
+            .get()
+    }
+
+    fn cache_map_watch<T: CellValue>(
+        &self,
+        cache_key: String,
+        tx: Arc<str>,
+        map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
+        ready: &Cell<bool, CellImmutable>,
+    ) {
+        self.inner.map_watch_cache.insert(
+            cache_key,
+            Box::new(ClientMapWatchCacheEntry::new(tx, map, ready)),
+        );
     }
 
     /// Create a new `MykoClient` with the platform-default transport.
@@ -569,6 +1125,10 @@ impl MykoClient {
                 command_response_handlers,
                 command_request_handlers,
                 report_cache: DashMap::new(),
+                list_watch_cache: DashMap::new(),
+                list_watch_cache_gate: Mutex::new(()),
+                map_watch_cache: DashMap::new(),
+                map_watch_cache_gate: Mutex::new(()),
                 pending_sends,
                 report_dispatch_tx,
                 _read_guard: read_guard,
@@ -1133,6 +1693,7 @@ impl MykoClient {
     /// Returns a Cell containing the current list of matching items.
     /// The Cell updates whenever the server pushes query diffs.
     /// On reconnect, the query is automatically re-subscribed.
+    /// Identical query parameters share one decoded state and wire subscription.
     pub fn watch_query<Q>(
         &self,
         query: impl Into<QueryRequest<Q>>,
@@ -1141,18 +1702,55 @@ impl MykoClient {
         Q: QueryParams + Clone,
         Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
+        self.watch_query_state(query).into_items()
+    }
+
+    /// Watch a query together with authoritative initial-response readiness.
+    ///
+    /// Unlike observing the locally seeded empty list, `ready` distinguishes a
+    /// pending subscription from a successful empty server response and resets
+    /// when a reconnect starts a new response-sequence epoch.
+    #[allow(clippy::too_many_lines)]
+    pub fn watch_query_state<Q>(&self, query: impl Into<QueryRequest<Q>>) -> QueryWatch<Q::Item>
+    where
+        Q: QueryParams + Clone,
+        Q::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+    {
         let supplied: QueryRequest<Q> = query.into();
+        let query_id = supplied.query.query_id();
+        let query_item_type = Q::query_item_type_static();
+        let cache_key = format!(
+            "query-list:{query_id}:{query_item_type}:{}:{:016x}",
+            std::any::type_name::<Q::Item>(),
+            supplied.query.cache_key_hash()
+        );
+        let _cache_gate = self
+            .inner
+            .list_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(shared) = self.cached_list_watch(&cache_key) {
+            debug!("watch_query_state: cache hit for {cache_key}");
+            return shared;
+        }
+        self.inner.list_watch_cache.remove(&cache_key);
+
         let query = QueryRequest::with_tx(supplied.query, next_subscription_tx());
         let tx: Arc<str> = query.tx.clone();
-        let query_id = query.query.query_id();
-        let query_item_type = Q::query_item_type_static();
 
         let cell = Cell::new(vec![]).with_name(query_id.as_ref());
         let cell_weak = cell.downgrade();
+        let ready =
+            Cell::<bool, CellMutable>::new(false).with_name(format!("query_ready:{query_id}"));
+        let ready_weak = ready.downgrade();
+        let ready_read = ready.clone().lock();
 
         let Ok(query_value) = serde_json::to_value(&query) else {
             error!("Could not serialize query request for {query_id}");
-            return cell.lock();
+            return QueryWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
         };
 
         let wrapped = WrappedQuery {
@@ -1164,95 +1762,141 @@ impl MykoClient {
 
         // State for accumulating query diffs
         let state: QueryState<Q::Item> = Arc::default();
+        let sequences = Arc::new(map_response::MapSequence::new());
+        let sequences_for_handler = Arc::clone(&sequences);
 
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
 
         // Register handler for query responses matching this tx
-        self.inner.query_handlers.insert(
-            tx.clone(),
-            Box::new(move |response_value: Value| {
-                let Some(cell_writer) = cell_weak.upgrade() else {
-                    warn!(
-                        "watch_query: weak cell dead for query={} tx={}",
-                        query_id_for_handler, tx_for_handler
+        let handler: QueryHandler = Box::new(move |response_value: Value| {
+            let Some(cell_writer) = cell_weak.upgrade() else {
+                warn!(
+                    "watch_query: weak cell dead for query={} tx={}",
+                    query_id_for_handler, tx_for_handler
+                );
+                return;
+            };
+
+            let response =
+                match serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        error!(
+                            "Rejected query '{query_id_for_handler}' malformed response: {error}"
+                        );
+                        return;
+                    }
+                };
+
+            if response.tx != tx_for_handler {
+                return;
+            }
+
+            let upserts = match map_response::decode_map_upserts::<Q::Item, _>(
+                response.upserts,
+                WithId::id,
+            ) {
+                Ok(upserts) => upserts,
+                Err(error) => {
+                    error!(
+                        "Rejected query '{}' response: invalid {} upsert: {}",
+                        query_id_for_handler,
+                        std::any::type_name::<Q::Item>(),
+                        error
                     );
                     return;
-                };
-
-                let Ok(response) =
-                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
-                else {
-                    return;
-                };
-
-                if response.tx != tx_for_handler {
-                    return;
                 }
+            };
+            if !sequences_for_handler.accept(response.sequence) {
+                error!(
+                    "Rejected query '{}' out-of-order sequence {}",
+                    query_id_for_handler, response.sequence
+                );
+                return;
+            }
 
-                let mut state = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
 
-                if response.sequence == 0 {
-                    trace!("Sequence reset: Clearing {} state", query_id_for_handler);
-                    state.clear();
-                }
+            let is_initial_response = response.sequence == 0;
+            if is_initial_response {
+                trace!("Sequence reset: Clearing {} state", query_id_for_handler);
+                state.clear();
+            }
 
-                for upsert in response.upserts {
-                    match serde_json::from_value::<Q::Item>(upsert.item) {
-                        Ok(item) => {
-                            let item = Arc::new(item);
-                            state.insert(item.id().clone(), item);
-                        }
-                        Err(e) => error!(
-                            "Failed to parse query '{}' upsert as {}: {}",
-                            query_id_for_handler,
-                            std::any::type_name::<Q::Item>(),
-                            e
-                        ),
-                    }
-                }
+            for del in response.deletes {
+                state.remove(&del);
+            }
+            for (id, item) in upserts {
+                state.insert(id, item);
+            }
 
-                for del in response.deletes {
-                    state.remove(&del);
-                }
-
-                cell_writer.set(state.values().cloned().collect());
-            }),
-        );
+            cell_writer.set(state.values().cloned().collect());
+            drop(state);
+            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
+                ready_writer.set(true);
+            }
+        });
+        if !self.try_register_query_handler(tx.clone(), handler) {
+            error!("Refusing duplicate query transaction {tx}");
+            return QueryWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
+        }
 
         // Build the frame to send (and re-send on reconnect)
         let msg = MykoMessage::Query(wrapped);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode query request for {query_id}");
             self.inner.query_handlers.remove(&tx);
-            return cell.lock();
+            return QueryWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
         };
 
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
+        let ready_for_status = ready.downgrade();
+        let sequences_for_status = sequences;
         let status_cell = self.connection_status();
         let send_query_id = query_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
-                match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
+                if let ConnectionStatus::Connected(_) = &**status {
+                    match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching query {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
-                    },
-                    _ => {
-                        debug!("Query {send_query_id} disconnected");
                     }
+                } else {
+                    sequences_for_status.reset_epoch();
+                    if let Some(ready_writer) = ready_for_status.upgrade() {
+                        ready_writer.set(false);
+                    }
+                    debug!("Query {send_query_id} disconnected");
                 }
             }
         });
 
         cell.own(status_guard);
-        cell.own(query_cancel_guard(tx, self.inner.clone()));
+        cell.own(query_cancel_guard(tx.clone(), self.inner.clone()));
+        cell.own(retain_cell_guard(ready_read.clone()));
+        cell.own(list_watch_cache_guard(
+            cache_key.clone(),
+            tx.clone(),
+            self.inner.clone(),
+        ));
 
-        cell.lock()
+        let watch = QueryWatch {
+            items: cell.lock(),
+            ready: ready_read,
+        };
+        self.cache_list_watch(cache_key, tx, &watch);
+        watch
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1370,6 +2014,7 @@ impl MykoClient {
     /// Returns a Cell containing the current list of items in the view.
     /// The Cell updates whenever the server pushes view diffs.
     /// On reconnect, the view is automatically re-subscribed.
+    /// Identical view parameters share one decoded state and wire subscription.
     pub fn watch_view<V>(
         &self,
         view: impl Into<ViewRequest<V>>,
@@ -1378,98 +2023,181 @@ impl MykoClient {
         V: ViewParams + Clone,
         V::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
     {
+        self.watch_view_state(view).into_items()
+    }
+
+    /// Watch a view together with authoritative initial-response readiness.
+    #[allow(clippy::too_many_lines)]
+    pub fn watch_view_state<V>(&self, view: impl Into<ViewRequest<V>>) -> ViewWatch<V::Item>
+    where
+        V: ViewParams + Clone,
+        V::Item: Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + 'static,
+    {
         let supplied: ViewRequest<V> = view.into();
+        let view_id = supplied.view.view_id();
+        let cache_key = format!(
+            "view-list:{view_id}:{}:{:016x}",
+            std::any::type_name::<V::Item>(),
+            supplied.view.cache_key_hash()
+        );
+        let _cache_gate = self
+            .inner
+            .list_watch_cache_gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(shared) = self.cached_list_watch(&cache_key) {
+            debug!("watch_view_state: cache hit for {cache_key}");
+            return shared;
+        }
+        self.inner.list_watch_cache.remove(&cache_key);
+
         let view = ViewRequest::with_tx(supplied.view, next_subscription_tx());
         let tx: Arc<str> = view.tx.clone();
-        let view_id = view.view.view_id();
         let cell = Cell::new(vec![]).with_name(view_id.as_ref());
         let cell_weak = cell.downgrade();
+        let ready =
+            Cell::<bool, CellMutable>::new(false).with_name(format!("view_ready:{view_id}"));
+        let ready_weak = ready.downgrade();
+        let ready_read = ready.clone().lock();
 
         let Ok(wrapped) = wrap_view(tx.clone(), &view.view) else {
             error!("Could not serialize view request for {view_id}");
-            return cell.lock();
+            return ViewWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
         };
 
         let msg = MykoMessage::View(wrapped);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode view request for {view_id}");
-            return cell.lock();
+            return ViewWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
         };
 
         let state: Arc<Mutex<HashMap<Arc<str>, V::Item>>> = Arc::default();
+        let sequences = Arc::new(map_response::MapSequence::new());
+        let sequences_for_handler = Arc::clone(&sequences);
         let tx_for_handler = tx.clone();
         let view_id_for_handler = view_id.clone();
 
-        self.inner.query_handlers.insert(
-            tx.clone(),
-            Box::new(move |response_value: Value| {
-                let Some(cell_writer) = cell_weak.upgrade() else {
-                    return;
-                };
+        let handler: QueryHandler = Box::new(move |response_value: Value| {
+            let Some(cell_writer) = cell_weak.upgrade() else {
+                return;
+            };
 
-                let Ok(response) =
-                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
-                else {
-                    return;
-                };
-
-                if response.tx != tx_for_handler {
-                    return;
-                }
-
-                let mut state = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-                if response.sequence == 0 {
-                    trace!("Sequence reset: Clearing {} state", view_id_for_handler);
-                    state.clear();
-                }
-
-                for upsert in response.upserts {
-                    match serde_json::from_value::<V::Item>(upsert.item) {
-                        Ok(item) => {
-                            state.insert(item.id().clone(), item);
-                        }
-                        Err(e) => error!(
-                            "Failed to parse view '{}' upsert as {}: {}",
-                            view_id_for_handler,
-                            std::any::type_name::<V::Item>(),
-                            e
-                        ),
+            let response =
+                match serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value) {
+                    Ok(response) => response,
+                    Err(error) => {
+                        error!("Rejected view '{view_id_for_handler}' malformed response: {error}");
+                        return;
                     }
-                }
+                };
 
-                for del in response.deletes {
-                    state.remove(&del);
-                }
+            if response.tx != tx_for_handler {
+                return;
+            }
 
-                cell_writer.set(state.values().cloned().collect());
-            }),
-        );
+            let upserts = response
+                .upserts
+                .into_iter()
+                .map(|wrapped| {
+                    let item = serde_json::from_value::<V::Item>(wrapped.item)?;
+                    Ok((item.id(), item))
+                })
+                .collect::<Result<Vec<_>, serde_json::Error>>();
+            let upserts = match upserts {
+                Ok(upserts) => upserts,
+                Err(error) => {
+                    error!(
+                        "Rejected view '{}' response: invalid {} upsert: {}",
+                        view_id_for_handler,
+                        std::any::type_name::<V::Item>(),
+                        error
+                    );
+                    return;
+                }
+            };
+            if !sequences_for_handler.accept(response.sequence) {
+                error!(
+                    "Rejected view '{}' out-of-order sequence {}",
+                    view_id_for_handler, response.sequence
+                );
+                return;
+            }
+
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+
+            let is_initial_response = response.sequence == 0;
+            if is_initial_response {
+                trace!("Sequence reset: Clearing {} state", view_id_for_handler);
+                state.clear();
+            }
+
+            for del in response.deletes {
+                state.remove(&del);
+            }
+            for (id, item) in upserts {
+                state.insert(id, item);
+            }
+
+            cell_writer.set(state.values().cloned().collect());
+            drop(state);
+            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
+                ready_writer.set(true);
+            }
+        });
+        if !self.try_register_query_handler(tx.clone(), handler) {
+            error!("Refusing duplicate view transaction {tx}");
+            return ViewWatch {
+                items: cell.lock(),
+                ready: ready_read,
+            };
+        }
 
         let socket = self.inner.socket.clone();
+        let ready_for_status = ready.downgrade();
+        let sequences_for_status = sequences;
         let status_cell = self.connection_status();
         let send_view_id = view_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
-                match &**status {
-                    ConnectionStatus::Connected(_) => match socket.send(frame_to_send.clone()) {
+                if let ConnectionStatus::Connected(_) = &**status {
+                    match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching view {send_view_id}"),
                         Err(e) => error!("Could not send view: {e:?}"),
-                    },
-                    _ => {
-                        debug!("View {send_view_id} disconnected");
                     }
+                } else {
+                    sequences_for_status.reset_epoch();
+                    if let Some(ready_writer) = ready_for_status.upgrade() {
+                        ready_writer.set(false);
+                    }
+                    debug!("View {send_view_id} disconnected");
                 }
             }
         });
 
         cell.own(status_guard);
-        cell.own(view_cancel_guard(tx, self.inner.clone()));
+        cell.own(view_cancel_guard(tx.clone(), self.inner.clone()));
+        cell.own(retain_cell_guard(ready_read.clone()));
+        cell.own(list_watch_cache_guard(
+            cache_key.clone(),
+            tx.clone(),
+            self.inner.clone(),
+        ));
 
-        cell.lock()
+        let watch = ViewWatch {
+            items: cell.lock(),
+            ready: ready_read,
+        };
+        self.cache_list_watch(cache_key, tx, &watch);
+        watch
     }
 
     /// Watch a report and receive updates as a reactive Cell with an initial value.

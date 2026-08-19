@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use serde::de::DeserializeOwned;
@@ -115,6 +116,220 @@ impl CommandContext {
                 .as_ref()
                 .clone())
         }
+    }
+
+    /// Look up the existing edge occupying the candidate's unique pair and
+    /// scope. Used by generated idempotent graph commands.
+    #[doc(hidden)]
+    pub fn graph_unique_edge<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        scope: Option<&<E::Scope as crate::graph::EdgeScope>::Value>,
+    ) -> Result<Option<Arc<E>>, CommandError>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        if E::PAIR_POLICY != crate::graph::PairPolicy::Unique {
+            return Err(CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                format!("{} does not declare unique pairs", E::ENTITY_NAME_STATIC),
+            ));
+        }
+
+        let query = self.server_ctx.edges::<E>();
+        let result = scope.map_or_else(
+            || query.one_between(a, b),
+            |scope| query.one_between_in_scope(scope, a, b),
+        );
+        result.map_err(|error| {
+            CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                error.to_string(),
+            )
+        })
+    }
+
+    /// Atomically make `edges` the exact edge set at endpoint A and within the
+    /// optional edge scope. Generated graph commands use this entry point.
+    #[doc(hidden)]
+    pub fn graph_sync_from<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        scope: Option<&serde_json::Value>,
+        edges: &[E],
+    ) -> Result<crate::graph::GraphSyncResult, CommandError>
+    where
+        E: crate::graph::GraphEdge + Clone + PartialEq,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let endpoint =
+            <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::erase(
+                endpoint,
+            )
+            .map_err(|error| self.graph_command_error(error))?;
+        self.graph_sync_at(crate::graph::EndPosition::A, &endpoint, scope, edges)
+    }
+
+    /// Endpoint-B counterpart of [`Self::graph_sync_from`].
+    #[doc(hidden)]
+    pub fn graph_sync_to<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        scope: Option<&serde_json::Value>,
+        edges: &[E],
+    ) -> Result<crate::graph::GraphSyncResult, CommandError>
+    where
+        E: crate::graph::GraphEdge + Clone + PartialEq,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let endpoint =
+            <<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::erase(
+                endpoint,
+            )
+            .map_err(|error| self.graph_command_error(error))?;
+        self.graph_sync_at(crate::graph::EndPosition::B, &endpoint, scope, edges)
+    }
+
+    fn graph_command_error(&self, error: impl std::fmt::Display) -> CommandError {
+        CommandError::new(
+            self.req.tx.to_string(),
+            self.command_id.to_string(),
+            error.to_string(),
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn graph_sync_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoint: &crate::graph::EndpointValue,
+        scope: Option<&serde_json::Value>,
+        edges: &[E],
+    ) -> Result<crate::graph::GraphSyncResult, CommandError>
+    where
+        E: crate::graph::GraphEdge + Clone + PartialEq,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        use crate::core::item::{AnyItem, downcast_any_item_arc};
+        use crate::graph::{EdgeEnds, EdgeScope};
+
+        let graph = self
+            .server_ctx
+            .graph_index()
+            .ok_or_else(|| self.graph_command_error("application has no graph registrations"))?;
+        let expected_scope = scope
+            .map(crate::graph::IndexValue::from_serializable)
+            .transpose()
+            .map_err(|error| self.graph_command_error(error))?;
+        let is_scoped = <E::Scope as EdgeScope>::scope_type().is_some();
+        if is_scoped != expected_scope.is_some() {
+            return Err(self.graph_command_error(if is_scoped {
+                "scoped graph reconciliation requires a scope"
+            } else {
+                "unscoped graph reconciliation does not accept a scope"
+            }));
+        }
+
+        let mut desired_ids = HashSet::with_capacity(edges.len());
+        for edge in edges {
+            let ends =
+                E::Ends::erase(&edge.ends()).map_err(|error| self.graph_command_error(error))?;
+            let candidate = match position {
+                crate::graph::EndPosition::A => &ends.a,
+                crate::graph::EndPosition::B => &ends.b,
+            };
+            if candidate != endpoint {
+                return Err(
+                    self.graph_command_error("desired edge does not match the reconciled endpoint")
+                );
+            }
+            let edge_scope = edge
+                .scope()
+                .as_ref()
+                .map(E::Scope::erase)
+                .transpose()
+                .map_err(|error| self.graph_command_error(error))?;
+            if edge_scope != expected_scope {
+                return Err(
+                    self.graph_command_error("desired edge does not match the reconciled scope")
+                );
+            }
+            if !desired_ids.insert(edge.id()) {
+                return Err(self.graph_command_error("desired edge IDs must be unique"));
+            }
+        }
+
+        for _ in 0..64 {
+            let generation = graph.generation();
+            let ids = graph.edge_ids_at(E::ENTITY_NAME_STATIC, position, endpoint);
+            let current = self
+                .server_ctx
+                .registry
+                .get(E::ENTITY_NAME_STATIC)
+                .map_or_else(HashMap::new, |store| {
+                    ids.into_iter()
+                        .filter_map(|id| store.get_value(&id))
+                        .filter_map(|item| downcast_any_item_arc::<E>(&item, "graph endpoint sync"))
+                        .filter(|edge| {
+                            edge.scope()
+                                .as_ref()
+                                .map(E::Scope::erase)
+                                .transpose()
+                                .is_ok_and(|scope| scope == expected_scope)
+                        })
+                        .map(|edge| (edge.id(), edge))
+                        .collect()
+                });
+
+            let mut result = crate::graph::GraphSyncResult::default();
+            let mut upserts = Vec::<Arc<dyn AnyItem>>::new();
+            for edge in edges {
+                let id = edge.id();
+                match current.get(&id) {
+                    Some(old) if E::eq(old.as_ref(), edge) => {
+                        result.unchanged = result.unchanged.saturating_add(1);
+                    }
+                    Some(_) => {
+                        result.updated = result.updated.saturating_add(1);
+                        upserts.push(Arc::new(edge.clone()));
+                    }
+                    None => {
+                        result.inserted = result.inserted.saturating_add(1);
+                        upserts.push(Arc::new(edge.clone()));
+                    }
+                }
+            }
+            let deletes = current
+                .into_iter()
+                .filter(|(id, _)| !desired_ids.contains(id))
+                .map(|(_, edge)| {
+                    result.deleted = result.deleted.saturating_add(1);
+                    let edge: Arc<dyn AnyItem> = edge;
+                    edge
+                })
+                .collect::<Vec<_>>();
+
+            if upserts.is_empty() && deletes.is_empty() {
+                if graph.generation() == generation {
+                    return Ok(result);
+                }
+                continue;
+            }
+            if self
+                .server_ctx
+                .replace_batch_any_if_graph_generation(upserts, deletes, generation)
+                .map_err(|error| self.graph_command_error(error))?
+            {
+                return Ok(result);
+            }
+        }
+        Err(self.graph_command_error(
+            "graph endpoint kept changing; reconciliation retry budget exhausted",
+        ))
     }
 }
 

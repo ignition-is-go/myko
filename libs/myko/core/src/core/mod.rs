@@ -3,6 +3,7 @@
 pub mod capability;
 pub mod command;
 pub mod common;
+pub mod graph;
 pub mod item;
 pub mod query;
 pub mod reflection;

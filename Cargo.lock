@@ -4404,6 +4404,7 @@ dependencies = [
  "num-traits",
  "opentelemetry",
  "ordered-float",
+ "parking_lot",
  "pin-project-lite",
  "rayon",
  "roaring",

@@ -368,6 +368,23 @@ impl RelationshipManager {
         }
     }
 
+    /// Whether this item type can synchronously derive relationship work.
+    pub(crate) fn coordinates(&self, entity_type: &str, change: crate::wire::MEventType) -> bool {
+        match change {
+            crate::wire::MEventType::SET => {
+                self.belongs_to_by_local.contains_key(entity_type)
+                    || self.ensure_for_by_dependency.contains_key(entity_type)
+            }
+            crate::wire::MEventType::DEL => {
+                self.belongs_to_by_foreign.contains_key(entity_type)
+                    || self.belongs_to_by_local.contains_key(entity_type)
+                    || self.owns_many_by_local.contains_key(entity_type)
+                    || self.owns_many_by_foreign.contains_key(entity_type)
+                    || self.ensure_for_by_dependency.contains_key(entity_type)
+            }
+        }
+    }
+
     /// Forward a SET event for relationship processing.
     ///
     /// Handles `EnsureFor`: when a dependency entity is created, ensures
@@ -1506,7 +1523,8 @@ mod cascade_tests {
         hyphae::{Gettable, Materialize},
         search::SearchIndex,
         server::{
-            HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter,
+            CausalLimits, HandlerRegistry, MykoServerContext, RelationshipManager,
+            persister::PersisterRouter,
         },
         store::StoreRegistry,
         test_util::scheduler_test_serial,
@@ -1586,14 +1604,9 @@ mod cascade_tests {
         );
     }
 
-    /// Regression test: a cascade-triggered recursive `emit_grouped` call
-    /// (deleting root cascades to branch, which cascades to leaf) must not
-    /// share its reducing `hyphae::batch` window with the batch that
-    /// triggered it. `CellMap`'s `diffs_cell` coalesces last-write-wins like
-    /// any other cell, so if the recursive call's `store.remove_many` landed
-    /// in the *same* still-open window as the top-level reduce, the later
-    /// level's diff would silently drop the earlier one on the same
-    /// `CascadeNode` store (see the batch-scoping comment on `emit_grouped`).
+    /// Regression test: causal cascade work is queued rather than recursively
+    /// joining the root's still-open Hyphae batch. Every level must retain its
+    /// own observable diff on the same store.
     #[test]
     fn del_cascade_recursion_does_not_drop_earlier_diffs_in_same_store() {
         let _serial = scheduler_test_serial();
@@ -1632,6 +1645,10 @@ mod cascade_tests {
         assert!(!exists(&registry, "leaf"), "grandchild deleted");
         assert!(!exists(&registry, "island"));
 
+        let causal = ctx.causal_diagnostics();
+        assert!(causal.derived_mutations >= 2);
+        assert!(causal.max_observed_depth >= 2);
+
         let seen = seen
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1661,6 +1678,37 @@ mod cascade_tests {
             !exists(&registry, "b"),
             "b deleted via the cycle, then terminated"
         );
+        let causal = ctx.causal_diagnostics();
+        assert!(causal.derived_mutations >= 1);
+        assert_eq!(causal.budget_exhaustions, 0);
+    }
+
+    #[test]
+    fn causal_depth_budget_stops_a_partial_cascade_without_rollback() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+        assert!(ctx.set(&make_node("root", "")).is_ok());
+        assert!(ctx.set(&make_node("branch", "root")).is_ok());
+        assert!(ctx.set(&make_node("leaf", "branch")).is_ok());
+        ctx.set_causal_limits(CausalLimits {
+            max_depth: 1,
+            max_derived_mutations: 100,
+        });
+
+        let result = ctx.del(&make_node("root", ""));
+        assert!(result.is_err(), "depth-two leaf cascade must be bounded");
+        let Err(error) = result else { return };
+        assert!(error.message.contains("exceeded max depth 1"));
+        assert!(!exists(&registry, "root"), "accepted root DEL is retained");
+        assert!(
+            !exists(&registry, "branch"),
+            "accepted depth-one DEL is retained"
+        );
+        assert!(
+            exists(&registry, "leaf"),
+            "unscheduled depth-two DEL remains"
+        );
+        assert_eq!(ctx.causal_diagnostics().budget_exhaustions, 1);
     }
 }
 

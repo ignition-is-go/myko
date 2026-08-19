@@ -234,8 +234,27 @@ fields. Its serialized field names, item type, ID, event history, persistence
 rows, ordinary CRUD, and generated query types must stay identical.
 
 Separate inventory registrations are required rather than adding mandatory
-fields to public registration structs. Adding a field to `ItemRegistration`
-would break downstream struct literals and previously expanded code.
+fields to public registration structs. Adding a field to `ItemRegistration` or
+`TypegenCatalog` would break downstream struct literals and previously expanded
+code. `GraphSchemaCatalog` is therefore collected separately and passed beside
+an ordinary `TypegenCatalog`; it is not a new required field on that catalog.
+
+The additive guarantee has two explicit levels:
+
+1. An application with no edge or category registrations keeps its existing
+   mutation path and runtime behavior. The empty graph registry must have a
+   single fast-path check and must not install stores, projections, locks, or
+   reactive subscriptions.
+2. Annotating an existing item as an edge preserves its serialized shape,
+   identity, persistence history, and ordinary generated APIs. The application
+   is deliberately opting into the declared graph validation, indexing, and
+   endpoint-lifecycle behavior; those new checks are not claimed to be
+   behaviorally invisible for that item.
+
+Myko's existing single-item and batch paths currently disagree about
+reduce/persist ordering. Normalizing non-graph mutations is desirable, but it
+is a separate runtime change with its own tests and release note, not a hidden
+prerequisite of this additive graph feature.
 
 ## 6. Downstream-defined entity categories
 
@@ -862,6 +881,11 @@ pub struct GraphShardState {
 }
 ```
 
+Incidence and pair buckets keep one edge ID inline and promote to a sorted set
+only when a second distinct edge arrives. Removal demotes a set back to the
+inline form. This preserves deterministic results without paying for a tree
+allocation in the common singleton-bucket case.
+
 `by_pair` is present for `PairProjectionPolicy::Eager`. Qualified maps are
 populated when the associated endpoint type has a qualifier. Undirected edges
 require identical endpoint schemas and canonicalize complete endpoint addresses
@@ -982,9 +1006,74 @@ use incident/between. There are no manually supplied role or qualifier names.
 ```rust
 ctx.edges::<TagAssignment>().watch_from(&tag_id);
 ctx.edges::<TagAssignment>().watch_to(&target_ref);
+ctx.edges::<TagAssignment>().watch_between(&tag_id, &target_ref);
+ctx.edges::<TagAssignment>().watch_count_from(&tag_id);
+ctx.edges::<TagAssignment>().watch_count_between(&tag_id, &target_ref);
 ctx.edges::<WorkflowConnection>().watch_to_at(&address);
 ctx.edges::<Friendship>().watch_incident(&person_id);
 ```
+
+For an eagerly projected endpoint, watch construction subscribes while holding
+the graph authority barrier and seeds its initial `CellMap` from the adjacency
+bucket. This closes the subscribe/snapshot race without scanning the canonical
+edge store. Demand-driven endpoints preserve scan-equivalent initialization;
+both plans route later canonical diffs incrementally by their old and new
+endpoints.
+
+`#[myko_edge]` also generates ordinary query-protocol operations for endpoint
+A, endpoint B, and exact-pair watches. Rust clients select them without naming
+the generated parameter structs:
+
+```rust
+let edges = client.watch_graph_from::<TagAssignment>(&tag_id);
+let pair = client.watch_graph_between::<TagAssignment>(&tag_id, &target_ref);
+let articles = client.watch_graph_targets_from::<TagAssignment>(&tag_id);
+let friends = client.watch_graph_neighbors::<Friendship>(&person_id);
+```
+
+Concrete endpoints additionally generate related-entity views. Directed edges
+expose `targets_from` and `sources_to`; symmetric concrete undirected edges
+expose `neighbors`. These views return distinct entity items rather than edge
+items, deduplicate parallel edges by reference count, treat a self-loop as one
+neighbor, and follow entity updates and deletion without client-side joins.
+Sparse views install subscriptions only for referenced entity IDs. Once a view
+is both large and dense relative to its entity store, it switches one-way to a
+filtered store subscription to cap high-degree setup cost. The bulk plan makes
+that subscription live first, ignores its full-store initial snapshot, and
+hydrates only referenced IDs before releasing the view's dispatch barrier. It
+also applies later inserts and removals through native map batches. Both
+strategies publish identical keyed output, and the switch is internal rather
+than a wire or application configuration surface.
+
+TypeScript codegen emits endpoint-aware query classes behind a compact helper:
+
+```typescript
+client.watchQuery(TagAssignmentGraph.from(tagId));
+client.watchQuery(TagAssignmentGraph.between(tagId, targetRef));
+client.watchQuery(TagAssignmentGraph.targetsFrom(tagId));
+client.watchQuery(FriendshipGraph.neighbors(personId));
+client.watchReport(TagAssignmentGraph.countFrom(tagId));
+client.watchReport(TagAssignmentGraph.existsBetween(tagId, targetRef));
+```
+
+These are registrations in the existing query dispatcher, not graph-specific
+wire messages. They therefore inherit query reconnect, cancellation, sequence
+validation, readiness, windowing, and subscription deduplication without a
+second client protocol.
+
+Typed Rust helpers also cover pushed windows for edge and related-entity views,
+including `watch_graph_targets_from_windowed`,
+`watch_graph_sources_to_windowed`, and `watch_graph_neighbors_windowed`.
+Windowing stays server-side, so an off-page entity update does not republish the
+retained page.
+
+The generated `countFrom`, `countTo`, `countBetween`, and `existsBetween`
+reports are scalar projections. Eager endpoints seed directly from index bucket
+cardinality and canonical diffs adjust the server-side scalar by ±1. They do
+not materialize matching edge items or transfer edge payloads merely to answer
+badge, presence, and empty-state questions. Rust exposes the same operations as
+`watch_graph_count_from`, `watch_graph_count_to`,
+`watch_graph_count_between`, and `watch_graph_exists_between`.
 
 One-shot and reactive APIs return edge items so payload remains available and
 ordinary Myko semantics remain explicit.
@@ -997,15 +1086,51 @@ Bounded traversal uses the following builder:
 ctx.traverse::<WorkflowConnection>()
     .start(node_id)
     .direction(Direction::Forward)
-    .within_scope(workflow_id)
+    .within_scope(workflow_id)?
     .max_depth(8)
     .max_nodes(10_000)
+    .max_edges(50_000)
+    .nodes_only()
     .execute();
 ```
 
 Traversal complexity remains proportional to visited nodes and incident edges.
 High-degree hubs and large result sets remain expensive. APIs require explicit
 bounds and must not imply arbitrary reactive transitive closure is free.
+
+Projected traversal holds one coherent graph read snapshot for the bounded
+operation. When a required direction is demand-driven, Myko builds one
+request-local adjacency from one canonical snapshot rather than rescanning the
+edge store for every visited node. `nodes_only()` avoids retaining traversed
+edge IDs, while `is_reachable_to`/`is_reachable_from` and
+`path_to`/`path_from` stop at the first breadth-first match. A returned
+`TraversalPath` contains ordered nodes and the connecting edge ID for every
+hop. Node and edge-work limits terminate dense hubs deterministically and set
+`truncated` for exhaustive results.
+
+`#[myko_edge]` generates live bounded-traversal reports for both endpoint
+orientations. Remote Rust callers use `watch_graph_traverse_from` and
+`watch_graph_traverse_to`; generated TypeScript binds the same reports without
+duplicating endpoint or report parameter types:
+
+```typescript
+const reachable = client.graph(WorkflowConnectionGraph)
+  .from(nodeId)
+  .traverse({
+    maxDepth: 8,
+    maxNodes: 10_000,
+    maxEdges: 50_000,
+    includeEdges: false,
+    scope: workflowId,
+  });
+```
+
+Direction defaults to forward from endpoint A and reverse from endpoint B.
+Scope IDs retain their generated TypeScript ID type. The report subscribes to
+incremental canonical edge diffs and reruns the bounded server traversal when
+that edge type changes; only the bounded `TraversalResult` crosses the wire.
+This removes client-side graph hydration and custom report boilerplate without
+claiming an incrementally maintained transitive closure.
 
 Live reachability is a separate algorithmic feature. Edge removal, cycles, and
 multiple supporting paths require reference counts or recomputation. It should
@@ -1043,9 +1168,10 @@ Plan selection and fallback must be observable in diagnostics and benchmarks.
 
 Edge invariants apply regardless of entry point. Typed SET, erased SET, generated
 CRUD, batches, WebSocket commands, and other authoritative local mutations all
-pass through an edge preflight hook selected by `EdgeRegistration` **before**
-persistence and store reduction. No public authoritative mutation path may
-bypass it.
+consult `EdgeRegistration`. A non-participating item takes the existing fast
+path unchanged. A participating edge, or an endpoint whose deletion has graph
+policy, passes through the graph coordinator; no public authoritative mutation
+path may bypass its preflight.
 
 The hook receives mutation mode plus old and new canonical values:
 
@@ -1075,7 +1201,63 @@ acceptance and is the safe first mode for annotating existing item types.
 Endpoint DEL passes through the same coordinator before persistence so
 `RestrictEndpointDelete` and incident-edge cascades cannot be bypassed.
 
-### 13.2 Authoritative uniqueness mechanism
+For a participating authoritative mutation, the coordinator orders work as:
+
+1. acquire the required canonical pair/shard locks and run preflight;
+2. open the Hyphae mutation batch and reduce canonical item state;
+3. update the derived graph projection to the same generation;
+4. enqueue persistence while the reactive batch is still closed;
+5. close the batch, publish reactive diffs, and drain relationship/cascade and
+   other downstream effects through the guarded causal work queue;
+6. release the mutation locks after canonical state, projection state, and the
+   persistence enqueue agree.
+
+This is intentionally **reduce, then persist**: accepted state becomes locally
+canonical immediately. Persistence is nevertheless enqueued before reactive
+query or relationship work can spin or delay it during a large import. A
+configuration with an acknowledged durability barrier may delay command
+acknowledgement, but it must not delay local reduction or graph publication.
+
+### 13.2 Causal loop protection
+
+Reduce-before-effects is part of loop safety, not only a latency choice. The
+existing relationship rules remain foundational:
+
+- a DEL removes the item before its cascades run, so canonical state is the
+  visited set and a delete cycle converges when it reaches an already absent
+  item;
+- bookkeeping mutations equivalent to `RelationshipFixup` do not start another
+  structural cascade;
+- statically detectable non-convergent creation cycles, such as recursive
+  `ensure_for` schemas that mint fresh IDs, are rejected at registration.
+
+Graph and relationship effects additionally run through one transaction-scoped
+causal work queue rather than unbounded recursive publication. Every derived
+mutation inherits a root transaction ID and records its cause, depth, and effect
+kind. The queue:
+
+1. suppresses an exact repeated transition identified by item type, item ID,
+   operation, and canonical content hash within the same root transaction;
+2. bounds causal depth and total derived mutations independently;
+3. preserves FIFO order within a root transaction while allowing independent
+   roots to proceed under the normal mutation locks;
+4. emits the complete causal chain and offending transition when a duplicate or
+   budget breach is detected.
+
+Exact-transition suppression does not treat every second write to an item as a
+loop: a genuinely different canonical value may progress. Depth and total-work
+budgets catch alternating or ever-changing cycles that never repeat an exact
+value. Synchronously derived mutations must propagate the causal token across
+relationship, graph, saga, and reactive-effect entry points; a mutation arriving
+later from an external client is a new root transaction.
+
+When a budget is exhausted, the coordinator stops scheduling further derived
+effects, returns a structured loop-protection error, and marks the causal chain
+in diagnostics. It does not roll back canonical mutations that were already
+reduced and enqueued for persistence. Operators can therefore distinguish a
+bounded partial cascade from an unavailable or silently spinning server.
+
+### 13.3 Authoritative uniqueness mechanism
 
 `PairPolicy::Unique` uses a mutation-authority reservation keyed by the complete
 canonical pair:
@@ -1092,31 +1274,80 @@ The server owns a striped pair-lock table. An authoritative single mutation
 acquires its pair lock; a pair-changing SET acquires old and new locks in sorted
 canonical order. A batch computes all affected keys, sorts/deduplicates them,
 and acquires them before validation. While held, preflight checks the canonical
-edge store plus other mutations in the same batch, persists accepted events,
-reduces the canonical stores, and updates graph projection state. Locks release
-only after the canonical store reflects the mutation.
+edge store plus other mutations in the same batch, reduces the canonical
+stores, updates graph projection state, and enqueues persistence before the
+reactive batch drains. Locks release only after canonical state, projection
+state, and the persistence enqueue agree.
 
-A persistence failure occurs before reduction and releases the reservation
-without changing canonical state. Graph projection updates are derived and
-infallible; a detected projection invariant violation marks that edge index
-unready and schedules rebuild rather than rolling back a durable canonical
-event.
+A persistence-enqueue failure occurs after local reduction. It returns an error
+without rolling back already visible canonical state; the mutation remains the
+uniqueness authority, and persistence health/retry machinery must expose and
+repair the durability gap. Graph projection updates are derived and infallible;
+a detected projection invariant violation marks that edge index unready and
+schedules rebuild rather than rolling back canonical state.
 
 This mechanism supports independent edge IDs and parallel payload-rich records
 while enforcing unique topology. A deterministic pair ID remains an optional
 idempotency strategy for new edge types, not the uniqueness authority.
 
-### 13.3 Application commands
+### 13.4 Application commands
 
-Myko does not generate a universal `Connect<Edge>` command because it cannot
-construct an arbitrary payload-bearing edge. Applications construct and
-validate typed edge items through normal commands. Myko generates lookup and
-disconnect helpers, which require no payload factory.
+Myko cannot construct an arbitrary payload-bearing edge, so applications still
+build the typed edge value. `#[myko_edge]` generates ordinary command-protocol
+wrappers around that value: authoritative connect/upsert, same-type batch
+connect, idempotent ensure for unique pairs, and disconnect by typed ID. The
+disconnect operations reuse the existing `#[myko_item]` delete commands.
+
+```rust
+client.connect_graph(&assignment);
+client.connect_graph_batch(&assignments);
+client.sync_graph_from(&tag_id, None, &assignments);
+client.ensure_graph(&assignment);
+client.disconnect_graph::<TagAssignment>(&assignment_id);
+```
+
+```typescript
+client.sendCommand(TagAssignmentGraph.connect(assignment));
+client.sendCommand(TagAssignmentGraph.connectMany(assignments));
+client.sendCommand(TagAssignmentGraph.syncFrom(tagId, assignments));
+client.sendCommand(TagAssignmentGraph.ensure(assignment));
+client.sendCommand(TagAssignmentGraph.disconnect(assignmentId));
+
+const assignments = client.graph(TagAssignmentGraph);
+await assignments.connect(assignment, { timeoutMs: 5_000, signal });
+await assignments.from(tagId).sync(desiredAssignments, { timeoutMs: 5_000 });
+```
+
+These helpers do not add a graph mutation wire format. They inherit ordinary
+command completion, transaction IDs, reconnect queuing, validation, causal-loop
+budgets, and the reduce → graph projection → persistence ordering. `ensure`
+requires `PairPolicy::Unique`; it uses the indexed pair reservation and repeats
+the scope-aware lookup after a concurrent uniqueness conflict, so simultaneous
+callers converge on the winning edge ID rather than requiring client retries.
+
+Generated `syncFrom`/`syncTo` commands make the supplied values the exact edge
+set at one endpoint (and, for scoped edges, one mandatory scope). The server
+plans against a graph generation and retries if a concurrent writer wins,
+making reconciliation authoritative rather than a racy convenience wrapper.
+Only changed values enter one mixed final-state reducer batch: unchanged edges
+are counted but not re-emitted, stale edges and desired upserts are validated
+together, unique-pair replacements may delete the predecessor and insert its
+replacement atomically, and subscribers observe one batch without an empty or
+partially replaced intermediate state. The result reports inserted, updated,
+deleted, and unchanged counts.
+
+Successful command completion is a causal barrier for already-live queries and
+reports on the same connection: synchronous reactive responses produced by the
+command share one FIFO with its terminal response and are delivered first. The
+TypeScript client routes terminal responses through an O(1) transaction map
+rather than allocating two filtered RxJS subscriptions per command. Optional
+timeouts and abort signals bound the client-side wait; aborting cannot roll back
+a command that has already reached the server.
 
 Runtime-dependent cardinality remains in the typed application validator; Myko
 cannot infer it solely from static schema metadata.
 
-### 13.4 Self-loops
+### 13.5 Self-loops
 
 ```rust
 pub enum SelfLoopPolicy {
@@ -1136,6 +1367,12 @@ present through both directions.
 ## 14. Deletion, orphan handling, and history
 
 Endpoint deletion operates on incident edges according to registration policy.
+Eager edge types plan directly from their entity-incidence projection, making
+planning proportional to endpoint degree. Demand-driven edge types retain a
+canonical-store scan fallback rather than paying idle incidence memory. The
+cascade plan is deduplicated by `(edge type, edge ID)`, and any incident
+`RestrictEndpointDelete` aborts before canonical reduction even when the same
+self-loop is cascade-eligible through its other role.
 For high-degree nodes, per-edge cascade can create a large event storm. The
 framework must retain explicit, auditable DEL events when individual edge
 history matters. Cascades use configured chunking, fan-out limits, and
@@ -1198,6 +1435,11 @@ pub struct GraphSchemaCatalog {
 }
 ```
 
+`GraphSchemaCatalog::collect*` mirrors the crate/group selection rules of
+`TypegenCatalog::collect*`. Renderers receive the two catalogs as separate
+inputs (or through a new wrapper type) so no required field is added to the
+existing public `TypegenCatalog` struct.
+
 Renderers consume end requirements, A/B positions, `Directed`/`Undirected`
 shape, qualifier types, pair policy, and available projections. No
 renderer-specific callback belongs in these neutral records.
@@ -1225,6 +1467,8 @@ Expose at least:
 - projection rebuild duration and version/lag;
 - invalid endpoint and qualifier counts;
 - cascade size and duration;
+- causal depth, derived-mutation count, duplicate-transition suppression, and
+  loop-budget exhaustion;
 - uniqueness/cardinality rejection counts.
 
 These metrics are necessary to decide whether eager adjacency is an efficiency
@@ -1438,7 +1682,11 @@ After diagnostics are clean, the application changes the typed mode to
 `EdgeApplyMode::Authoritative`. All mutation entry points then enforce the edge
 schema. `AdjacencyPolicy::Eager` may be selected in the `GraphEdge`
 implementation when measured lookup/traversal benefit justifies retained
-memory.
+memory. `ADJACENCY` remains the source-compatible default for both ends;
+predominantly directional workloads may override `A_ADJACENCY` or
+`B_ADJACENCY` independently. A cold end continues to use canonical scans,
+while exact-pair lookup filters the hot end's incident bucket rather than
+scanning the complete edge store.
 
 Index consolidation is internal. Existing item queries and relationship
 behavior remain available regardless of whether graph adjacency eventually
@@ -1466,6 +1714,11 @@ backs their implementation.
 - unqualified and qualified adjacency;
 - endpoint and qualifier updates remove old index entries;
 - self-loops are handled once per role/policy;
+- delete cycles converge through reduce-before-cascade semantics;
+- exact repeated transitions are suppressed within one causal chain;
+- alternating/non-repeating effect loops stop at configured depth or work
+  budgets and report the complete causal chain;
+- independent root transactions do not share duplicate-transition state;
 - batch SET/DEL produces atomically coherent adjacency publication;
 - replay/rebuild equals live-maintained state;
 - cascade, restrict, and dangling policies;
@@ -1499,6 +1752,10 @@ B. edge registration using demand-driven indexes;
 C. ordinary edge item plus eager forward/reverse adjacency;
 D. eager adjacency plus qualified and pair projections.
 
+Also compare a graph-capable build with zero graph registrations against the
+same workload before graph support. This isolates the cost of the empty-registry
+fast path and protects the no-opt-in compatibility boundary.
+
 Datasets:
 
 - uniform degree and Zipf/high-degree hubs;
@@ -1527,6 +1784,8 @@ Measurements:
 - allocations and CPU/cache behavior;
 - retained bytes per edge and per live subscription;
 - logical and physical writes per mutation;
+- mutation throughput and graph-shard/pair-lock wait time;
+- causal-guard overhead for shallow ordinary mutations and wide valid cascades;
 - cold backfill time and number of store scans;
 - steady diff latency and subscriber fanout;
 - replay/rebuild time;
@@ -1547,6 +1806,289 @@ Expected hypotheses:
 - Rich payload filtering reduces adjacency's advantage unless matching payload
   indexes also exist.
 - Hubs dominate output-size and fanout costs under every representation.
+- A graph-capable application with zero registrations should be statistically
+  indistinguishable from the existing mutation/query baseline.
+
+### 21.1 Initial implementation measurements
+
+`libs/myko/core/benches/graph.rs` is the executable acceptance matrix for the
+first implementation. A short Criterion run on 2026-08-14 (10 samples, 100 ms
+warmup, 200 ms measurement) produced:
+
+| scenario | baseline | graph path | result |
+| --- | ---: | ---: | ---: |
+| ordinary SET, catalog present versus disabled | 1.98–2.61 µs disabled | 2.07–2.81 µs catalog present | confidence intervals overlap; no detected regression |
+| 1,000-edge high-degree lookup returning 1,000 edges | 34.95–35.09 µs scan | 30.20–30.32 µs eager | about 1.16× faster; output materialization dominates |
+| 10,000-edge sparse lookup returning 10 edges | 424.2–425.9 µs scan | 373.0–374.5 ns eager | about 1,137× faster |
+| exact-pair existence among 10,000 edges | 426.8–429.0 µs scan | 104.7–105.3 ns pair projection | about 4,075× faster; ID lookup is 118.8–119.2 ns and typed materialization is 154.3–155.4 ns |
+| idempotent ensure of an existing unique pair | 154.73–155.18 ns raw typed materialization | 190.04–190.91 ns generated command handler | about 35 ns over the raw lookup while preserving scope, returning the winning typed ID, and avoiding a write; excludes network serialization |
+| sparse endpoint-delete planning among 10,000 edges with 10 incident | 419.3–421.3 µs conservative typed scan | 828.8–833.3 ns eager incidence | about 506× faster; the baseline scans only the populated store and is cheaper than the replaced dynamic all-registration path |
+| 1,000-edge batch write | 309.1–310.2 µs plain | 1.815–1.823 ms projected | about 5.9× write cost for validation, causal hashing, and four maintained projections; inline singleton pair IDs improved the projected path by about 1.1%, within the benchmark's noise threshold |
+| Sparse reactive watch initialization, 10,000 edges / 1,000 sources | 447.68–451.34 µs canonical select | 20.411–20.561 µs typed index-seeded; 10.448–10.536 µs ordinary query factory | about 22× faster for the typed in-process watch and 43× for the erased server query path; all remain live incremental maps |
+| Sparse reactive count initialization, 10,000 edges / 1,000 sources | 443.57–445.22 µs canonical select; 20.051–20.167 µs full-edge typed watch | 1.2925–1.3078 µs direct scalar watch; 2.6583–2.6669 µs generated report pipeline | direct count is about 15.5× faster than the full-edge indexed watch and about 340× faster than canonical selection; the remotely consumable report pipeline is about 7.5× and 167× faster respectively, before its much larger payload reduction |
+| 1,000-edge projected batch, both ends versus A only | 1.817–1.832 ms both ends | 1.621–1.630 ms A only | one-sided projection is about 10.9% faster and omits the cold endpoint and entity-incidence maps |
+| sparse hot-end lookup, both ends versus A only | 121.1–122.4 ns both ends | 123.0–123.8 ns A only | hot-end lookup remains within 2%; the write/memory saving does not trade away lookup complexity |
+| singleton-inline incidence buckets | 1.815–1.823 ms prior 1,000-edge projected batch | 1.802–1.812 ms inline incidence | write time remains within noise while singleton endpoint buckets no longer allocate a tree; sparse hot-end lookup remains 121.2–121.6 ns |
+| two writers, 200 attempted unique-edge writes | n/a | 361–396 µs | bounded authority-lock contention, no uniqueness race |
+| related-entity initialization, 10,000 edges / 1,000 sources | 5.3591 ms whole-store join | 60.355 µs routed target IDs | about 88.8× faster while returning distinct live entities |
+| related-entity off-page update, 10,000 related entities / 50 retained | 781.42 µs materialized session window | 1.9712 µs pushed window | about 396× faster; the retained snapshot is not republished |
+| sparse undirected neighbors, 10,000 edges / 1,000 sources | 4.3837 ms whole-store join | 60.706 µs routed neighbor IDs | about 72.2× faster |
+| dense undirected hub, 10,000 of 10,001 entities adjacent | 17.649 ms non-deduplicating whole-store join | 7.7310 ms targeted adaptive distinct neighbor view | about 2.3× faster than the simpler baseline and 64.9% faster than the adaptive full-store hydration it replaced; preserves parallel-edge and self-loop deduplication |
+| 5,000 concurrent TypeScript command completions | 265.951 ms filtered RxJS subjects | 1.785 ms direct transaction map | about 149× faster routing; removes two subscriptions and filters per in-flight command |
+| 128-hop traversal over a 1,000-edge chain | 4.189–4.272 ms demand-driven scan per hop | 224.1–229.9 µs one canonical snapshot; 28.76–28.91 µs eager coherent adjacency | demand traversal is about 18.2–19.1× faster and eager traversal about 145–149× faster; eager reachability to depth 32 stops in 7.10–8.20 µs |
+
+These are development-machine microbenchmarks, not release SLOs. They validate
+the intended shape of the trade: the non-participating path stays within noise,
+eager adjacency has a very large real gain when the selected neighborhood is
+sparse relative to the edge store, and that gain is purchased with measurable
+write amplification. CI should retain the benchmark definitions; release
+qualification should rerun the full dataset/percentile matrix above.
+
+### 21.2 Diff-native client state
+
+Graph views frequently contain thousands of entities while most updates touch
+one row. The compatibility `watchQuery()` and `watchView()` APIs continue to
+emit defensive full arrays, but clients that render keyed rows can opt into
+`watchQueryState()` and `watchViewState()`. These APIs expose a stable keyed
+collection with loading/live/error state, revision and latest-change metadata,
+and a lazy array materialization cache. Identical state watches share the same
+wire subscription and collection instance. Framework adapters apply the same
+reset/upsert/delete primitive to their native reactive maps.
+
+`libs/myko/ts/benches/live-collection.ts` compares 1,000 one-row updates to a
+10,000-item result. Across three seven-sample runs on 2026-08-15:
+
+| client update path | median range | result |
+| --- | ---: | --- |
+| compatibility full-array emission and subscriber copy | 64.335–70.621 ms | baseline; performs full-result array work for every row update |
+| diff-native keyed state, no array consumer | 0.853–0.866 ms | 74.7–82.8× faster; work remains proportional to the changed rows |
+| lazy array requested twice per revision | 42.126–43.690 ms | 1.5–1.7× faster; one cached materialization replaces repeated full-array construction |
+
+The benchmark isolates client collection maintenance and excludes transport,
+decoding, and framework rendering. It demonstrates why generated graph clients
+should default row-oriented APIs to keyed state while retaining arrays as an
+explicit compatibility or presentation boundary.
+
+Fine-grained consumers can subscribe to one immutable selection without
+receiving every collection revision:
+
+```ts
+const assignment = assignments.from(tagId)
+const edge$ = assignment.edge(edgeId)
+const present$ = assignment.hasEdge(edgeId)
+const article$ = assignment.target(articleId)
+const selected$ = assignment.selectEdges(
+  (state) => state.get(edgeId)?.weight ?? 0,
+)
+```
+
+`edge`, `target`/`source`, `has*`, and query/view item/size helpers use a shared
+selection hub plus keyed listeners inside `LiveCollection`. A one-row diff
+dispatches only to listeners registered for that ID; it does not run every
+selector or open another wire subscription. Generic `select*` helpers accept a
+custom equality function and are intended for scalars, entity references, or
+new immutable values. They deliberately warn against returning the stable
+mutable backing `Map`, whose identity does not change across revisions.
+
+`libs/myko/ts/benches/selection-routing.ts` models 1,000 item-oriented
+components over a 10,000-item collection and 1,000 one-row updates. A
+development-machine run on 2026-08-15 measured 36.691 ms and 1,001,000
+downstream notifications for broadcasting every revision, versus 2.871 ms and
+2,000 notifications for keyed item selection: about 12.8× faster with 500.5×
+fewer downstream notifications. With no listeners, the ordinary diff path
+does not allocate changed-ID routing state.
+
+When an item selection is the only consumer, generated descriptors route it
+through additive `fromId`, `toId`, or `betweenId` queries. These queries build
+from the canonical store's reactive per-key cell and then apply the normal
+endpoint/pair predicate, so a scoped lookup does not hydrate every incident
+edge merely to retain one row. Endpoint-changing updates still move the item
+into or out of the result, and undirected pair matching retains its symmetric
+semantics. `bindGraph` feature-detects the exact helpers and falls back to the
+broad query plus keyed client selection for older or hand-written descriptors.
+
+`graph/high_degree_exact_edge_initialization` compares a lone exact selection
+at a 10,000-edge endpoint. A development-machine run on 2026-08-15 measured
+1.456 ms for endpoint hydration versus 17.431 µs for the direct-key scoped
+query: about 83.5× faster, with retained result cardinality reduced from 10,000
+edges to at most one.
+
+Selected sets use the same design through generated `fromIds`, `toIds`, and
+`betweenIds` queries and bound `edgesByIds(ids)` helpers. IDs are sorted and
+deduplicated at construction, one query owns all requested reactive key cells,
+and the remaining scope predicate does not rescan the ID list for every item.
+At the same 10,000-edge endpoint, selecting 100 IDs measured 320.49 µs versus
+1.4643 ms for broad endpoint hydration: about 4.57× faster while retaining 100×
+fewer rows. Work scales with the selected set rather than endpoint degree.
+
+### 21.3 Batched endpoint watches and client-bound graph scopes
+
+List and matrix UIs commonly watch the same relationship at hundreds of source
+endpoints. Starting one ordinary query per row creates an N+1 subscription
+shape even though every query is individually routed. Generated graph bindings
+therefore provide additive `fromMany`, `toMany`, `targetsFromMany`, and
+`sourcesToMany` union queries. A many-endpoint query:
+
+- deduplicates repeated endpoint addresses;
+- hydrates the union of projected edge IDs before reading the entity store;
+- registers one logical graph callback under every selected routing key;
+- uses one callback ID across those keys, so an endpoint-changing SET whose old
+  and new addresses are both selected still dispatches once;
+- uses the ordinary cached query, diff, reconnect, and cancellation protocol.
+
+The TypeScript client can bind a generated graph descriptor once and reuse the
+endpoint across related operations:
+
+```ts
+const assignments = client.graph(TagAssignmentGraph)
+const tag = assignments.from(tagId)
+
+const edges$ = tag.edges()
+const articles$ = tag.targets()
+const count$ = tag.count()
+
+const visibleArticles$ = assignments.fromMany(visibleTagIds).targets()
+```
+
+Existing generated constructors and `watchQuery*` APIs remain unchanged. The
+scoped methods return diff-native `LiveCollection` state, while aggregate and
+mutation methods continue through the existing report and command channels.
+Identical immutable queries also share one ref-counted raw response stream
+across array, diff, and keyed-state projections. This lets older array-oriented
+components coexist with incrementally migrated graph components without
+opening parallel server subscriptions for the same query. The final projection
+consumer owns cancellation; mutable-window handles remain independent because
+they own server-side window state.
+
+`graph/many_endpoint_watch_initialization` measures 100 selected endpoints over
+10,000 edges distributed across 1,000 sources. A 2026-08-15 development-machine
+run measured:
+
+| endpoint strategy | 100 individual watches | one union watch | result |
+| --- | ---: | ---: | --- |
+| eager projected endpoint | 2.018–2.052 ms | 418.8–422.5 µs | about 4.8× faster |
+| demand-driven endpoint | 1.672–1.731 ms | 89.6–91.2 µs | about 18.8× faster; scans the canonical store once for the endpoint set rather than once per endpoint |
+
+Both cases collapse 100 client/wire subscriptions to one logical subscription.
+
+`graph/endpoint_sync_100_of_1000` compares exact-set reconciliation for 100
+changes in a 1,000-edge endpoint. A short 2026-08-15 run measured server-side
+reconciliation at 668.6–674.1 µs and an in-process client diff followed by
+separate delete/set mutations at 603.8–630.5 µs. Reconciliation therefore costs
+about 9% more server CPU in this local case; its performance gain is end-to-end:
+one command and one reactive/persistence drain replace the subscribe/readiness
+round trip plus two mutation commands and eliminate the transient intermediate
+state. This benchmark intentionally records that tradeoff rather than treating
+reduced client latency and server CPU as the same metric.
+
+Windowed `fromMany` and `toMany` queries push eager-endpoint page selection into
+the graph index. The index performs a k-way merge over already sorted endpoint
+buckets, retaining only O(endpoint count + page size) IDs and hydrating only the
+visible edge payloads. It still traverses the merged IDs to report an exact
+distinct total. Demand-driven endpoints retain the existing materialized-query
+fallback, avoiding a rescan-on-every-diff regression.
+
+With the same 10,000-edge/100-endpoint benchmark and a 25-edge page at offset
+250, full union initialization measured 403.3–404.6 µs while pushed window
+initialization measured 112.6–113.1 µs, about 3.6× faster, with 25 rather than
+1,000 edge payloads hydrated.
+
+Generated graph descriptors carry their edge schema into the bound client
+facade. Every endpoint and pair scope exposes an allocation-free static `plan`
+that states whether initialization uses an eager endpoint/pair lookup,
+adjacency filtering, or a canonical scan; whether live changes are routed; and
+whether windows are pushed down or materialized. The same scope exposes
+`edgesWindowed`, `targetsWindowed`, and `sourcesWindowed` handles, so callers can
+use the mutable pushed-window protocol without dropping down to raw generated
+queries:
+
+```ts
+const visible = assignments.fromMany(visibleTagIds)
+console.debug(visible.plan)
+
+const page = visible.edgesWindowed({ offset: 250, limit: 25 })
+page.setWindow({ offset: 275, limit: 25 })
+```
+
+Legacy or hand-authored graph descriptors remain bindable; their plan is
+reported as `unknown` rather than guessing about server execution.
+
+### 21.4 Cursor pages, connection projections, and observed plans
+
+Cursor pagination is an additive control protocol alongside `QueryWindow`.
+`QueryCursorWindow` selects the first page or an exclusive `after`/`before`
+ID keyset in canonical ascending result-ID order. It does not add fields to
+`WrappedQuery`, `QueryWindow`, or query responses. An initial ordinary window
+opens the subscription; `ws:m:query-cursor-window` then moves that same live
+subscription without resubscribing. Materialized queries use binary partition
+points, while eager graph buckets use `BTreeSet` ranges. Pushed windows retain
+only the requested page and continue to emit the existing ordered-ID change.
+
+Rust exposes cursor controls on `WindowedQueryWatch` plus generated graph
+helpers such as `watch_graph_from_cursor`. The TypeScript client exposes
+`watchQueryCursor`; bound graph scopes expose `edgesCursor`:
+
+```ts
+const page = assignments.from(tagId).edgesCursor(50)
+page.setWindow({ after: lastEdgeId, limit: 50 })
+page.setWindow({ before: firstEdgeId, limit: 50 })
+```
+
+At 10,000 edges, moving a 50-row deep eager graph page by offset measured
+21.278–21.586 µs. Moving the equivalent ID-keyset page measured
+2.067–2.086 µs, about 10.3× faster. First-page index pushdown remained
+3.628–3.660 µs.
+
+Concrete related-entity scopes also expose `connections`, a typed live
+projection that pairs every edge with the current entity at its opposite end.
+The caller supplies the generated edge's related-ID accessor once; Myko owns
+the two live subscriptions and join updates:
+
+```ts
+const rows$ = assignments
+  .from(tagId)
+  .connections((edge) => edge.articleId)
+// Observable<readonly { edge: TagAssignment; entity: Article }[]>
+```
+
+Finally, `GraphIndex::plan_telemetry()` snapshots per-edge/per-end demand-driven
+lookup counts, canonical edges scanned, rows returned, and an explicit eager
+projection recommendation. The heuristic recommends eager adjacency only after
+at least eight lookups and 10,000 cumulative scanned edges; it never changes
+policy at runtime. Eager hot paths deliberately carry no telemetry atomics or
+map lookup. The existing eager one-hop benchmark measured 32.730–33.072 µs
+after that choice, with no statistically detectable change from its baseline.
+
+### 21.5 Incremental client-side graph indexes
+
+A batched edge union often feeds a list, tree, or matrix grouped by one endpoint.
+Re-running `groupBy` over the entire union for every one-edge diff turns an
+otherwise incremental graph subscription back into O(result size) client work.
+`LiveIndex<K, T>` is a stable secondary index over `LiveCollection<T>`:
+
+- the first update groups the authoritative keyed snapshot;
+- consecutive revisions move, insert, or delete only changed item memberships;
+- prior keys are cached, so deleting or moving an item does not scan a bucket;
+- arrays are materialized and memoized independently per bucket;
+- `changes.keys` identifies only buckets affected by the latest revision;
+- loading, live, and terminal-error metadata follows the source collection;
+- skipped revisions trigger a safe rebuild from current authoritative state;
+- removed buckets are emptied before removal, keeping held map references safe.
+
+The client-bound graph scope exposes this as `edgesBy`:
+
+```ts
+const byTag$ = assignments
+  .fromMany(visibleTagIds)
+  .edgesBy((edge) => edge.tagId)
+
+// Observable<LiveIndex<TagId, TagAssignment>>
+```
+
+The `bench:live-collection` benchmark groups 10,000 edges while applying 1,000
+single-edge moves. Repeated 2026-08-15 development-machine runs measured
+537–547 ms for full regrouping and 2.70–3.10 ms for the incremental index,
+about 173–203× faster.
 
 ## 22. Delivery phases
 
@@ -1593,7 +2135,8 @@ The graph-edge feature is acceptable when:
 
 1. An application with no category or edge registrations has unchanged item,
    relationship, query, wire, persistence, generated-binding, and runtime
-   behavior.
+   behavior, installs no graph runtime state, and shows no material regression
+   in mutation throughput or allocation count.
 2. Two independent writers can add distinct incident edges without rewriting an
    endpoint item or losing either connection.
 3. Concrete endpoint misuse fails at compile time, while an erased endpoint
@@ -1610,14 +2153,71 @@ The graph-edge feature is acceptable when:
    version/lag information that consumers never mistake a partial rebuild for a
    complete graph.
 8. Edge and entity-category schema is emitted from the neutral aggregate
-   catalog and consumed by the active renderer without embedding renderer
-   callbacks in neutral registrations.
+   graph catalog and consumed beside the existing `TypegenCatalog` without
+   adding required fields or embedding renderer callbacks in neutral
+   registrations.
 9. Demand-driven adjacency is the default. An application selects eager
-   adjacency only when benchmarks against the fully routed item baseline show a
-   workload benefit within its retained-bytes-per-edge budget.
+   adjacency per edge or per endpoint only when benchmarks against the fully
+   routed item baseline show a workload benefit within its retained-bytes-per-edge
+   budget. One-sided projection must retain scan-equivalent behavior on the cold
+   end and for reverse traversal.
 10. The handler-context authority model remains sealed; downstream entity
     categories cannot grant querying, event-publishing, or graph-reading
     authority.
+11. Representative Rust and generated-client call sites can declare and query
+    concrete, category-constrained, and qualified edges without handwritten
+    entity/category/field-name strings or duplicate wire types.
+12. Participating authoritative mutations reduce canonical and graph state,
+    enqueue persistence before reactive work drains, and only then publish
+    downstream effects; tests cover persistence-enqueue failure and a
+    relationship workload that does not settle promptly.
+13. Every synchronously derived relationship, graph, saga, or reactive mutation
+    carries one root causal token. Delete cycles converge, exact transitions are
+    suppressed per root, changing-value loops stop at explicit depth/work
+    budgets, and loop termination produces actionable diagnostics instead of
+    blocking persistence or spinning indefinitely.
+14. Generated clients can consume large graph results as stable keyed state with
+    work proportional to each diff, explicit lifecycle/error metadata, and lazy
+    array materialization; existing full-array APIs remain source-compatible.
+15. Generated clients can watch the distinct union of many graph endpoints with
+    one ordinary subscription, without duplicate callback delivery when a
+    mutation touches several selected routes, and can bind endpoint-scoped
+    edge/related/aggregate/mutation operations without handwritten query or
+    command construction. Array, diff, and keyed-state consumers of an identical
+    immutable query share that same wire subscription until the final consumer
+    releases it.
+16. Client applications can maintain stable endpoint-grouped graph results with
+    work proportional to changed memberships, lazy per-bucket arrays, and a
+    safe authoritative rebuild after any skipped revision.
+17. Windowed many-endpoint edge queries over eagerly projected endpoints merge
+    sorted buckets without materializing the full ID union, hydrate only the
+    visible page, preserve exact distinct totals and live page shifts, and fall
+    back safely for demand-driven endpoints.
+18. Bound generated graph scopes expose their static execution strategy and
+    provide typed mutable-window helpers for edge and related-entity queries;
+    older descriptors remain source-compatible and report an unknown plan.
+19. A successful graph mutation resolves only after its synchronously caused
+    responses for already-live queries/reports have been delivered on that
+    connection. Command waits use direct transaction routing, accept optional
+    timeout/abort controls, and release queued/client state on every terminal
+    path without changing existing command wire messages or required call-site
+    arguments.
+20. Fine-grained query/view and bound-graph item, membership, size, and
+    immutable-selection APIs share the existing wire/state subscription,
+    dispatch keyed changes only to affected listeners, suppress equal derived
+    values, and add no changed-ID routing allocation when no selector is active.
+21. Generated bound-graph `edge(id)` and `hasEdge(id)` helpers use a reactive
+    direct-key server query when available, retain endpoint/pair filtering and
+    undirected semantics, and safely fall back to broad-query selection for
+    descriptors generated before the exact helpers existed.
+22. Generated Rust and TypeScript graph clients can watch a canonicalized set
+    of edge IDs inside one endpoint or pair scope with one ordinary query and
+    one wire subscription, hydrating only requested keys and filtering scope
+    without an ID-list scan per selected item.
+23. Bounded traversal reads one coherent projected snapshot or performs at most
+    one canonical scan for an unprojected direction, enforces explicit node and
+    edge-work limits, can omit edge collection, and provides typed early-exit
+    reachability and shortest-path helpers without client-side BFS boilerplate.
 
 ## 24. Decision
 
@@ -1629,4 +2229,7 @@ edge shape, and either end may independently be concrete or erased.
 
 No second storage, event, or persistence system is introduced. Demand-driven
 adjacency is the default; eager adjacency is opt-in. Index consolidation
-requires equivalence and performance evidence.
+requires equivalence and performance evidence. Graph schema remains in a
+separately collected catalog. Participating authoritative mutations use
+preflight, reduce/project, persistence enqueue, then guarded causal effect
+publication; the empty-registry path remains unchanged.

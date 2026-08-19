@@ -120,6 +120,233 @@ impl QueryBuildContext {
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.registry.clone()
     }
+
+    /// Build an index-seeded graph watch for generated edge queries.
+    #[doc(hidden)]
+    pub fn graph_watch_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoint: &crate::graph::EndpointValue,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_at(E::ENTITY_NAME_STATIC, position, endpoint)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Build one index-seeded graph watch for a union of endpoint addresses.
+    #[doc(hidden)]
+    pub fn graph_watch_many_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoints: &[crate::graph::EndpointValue],
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_many_at(E::ENTITY_NAME_STATIC, position, endpoints)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Build a routed live view of one concrete entity type reached through
+    /// matching graph edges.
+    #[doc(hidden)]
+    pub fn graph_related_at<E, T>(
+        &self,
+        edge_position: crate::graph::EndPosition,
+        endpoint: &crate::graph::EndpointValue,
+        related_position: crate::graph::EndPosition,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        T: crate::graph::EntityEndpointSpec,
+    {
+        let edges = self.graph_watch_at::<E>(edge_position, endpoint)?;
+        let edges = crate::item::typed_map_arc_from_any_item::<E>(
+            edges,
+            "QueryBuildContext::graph_related_at",
+        );
+        Ok(crate::graph::graph_related_entity_watch::<E, T>(
+            &edges,
+            self.registry.as_ref(),
+            related_position,
+        ))
+    }
+
+    /// Build a routed live union of one concrete entity type reached through
+    /// any of several endpoint addresses.
+    #[doc(hidden)]
+    pub fn graph_related_many_at<E, T>(
+        &self,
+        edge_position: crate::graph::EndPosition,
+        endpoints: &[crate::graph::EndpointValue],
+        related_position: crate::graph::EndPosition,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        T: crate::graph::EntityEndpointSpec,
+    {
+        let edges = self.graph_watch_many_at::<E>(edge_position, endpoints)?;
+        let edges = crate::item::typed_map_arc_from_any_item::<E>(
+            edges,
+            "QueryBuildContext::graph_related_many_at",
+        );
+        Ok(crate::graph::graph_related_entity_watch::<E, T>(
+            &edges,
+            self.registry.as_ref(),
+            related_position,
+        ))
+    }
+
+    /// Build a routed live view of the distinct entities adjacent through an
+    /// undirected edge type.
+    #[doc(hidden)]
+    pub fn graph_neighbors_at<E, T>(
+        &self,
+        endpoint: &crate::graph::EndpointValue,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+        T: crate::graph::EntityEndpointSpec,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        let edges = graph
+            .watch_incident(E::ENTITY_NAME_STATIC, endpoint)
+            .map_err(|error| error.to_string())?;
+        let edges = crate::item::typed_map_arc_from_any_item::<E>(
+            edges,
+            "QueryBuildContext::graph_neighbors_at",
+        );
+        Ok(crate::graph::graph_neighbor_entity_watch::<E, T>(
+            &edges,
+            self.registry.as_ref(),
+            endpoint,
+        ))
+    }
+
+    /// Build an index-seeded exact-pair graph watch for generated edge queries.
+    #[doc(hidden)]
+    pub fn graph_watch_between<E>(
+        &self,
+        a: &crate::graph::EndpointValue,
+        b: &crate::graph::EndpointValue,
+    ) -> Result<FilteredCellMap, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_between(E::ENTITY_NAME_STATIC, a, b)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Build a bounded, index-backed graph watch without materializing the
+    /// complete matching edge set in the WebSocket session.
+    #[doc(hidden)]
+    pub fn graph_window_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoint: &crate::graph::EndpointValue,
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<super::WindowedQuerySource>, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_window_at(E::ENTITY_NAME_STATIC, position, endpoint, window)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Build one bounded, index-backed union watch for several endpoints.
+    #[doc(hidden)]
+    pub fn graph_window_many_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoints: &[crate::graph::EndpointValue],
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<super::WindowedQuerySource>, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_window_many_at(E::ENTITY_NAME_STATIC, position, endpoints, window)
+            .map_err(|error| error.to_string())
+    }
+
+    /// Build a bounded, index-backed exact-pair graph watch.
+    #[doc(hidden)]
+    pub fn graph_window_between<E>(
+        &self,
+        a: &crate::graph::EndpointValue,
+        b: &crate::graph::EndpointValue,
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<super::WindowedQuerySource>, String>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let server = self
+            .server_ctx
+            .as_ref()
+            .ok_or_else(|| "graph query requires server context".to_string())?;
+        let graph = server
+            .graph_index()
+            .ok_or_else(|| "application has no graph registrations".to_string())?;
+        graph
+            .watch_window_between(E::ENTITY_NAME_STATIC, a, b, window)
+            .map_err(|error| error.to_string())
+    }
 }
 
 // Query build keeps its own `query`/`report` (fallible over an optional

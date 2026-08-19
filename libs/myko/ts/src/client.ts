@@ -5,25 +5,13 @@
  * When the current server disconnects, instantly switches to another open connection.
  */
 
-import {
-  GetPeerServers,
-  MykoEvent,
-  type JsonValue,
-  type MEvent,
-  type MykoMessage,
-  type PingData,
-  type Server,
-  type WrappedItem,
-  type WrappedQuery,
-  type WrappedReport,
-  type WrappedView,
-} from './generated'
 import { Decoder, Encoder } from 'cbor-x'
 import {
   bufferCount,
   bufferTime,
   catchError,
   combineLatest,
+  distinctUntilChanged,
   filter,
   finalize,
   firstValueFrom,
@@ -33,13 +21,28 @@ import {
   Observable,
   of,
   ReplaySubject,
+  Subject,
+  type Subscription,
   scan,
   shareReplay,
-  Subject,
-  Subscription,
   switchMap,
 } from 'rxjs'
 import { v4 as uuid } from 'uuid'
+import {
+  GetPeerServers,
+  type JsonValue,
+  type MEvent,
+  MykoEvent,
+  type MykoMessage,
+  type PingData,
+  type Server,
+  type WrappedItem,
+  type WrappedQuery,
+  type WrappedReport,
+  type WrappedView,
+} from './generated'
+import { type BoundGraph, bindGraph } from './graph-client.js'
+import { LiveCollection } from './live-collection.js'
 
 // cbor-x's defaults emit several non-standard extensions (the "records" structure
 // compression, tag 259 for maps with non-string keys, typed-array tags) that other
@@ -260,8 +263,37 @@ export type QueryWindow = {
   limit: number
 }
 
+/** Exclusive keyset window over the canonical ascending result-ID order. */
+export type QueryCursorWindow = {
+  after?: string
+  before?: string
+  limit: number
+}
+
+export type QueryCursorPageInfo = {
+  totalCount: number | null
+  startCursor: string | null
+  endCursor: string | null
+  hasPreviousPage: boolean
+  hasNextPage: boolean
+}
+
 export type QueryWatchOptions = {
   window?: QueryWindow | null
+}
+
+/** Options for an immutable projection of live keyed query/view state. */
+export type QuerySelectionOptions<S> = QueryWatchOptions & {
+  /** Equality used to suppress unchanged projections. Defaults to `Object.is`. */
+  equals?: (previous: S, current: S) => boolean
+}
+
+/** Lifecycle controls for waiting on command completion. */
+export type CommandOptions = {
+  /** Stop waiting after this many milliseconds. Does not undo a command already sent. */
+  timeoutMs?: number
+  /** Stop waiting when aborted. Does not undo a command already sent. */
+  signal?: AbortSignal
 }
 
 export type QueryWindowInfo = {
@@ -330,6 +362,93 @@ interface ManagedSocket {
   reconnectOnClose: boolean
 }
 
+type PendingCommand = {
+  resolve: (message: CommandResponseMessage) => void
+  reject: (error: Error) => void
+}
+
+type LiveSelectionRegistration<T> = {
+  attach: (state: T) => void
+  detach?: () => void
+  complete: () => void
+  error: (cause: unknown) => void
+}
+
+/** One shared source subscription with direct fine-grained state listeners. */
+class LiveSelectionHub<T> {
+  readonly #source: () => Observable<T>
+  readonly #onEmpty: () => void
+  readonly #registrations = new Set<LiveSelectionRegistration<T>>()
+  #state: T | undefined
+  #sourceSubscription: Subscription | undefined
+
+  constructor(source: () => Observable<T>, onEmpty: () => void) {
+    this.#source = source
+    this.#onEmpty = onEmpty
+  }
+
+  watch<S>(
+    register: (state: T, emit: (value: S) => void) => () => void,
+    equals: (previous: S, current: S) => boolean = Object.is,
+  ): Observable<S> {
+    return new Observable<S>((subscriber) => {
+      let emitted = false
+      let previous: S
+      const emit = (value: S) => {
+        if (emitted && equals(previous, value)) return
+        emitted = true
+        previous = value
+        subscriber.next(value)
+      }
+      const registration: LiveSelectionRegistration<T> = {
+        attach: (state) => {
+          registration.detach = register(state, emit)
+        },
+        complete: () => subscriber.complete(),
+        error: (cause) => subscriber.error(cause),
+      }
+      this.#registrations.add(registration)
+      if (this.#state !== undefined) registration.attach(this.#state)
+      if (!this.#sourceSubscription) this.#start()
+
+      return () => {
+        registration.detach?.()
+        this.#registrations.delete(registration)
+        if (this.#registrations.size === 0) {
+          this.#sourceSubscription?.unsubscribe()
+          this.#sourceSubscription = undefined
+          this.#state = undefined
+          this.#onEmpty()
+        }
+      }
+    })
+  }
+
+  #start(): void {
+    const subscription = this.#source().subscribe({
+      next: (state) => {
+        if (this.#state === state) return
+        this.#state = state
+        for (const registration of this.#registrations) {
+          registration.detach?.()
+          registration.attach(state)
+        }
+      },
+      error: (cause) => {
+        for (const registration of [...this.#registrations]) {
+          registration.error(cause)
+        }
+      },
+      complete: () => {
+        for (const registration of [...this.#registrations]) {
+          registration.complete()
+        }
+      },
+    })
+    this.#sourceSubscription = subscription.closed ? undefined : subscription
+  }
+}
+
 /**
  * Reactive WebSocket client for Myko servers with automatic failover.
  */
@@ -363,6 +482,7 @@ export class MykoClient {
   private queryErrorRoutes = new Map<string, Subject<QueryErrorMessage>>()
   private viewErrorRoutes = new Map<string, Subject<QueryErrorMessage>>()
   private reportErrorRoutes = new Map<string, Subject<ReportErrorMessage>>()
+  private pendingCommands = new Map<string, PendingCommand>()
 
   // Lighter-weight direct-callback routing for `subscribeReport` — avoids
   // allocating an RxJS Subject per anchor when the consumer just needs a
@@ -382,6 +502,7 @@ export class MykoClient {
 
   // Subscription tracking
   private activeQueries = new Map<string, WrappedQuery>()
+  private activeQueryCursorWindows = new Map<string, QueryCursorWindow>()
   private activeViews = new Map<string, WrappedView>()
   private activeReports = new Map<string, WrappedReport>()
   private activeQueryNames = new Map<string, string>()
@@ -389,8 +510,20 @@ export class MykoClient {
   private activeReportNames = new Map<string, string>()
   private sharedQueries = new Map<string, Observable<unknown>>()
   private sharedViews = new Map<string, Observable<unknown>>()
+  private sharedQueryResponseStreams = new Map<
+    string,
+    Observable<QueryResponseMessage>
+  >()
+  private sharedViewResponseStreams = new Map<
+    string,
+    Observable<QueryResponseMessage>
+  >()
   private sharedQueryDiffs = new Map<string, Observable<unknown>>()
   private sharedViewDiffs = new Map<string, Observable<unknown>>()
+  private sharedQueryStates = new Map<string, Observable<unknown>>()
+  private sharedViewStates = new Map<string, Observable<unknown>>()
+  private querySelectionHubs = new Map<string, unknown>()
+  private viewSelectionHubs = new Map<string, unknown>()
   private sharedReports = new Map<string, Observable<unknown>>()
   private subscriptionStartMs = new Map<string, number>()
   private firstResponseLogged = new Set<string>()
@@ -723,6 +856,7 @@ export class MykoClient {
           activeQueriesBefore: this.activeQueries.size,
         })
         this.activeQueries.delete(tx)
+        this.activeQueryCursorWindows.delete(tx)
         this.activeQueryNames.delete(tx)
         this.subscriptionStartMs.delete(tx)
         this.firstResponseLogged.delete(tx)
@@ -735,6 +869,36 @@ export class MykoClient {
     )
 
     return [tx, responses$]
+  }
+
+  /**
+   * One ref-counted wire stream per immutable query identity.
+   *
+   * Array, diff, and keyed-state projections all consume this stream. Keeping
+   * the cache below those projections prevents the same query from opening
+   * several server subscriptions merely because different UI layers prefer
+   * different result shapes.
+   */
+  private sharedQueryResponses<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): Observable<QueryResponseMessage> {
+    const cacheKey = queryCacheKey(query, options)
+    const existing = this.sharedQueryResponseStreams.get(cacheKey)
+    if (existing) return existing
+
+    const [, responses$] = this.startQuery(query, options)
+    let shared$: Observable<QueryResponseMessage>
+    shared$ = responses$.pipe(
+      finalize(() => {
+        if (this.sharedQueryResponseStreams.get(cacheKey) === shared$) {
+          this.sharedQueryResponseStreams.delete(cacheKey)
+        }
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    this.sharedQueryResponseStreams.set(cacheKey, shared$)
+    return shared$
   }
 
   /** Update server-side window for an active query subscription */
@@ -759,6 +923,19 @@ export class MykoClient {
     })
 
     this.send({ event: MykoEvent.QueryWindow, data: { tx, window } as unknown } as MykoMessage)
+  }
+
+  /** Move an active query to an exclusive ID-keyset page. */
+  setQueryCursorWindow(tx: string, window: QueryCursorWindow): void {
+    if (window.after !== undefined && window.before !== undefined) {
+      throw new Error('cursor window cannot contain both after and before')
+    }
+    if (!this.activeQueries.has(tx)) return
+    this.activeQueryCursorWindows.set(tx, window)
+    this.send({
+      event: 'ws:m:query-cursor-window',
+      data: { tx, window },
+    } as MykoMessage)
   }
 
   /** Start a view subscription, returns [tx, responses$] */
@@ -846,6 +1023,29 @@ export class MykoClient {
     return [tx, responses$]
   }
 
+  /** One ref-counted wire stream shared by every immutable view projection. */
+  private sharedViewResponses<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): Observable<QueryResponseMessage> {
+    const cacheKey = viewCacheKey(view, options)
+    const existing = this.sharedViewResponseStreams.get(cacheKey)
+    if (existing) return existing
+
+    const [, responses$] = this.startView(view, options)
+    let shared$: Observable<QueryResponseMessage>
+    shared$ = responses$.pipe(
+      finalize(() => {
+        if (this.sharedViewResponseStreams.get(cacheKey) === shared$) {
+          this.sharedViewResponseStreams.delete(cacheKey)
+        }
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    this.sharedViewResponseStreams.set(cacheKey, shared$)
+    return shared$
+  }
+
   /** Update server-side window for an active view subscription */
   setViewWindow(tx: string, window: QueryWindow | null): void {
     const active = this.activeViews.get(tx)
@@ -879,7 +1079,7 @@ export class MykoClient {
     const existing = this.sharedQueries.get(cacheKey)
     if (existing) return existing as Observable<QueryResult<Q>>
 
-    const [, responses$] = this.startQuery(query, options)
+    const responses$ = this.sharedQueryResponses(query, options)
 
     const shared$ = responses$.pipe(
       scan((acc, update) => {
@@ -916,7 +1116,7 @@ export class MykoClient {
     const existing = this.sharedViews.get(cacheKey)
     if (existing) return existing as Observable<ViewResult<V>>
 
-    const [, responses$] = this.startView(view, options)
+    const responses$ = this.sharedViewResponses(view, options)
 
     const shared$ = responses$.pipe(
       scan((acc, update) => {
@@ -949,7 +1149,7 @@ export class MykoClient {
     const existing = this.sharedQueryDiffs.get(cacheKey)
     if (existing) return existing as Observable<QueryDiff<QueryItem<Q>>>
 
-    const [, responses$] = this.startQuery(query, options)
+    const responses$ = this.sharedQueryResponses(query, options)
     const shared$ = responses$.pipe(
       map((r) => ({
         sequence: BigInt(r.data.sequence),
@@ -981,7 +1181,7 @@ export class MykoClient {
     const existing = this.sharedViewDiffs.get(cacheKey)
     if (existing) return existing as Observable<QueryDiff<ViewItem<V>>>
 
-    const [, responses$] = this.startView(view, options)
+    const responses$ = this.sharedViewResponses(view, options)
     const shared$ = responses$.pipe(
       map((r) => ({
         sequence: BigInt(r.data.sequence),
@@ -1002,6 +1202,200 @@ export class MykoClient {
     )
     this.sharedViewDiffs.set(cacheKey, shared$)
     return shared$
+  }
+
+  /**
+   * Watch a query as stable keyed state without rebuilding its full result array.
+   *
+   * Identical requests share both the wire subscription and collection instance.
+   * Use `toArray()` only where array rendering is required; `get()`, `items`, and
+   * `changes` remain O(changes) for incremental updates.
+   */
+  watchQueryState<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): Observable<LiveCollection<QueryItem<Q> & { id: string }>> {
+    type Item = QueryItem<Q> & { id: string }
+    const cacheKey = queryCacheKey(query, options)
+    const existing = this.sharedQueryStates.get(cacheKey)
+    if (existing) return existing as Observable<LiveCollection<Item>>
+
+    const state = new LiveCollection<Item>()
+    const shared$ = this.watchQueryDiff(query, options).pipe(
+      map((diff) => state.apply(diff as QueryDiff<Item>)),
+      catchError((error) => of(state.fail(error))),
+      finalize(() => {
+        this.sharedQueryStates.delete(cacheKey)
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    this.sharedQueryStates.set(cacheKey, shared$)
+    return shared$
+  }
+
+  /** Watch a view as stable keyed state without full-array reconstruction. */
+  watchViewState<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): Observable<LiveCollection<ViewItem<V> & { id: string }>> {
+    type Item = ViewItem<V> & { id: string }
+    const cacheKey = viewCacheKey(view, options)
+    const existing = this.sharedViewStates.get(cacheKey)
+    if (existing) return existing as Observable<LiveCollection<Item>>
+
+    const state = new LiveCollection<Item>()
+    const shared$ = this.watchViewDiff(view, options).pipe(
+      map((diff) => state.apply(diff as QueryDiff<Item>)),
+      catchError((error) => of(state.fail(error))),
+      finalize(() => {
+        this.sharedViewStates.delete(cacheKey)
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    this.sharedViewStates.set(cacheKey, shared$)
+    return shared$
+  }
+
+  /**
+   * Watch an immutable projection of keyed query state.
+   *
+   * The underlying query/state subscription remains shared. The selector runs
+   * once per source revision, while equal results suppress downstream work.
+   * Select scalars, entity references, or newly-created immutable values; do
+   * not return `state.items` directly because that Map is intentionally stable
+   * and mutates in place.
+   */
+  watchQuerySelection<Q extends Query<unknown>, S>(
+    query: Q,
+    select: (state: LiveCollection<QueryItem<Q> & { id: string }>) => S,
+    options?: QuerySelectionOptions<S>,
+  ): Observable<S> {
+    return this.watchQueryState(query, options).pipe(
+      map(select),
+      distinctUntilChanged(options?.equals ?? Object.is),
+    )
+  }
+
+  /** Watch one query result by ID without reacting to unrelated rows. */
+  watchQueryItem<Q extends Query<unknown>>(
+    query: Q,
+    id: string,
+    options?: QueryWatchOptions,
+  ): Observable<(QueryItem<Q> & { id: string }) | undefined> {
+    return this.querySelectionHub(query, options).watch((state, emit) =>
+      state.subscribeItem(id, emit),
+    )
+  }
+
+  /** Watch membership of one ID without reacting to unrelated rows. */
+  watchQueryHas<Q extends Query<unknown>>(
+    query: Q,
+    id: string,
+    options?: QueryWatchOptions,
+  ): Observable<boolean> {
+    return this.querySelectionHub(query, options).watch((state, emit) =>
+      state.subscribeItem(id, (item) => emit(item !== undefined)),
+    )
+  }
+
+  /** Watch live query cardinality without materializing its result array. */
+  watchQuerySize<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): Observable<number> {
+    return this.querySelectionHub(query, options).watch((state, emit) =>
+      state.subscribeSize(emit),
+    )
+  }
+
+  /** Watch an immutable projection of keyed view state. */
+  watchViewSelection<V extends View<unknown>, S>(
+    view: V,
+    select: (state: LiveCollection<ViewItem<V> & { id: string }>) => S,
+    options?: QuerySelectionOptions<S>,
+  ): Observable<S> {
+    return this.watchViewState(view, options).pipe(
+      map(select),
+      distinctUntilChanged(options?.equals ?? Object.is),
+    )
+  }
+
+  /** Watch one view result by ID without reacting to unrelated rows. */
+  watchViewItem<V extends View<unknown>>(
+    view: V,
+    id: string,
+    options?: QueryWatchOptions,
+  ): Observable<(ViewItem<V> & { id: string }) | undefined> {
+    return this.viewSelectionHub(view, options).watch((state, emit) =>
+      state.subscribeItem(id, emit),
+    )
+  }
+
+  /** Watch membership of one view ID without reacting to unrelated rows. */
+  watchViewHas<V extends View<unknown>>(
+    view: V,
+    id: string,
+    options?: QueryWatchOptions,
+  ): Observable<boolean> {
+    return this.viewSelectionHub(view, options).watch((state, emit) =>
+      state.subscribeItem(id, (item) => emit(item !== undefined)),
+    )
+  }
+
+  /** Watch live view cardinality without materializing its result array. */
+  watchViewSize<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): Observable<number> {
+    return this.viewSelectionHub(view, options).watch((state, emit) =>
+      state.subscribeSize(emit),
+    )
+  }
+
+  private querySelectionHub<Q extends Query<unknown>>(
+    query: Q,
+    options?: QueryWatchOptions,
+  ): LiveSelectionHub<LiveCollection<QueryItem<Q> & { id: string }>> {
+    type Item = QueryItem<Q> & { id: string }
+    const cacheKey = queryCacheKey(query, options)
+    const existing = this.querySelectionHubs.get(cacheKey)
+    if (existing) {
+      return existing as LiveSelectionHub<LiveCollection<Item>>
+    }
+    let hub: LiveSelectionHub<LiveCollection<Item>>
+    hub = new LiveSelectionHub(
+      () => this.watchQueryState(query, options),
+      () => {
+        if (this.querySelectionHubs.get(cacheKey) === hub) {
+          this.querySelectionHubs.delete(cacheKey)
+        }
+      },
+    )
+    this.querySelectionHubs.set(cacheKey, hub)
+    return hub
+  }
+
+  private viewSelectionHub<V extends View<unknown>>(
+    view: V,
+    options?: QueryWatchOptions,
+  ): LiveSelectionHub<LiveCollection<ViewItem<V> & { id: string }>> {
+    type Item = ViewItem<V> & { id: string }
+    const cacheKey = viewCacheKey(view, options)
+    const existing = this.viewSelectionHubs.get(cacheKey)
+    if (existing) {
+      return existing as LiveSelectionHub<LiveCollection<Item>>
+    }
+    let hub: LiveSelectionHub<LiveCollection<Item>>
+    hub = new LiveSelectionHub(
+      () => this.watchViewState(view, options),
+      () => {
+        if (this.viewSelectionHubs.get(cacheKey) === hub) {
+          this.viewSelectionHubs.delete(cacheKey)
+        }
+      },
+    )
+    this.viewSelectionHubs.set(cacheKey, hub)
+    return hub
   }
 
   /**
@@ -1118,6 +1512,53 @@ export class MykoClient {
       results$,
       windowInfo$,
       setWindow: (window) => this.setQueryWindow(tx, window),
+    }
+  }
+
+  /** Start a live query whose subsequent pages use stable ID keysets. */
+  watchQueryCursor<Q extends Query<{ id: string }>>(
+    query: Q,
+    limit: number,
+    options?: Omit<QueryWatchOptions, 'window'>,
+  ): {
+    tx: string
+    results$: Observable<QueryResult<Q>>
+    pageInfo$: Observable<QueryCursorPageInfo>
+    setWindow: (window: QueryCursorWindow) => void
+    firstPage: () => void
+  } {
+    const watch = this.watchQueryWindowed(query, {
+      ...options,
+      window: { offset: 0, limit },
+    })
+    let requested: QueryCursorWindow = { limit }
+    const pageInfo$ = combineLatest([watch.results$, watch.windowInfo$]).pipe(
+      map(([items, info]) => {
+        const rows = items as Array<{ id: string }>
+        const startCursor = rows.at(0)?.id ?? null
+        const endCursor = rows.at(-1)?.id ?? null
+        return {
+          totalCount: info.totalCount,
+          startCursor,
+          endCursor,
+          hasPreviousPage: requested.before !== undefined || requested.after !== undefined,
+          hasNextPage:
+            rows.length === requested.limit &&
+            (info.totalCount === null || rows.length < info.totalCount),
+        } satisfies QueryCursorPageInfo
+      }),
+      shareReplay({ bufferSize: 1, refCount: true }),
+    )
+    const setWindow = (window: QueryCursorWindow) => {
+      requested = window
+      this.setQueryCursorWindow(watch.tx, window)
+    }
+    return {
+      tx: watch.tx,
+      results$: watch.results$,
+      pageInfo$,
+      setWindow,
+      firstPage: () => setWindow({ limit }),
     }
   }
 
@@ -1408,7 +1849,22 @@ export class MykoClient {
   /** Send a command and wait for response */
   sendCommand<C extends Command<unknown>>(
     command: C,
+    options: CommandOptions = {},
   ): Promise<CommandResult<C>> {
+    if (
+      options.timeoutMs !== undefined &&
+      (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0)
+    ) {
+      return Promise.reject(
+        new RangeError('Command timeoutMs must be a finite non-negative number'),
+      )
+    }
+    if (options.signal?.aborted) {
+      const error = new Error('Command aborted before it was sent')
+      error.name = 'AbortError'
+      return Promise.reject(error)
+    }
+
     const tx = uuid()
 
     const wrappedCommand = {
@@ -1422,27 +1878,59 @@ export class MykoClient {
     }
 
     return new Promise<CommandResult<C>>((resolve, reject) => {
-      const responseSub = this.commandResponses
-        .pipe(filter((r) => r.data.tx === tx))
-        .subscribe((r) => {
-          cleanup()
-          resolve(r.data.response as CommandResult<C>)
-        })
-
-      const errorSub = this.commandErrors
-        .pipe(filter((r) => r.data.tx === tx))
-        .subscribe((r) => {
-          cleanup()
-          reject(new Error(r.data.message))
-        })
-
-      const cleanup = () => {
-        responseSub.unsubscribe()
-        errorSub.unsubscribe()
+      let timeout: ReturnType<typeof setTimeout> | undefined
+      const onAbort = () => {
+        const error = new Error('Command aborted')
+        error.name = 'AbortError'
+        fail(error)
+      }
+      const cleanup = (removeQueuedCommand = false) => {
+        this.pendingCommands.delete(tx)
+        if (timeout !== undefined) clearTimeout(timeout)
+        options.signal?.removeEventListener('abort', onAbort)
+        if (removeQueuedCommand && this.messageQueue.length > 0) {
+          this.messageQueue = this.messageQueue.filter(
+            (message) => this.messageTx(message) !== tx,
+          )
+        }
+      }
+      const fail = (error: Error) => {
+        cleanup(true)
+        reject(error)
       }
 
-      this.send({ event: MykoEvent.Command, data: wrappedCommand })
+      this.pendingCommands.set(tx, {
+        resolve: (message) => {
+          cleanup()
+          resolve(message.data.response as CommandResult<C>)
+        },
+        reject: fail,
+      })
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      if (options.timeoutMs !== undefined) {
+        timeout = setTimeout(() => {
+          const error = new Error(
+            `Command timed out after ${options.timeoutMs}ms`,
+          )
+          error.name = 'TimeoutError'
+          fail(error)
+        }, options.timeoutMs)
+      }
+
+      try {
+        this.send({ event: MykoEvent.Command, data: wrappedCommand })
+      } catch (error) {
+        fail(error instanceof Error ? error : new Error(String(error)))
+      }
     })
+  }
+
+  /**
+   * Bind a generated `*Graph` descriptor into endpoint-scoped live state,
+   * aggregate, and mutation helpers.
+   */
+  graph<G extends object>(graph: G): BoundGraph<G> {
+    return bindGraph(this, graph)
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -1495,6 +1983,7 @@ export class MykoClient {
   }
 
   private closeAllSockets(): void {
+    this.failPendingCommands(new Error('Disconnected before command completion'))
     for (const timer of this.reconnectTimers.values()) clearTimeout(timer)
     this.reconnectTimers.clear()
     this.endpointSockets.clear()
@@ -1571,6 +2060,9 @@ export class MykoClient {
       this.endpointSockets.delete(endpointKey)
 
       if (this.currentServer === address) {
+        this.failPendingCommands(
+          new Error(`Connection closed before command completion: ${address}`),
+        )
         const next = this.getFirstOpenSocket()
         if (next) {
           this.setCurrentServer(
@@ -1745,9 +2237,15 @@ export class MykoClient {
         this.reportResponses.next(message)
         break
       case MykoEvent.CommandResponse:
+        this.pendingCommands
+          .get(message.data.tx)
+          ?.resolve(message as CommandResponseMessage)
         this.commandResponses.next(message as CommandResponseMessage)
         break
       case MykoEvent.CommandError:
+        this.pendingCommands
+          .get(message.data.tx)
+          ?.reject(new Error(message.data.message))
         this.commandErrors.next(message as CommandErrorMessage)
         break
       case MykoEvent.QueryError:
@@ -1826,11 +2324,18 @@ export class MykoClient {
     this.sendNow(message)
   }
 
+  private failPendingCommands(error: Error): void {
+    for (const pending of [...this.pendingCommands.values()]) {
+      pending.reject(error)
+    }
+  }
+
   private messageTx(message: MykoMessage): string | null {
     const data = (message as { data?: unknown }).data as
-      | { tx?: string }
+      | { tx?: string; command?: { tx?: string } }
       | undefined
-    return typeof data?.tx === 'string' ? data.tx : null
+    if (typeof data?.tx === 'string') return data.tx
+    return typeof data?.command?.tx === 'string' ? data.command.tx : null
   }
 
   private sendNow(message: MykoMessage): void {
@@ -1890,11 +2395,18 @@ export class MykoClient {
   }
 
   private resendSubscriptions(): void {
-    for (const q of this.activeQueries.values()) {
+    for (const [tx, q] of this.activeQueries) {
       this.send({
         event: MykoEvent.Query,
         data: this.withReconnectSequenceReset(q),
       })
+      const cursor = this.activeQueryCursorWindows.get(tx)
+      if (cursor) {
+        this.send({
+          event: 'ws:m:query-cursor-window',
+          data: { tx, window: cursor },
+        } as MykoMessage)
+      }
     }
     for (const v of this.activeViews.values()) {
       this.send({ event: MykoEvent.View, data: v })

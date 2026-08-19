@@ -32,8 +32,8 @@ use myko::{
     },
     wire::{
         CancelSubscription, CommandError, CommandResponse, EncodedCommandMessage, MEvent,
-        MEventType, MykoMessage, QueryWindowUpdate, ViewError, ViewWindowUpdate, WrappedQuery,
-        WrappedView,
+        MEventType, MykoMessage, QueryCursorWindowUpdate, QueryWindowUpdate, ViewError,
+        ViewWindowUpdate, WrappedQuery, WrappedView,
     },
 };
 use tokio::{
@@ -227,6 +227,11 @@ struct CommandJob {
 
 /// Result of an async subscription build (query or view `cell_factory`).
 enum SubscriptionReady {
+    WindowedQuery {
+        tx_id: Arc<str>,
+        query_id: Arc<str>,
+        source: myko::query::WindowedQuerySource,
+    },
     Query {
         tx_id: Arc<str>,
         query_id: Arc<str>,
@@ -301,6 +306,11 @@ enum DeferredOutbound {
         response: PendingQueryResponse,
         is_view: bool,
     },
+    /// Successful command completion is deliberately serialized behind the
+    /// query/report updates emitted by that command. Reactive publication is
+    /// synchronous, so sharing this FIFO gives clients read-your-writes when
+    /// the command promise resolves without changing the wire protocol.
+    CommandResult(MykoMessage),
 }
 
 /// WebSocket handler for a single client connection.
@@ -448,13 +458,17 @@ impl WsHandler {
                 // Completed subscription builds — register with session
                 Some(ready) = subscribe_rx.recv() => {
                     let tx_id = match &ready {
-                        SubscriptionReady::Query { tx_id, .. }
+                        SubscriptionReady::WindowedQuery { tx_id, .. }
+                        | SubscriptionReady::Query { tx_id, .. }
                         | SubscriptionReady::View { tx_id, .. } => tx_id.clone(),
                     };
                     if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
                         map.remove(&tx_id);
                     }
                     match ready {
+                        SubscriptionReady::WindowedQuery { tx_id, query_id, source } => {
+                            session.subscribe_windowed_query(tx_id, query_id, source);
+                        }
                         SubscriptionReady::Query { tx_id, query_id, cellmap, window } => {
                             session.subscribe_query(tx_id, query_id, cellmap, window);
                         }
@@ -502,6 +516,7 @@ impl WsHandler {
     async fn run_command_worker(
         mut command_rx: mpsc::UnboundedReceiver<CommandJob>,
         command_ctx: Arc<MykoServerContext>,
+        command_deferred_tx: mpsc::Sender<DeferredOutbound>,
         command_priority_tx: mpsc::Sender<MykoMessage>,
         command_drop_logger: Arc<DropLogger>,
         command_client_id: Arc<str>,
@@ -509,6 +524,7 @@ impl WsHandler {
     ) {
         while let Some(job) = command_rx.recv().await {
             let command_ctx = command_ctx.clone();
+            let command_deferred_tx = command_deferred_tx.clone();
             let command_priority_tx = command_priority_tx.clone();
             let command_drop_logger = command_drop_logger.clone();
             let command_client_id = command_client_id.clone();
@@ -517,6 +533,7 @@ impl WsHandler {
             match tokio::task::spawn_blocking(move || {
                 Self::execute_command_job(
                     command_ctx,
+                    &command_deferred_tx,
                     &command_priority_tx,
                     command_drop_logger.as_ref(),
                     command_client_id,
@@ -714,6 +731,9 @@ impl WsHandler {
                                 OutboundMessage::Message(MykoMessage::QueryResponse(response.into_wire()))
                             }
                         }
+                        Some(DeferredOutbound::CommandResult(response)) => {
+                            OutboundMessage::Message(response)
+                        }
                         None => {
                             deferred_open = false;
                             continue;
@@ -851,6 +871,7 @@ impl WsHandler {
         let write_client_id = client_id.clone();
         let write_addr = addr;
         let command_ctx = ctx.clone();
+        let command_deferred_tx = deferred_tx.clone();
         let command_priority_tx = priority_tx.clone();
         let command_drop_logger = drop_logger.clone();
         let command_client_id = client_id.clone();
@@ -871,6 +892,7 @@ impl WsHandler {
         let command_task = tokio::spawn(Self::run_command_worker(
             command_rx,
             command_ctx,
+            command_deferred_tx,
             command_priority_tx,
             command_drop_logger,
             command_client_id,
@@ -949,9 +971,36 @@ impl WsHandler {
                 Ok(query) => {
                     let registry = ctx.registry.clone();
                     let factory = query_data.cell_factory;
+                    let window_factory = query_data.window_cell_factory;
                     let window = wrapped.window;
                     let sender = message_context.subscribe_tx.clone();
                     tokio::task::spawn_blocking(move || {
+                        if let (Some(window_factory), Some(initial_window)) =
+                            (window_factory, window.clone())
+                        {
+                            match window_factory(
+                                query.clone(),
+                                registry.clone(),
+                                request.clone(),
+                                ctx.clone(),
+                                initial_window,
+                            ) {
+                                Ok(Some(source)) => {
+                                    let _ = sender.send(SubscriptionReady::WindowedQuery {
+                                        tx_id,
+                                        query_id,
+                                        source,
+                                    });
+                                    return;
+                                }
+                                Ok(None) => {}
+                                Err(error) => tracing::warn!(
+                                    "Graph window pushdown unavailable for {}: {}; falling back to materialized windowing",
+                                    query_id,
+                                    error
+                                ),
+                            }
+                        }
                         match factory(query, registry, request, Some(ctx)) {
                             Ok(cellmap) => {
                                 let _ = sender.send(SubscriptionReady::Query {
@@ -1098,6 +1147,7 @@ impl WsHandler {
             }
             message @ (MykoMessage::QueryCancel(_)
             | MykoMessage::QueryWindow(_)
+            | MykoMessage::QueryCursorWindow(_)
             | MykoMessage::ViewCancel(_)
             | MykoMessage::ViewWindow(_)
             | MykoMessage::ReportCancel(_)) => {
@@ -1155,6 +1205,9 @@ impl WsHandler {
             }
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
                 session.update_query_window(&Arc::from(tx), window);
+            }
+            MykoMessage::QueryCursorWindow(QueryCursorWindowUpdate { tx, window }) => {
+                session.update_query_cursor_window(&Arc::from(tx), window);
             }
             MykoMessage::ViewCancel(CancelSubscription { tx }) => {
                 let tx: Arc<str> = tx.into();
@@ -1348,6 +1401,7 @@ impl WsHandler {
 
     fn execute_command_job(
         ctx: Arc<MykoServerContext>,
+        deferred_tx: &mpsc::Sender<DeferredOutbound>,
         priority_tx: &mpsc::Sender<MykoMessage>,
         drop_logger: &DropLogger,
         client_id: Arc<str>,
@@ -1375,11 +1429,13 @@ impl WsHandler {
 
                 match executor.execute_from_value(job.command.clone(), cmd_ctx) {
                     Ok(result) => {
-                        let response = MykoMessage::CommandResponse(CommandResponse {
+                        let response = CommandResponse {
                             response: result,
                             tx: job.tx_id.to_string(),
-                        });
-                        if let Err(e) = priority_tx.try_send(response) {
+                        };
+                        if let Err(e) = deferred_tx.try_send(DeferredOutbound::CommandResult(
+                            MykoMessage::CommandResponse(response),
+                        )) {
                             drop_logger.on_drop("CommandResponse", &e);
                         }
                     }
@@ -1389,7 +1445,9 @@ impl WsHandler {
                             command_id.clone(),
                             e.message,
                         ));
-                        if let Err(err) = priority_tx.try_send(error) {
+                        if let Err(err) =
+                            deferred_tx.try_send(DeferredOutbound::CommandResult(error))
+                        {
                             drop_logger.on_drop("CommandError", &err);
                         }
                     }
@@ -1608,6 +1666,54 @@ mod tests {
                 response: PendingQueryResponse { sequence: 0, .. },
                 is_view: false,
             })
+        ));
+    }
+
+    #[test]
+    fn command_completion_follows_causally_prior_query_response() {
+        let (deferred_tx, mut deferred_rx) = mpsc::channel(2);
+        let query = PendingQueryResponse {
+            tx: "query-tx".into(),
+            sequence: 1,
+            upsert_items: Vec::new(),
+            deletes: Vec::new(),
+            total_count: 0,
+            window: None,
+            window_order_ids: None,
+        };
+        let command = MykoMessage::CommandResponse(CommandResponse {
+            response: serde_json::Value::Null,
+            tx: "command-tx".to_string(),
+        });
+
+        assert!(
+            deferred_tx
+                .try_send(DeferredOutbound::Query {
+                    response: query,
+                    is_view: false,
+                })
+                .is_ok(),
+            "query response must enqueue"
+        );
+        assert!(
+            deferred_tx
+                .try_send(DeferredOutbound::CommandResult(command))
+                .is_ok(),
+            "command completion must enqueue"
+        );
+
+        assert!(matches!(
+            deferred_rx.try_recv(),
+            Ok(DeferredOutbound::Query {
+                response: PendingQueryResponse { sequence: 1, .. },
+                ..
+            })
+        ));
+        assert!(matches!(
+            deferred_rx.try_recv(),
+            Ok(DeferredOutbound::CommandResult(
+                MykoMessage::CommandResponse(CommandResponse { tx, .. })
+            )) if tx == "command-tx"
         ));
     }
 

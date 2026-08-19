@@ -11,6 +11,7 @@ use syn::{
 };
 
 mod command;
+mod graph;
 mod item;
 mod message_events;
 mod query;
@@ -19,6 +20,26 @@ mod report;
 mod saga;
 mod setter;
 mod view;
+
+/// Declare an open, downstream-defined Myko entity category.
+#[proc_macro_attribute]
+pub fn myko_category(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    graph::category(&parse_macro_input!(input as syn::ItemStruct)).into()
+}
+
+/// Add an item type to one or more entity categories.
+#[proc_macro_attribute]
+pub fn myko_in(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let categories =
+        parse_macro_input!(attr with Punctuated::<syn::Path, Token![,]>::parse_terminated);
+    graph::category_membership(&categories, &parse_macro_input!(input as syn::ItemStruct)).into()
+}
+
+/// Register a [`GraphEdge`] implementation without changing its item schema.
+#[proc_macro_attribute]
+pub fn myko_edge(_attr: TokenStream, input: TokenStream) -> TokenStream {
+    graph::edge(parse_macro_input!(input as syn::ItemImpl)).into()
+}
 
 /// Returns whether we are compiling inside the myko crate itself.
 pub(crate) fn is_myko_crate() -> bool {

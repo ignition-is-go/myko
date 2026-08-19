@@ -19,6 +19,109 @@ use hyphae::SwitchMapExt;
 
 use crate::prelude::*;
 
+pub use graph_edge::{BenchGraphEdge, BenchGraphEdgeId, EnsureBenchGraphEdge};
+pub use graph_edge_demand::{BenchDemandGraphEdge, BenchDemandGraphEdgeId};
+pub use graph_edge_forward::{BenchForwardGraphEdge, BenchForwardGraphEdgeId};
+pub use graph_edge_undirected::{BenchUndirectedGraphEdge, BenchUndirectedGraphEdgeId};
+pub use graph_node::{BenchGraphNode, BenchGraphNodeId};
+
+mod graph_node {
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchGraphNode {
+        pub ordinal: i64,
+    }
+}
+
+mod graph_edge {
+    use super::{BenchGraphNode, BenchGraphNodeId};
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchGraphEdge {
+        pub from_id: BenchGraphNodeId,
+        pub to_id: BenchGraphNodeId,
+    }
+
+    #[myko_edge]
+    impl GraphEdge for BenchGraphEdge {
+        type Ends = Directed<ConcreteEndpoint<BenchGraphNode>, ConcreteEndpoint<BenchGraphNode>>;
+
+        fn ends(&self) -> (BenchGraphNodeId, BenchGraphNodeId) {
+            (self.from_id.clone(), self.to_id.clone())
+        }
+
+        const ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
+        const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
+    }
+}
+
+mod graph_edge_forward {
+    use super::{BenchGraphNode, BenchGraphNodeId};
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchForwardGraphEdge {
+        pub from_id: BenchGraphNodeId,
+        pub to_id: BenchGraphNodeId,
+    }
+
+    #[myko_edge]
+    impl GraphEdge for BenchForwardGraphEdge {
+        type Ends = Directed<ConcreteEndpoint<BenchGraphNode>, ConcreteEndpoint<BenchGraphNode>>;
+
+        fn ends(&self) -> (BenchGraphNodeId, BenchGraphNodeId) {
+            (self.from_id.clone(), self.to_id.clone())
+        }
+
+        const A_ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
+        const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
+    }
+}
+
+mod graph_edge_demand {
+    use super::{BenchGraphNode, BenchGraphNodeId};
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchDemandGraphEdge {
+        pub from_id: BenchGraphNodeId,
+        pub to_id: BenchGraphNodeId,
+    }
+
+    #[myko_edge]
+    impl GraphEdge for BenchDemandGraphEdge {
+        type Ends = Directed<ConcreteEndpoint<BenchGraphNode>, ConcreteEndpoint<BenchGraphNode>>;
+
+        fn ends(&self) -> (BenchGraphNodeId, BenchGraphNodeId) {
+            (self.from_id.clone(), self.to_id.clone())
+        }
+    }
+}
+
+mod graph_edge_undirected {
+    use super::{BenchGraphNode, BenchGraphNodeId};
+    use crate::prelude::*;
+
+    #[myko_item]
+    pub struct BenchUndirectedGraphEdge {
+        pub a_id: BenchGraphNodeId,
+        pub b_id: BenchGraphNodeId,
+    }
+
+    #[myko_edge]
+    impl GraphEdge for BenchUndirectedGraphEdge {
+        type Ends = Undirected<ConcreteEndpoint<BenchGraphNode>, ConcreteEndpoint<BenchGraphNode>>;
+
+        fn ends(&self) -> (BenchGraphNodeId, BenchGraphNodeId) {
+            (self.a_id.clone(), self.b_id.clone())
+        }
+
+        const ADJACENCY: AdjacencyPolicy = AdjacencyPolicy::Eager;
+    }
+}
+
 /// A simple entity for benchmarking with category-based filtering.
 #[myko_item]
 pub struct BenchItem {
@@ -312,7 +415,8 @@ impl ReportHandler for SwitchMapReport {
                 category: Some(StringFilter::Eq(category.into())),
                 ..Default::default()
             }))
-            .items();
+            .items()
+            .materialize();
 
         // switch_map + nested query_map — the leak pattern
         items.switch_map(move |items| {

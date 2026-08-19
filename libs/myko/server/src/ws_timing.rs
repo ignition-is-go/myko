@@ -132,6 +132,7 @@ pub const fn message_kind(msg: &MykoMessage) -> &'static str {
         MykoMessage::QueryResponse(_) => "QueryResponse",
         MykoMessage::QueryCancel(_) => "QueryCancel",
         MykoMessage::QueryWindow(_) => "QueryWindow",
+        MykoMessage::QueryCursorWindow(_) => "QueryCursorWindow",
         MykoMessage::QueryError(_) => "QueryError",
         MykoMessage::View(_) => "View",
         MykoMessage::ViewResponse(_) => "ViewResponse",

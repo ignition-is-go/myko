@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 
 // Re-export the hyphae→Leptos bridge primitives so consumers get them from a
 // single place (`myko_leptos`) without depending on `hyphae-leptos` directly.
@@ -86,9 +83,10 @@ where
 /// `loaded` starts as `false`. Each time the reactive query closure re-runs or
 /// the client connection changes, it resets to `false`. It flips to `true` on
 /// the **first response** from the server — even if the returned vec is empty.
-/// The cell's local empty seed is deliberately ignored, so callers can reliably
-/// distinguish "still waiting for a response" from "server replied with zero
-/// items", including after reconnecting to a different server.
+/// This follows the core client's response-sequence readiness rather than
+/// inferring state from the locally seeded empty collection, so callers can
+/// reliably distinguish "still waiting" from "server replied with zero items",
+/// including after reconnecting to a different server.
 ///
 /// ```ignore
 /// let (projects, loaded) = live_query_loaded(|| GetAllProjects {});
@@ -97,7 +95,9 @@ where
 /// // loaded.get() == true && !projects.get().is_empty() →  render list
 /// ```
 pub type LiveQuerySignals<T> = (ReadSignal<Vec<Arc<T>>>, ReadSignal<bool>);
-type QueryResultCell<T> = myko::hyphae::Cell<Vec<Arc<T>>, myko::hyphae::CellImmutable>;
+/// A fine-grained keyed store and authoritative readiness signal.
+pub type LiveStoreSignals<T> = (CellMapStore<Arc<str>, Arc<T>>, ReadSignal<bool>);
+type QueryResultWatch<T> = myko::client::QueryWatch<T>;
 
 pub fn live_query_loaded<Q>(
     query: impl Fn() -> Q + Send + Sync + 'static,
@@ -123,41 +123,29 @@ where
 
     let client = expect_context::<MykoClient>();
 
-    // `prev_cell` holds the previous Cell so it drops (and unsubscribes) on
+    // `prev_watch` holds the previous watch so it drops (and unsubscribes) on
     // each re-run of the effect, before the new subscription is created.
-    let prev_cell: StoredValue<Option<QueryResultCell<Q::Item>>> = StoredValue::new(None);
+    let prev_watch: StoredValue<Option<QueryResultWatch<Q::Item>>> = StoredValue::new(None);
 
     Effect::new(move || {
         let q = query(); // tracks signals read inside the closure
-        // A new subscription is starting — mark as not-yet-loaded.
         set_loaded.set(false);
-        let cell = client.watch_query(q);
-
-        // Hyphae subscriptions immediately emit the cell's current value. Query
-        // cells are seeded locally with an empty vec, so that first notification
-        // is not evidence that the server has replied.
-        let skip_local_seed = Arc::new(AtomicBool::new(true));
-        let guard = cell.subscribe(move |signal| {
-            if skip_local_seed.swap(false, Ordering::AcqRel) {
-                return;
-            }
+        let watch = client.watch_query_state(q);
+        let items_guard = watch.items().subscribe(move |signal| {
             if let Signal::Value(items) = signal {
                 write.set((**items).clone());
-                // A post-seed emission (even an empty vec) is a server response.
-                set_loaded.set(true);
             }
         });
-        cell.own(guard);
-
-        // A retained result belongs to the previous connection until the newly
-        // connected server answers the re-subscribed query.
-        let status_guard = client.connection_status().subscribe(move |_| {
-            set_loaded.set(false);
+        let ready_guard = watch.ready().subscribe(move |signal| {
+            if let Signal::Value(ready) = signal {
+                set_loaded.set(**ready);
+            }
         });
-        cell.own(status_guard);
+        watch.items().own(items_guard);
+        watch.items().own(ready_guard);
 
-        // Drop the previous cell (unsubscribes) and hold the new one.
-        prev_cell.set_value(Some(cell));
+        // Drop the previous watch (unsubscribes) and hold the new one.
+        prev_watch.set_value(Some(watch));
     });
 
     (read, loaded)
@@ -188,7 +176,9 @@ where
     read
 }
 
-/// Like [`live_view`] but also returns a `loaded` flag (see [`live_query_loaded`]).
+/// Like [`live_view`] but also returns an authoritative `loaded` flag (see
+/// [`live_query_loaded`]). Unlike the previous seed-based bridge, the initial
+/// local empty collection does not mark the view loaded.
 pub fn live_view_loaded<V>(
     view: impl Fn() -> V + Send + Sync + 'static,
 ) -> (ReadSignal<Vec<V::Item>>, ReadSignal<bool>)
@@ -213,23 +203,26 @@ where
 
     let client = expect_context::<MykoClient>();
 
-    // Holds the previous Cell so it drops (and unsubscribes) on each re-run.
-    let prev_cell: StoredValue<
-        Option<myko::hyphae::Cell<Vec<V::Item>, myko::hyphae::CellImmutable>>,
-    > = StoredValue::new(None);
+    // Holds the previous watch so it drops (and unsubscribes) on each re-run.
+    let prev_watch: StoredValue<Option<myko::client::ViewWatch<V::Item>>> = StoredValue::new(None);
 
     Effect::new(move || {
         let v = view(); // tracks signals read inside the closure
         set_loaded.set(false);
-        let cell = client.watch_view(v);
-        let guard = cell.subscribe(move |signal| {
+        let watch = client.watch_view_state(v);
+        let items_guard = watch.items().subscribe(move |signal| {
             if let Signal::Value(items) = signal {
                 write.set((**items).clone());
-                set_loaded.set(true);
             }
         });
-        cell.own(guard);
-        prev_cell.set_value(Some(cell));
+        let ready_guard = watch.ready().subscribe(move |signal| {
+            if let Signal::Value(ready) = signal {
+                set_loaded.set(**ready);
+            }
+        });
+        watch.items().own(items_guard);
+        watch.items().own(ready_guard);
+        prev_watch.set_value(Some(watch));
     });
 
     (read, loaded)
@@ -316,12 +309,77 @@ where
         + 'static,
     <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
 {
+    live_query_store_loaded(query).0
+}
+
+/// Fine-grained reactive query store with authoritative response readiness.
+///
+/// `loaded` remains false for the local empty seed, becomes true after the
+/// server's sequence-zero snapshot (including an empty snapshot), and resets
+/// across reconnect epochs. Identical stores also share the core client's one
+/// wire subscription and decode path.
+pub fn live_query_store_loaded<Q>(query: Q) -> LiveStoreSignals<Q::Item>
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + WithTypedId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Send
+        + Sync
+        + 'static,
+    <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
+{
     use myko::client::MykoClient;
 
     let client = expect_context::<MykoClient>();
-    // hyphae owns the diff-driven per-key cells; `to_leptos_store` bridges them
-    // to per-entity Leptos signals tied to the current owner.
-    client.watch_query_map(query).to_leptos_store()
+    let watch = client.watch_query_map_state(query);
+    let store = watch.map().to_leptos_store();
+    let loaded = watch.ready().to_leptos_signal();
+    (store, loaded)
+}
+
+/// Fine-grained reactive view rows with stable per-row Leptos signals.
+///
+/// This is the view counterpart to [`live_query_store`]. It avoids rebuilding
+/// a whole `Vec` and waking every row when one joined row changes.
+pub fn live_view_store<V>(view: V) -> CellMapStore<Arc<str>, Arc<V::Item>>
+where
+    V: myko::core::view::ViewParams + Clone + Send + Sync + 'static,
+    V::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
+    live_view_store_loaded(view).0
+}
+
+/// Fine-grained reactive view store with authoritative response readiness.
+pub fn live_view_store_loaded<V>(view: V) -> LiveStoreSignals<V::Item>
+where
+    V: myko::core::view::ViewParams + Clone + Send + Sync + 'static,
+    V::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
+    use myko::client::MykoClient;
+
+    let client = expect_context::<MykoClient>();
+    let watch = client.watch_view_map_state(view);
+    let store = watch.map().to_leptos_store();
+    let loaded = watch.ready().to_leptos_signal();
+    (store, loaded)
 }
 
 /// Send a command to the Myko server and return a reactive signal with the result.
