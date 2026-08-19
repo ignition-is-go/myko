@@ -1,6 +1,6 @@
 {
   "dependencies": {
-    "@myko/core": "^6.1.0"
+    "@myko/core": "^6.2.0"
   },
   "devDependencies": {
     "@types/luxon": "^3.4.2",
@@ -60,5 +60,5 @@
   },
   "type": "module",
   "types": "./src/lib/index.ts",
-  "version": "6.1.0"
+  "version": "6.2.0"
 }
