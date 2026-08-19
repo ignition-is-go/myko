@@ -14,6 +14,7 @@ use std::{
 };
 
 use ::postgres::{Client, Config as PgClientConfig, NoTls};
+use confique::Config as _;
 use myko::{
     event::{MEvent, MEventType},
     server::{HandlerRegistry, PersistError, PersistHealth, Persister},
@@ -56,6 +57,24 @@ pub struct PersistedEvent {
 }
 
 impl PostgresConfig {
+    /// Load the PostgreSQL settings from the process environment.
+    ///
+    /// The URL is optional because Myko can still be used with an in-memory
+    /// persister. When it is present, all values are parsed before the config
+    /// reaches the server runtime.
+    pub fn try_from_env() -> Result<Option<Self>, confique::Error> {
+        let values = PostgresEnvironment::builder().env().load()?;
+        let Some(url) = values.url else {
+            return Ok(None);
+        };
+
+        Ok(Some(Self {
+            url,
+            table: values.table,
+            channel: values.channel,
+        }))
+    }
+
     /// Create config from environment.
     ///
     /// - `MYKO_POSTGRES_URL` (required)
@@ -63,16 +82,18 @@ impl PostgresConfig {
     /// - `MYKO_POSTGRES_CHANNEL` (optional, default `myko_events_notify`)
     #[must_use]
     pub fn from_env() -> Option<Self> {
-        let url = std::env::var("MYKO_POSTGRES_URL").ok()?;
-        let table = std::env::var("MYKO_POSTGRES_TABLE").unwrap_or_else(|_| "myko_events".into());
-        let channel =
-            std::env::var("MYKO_POSTGRES_CHANNEL").unwrap_or_else(|_| "myko_events_notify".into());
-        Some(Self {
-            url,
-            table,
-            channel,
-        })
+        Self::try_from_env().ok().flatten()
     }
+}
+
+#[derive(confique::Config)]
+struct PostgresEnvironment {
+    #[config(env = "MYKO_POSTGRES_URL")]
+    url: Option<String>,
+    #[config(env = "MYKO_POSTGRES_TABLE", default = "myko_events")]
+    table: String,
+    #[config(env = "MYKO_POSTGRES_CHANNEL", default = "myko_events_notify")]
+    channel: String,
 }
 
 /// Read API for durable event history (windback/replay providers).
