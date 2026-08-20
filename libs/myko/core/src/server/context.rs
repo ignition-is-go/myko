@@ -2976,11 +2976,13 @@ mod tests {
             },
         );
 
-        ctx.set_transient(&ImmediateTestItem {
-            id: "transient-1".into(),
-            value: 9,
-        })
-        .expect("transient SET should apply");
+        assert!(
+            ctx.set_transient(&ImmediateTestItem {
+                id: "transient-1".into(),
+                value: 9,
+            })
+            .is_ok()
+        );
 
         assert_eq!(persister.calls.load(Ordering::Relaxed), 0);
         assert_eq!(

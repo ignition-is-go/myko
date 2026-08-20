@@ -341,8 +341,15 @@ mod tests {
             let total_count = rows.len();
             let start = window.offset.min(total_count);
             let end = start.saturating_add(window.limit).min(total_count);
+            let Some(events) = rows.get(start..end) else {
+                return Err(format!(
+                    "invalid history window {start}..{end} for {total_count} rows"
+                ));
+            };
+            let events = events.to_vec();
+            drop(rows);
             Ok(HistoryPage {
-                events: rows[start..end].to_vec(),
+                events,
                 total_count,
             })
         }
@@ -415,8 +422,11 @@ mod tests {
                 offset: 0,
                 limit: 2,
             },
-        )
-        .expect("history source");
+        );
+        assert!(source.is_ok());
+        let Ok(source) = source else {
+            return;
+        };
 
         let initial = source.snapshots().get();
         assert_eq!(initial.total_count, 3);
