@@ -57,11 +57,16 @@ pub struct PersistedEvent {
 }
 
 impl PostgresConfig {
-    /// Load the PostgreSQL settings from the process environment.
+    /// Load the `PostgreSQL` settings from the process environment.
     ///
     /// The URL is optional because Myko can still be used with an in-memory
     /// persister. When it is present, all values are parsed before the config
     /// reaches the server runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns the configuration error if an environment value cannot be
+    /// loaded or parsed.
     pub fn try_from_env() -> Result<Option<Self>, confique::Error> {
         let values = PostgresEnvironment::builder().env().load()?;
         let Some(url) = values.url else {
