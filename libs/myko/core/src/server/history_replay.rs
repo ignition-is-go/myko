@@ -27,6 +27,8 @@ pub struct HistoryEvent {
     pub event: MEvent,
 }
 
+crate::register_typegen_type!(HistoryEvent);
+
 impl WithId for HistoryEvent {
     fn id(&self) -> Arc<str> {
         self.id.to_string().into()
