@@ -385,6 +385,34 @@ impl RelationshipManager {
         }
     }
 
+    /// Release an ensure-for reservation when its derived entity reaches the
+    /// store. Derived writes may be queued on the active causal transaction,
+    /// so releasing the reservation when the write is enqueued is too early.
+    pub(crate) fn release_ensure_reservation_for_item(&self, item: &dyn AnyItem) {
+        let reservations: Vec<EnsureForReservation> = self
+            .ensure_for_by_dependency
+            .values()
+            .flatten()
+            .filter(|lookup| lookup.local_type == item.entity_type())
+            .filter_map(|lookup| {
+                let combo = lookup
+                    .dependencies
+                    .iter()
+                    .map(|dependency| (dependency.extract_fk)(item.as_any()))
+                    .collect::<Option<Vec<_>>>()?;
+                Some((lookup.local_type, combo))
+            })
+            .collect();
+
+        let mut in_flight = self
+            .ensure_for_in_flight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for reservation in reservations {
+            in_flight.remove(&reservation);
+        }
+    }
+
     /// Forward a SET event for relationship processing.
     ///
     /// Handles `EnsureFor`: when a dependency entity is created, ensures
@@ -937,7 +965,11 @@ impl RelationshipManager {
         let exists =
             Self::find_ensure_for_entity_in(&store.snapshot(), &lookup.dependencies, combo)
                 .is_some();
-        let result = if exists {
+        if exists {
+            self.ensure_for_in_flight
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&reservation);
             Ok(false)
         } else {
             let entity = (lookup.make_entity)(combo);
@@ -945,14 +977,15 @@ impl RelationshipManager {
                 "RelationshipManager: Creating ensured {} for {:?}",
                 lookup.local_type, combo
             );
-            Self::publish_set_cascade(ctx, lookup.local_type, entity).map(|()| true)
-        };
-
-        self.ensure_for_in_flight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&reservation);
-        result
+            let result = Self::publish_set_cascade(ctx, lookup.local_type, entity);
+            if result.is_err() {
+                self.ensure_for_in_flight
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .remove(&reservation);
+            }
+            result.map(|()| true)
+        }
     }
 
     /// Handle `EnsureFor`: when a dependency entity is deleted, delete the

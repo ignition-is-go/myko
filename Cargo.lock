@@ -10024,3 +10024,11 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "leptos-node-graph"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "leptos-node-graph"
+version = "0.1.0"
