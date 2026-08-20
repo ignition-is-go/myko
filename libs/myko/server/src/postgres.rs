@@ -327,7 +327,10 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
     }
 }
 
-type ProducerRequest = MEvent;
+struct ProducerRequest {
+    event: MEvent,
+    acknowledgement: flume::Sender<Result<(), PersistError>>,
+}
 
 /// Handle to the `PostgreSQL` producer.
 #[derive(Clone)]
@@ -339,8 +342,8 @@ pub struct PostgresProducerHandle {
 }
 
 impl PostgresProducerHandle {
-    /// Persist an event. Enqueues to the background producer thread and
-    /// returns immediately. Returns Err only if the channel is full (backpressure).
+    /// Persist an event through the background producer and wait until its
+    /// PostgreSQL transaction commits.
     ///
     /// # Errors
     ///
@@ -350,10 +353,22 @@ impl PostgresProducerHandle {
             event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
         }
         let entity_type = event.item_type.clone();
+        let (acknowledgement, committed) = flume::bounded(1);
+        let request = ProducerRequest {
+            event,
+            acknowledgement,
+        };
 
-        if self.sender.send(event) == Ok(()) {
+        if self.sender.send(request).is_ok() {
             self.health.record_enqueue();
-            Ok(())
+            committed.recv().unwrap_or_else(|_| {
+                let msg = "Postgres producer stopped before acknowledging commit".to_string();
+                self.health.record_error(msg.clone());
+                Err(PersistError {
+                    entity_type,
+                    message: msg,
+                })
+            })
         } else {
             let msg = "Postgres producer thread not running".to_string();
             self.health.record_dropped(msg.clone());
@@ -425,11 +440,11 @@ fn run_producer_loop(
     health: &Arc<PersistHealth>,
 ) {
     let mut client: Option<Client> = None;
-    let mut retry_batch: Vec<MEvent> = Vec::new();
+    let mut retry_batch: Vec<ProducerRequest> = Vec::new();
 
     loop {
         // NOTE(ts): Collect a batch — start with any retry events, then drain the channel.
-        let mut batch: Vec<MEvent> = Vec::new();
+        let mut batch: Vec<ProducerRequest> = Vec::new();
         if retry_batch.is_empty() {
             match rx.recv() {
                 Ok(ev) => batch.push(ev),
@@ -461,12 +476,13 @@ fn run_producer_loop(
         if tracing::enabled!(tracing::Level::DEBUG) {
             let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
                 std::collections::BTreeMap::new();
-            for ev in &batch {
-                let kind = match ev.change_type {
+            for request in &batch {
+                let event = &request.event;
+                let kind = match event.change_type {
                     MEventType::SET => "SET",
                     MEventType::DEL => "DEL",
                 };
-                let count = counts.entry((&*ev.item_type, kind)).or_insert(0);
+                let count = counts.entry((&*event.item_type, kind)).or_insert(0);
                 *count = count.saturating_add(1);
             }
             let summary: Vec<String> = counts
@@ -481,9 +497,13 @@ fn run_producer_loop(
             );
         }
         if let Some(c) = client.as_mut() {
-            match insert_event_batch(c, config, &batch) {
+            let events: Vec<MEvent> = batch.iter().map(|request| request.event.clone()).collect();
+            match insert_event_batch(c, config, &events) {
                 Ok(()) => {
                     health.record_success_batch(u64::try_from(batch_len).unwrap_or(u64::MAX));
+                    for request in batch {
+                        let _ = request.acknowledgement.send(Ok(()));
+                    }
                 }
                 Err(err) => {
                     let msg =
@@ -1101,6 +1121,49 @@ fn format_pg_error(role: &str, url: Option<&str>, err: &postgres::Error) -> Stri
         }
     }
     msg
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn producer_handle_waits_for_commit_acknowledgement() {
+        let (sender, receiver) = flume::unbounded();
+        let health = Arc::new(PersistHealth::default());
+        let handle = PostgresProducerHandle {
+            sender,
+            host_id: Uuid::new_v4(),
+            config: PostgresConfig {
+                url: "postgres://test".to_string(),
+                table: "events".to_string(),
+                channel: "events_notify".to_string(),
+            },
+            health: health.clone(),
+        };
+        let event = MEvent {
+            item: serde_json::json!({ "id": "item-1" }),
+            change_type: MEventType::SET,
+            item_type: Arc::from("TestItem"),
+            created_at: "2026-08-20T00:00:00Z".into(),
+            tx: "tx-1".into(),
+            source_id: None,
+        };
+        let (completed_tx, completed_rx) = flume::bounded(1);
+
+        std::thread::spawn(move || {
+            let _ = completed_tx.send(handle.produce(event));
+        });
+
+        let request = receiver.recv().expect("producer request");
+        assert!(completed_rx.try_recv().is_err());
+        health.record_success();
+        request
+            .acknowledgement
+            .send(Ok(()))
+            .expect("commit acknowledgement");
+        assert!(completed_rx.recv().expect("produce result").is_ok());
+    }
 }
 
 fn connect_pg_client(config: &PostgresConfig, role: &str) -> Result<Client, String> {

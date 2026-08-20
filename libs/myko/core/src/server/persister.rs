@@ -1,7 +1,7 @@
 //! Trait for persisting events to a durable store.
 //!
-//! Implementations may be sync (in-memory/no-op) or internally async.
-//! The `persist` call is fire-and-forget — the implementation handles delivery.
+//! Implementations may perform their I/O directly or delegate it internally,
+//! but a successful `persist` call confirms that the event is durable.
 
 use std::{
     collections::HashMap,
@@ -165,7 +165,7 @@ impl PersistHealth {
 
 /// Trait for persisting events to a durable store.
 pub trait Persister: Send + Sync + 'static {
-    /// Persist a single event.
+    /// Persist a single event and wait for durable acknowledgement.
     ///
     /// # Errors
     ///
