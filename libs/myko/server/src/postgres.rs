@@ -1157,31 +1157,6 @@ fn format_pg_error(role: &str, url: Option<&str>, err: &postgres::Error) -> Stri
     msg
 }
 
-#[cfg(test)]
-mod tests {
-    use myko::{hyphae::Gettable, server::HistoryReplayProvider};
-
-    use super::*;
-
-    #[test]
-    fn committed_rows_flow_through_the_history_notification_cell() {
-        let provider = PostgresHistoryReplayProvider::new(PostgresConfig {
-            url: "postgres://test".to_string(),
-            table: "events".to_string(),
-            channel: "events_notify".to_string(),
-        });
-        let committed = provider.committed_history_event();
-        let key = HistoryEntityKey::new("TestItem", "item-1");
-
-        assert_eq!(committed.get(), None);
-        provider.observe_committed(key.clone(), 42);
-        assert_eq!(
-            committed.get(),
-            Some(Arc::new(CommittedHistoryEvent { key, row_id: 42 }))
-        );
-    }
-}
-
 fn connect_pg_client(config: &PostgresConfig, role: &str) -> Result<Client, String> {
     let mut client_config = parse_pg_client_config(config, role)?;
 
@@ -1208,4 +1183,29 @@ fn parse_pg_client_config(config: &PostgresConfig, role: &str) -> Result<PgClien
             redact_pg_url(&config.url)
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use myko::{hyphae::Gettable, server::HistoryReplayProvider};
+
+    use super::*;
+
+    #[test]
+    fn committed_rows_flow_through_the_history_notification_cell() {
+        let provider = PostgresHistoryReplayProvider::new(PostgresConfig {
+            url: "postgres://test".to_string(),
+            table: "events".to_string(),
+            channel: "events_notify".to_string(),
+        });
+        let committed = provider.committed_history_event();
+        let key = HistoryEntityKey::new("TestItem", "item-1");
+
+        assert_eq!(committed.get(), None);
+        provider.observe_committed(key.clone(), 42);
+        assert_eq!(
+            committed.get(),
+            Some(Arc::new(CommittedHistoryEvent { key, row_id: 42 }))
+        );
+    }
 }

@@ -1674,14 +1674,16 @@ mod tests {
         let observed = Arc::new(Mutex::new(Vec::new()));
         let observed_for_source = observed.clone();
         let source = WindowedQuerySource::new(snapshots.lock(), move |window| {
-            let runtime = tokio::runtime::Builder::new_current_thread()
-                .build()
-                .expect("nested test runtime must build");
+            let runtime = tokio::runtime::Builder::new_current_thread().build();
+            assert!(runtime.is_ok());
+            let Ok(runtime) = runtime else {
+                return;
+            };
             runtime.block_on(async {});
             if let Some(window) = window {
                 observed_for_source
                     .lock()
-                    .expect("observations lock must be healthy")
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .push(window.offset);
             }
         });
@@ -1689,18 +1691,22 @@ mod tests {
         let worker = tokio::spawn(WsHandler::run_query_window_worker(rx));
 
         for offset in [24, 48] {
-            tx.send(QueryWindowJob {
-                tx_id: "history-query".into(),
-                source: source.clone(),
-                window: Some(QueryWindow { offset, limit: 24 }),
-            })
-            .expect("window worker must accept work");
+            assert!(
+                tx.send(QueryWindowJob {
+                    tx_id: "history-query".into(),
+                    source: source.clone(),
+                    window: Some(QueryWindow { offset, limit: 24 }),
+                })
+                .is_ok()
+            );
         }
         drop(tx);
-        worker.await.expect("window worker must exit cleanly");
+        assert!(worker.await.is_ok());
 
         assert_eq!(
-            *observed.lock().expect("observations lock must be healthy"),
+            *observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
             vec![24, 48]
         );
     }
