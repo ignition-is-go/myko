@@ -225,8 +225,13 @@ struct CommandJob {
     received_at: Instant,
 }
 
-/// Result of an async subscription build (query or view `cell_factory`).
+/// Result of an async subscription build (`cell_factory`).
 enum SubscriptionReady {
+    Report {
+        tx_id: Arc<str>,
+        report_id: Arc<str>,
+        cell: hyphae::Cell<Arc<dyn AnyOutput>, hyphae::CellImmutable>,
+    },
     WindowedQuery {
         tx_id: Arc<str>,
         query_id: Arc<str>,
@@ -458,7 +463,8 @@ impl WsHandler {
                 // Completed subscription builds — register with session
                 Some(ready) = subscribe_rx.recv() => {
                     let tx_id = match &ready {
-                        SubscriptionReady::WindowedQuery { tx_id, .. }
+                        SubscriptionReady::Report { tx_id, .. }
+                        | SubscriptionReady::WindowedQuery { tx_id, .. }
                         | SubscriptionReady::Query { tx_id, .. }
                         | SubscriptionReady::View { tx_id, .. } => tx_id.clone(),
                     };
@@ -466,6 +472,9 @@ impl WsHandler {
                         map.remove(&tx_id);
                     }
                     match ready {
+                        SubscriptionReady::Report { tx_id, report_id, cell } => {
+                            session.subscribe_report(tx_id, report_id, cell);
+                        }
                         SubscriptionReady::WindowedQuery { tx_id, query_id, source } => {
                             session.subscribe_windowed_query(tx_id, query_id, source);
                         }
@@ -1157,7 +1166,7 @@ impl WsHandler {
             message @ (MykoMessage::Report(_)
             | MykoMessage::Event(_)
             | MykoMessage::EventBatch(_)) => {
-                Self::handle_report_or_event(session, ctx, message);
+                Self::handle_report_or_event(session, ctx, message_context, message);
             }
             message @ (MykoMessage::Command(_) | MykoMessage::Ping(_)) => {
                 Self::handle_command_or_ping(session, message_context, message);
@@ -1232,6 +1241,7 @@ impl WsHandler {
     fn handle_report_or_event<W: WsWriter>(
         session: &mut ClientSession<W>,
         ctx: Arc<MykoServerContext>,
+        message_context: &MessageContext<'_>,
         message: MykoMessage,
     ) {
         match message {
@@ -1254,14 +1264,22 @@ impl WsHandler {
                             session.client_id.clone(),
                             ctx.host_id,
                         ));
-                        match (data.cell_factory)(report, request, ctx) {
-                            Ok(cell) => session.subscribe_report(tx, report_id.into(), cell),
+                        let factory = data.cell_factory;
+                        let sender = message_context.subscribe_tx.clone();
+                        tokio::task::spawn_blocking(move || match factory(report, request, ctx) {
+                            Ok(cell) => {
+                                let _ = sender.send(SubscriptionReady::Report {
+                                    tx_id: tx,
+                                    report_id: report_id.into(),
+                                    cell,
+                                });
+                            }
                             Err(error) => tracing::error!(
                                 "Failed to create report cell for {}: {}",
                                 report_id,
                                 error
                             ),
-                        }
+                        });
                     }
                     Err(error) => tracing::error!(
                         "Failed to parse report {}: {} | payload: {}",
