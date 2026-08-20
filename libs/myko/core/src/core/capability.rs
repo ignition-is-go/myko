@@ -286,6 +286,20 @@ pub trait EventPublishing: ServerScoped {
             .map_err(|e| self.__emit_err(e))
     }
 
+    /// Emit a live-only SET for an in-progress interaction. The final value
+    /// should be emitted with [`Self::emit_set`] when the interaction ends.
+    fn emit_set_transient<T>(
+        &self,
+        item: impl std::ops::Deref<Target = T>,
+    ) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
+        self.__server_ctx()
+            .set_transient(&*item)
+            .map_err(|e| self.__emit_err(e))
+    }
+
     /// Emit a batch of typed SET events (applied immediately, in one bulk pass).
     ///
     /// # Errors
@@ -466,6 +480,20 @@ pub trait Replaying: ServerScoped {
             .history_replay()
             .ok_or_else(|| "No history replay provider configured".to_string())?;
         provider.replay_to_store(until, &ctx.handler_registry)
+    }
+
+    /// Read durable history for one entity, newest first.
+    fn entity_history(
+        &self,
+        item_type: &str,
+        item_id: &str,
+        limit: usize,
+    ) -> Result<Vec<crate::server::HistoryEvent>, String> {
+        let ctx = self.__server_ctx();
+        let provider = ctx
+            .history_replay()
+            .ok_or_else(|| "No history replay provider configured".to_string())?;
+        provider.entity_history(item_type, item_id, limit)
     }
 }
 

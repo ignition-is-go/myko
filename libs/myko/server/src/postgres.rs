@@ -17,7 +17,7 @@ use ::postgres::{Client, Config as PgClientConfig, NoTls};
 use confique::Config as _;
 use myko::{
     event::{MEvent, MEventType},
-    server::{HandlerRegistry, PersistError, PersistHealth, Persister},
+    server::{HandlerRegistry, HistoryEvent, PersistError, PersistHealth, Persister},
     store::StoreRegistry,
 };
 use postgres::fallible_iterator::FallibleIterator;
@@ -194,6 +194,38 @@ impl PostgresHistoryStore {
             .map(row_to_persisted_event)
             .collect::<Result<Vec<_>, _>>()
     }
+
+    /// Read durable events for one entity, newest first.
+    pub fn load_entity_history(
+        &self,
+        item_type: &str,
+        item_id: &str,
+        limit: usize,
+    ) -> Result<Vec<HistoryEvent>, String> {
+        let mut client = connect_pg_client(&self.config, "history(entity)")?;
+        let sql = format!(
+            "SELECT id, created_at::text, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3",
+            qi(&self.config.table)
+        );
+        let limit = i64::try_from(limit).map_err(|_| "history limit is too large".to_string())?;
+        let rows = client
+            .query(&sql, &[&item_type, &item_id, &limit])
+            .map_err(|e| format!("history query failed: {e}"))?;
+        rows.into_iter()
+            .map(|row| {
+                let id: i64 = row.get(0);
+                let created_at: String = row.get(1);
+                let event_json: String = row.get(2);
+                let event = MEvent::from_str_trim(&event_json)
+                    .map_err(|e| format!("invalid history event payload for id={id}: {e}"))?;
+                Ok(HistoryEvent {
+                    id,
+                    created_at,
+                    event,
+                })
+            })
+            .collect()
+    }
 }
 
 /// `HistoryReplayProvider` backed by `PostgresHistoryStore`.
@@ -209,6 +241,16 @@ impl PostgresHistoryReplayProvider {
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn entity_history(
+        &self,
+        item_type: &str,
+        item_id: &str,
+        limit: usize,
+    ) -> Result<Vec<HistoryEvent>, String> {
+        PostgresHistoryStore::new(self.config.clone())?
+            .load_entity_history(item_type, item_id, limit)
+    }
+
     fn replay_to_store(
         &self,
         until: &str,

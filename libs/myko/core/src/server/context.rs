@@ -58,7 +58,7 @@ type AnyItemArc = Arc<dyn AnyItem>;
 
 /// Where a mutation came from. This is the single policy point for the apply
 /// pipeline's loop-safety: it determines whether a mutation should run
-/// relationship cascades. (Both origins produce.)
+/// relationship cascades and durability.
 ///
 /// It replaces the scattered per-call loop-guard flag checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,6 +73,9 @@ pub enum Origin {
     /// child ID from an `owns_many` parent. It must not start another structural
     /// cascade, or the fixup can feed back into the relation that produced it.
     RelationshipFixup,
+    /// A live-only mutation such as an in-progress editor gesture. It updates
+    /// local reactive state and relationships without durable persistence.
+    Transient,
 }
 
 impl Origin {
@@ -92,7 +95,7 @@ impl Origin {
     const fn should_cascade(self, _change: MEventType) -> bool {
         match self {
             Self::Local | Self::Cascade => true,
-            Self::RelationshipFixup => false,
+            Self::RelationshipFixup | Self::Transient => false,
         }
     }
 
@@ -101,8 +104,7 @@ impl Origin {
     /// Both origins produce; per-type durability is the persister router's job
     /// (`BlackholePersister`), not a per-event flag.
     const fn should_produce(self) -> bool {
-        let _ = self;
-        true
+        !matches!(self, Self::RelationshipFixup | Self::Transient)
     }
 }
 
@@ -583,6 +585,16 @@ impl MykoServerContext {
         T: Eventable + 'static,
     {
         self.set_with_origin(entity, Origin::Local)
+    }
+
+    /// Publish a live-only SET for an in-progress interaction. The item is
+    /// reduced and reactive subscribers observe it, but no durable event or
+    /// saga notification is produced. Emit the final value with [`Self::set`].
+    pub fn set_transient<T>(&self, entity: &T) -> Result<(), PersistError>
+    where
+        T: Eventable + 'static,
+    {
+        self.set_with_origin(entity, Origin::Transient)
     }
 
     /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
@@ -2930,6 +2942,46 @@ mod tests {
                 .get("ImmediateTestItem")
                 .map_or(0, |store| store.snapshot().len()),
             items.len()
+        );
+    }
+
+    #[test]
+    fn transient_set_updates_live_state_without_persistence() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let persister = Arc::new(PreReducePersister {
+            registry: registry.clone(),
+            calls: AtomicUsize::new(0),
+            all_before_reduce: AtomicBool::new(true),
+        });
+        let mut router = PersisterRouter::default();
+        router.set_default(Some(persister.clone()));
+        let ctx = MykoServerContext::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(router),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        );
+
+        ctx.set_transient(&ImmediateTestItem {
+            id: "transient-1".into(),
+            value: 9,
+        })
+        .expect("transient SET should apply");
+
+        assert_eq!(persister.calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            registry
+                .get("ImmediateTestItem")
+                .map_or(0, |store| store.snapshot().len()),
+            1
         );
     }
 
