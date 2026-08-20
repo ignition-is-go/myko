@@ -578,9 +578,7 @@ impl WsHandler {
         }
     }
 
-    async fn run_query_window_worker(
-        mut query_window_rx: mpsc::UnboundedReceiver<QueryWindowJob>,
-    ) {
+    async fn run_query_window_worker(mut query_window_rx: mpsc::UnboundedReceiver<QueryWindowJob>) {
         while let Some(job) = query_window_rx.recv().await {
             let tx_id = job.tx_id.clone();
             if let Err(error) = tokio::task::spawn_blocking(move || {
@@ -1248,8 +1246,7 @@ impl WsHandler {
             }
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
                 let tx_id: Arc<str> = tx.into();
-                if let Some((source, window)) =
-                    session.prepare_query_window_update(&tx_id, window)
+                if let Some((source, window)) = session.prepare_query_window_update(&tx_id, window)
                     && let Err(error) = message_context.query_window_tx.send(QueryWindowJob {
                         tx_id: tx_id.clone(),
                         source,
@@ -1660,10 +1657,7 @@ impl WsWriter for ChannelWriter {
 
 #[cfg(test)]
 mod tests {
-    use myko::{
-        hyphae::Cell,
-        query::WindowedQuerySnapshot,
-    };
+    use myko::{hyphae::Cell, query::WindowedQuerySnapshot};
 
     use super::*;
 
