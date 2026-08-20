@@ -1287,6 +1287,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "confique"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "06b4f5ec222421e22bb0a8cbaa36b1d2b50fd45cdd30c915ded34108da78b29f"
+dependencies = [
+ "confique-macro",
+ "serde",
+]
+
+[[package]]
+name = "confique-macro"
+version = "0.0.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e4d1754680cd218e7bcb4c960cc9bae3444b5197d64563dccccfdf83cab9e1a7"
+dependencies = [
+ "heck 0.5.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "console_error_panic_hook"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4458,6 +4480,7 @@ version = "6.2.0"
 dependencies = [
  "chrono",
  "ciborium",
+ "confique",
  "dashmap",
  "flume 0.11.1",
  "futures-util",
@@ -10001,3 +10024,11 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "leptos-node-graph"
+version = "0.1.0"
+
+[[patch.unused]]
+name = "leptos-node-graph"
+version = "0.1.0"

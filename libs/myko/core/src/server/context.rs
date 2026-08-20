@@ -1720,6 +1720,8 @@ impl MykoServerContext {
                 self.registry
                     .get_or_create(entity_type)
                     .insert(item.id(), item.clone());
+                self.relationship_manager
+                    .release_ensure_reservation_for_item(item.as_ref());
             }
             MEventType::DEL => {
                 crate::server::entity_set_stats::record_del(entity_type);
