@@ -36,6 +36,27 @@ impl ClientRegistry {
         self.writers.remove(client_id);
     }
 
+    /// Whether this client id has a live WS writer right now. This is the
+    /// process-local ground truth for connection liveness — unlike the
+    /// persisted `Client` entity store, which replays rows for connections
+    /// that died with a previous process and never saw their disconnect
+    /// cascade (the zombie-presence class: a stale entity row that keeps a
+    /// viewer "present" forever).
+    #[must_use]
+    pub fn contains(&self, client_id: &str) -> bool {
+        self.writers.contains_key(client_id)
+    }
+
+    /// Snapshot of every client id with a live WS writer. For sweepers that
+    /// reconcile persisted presence entities against actual connections.
+    #[must_use]
+    pub fn live_ids(&self) -> Vec<Arc<str>> {
+        self.writers
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// Send a message to a specific client.
     ///
     /// Returns `true` if the client was found and the message was sent.
@@ -113,4 +134,35 @@ pub fn client_registry() -> Arc<ClientRegistry> {
 /// Returns None if `init_client_registry()` has not been called.
 pub fn try_client_registry() -> Option<Arc<ClientRegistry>> {
     CLIENT_REGISTRY.get().cloned()
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+    use crate::server::client_session::WsWriter;
+    use crate::wire::message::MykoMessage;
+
+    struct NullWriter;
+    impl WsWriter for NullWriter {
+        fn send(&self, _msg: MykoMessage) {}
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: crate::wire::command::EncodedCommandMessage,
+        ) {
+        }
+    }
+
+    #[test]
+    fn contains_and_live_ids_reflect_registered_writers() {
+        let registry = ClientRegistry::new();
+        assert!(!registry.contains("a"));
+        assert!(registry.live_ids().is_empty());
+        registry.register("a".into(), Arc::new(NullWriter));
+        assert!(registry.contains("a"));
+        assert_eq!(registry.live_ids(), vec![Arc::<str>::from("a")]);
+        registry.unregister("a");
+        assert!(!registry.contains("a"));
+    }
 }
