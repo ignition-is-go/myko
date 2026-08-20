@@ -279,6 +279,10 @@ pub struct EntityHistory {
     pub item_id: Arc<str>,
     #[serde(default = "default_history_limit")]
     pub limit: usize,
+    /// Caller-controlled cache generation. Historical reports are snapshots;
+    /// increment this to force a fresh lookup without changing report meaning.
+    #[serde(default)]
+    pub refresh: u64,
 }
 
 fn default_history_limit() -> usize {
@@ -289,6 +293,7 @@ impl ReportHandler for EntityHistory {
     type Output = Vec<HistoryEvent>;
 
     fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        let _ = self.refresh;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let events = ctx
