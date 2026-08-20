@@ -7,9 +7,9 @@ use std::sync::Arc;
 
 use crate::{
     command::CommandHandlerRegistration,
-    graph::{GraphQueryRegistration, GraphWindowQueryCellFactory},
+    graph::GraphQueryRegistration,
     item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
-    query::{QueryCellFactory, QueryParseFn, QueryRegistration},
+    query::{QueryCellFactory, QueryParseFn, QueryRegistration, QueryWindowCellFactory},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
     view::{ViewCellFactory, ViewParseFn, ViewRegistration},
 };
@@ -43,7 +43,7 @@ pub struct StoredQueryData {
     pub query_item_type: Arc<str>,
     pub parse: QueryParseFn,
     pub cell_factory: QueryCellFactory,
-    pub window_cell_factory: Option<GraphWindowQueryCellFactory>,
+    pub window_cell_factory: Option<QueryWindowCellFactory>,
 }
 
 /// Stored view registration data.
@@ -110,7 +110,7 @@ impl HandlerRegistry {
                 query_item_type: registration.query_item_type.into(),
                 parse: registration.parse,
                 cell_factory: registration.cell_factory,
-                window_cell_factory: None,
+                window_cell_factory: Some(registration.window_cell_factory),
             };
             query_data.insert(data.query_id.clone(), data);
         }

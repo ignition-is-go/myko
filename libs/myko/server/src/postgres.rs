@@ -19,10 +19,11 @@ use myko::{
     event::{MEvent, MEventType},
     hyphae::{Cell, CellImmutable, CellMutable, Mutable},
     server::{
-        CommittedHistoryEvent, HandlerRegistry, HistoryEntityKey, HistoryEvent, PersistError,
-        PersistHealth, Persister,
+        CommittedHistoryEvent, HandlerRegistry, HistoryEntityKey, HistoryEvent, HistoryPage,
+        PersistError, PersistHealth, Persister,
     },
     store::StoreRegistry,
+    wire::QueryWindow,
 };
 use postgres::fallible_iterator::FallibleIterator;
 use tracing::{debug, error, info, trace, warn};
@@ -200,22 +201,41 @@ impl PostgresHistoryStore {
     }
 
     /// Read durable events for one entity, newest first.
-    pub fn load_entity_history(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `PostgreSQL` cannot count, read, or decode the
+    /// requested history page.
+    pub fn load_entity_history_page(
         &self,
         item_type: &str,
         item_id: &str,
-        limit: usize,
-    ) -> Result<Vec<HistoryEvent>, String> {
+        window: &QueryWindow,
+    ) -> Result<HistoryPage, String> {
         let mut client = connect_pg_client(&self.config, "history(entity)")?;
-        let sql = format!(
-            "SELECT id, created_at::text, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3",
+        let count_sql = format!(
+            "SELECT COUNT(*)::bigint FROM {} WHERE item_type = $1 AND item_id = $2",
             qi(&self.config.table)
         );
-        let limit = i64::try_from(limit).map_err(|_| "history limit is too large".to_string())?;
+        let total_count: i64 = client
+            .query_one(&count_sql, &[&item_type, &item_id])
+            .map_err(|e| format!("history count query failed: {e}"))?
+            .get(0);
+        let total_count = usize::try_from(total_count)
+            .map_err(|_| "history row count does not fit usize".to_string())?;
+        let sql = format!(
+            "SELECT id, created_at::text, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
+            qi(&self.config.table)
+        );
+        let limit = i64::try_from(window.limit)
+            .map_err(|_| "history page size is too large".to_string())?;
+        let offset = i64::try_from(window.offset)
+            .map_err(|_| "history page offset is too large".to_string())?;
         let rows = client
-            .query(&sql, &[&item_type, &item_id, &limit])
+            .query(&sql, &[&item_type, &item_id, &limit, &offset])
             .map_err(|e| format!("history query failed: {e}"))?;
-        rows.into_iter()
+        let events = rows
+            .into_iter()
             .map(|row| {
                 let id: i64 = row.get(0);
                 let created_at: String = row.get(1);
@@ -228,7 +248,11 @@ impl PostgresHistoryStore {
                     event,
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(HistoryPage {
+            events,
+            total_count,
+        })
     }
 }
 
@@ -258,15 +282,15 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
         self.committed.clone().lock()
     }
 
-    fn entity_history(
+    fn entity_history_page(
         &self,
         key: &HistoryEntityKey,
-        limit: usize,
-    ) -> Result<Vec<HistoryEvent>, String> {
-        PostgresHistoryStore::new(self.config.clone())?.load_entity_history(
+        window: &QueryWindow,
+    ) -> Result<HistoryPage, String> {
+        PostgresHistoryStore::new(self.config.clone())?.load_entity_history_page(
             &key.item_type,
             &key.item_id,
-            limit,
+            window,
         )
     }
 

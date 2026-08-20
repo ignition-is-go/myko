@@ -30,8 +30,6 @@ pub use registration::{
 // Re-export request type
 pub use request::ReportRequest;
 // Re-export traits
-pub use crate::entities::framework_reports::EntityHistory;
-pub use crate::server::HistoryEvent;
 pub use traits::{
     AnyReport, CountResult, MykoReport, Report, ReportId, ReportIdStatic, ReportOutput,
     ReportOutputType, ReportParams,

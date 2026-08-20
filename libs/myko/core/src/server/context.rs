@@ -590,6 +590,10 @@ impl MykoServerContext {
     /// Publish a live-only SET for an in-progress interaction. The item is
     /// reduced and reactive subscribers observe it, but no durable event or
     /// saga notification is produced. Emit the final value with [`Self::set`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the entity cannot be serialized or applied.
     pub fn set_transient<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
@@ -2949,10 +2953,12 @@ mod tests {
     fn transient_set_updates_live_state_without_persistence() {
         let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
-        let persister = Arc::new(PreReducePersister {
+        let persister = Arc::new(OrderingPersister {
             registry: registry.clone(),
             calls: AtomicUsize::new(0),
-            all_before_reduce: AtomicBool::new(true),
+            all_after_reduce: AtomicBool::new(true),
+            reactive_drained: Arc::new(AtomicBool::new(false)),
+            all_before_reactive_drain: AtomicBool::new(true),
         });
         let mut router = PersisterRouter::default();
         router.set_default(Some(persister.clone()));

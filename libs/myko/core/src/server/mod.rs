@@ -51,7 +51,8 @@ pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 pub use handler_registry::HandlerRegistry;
 pub use history_replay::{
-    CommittedHistoryEvent, HistoryEntityKey, HistoryEvent, HistoryReplayProvider,
+    CommittedHistoryEvent, EntityHistory, HistoryEntityKey, HistoryEvent, HistoryPage,
+    HistoryReplayProvider,
 };
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,

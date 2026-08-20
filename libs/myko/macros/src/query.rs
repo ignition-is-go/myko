@@ -67,6 +67,7 @@ pub fn myko_query_impl(query_item_type: &Path, mut input_struct: ItemStruct) -> 
             crate_name: module_path!(),
             parse: <#struct_name as #krate::query::QueryFactory>::parse,
             cell_factory: <#struct_name as #krate::query::QueryFactory>::cell_factory,
+            window_cell_factory: <#struct_name as #krate::query::QueryFactory>::window_cell_factory,
             args: #args_tokens,
             description: #description_tokens,
         }
@@ -92,7 +93,7 @@ pub fn myko_query_impl(query_item_type: &Path, mut input_struct: ItemStruct) -> 
         }
     };
 
-    let expanded = quote! {
+    quote! {
         #derives
         #input_struct
 
@@ -132,7 +133,5 @@ pub fn myko_query_impl(query_item_type: &Path, mut input_struct: ItemStruct) -> 
         }
 
         #cache_key_impl
-    };
-
-    expanded
+    }
 }

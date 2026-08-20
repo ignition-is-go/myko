@@ -28,8 +28,6 @@ use crate::{
     wire::{MEvent, WrappedItem},
 };
 
-use crate::server::HistoryEvent;
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Entity Stub Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -270,41 +268,6 @@ pub struct EventContainer {
 #[myko_macros::myko_report(Vec<MEvent>)]
 pub struct EventsForTransaction {
     pub transaction_id: String,
-}
-
-/// Report returning durable events for one entity, newest first.
-#[myko_macros::myko_report(Vec<HistoryEvent>)]
-pub struct EntityHistory {
-    pub item_type: String,
-    pub item_id: Arc<str>,
-    #[serde(default = "default_history_limit")]
-    pub limit: usize,
-}
-
-fn default_history_limit() -> usize {
-    24
-}
-
-impl ReportHandler for EntityHistory {
-    type Output = Vec<HistoryEvent>;
-
-    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let key =
-                crate::server::HistoryEntityKey::new(self.item_type.clone(), self.item_id.clone());
-            let limit = self.limit;
-            let committed = ctx.committed_history_event();
-            return committed
-                .map(move |_| Arc::new(ctx.entity_history(&key, limit).unwrap_or_default()));
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (ctx, self);
-            Cell::new(Arc::new(Vec::new())).lock()
-        }
-    }
 }
 
 impl ReportHandler for EventsForTransaction {

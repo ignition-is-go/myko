@@ -99,6 +99,66 @@ pub type LiveQuerySignals<T> = (ReadSignal<Vec<Arc<T>>>, ReadSignal<bool>);
 pub type LiveStoreSignals<T> = (CellMapStore<Arc<str>, Arc<T>>, ReadSignal<bool>);
 type QueryResultWatch<T> = myko::client::QueryWatch<T>;
 
+/// A Leptos-readable server-side query window with pagination controls.
+#[derive(Clone)]
+pub struct LiveWindowedQuery<T: myko::hyphae::CellValue> {
+    state: ReadSignal<myko::client::WindowedQueryState<T>>,
+    watch: myko::client::WindowedQueryWatch<T>,
+}
+
+impl<T: myko::hyphae::CellValue> LiveWindowedQuery<T> {
+    /// Coherent page rows, readiness, count, and pagination metadata.
+    #[must_use]
+    pub const fn state(&self) -> ReadSignal<myko::client::WindowedQueryState<T>> {
+        self.state
+    }
+
+    /// Request the next page when one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client cannot send the window update.
+    pub fn next_page(&self) -> Result<bool, String> {
+        self.watch.next_page()
+    }
+
+    /// Request the previous page when one exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the client cannot send the window update.
+    pub fn previous_page(&self) -> Result<bool, String> {
+        self.watch.previous_page()
+    }
+}
+
+/// Subscribe to a query whose requested window can be pushed into its backing
+/// source. The returned state updates in place as pagination controls move the
+/// window.
+#[must_use]
+pub fn live_query_windowed<Q>(
+    query: Q,
+    initial_window: myko::wire::QueryWindow,
+) -> LiveWindowedQuery<Q::Item>
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
+    use myko::client::MykoClient;
+
+    let client = expect_context::<MykoClient>();
+    let watch = client.watch_query_windowed(query, initial_window);
+    let state = watch.state().to_leptos_signal();
+    LiveWindowedQuery { state, watch }
+}
+
 pub fn live_query_loaded<Q>(
     query: impl Fn() -> Q + Send + Sync + 'static,
 ) -> LiveQuerySignals<Q::Item>

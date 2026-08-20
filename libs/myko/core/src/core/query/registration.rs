@@ -24,7 +24,9 @@ use super::{
         QueryRoute,
     },
     request::QueryRequest,
-    traits::{AnyQuery, QueryBuildArgs, QueryHandler, QueryParams, QueryTestContext},
+    traits::{
+        AnyQuery, QueryBuildArgs, QueryHandler, QueryParams, QueryTestContext, QueryWindowBuildArgs,
+    },
 };
 use crate::{
     common::with_id::WithId, core::item::downcast_any_item_arc, request::RequestContext,
@@ -46,6 +48,16 @@ pub type QueryCellFactory = fn(
     Arc<RequestContext>,
     Option<Arc<MykoServerContext>>,
 ) -> Result<FilteredCellMap, String>;
+
+/// Type-erased factory for a query that can push a requested window into its
+/// backing source instead of materializing the complete result map.
+pub type QueryWindowCellFactory = fn(
+    Arc<dyn AnyQuery>,
+    Arc<StoreRegistry>,
+    Arc<RequestContext>,
+    Arc<MykoServerContext>,
+    crate::wire::QueryWindow,
+) -> Result<Option<super::WindowedQuerySource>, String>;
 
 type AnyItemArc = Arc<dyn crate::core::item::AnyItem>;
 type AnyItemMap = hyphae::CellMap<Arc<str>, AnyItemArc>;
@@ -1381,6 +1393,8 @@ pub struct QueryRegistration {
     pub parse: QueryParseFn,
     /// Factory for creating reactive cell from query
     pub cell_factory: QueryCellFactory,
+    /// Factory for an optional source-level bounded query window.
+    pub window_cell_factory: QueryWindowCellFactory,
     /// Query struct's own fields, captured at macro-expansion time. Backs
     /// the MCP `search()` tool's operation index — see `crate::reflection`.
     pub args: &'static [crate::reflection::OperationArgField],
@@ -1415,6 +1429,21 @@ pub trait QueryFactory: QueryParams {
         request_ctx: Arc<RequestContext>,
         server_ctx: Option<Arc<MykoServerContext>>,
     ) -> Result<FilteredCellMap, String>;
+
+    /// Create a source-level bounded query window when the handler supports
+    /// pushdown.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query payload is invalid or the source
+    /// cannot build the requested window.
+    fn window_cell_factory(
+        query: Arc<dyn AnyQuery>,
+        registry: Arc<StoreRegistry>,
+        request_ctx: Arc<RequestContext>,
+        server_ctx: Arc<MykoServerContext>,
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<super::WindowedQuerySource>, String>;
 }
 
 impl<Q: QueryParams> QueryFactory for Q
@@ -1471,6 +1500,24 @@ where
                     })
             },
         )))
+    }
+
+    fn window_cell_factory(
+        any_query: Arc<dyn AnyQuery>,
+        registry: Arc<StoreRegistry>,
+        request_ctx: Arc<RequestContext>,
+        server_ctx: Arc<MykoServerContext>,
+        window: crate::wire::QueryWindow,
+    ) -> Result<Option<super::WindowedQuerySource>, String> {
+        let any_ref: &dyn Any = any_query.as_ref();
+        let request: QueryRequest<Q> =
+            crate::common::downcast::downcast_request(any_ref, "windowed query payload")?;
+        let query_context = Arc::new(QueryContext { req: request_ctx });
+        Q::build_window(QueryWindowBuildArgs {
+            query: Arc::new(request.query),
+            query_context: QueryBuildContext::new(query_context, registry, Some(server_ctx)),
+            window,
+        })
     }
 }
 

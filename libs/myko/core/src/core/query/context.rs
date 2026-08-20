@@ -358,3 +358,10 @@ impl crate::core::capability::RequestScoped for QueryBuildContext {
         &self.query_context.req
     }
 }
+impl crate::core::capability::HistoryReading for QueryBuildContext {
+    fn __history_replay(&self) -> Option<&Arc<dyn crate::server::HistoryReplayProvider>> {
+        self.server_ctx
+            .as_ref()
+            .and_then(|server| server.history_replay())
+    }
+}

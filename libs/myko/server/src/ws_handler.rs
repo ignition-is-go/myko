@@ -1003,11 +1003,14 @@ impl WsHandler {
                                     return;
                                 }
                                 Ok(None) => {}
-                                Err(error) => tracing::warn!(
-                                    "Graph window pushdown unavailable for {}: {}; falling back to materialized windowing",
-                                    query_id,
-                                    error
-                                ),
+                                Err(error) => {
+                                    tracing::error!(
+                                        "Failed to create pushed query window for {}: {}",
+                                        query_id,
+                                        error
+                                    );
+                                    return;
+                                }
                             }
                         }
                         match factory(query, registry, request, Some(ctx)) {
@@ -1239,7 +1242,7 @@ impl WsHandler {
     }
 
     fn handle_report_or_event<W: WsWriter>(
-        session: &mut ClientSession<W>,
+        session: &ClientSession<W>,
         ctx: Arc<MykoServerContext>,
         message_context: &MessageContext<'_>,
         message: MykoMessage,
