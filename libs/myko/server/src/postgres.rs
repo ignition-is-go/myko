@@ -17,7 +17,11 @@ use ::postgres::{Client, Config as PgClientConfig, NoTls};
 use confique::Config as _;
 use myko::{
     event::{MEvent, MEventType},
-    server::{HandlerRegistry, HistoryEvent, PersistError, PersistHealth, Persister},
+    hyphae::{Cell, CellImmutable, CellMutable, Mutable},
+    server::{
+        CommittedHistoryEvent, HandlerRegistry, HistoryEntityKey, HistoryEvent, PersistError,
+        PersistHealth, Persister,
+    },
     store::StoreRegistry,
 };
 use postgres::fallible_iterator::FallibleIterator;
@@ -231,24 +235,39 @@ impl PostgresHistoryStore {
 /// `HistoryReplayProvider` backed by `PostgresHistoryStore`.
 pub struct PostgresHistoryReplayProvider {
     config: PostgresConfig,
+    committed: Cell<Option<Arc<CommittedHistoryEvent>>, CellMutable>,
 }
 
 impl PostgresHistoryReplayProvider {
     #[must_use]
-    pub const fn new(config: PostgresConfig) -> Self {
-        Self { config }
+    pub fn new(config: PostgresConfig) -> Self {
+        Self {
+            config,
+            committed: Cell::new(None),
+        }
+    }
+
+    fn observe_committed(&self, key: HistoryEntityKey, row_id: i64) {
+        self.committed
+            .set(Some(Arc::new(CommittedHistoryEvent { key, row_id })));
     }
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn committed_history_event(&self) -> Cell<Option<Arc<CommittedHistoryEvent>>, CellImmutable> {
+        self.committed.clone().lock()
+    }
+
     fn entity_history(
         &self,
-        item_type: &str,
-        item_id: &str,
+        key: &HistoryEntityKey,
         limit: usize,
     ) -> Result<Vec<HistoryEvent>, String> {
-        PostgresHistoryStore::new(self.config.clone())?
-            .load_entity_history(item_type, item_id, limit)
+        PostgresHistoryStore::new(self.config.clone())?.load_entity_history(
+            &key.item_type,
+            &key.item_id,
+            limit,
+        )
     }
 
     fn replay_to_store(
@@ -327,10 +346,7 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
     }
 }
 
-struct ProducerRequest {
-    event: MEvent,
-    acknowledgement: flume::Sender<Result<(), PersistError>>,
-}
+type ProducerRequest = MEvent;
 
 /// Handle to the `PostgreSQL` producer.
 #[derive(Clone)]
@@ -342,8 +358,8 @@ pub struct PostgresProducerHandle {
 }
 
 impl PostgresProducerHandle {
-    /// Persist an event through the background producer and wait until its
-    /// PostgreSQL transaction commits.
+    /// Persist an event. Enqueues to the background producer thread and
+    /// returns immediately. Returns Err only if the channel is full (backpressure).
     ///
     /// # Errors
     ///
@@ -353,22 +369,9 @@ impl PostgresProducerHandle {
             event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
         }
         let entity_type = event.item_type.clone();
-        let (acknowledgement, committed) = flume::bounded(1);
-        let request = ProducerRequest {
-            event,
-            acknowledgement,
-        };
-
-        if self.sender.send(request).is_ok() {
+        if self.sender.send(event) == Ok(()) {
             self.health.record_enqueue();
-            committed.recv().unwrap_or_else(|_| {
-                let msg = "Postgres producer stopped before acknowledging commit".to_string();
-                self.health.record_error(msg.clone());
-                Err(PersistError {
-                    entity_type,
-                    message: msg,
-                })
-            })
+            Ok(())
         } else {
             let msg = "Postgres producer thread not running".to_string();
             self.health.record_dropped(msg.clone());
@@ -440,11 +443,11 @@ fn run_producer_loop(
     health: &Arc<PersistHealth>,
 ) {
     let mut client: Option<Client> = None;
-    let mut retry_batch: Vec<ProducerRequest> = Vec::new();
+    let mut retry_batch: Vec<MEvent> = Vec::new();
 
     loop {
         // NOTE(ts): Collect a batch — start with any retry events, then drain the channel.
-        let mut batch: Vec<ProducerRequest> = Vec::new();
+        let mut batch: Vec<MEvent> = Vec::new();
         if retry_batch.is_empty() {
             match rx.recv() {
                 Ok(ev) => batch.push(ev),
@@ -476,8 +479,7 @@ fn run_producer_loop(
         if tracing::enabled!(tracing::Level::DEBUG) {
             let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
                 std::collections::BTreeMap::new();
-            for request in &batch {
-                let event = &request.event;
+            for event in &batch {
                 let kind = match event.change_type {
                     MEventType::SET => "SET",
                     MEventType::DEL => "DEL",
@@ -497,13 +499,9 @@ fn run_producer_loop(
             );
         }
         if let Some(c) = client.as_mut() {
-            let events: Vec<MEvent> = batch.iter().map(|request| request.event.clone()).collect();
-            match insert_event_batch(c, config, &events) {
+            match insert_event_batch(c, config, &batch) {
                 Ok(()) => {
                     health.record_success_batch(u64::try_from(batch_len).unwrap_or(u64::MAX));
-                    for request in batch {
-                        let _ = request.acknowledgement.send(Ok(()));
-                    }
                 }
                 Err(err) => {
                     let msg =
@@ -736,6 +734,7 @@ impl PostgresConsumer {
         host_id: Uuid,
         handler_registry: Arc<HandlerRegistry>,
         registry: Arc<StoreRegistry>,
+        history_replay: Arc<PostgresHistoryReplayProvider>,
     ) -> Result<Self, String> {
         validate_ident(&config.table)?;
         validate_ident(&config.channel)?;
@@ -746,9 +745,14 @@ impl PostgresConsumer {
         let host_id_string = host_id.to_string();
 
         let handle = std::thread::spawn(move || {
-            if let Err(err) =
-                run_consumer_loop(&cfg, &host_id_string, &handler_registry, &registry, &status)
-            {
+            if let Err(err) = run_consumer_loop(
+                &cfg,
+                &host_id_string,
+                &handler_registry,
+                &registry,
+                &status,
+                &history_replay,
+            ) {
                 let reason = format!("Postgres consumer failed: {err}");
                 error!("{reason}");
                 status.fail(reason);
@@ -827,8 +831,9 @@ fn load_consumer_snapshot(
         }
         count = count.saturating_add(1);
     }
-    let fetch_sql =
-        format!("SELECT id, event::text FROM {table} WHERE id > $1 ORDER BY id ASC LIMIT $2");
+    let fetch_sql = format!(
+        "SELECT id, item_type, item_id, event::text FROM {table} WHERE id > $1 ORDER BY id ASC LIMIT $2"
+    );
     Ok((high_water, count, fetch_sql))
 }
 
@@ -838,6 +843,7 @@ fn run_consumer_loop(
     handler_registry: &Arc<HandlerRegistry>,
     registry: &Arc<StoreRegistry>,
     status: &Arc<CatchUpStatus>,
+    history_replay: &PostgresHistoryReplayProvider,
 ) -> Result<(), String> {
     let mut reader = connect_consumer_client("reader", config)?;
     let mut listener = connect_listener_client(config)?;
@@ -867,12 +873,16 @@ fn run_consumer_loop(
         if !rows.is_empty() {
             for row in rows {
                 let id: i64 = row.get(0);
-                let event_json: String = row.get(1);
+                let item_type: String = row.get(1);
+                let item_id: String = row.get(2);
+                let event_json: String = row.get(3);
                 last_seen_id = id;
 
                 match MEvent::from_str_trim(&event_json) {
                     Ok(event) => {
                         apply_remote_event(&event, host_id, handler_registry, registry);
+                        history_replay
+                            .observe_committed(HistoryEntityKey::new(item_type, item_id), id);
                     }
                     Err(err) => {
                         error!("Invalid postgres event row id={id}: {err}");
@@ -1125,44 +1135,26 @@ fn format_pg_error(role: &str, url: Option<&str>, err: &postgres::Error) -> Stri
 
 #[cfg(test)]
 mod tests {
+    use myko::{hyphae::Gettable, server::HistoryReplayProvider};
+
     use super::*;
 
     #[test]
-    fn producer_handle_waits_for_commit_acknowledgement() {
-        let (sender, receiver) = flume::unbounded();
-        let health = Arc::new(PersistHealth::default());
-        let handle = PostgresProducerHandle {
-            sender,
-            host_id: Uuid::new_v4(),
-            config: PostgresConfig {
-                url: "postgres://test".to_string(),
-                table: "events".to_string(),
-                channel: "events_notify".to_string(),
-            },
-            health: health.clone(),
-        };
-        let event = MEvent {
-            item: serde_json::json!({ "id": "item-1" }),
-            change_type: MEventType::SET,
-            item_type: Arc::from("TestItem"),
-            created_at: "2026-08-20T00:00:00Z".into(),
-            tx: "tx-1".into(),
-            source_id: None,
-        };
-        let (completed_tx, completed_rx) = flume::bounded(1);
-
-        std::thread::spawn(move || {
-            let _ = completed_tx.send(handle.produce(event));
+    fn committed_rows_flow_through_the_history_notification_cell() {
+        let provider = PostgresHistoryReplayProvider::new(PostgresConfig {
+            url: "postgres://test".to_string(),
+            table: "events".to_string(),
+            channel: "events_notify".to_string(),
         });
+        let committed = provider.committed_history_event();
+        let key = HistoryEntityKey::new("TestItem", "item-1");
 
-        let request = receiver.recv().expect("producer request");
-        assert!(completed_rx.try_recv().is_err());
-        health.record_success();
-        request
-            .acknowledgement
-            .send(Ok(()))
-            .expect("commit acknowledgement");
-        assert!(completed_rx.recv().expect("produce result").is_ok());
+        assert_eq!(committed.get(), None);
+        provider.observe_committed(key.clone(), 42);
+        assert_eq!(
+            committed.get(),
+            Some(Arc::new(CommittedHistoryEvent { key, row_id: 42 }))
+        );
     }
 }
 

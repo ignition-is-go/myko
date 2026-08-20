@@ -2592,19 +2592,6 @@ impl MykoServerContext {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
-        if !R::CACHEABLE {
-            let report_id = report.report_id();
-            tracing::trace!(
-                target: "myko::server::context::report_cache",
-                "report_cache BYPASS report_id={}",
-                report_id,
-            );
-            let _span = tracing::trace_span!("myko.report", report = report_id.as_ref()).entered();
-            crate::server::dispatch_metrics::record_report(report_id.as_ref(), request.origin());
-            let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
-            return report.compute(nested_ctx).materialize();
-        }
-
         let key = Self::cache_key("report", report.report_id().as_ref(), &report, &request);
         let report_id = report.report_id();
 
@@ -3219,30 +3206,5 @@ mod tests {
 
         let _ = ctx.report(report, request);
         assert!(ctx.compute_gates.is_empty());
-    }
-
-    #[test]
-    fn snapshot_reports_bypass_the_report_cache() {
-        use crate::{entities::framework_reports::EntityHistory, request::RequestContext};
-
-        let _serial = scheduler_test_serial();
-        let ctx = make_ctx();
-        let request = Arc::new(RequestContext::internal(
-            Arc::<str>::from(Uuid::new_v4().to_string()),
-            ctx.host_id,
-            "test",
-        ));
-        let report = EntityHistory {
-            item_type: "TestItem".to_string(),
-            item_id: Arc::from("test-item"),
-            limit: 24,
-        };
-
-        let first = ctx.report(report.clone(), request.clone());
-        let second = ctx.report(report, request);
-
-        assert_eq!(ctx.report_cache_len(), 0);
-        assert!(ctx.compute_gates.is_empty());
-        assert!(!first.ptr_eq(&second));
     }
 }

@@ -50,7 +50,9 @@ pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 pub use handler_registry::HandlerRegistry;
-pub use history_replay::{HistoryEvent, HistoryReplayProvider};
+pub use history_replay::{
+    CommittedHistoryEvent, HistoryEntityKey, HistoryEvent, HistoryReplayProvider,
+};
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,
 };

@@ -485,15 +485,25 @@ pub trait Replaying: ServerScoped {
     /// Read durable history for one entity, newest first.
     fn entity_history(
         &self,
-        item_type: &str,
-        item_id: &str,
+        key: &crate::server::HistoryEntityKey,
         limit: usize,
     ) -> Result<Vec<crate::server::HistoryEvent>, String> {
         let ctx = self.__server_ctx();
         let provider = ctx
             .history_replay()
             .ok_or_else(|| "No history replay provider configured".to_string())?;
-        provider.entity_history(item_type, item_id, limit)
+        provider.entity_history(key, limit)
+    }
+
+    /// Stream cell for committed history rows observed by the backend.
+    fn committed_history_event(
+        &self,
+    ) -> Cell<Option<Arc<crate::server::CommittedHistoryEvent>>, CellImmutable> {
+        let ctx = self.__server_ctx();
+        ctx.history_replay().map_or_else(
+            || Cell::new(None).lock(),
+            |provider| provider.committed_history_event(),
+        )
     }
 }
 

@@ -287,15 +287,16 @@ fn default_history_limit() -> usize {
 
 impl ReportHandler for EntityHistory {
     type Output = Vec<HistoryEvent>;
-    const CACHEABLE: bool = false;
 
     fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let events = ctx
-                .entity_history(&self.item_type, &self.item_id, self.limit)
-                .unwrap_or_default();
-            return Cell::new(Arc::new(events)).lock();
+            let key =
+                crate::server::HistoryEntityKey::new(self.item_type.clone(), self.item_id.clone());
+            let limit = self.limit;
+            let committed = ctx.committed_history_event();
+            return committed
+                .map(move |_| Arc::new(ctx.entity_history(&key, limit).unwrap_or_default()));
         }
 
         #[cfg(target_arch = "wasm32")]

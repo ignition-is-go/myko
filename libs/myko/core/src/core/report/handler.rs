@@ -133,13 +133,6 @@ pub trait ReportHandler: Sized {
         + ToValue
         + 'static;
 
-    /// Whether report cells may be shared between equivalent subscriptions.
-    ///
-    /// Reactive reports should use the default. Snapshot reports backed by an
-    /// external point-in-time read must disable caching so every subscription
-    /// executes `compute` again.
-    const CACHEABLE: bool = true;
-
     /// Compute the report output as a reactive pipeline.
     ///
     /// This method is called once when the report is first subscribed to.
