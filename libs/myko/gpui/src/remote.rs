@@ -798,8 +798,10 @@ where
 }
 
 /// A report contract whose server-side handler lives in a service crate the UI
-/// intentionally does not link. The associated output remains strongly typed;
-/// only the handler registration is resolved dynamically by report name.
+/// intentionally does not link.
+///
+/// The associated output remains strongly typed; only the handler registration
+/// is resolved dynamically by report name.
 pub trait ClientReportSpec: Clone + Send + Sync + 'static {
     type Output: DeserializeOwned + Clone + Debug + PartialEq + Send + Sync + 'static;
 
@@ -814,14 +816,14 @@ pub trait ClientReportSpec: Clone + Send + Sync + 'static {
 /// client or linking the service's server-only implementation dependencies.
 pub fn live_client_report_in<R>(
     myko: &crate::Myko,
-    report: R,
+    report: &R,
     cx: &mut App,
 ) -> Entity<Remote<Result<R::Output, String>>>
 where
     R: ClientReportSpec,
 {
     let client = myko.client().clone();
-    let watch = client.watch_report_raw(wrap_client_report(&report));
+    let watch = client.watch_report_raw(wrap_client_report(report));
     bridge_cell(
         &watch,
         &client,
@@ -902,10 +904,12 @@ mod tests {
     fn client_report_wrapper_preserves_typed_identity_parameters_and_transaction() {
         let wrapped = wrap_client_report(&ServiceHealth);
         assert_eq!(wrapped.report_id, stringify!(ServiceHealth));
-        assert_eq!(wrapped.report["detail"], serde_json::json!(true));
+        assert_eq!(wrapped.report.get("detail"), Some(&serde_json::json!(true)));
         assert!(
-            wrapped.report["tx"]
-                .as_str()
+            wrapped
+                .report
+                .get("tx")
+                .and_then(serde_json::Value::as_str)
                 .is_some_and(|tx| !tx.is_empty())
         );
     }

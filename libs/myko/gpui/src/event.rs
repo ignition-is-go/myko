@@ -10,6 +10,10 @@ use crate::myko;
 ///
 /// This is the low-latency path for ephemeral, server-normalized state such as
 /// cursor presence. Durable domain mutations should continue to use commands.
+///
+/// # Errors
+///
+/// Returns an error when the Myko client cannot enqueue the event.
 pub fn send_set_event(item: &impl Eventable, source_id: &str, cx: &App) -> Result<(), String> {
     myko(cx)
         .client()
@@ -17,6 +21,10 @@ pub fn send_set_event(item: &impl Eventable, source_id: &str, cx: &App) -> Resul
 }
 
 /// Sends a typed raw DEL event through the application-global client.
+///
+/// # Errors
+///
+/// Returns an error when the Myko client cannot enqueue the event.
 pub fn send_delete_event(item: &impl Eventable, source_id: &str, cx: &App) -> Result<(), String> {
     myko(cx).client().send_event(MEvent::del(item, source_id))
 }
