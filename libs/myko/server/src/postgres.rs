@@ -14,6 +14,7 @@ use std::{
 };
 
 use ::postgres::{Client, Config as PgClientConfig, NoTls};
+use chrono::{DateTime, Utc};
 use confique::Config as _;
 use myko::{
     event::{MEvent, MEventType},
@@ -131,7 +132,7 @@ impl PostgresHistoryStore {
     pub fn load_after_id(&self, after_id: i64, limit: i64) -> Result<Vec<PersistedEvent>, String> {
         let mut client = connect_pg_client(&self.config, "history(load_after_id)")?;
         let sql = format!(
-            "SELECT id, created_at::text, event::text FROM {} WHERE id > $1 ORDER BY id ASC LIMIT $2",
+            "SELECT id, created_at, event::text FROM {} WHERE id > $1 ORDER BY id ASC LIMIT $2",
             qi(&self.config.table)
         );
         let rows = client
@@ -162,7 +163,7 @@ impl PostgresHistoryStore {
             return Err(format!("Invalid timestamp format: {until}"));
         }
         let sql = format!(
-            "SELECT id, created_at::text, event::text FROM {} WHERE id > {} AND created_at <= '{}'::timestamptz ORDER BY id ASC LIMIT {}",
+            "SELECT id, created_at, event::text FROM {} WHERE id > {} AND created_at <= '{}'::timestamptz ORDER BY id ASC LIMIT {}",
             qi(&self.config.table),
             after_id,
             until,
@@ -189,7 +190,7 @@ impl PostgresHistoryStore {
     ) -> Result<Vec<PersistedEvent>, String> {
         let mut client = connect_pg_client(&self.config, "history(load_between)")?;
         let sql = format!(
-            "SELECT id, created_at::text, event::text FROM {} WHERE created_at >= $1::timestamptz AND created_at <= $2::timestamptz ORDER BY id ASC LIMIT $3",
+            "SELECT id, created_at, event::text FROM {} WHERE created_at >= $1::timestamptz AND created_at <= $2::timestamptz ORDER BY id ASC LIMIT $3",
             qi(&self.config.table)
         );
         let rows = client
@@ -224,7 +225,7 @@ impl PostgresHistoryStore {
         let total_count = usize::try_from(total_count)
             .map_err(|_| "history row count does not fit usize".to_string())?;
         let sql = format!(
-            "SELECT id, created_at::text, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
+            "SELECT id, created_at, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
             qi(&self.config.table)
         );
         let limit = i64::try_from(window.limit)
@@ -238,7 +239,7 @@ impl PostgresHistoryStore {
             .into_iter()
             .map(|row| {
                 let id: i64 = row.get(0);
-                let created_at: String = row.get(1);
+                let created_at: DateTime<Utc> = row.get(1);
                 let event_json: String = row.get(2);
                 let event = MEvent::from_str_trim(&event_json)
                     .map_err(|e| format!("invalid history event payload for id={id}: {e}"))?;
@@ -1104,16 +1105,20 @@ fn qi(name: &str) -> String {
 
 fn row_to_persisted_event(row: ::postgres::Row) -> Result<PersistedEvent, String> {
     let id: i64 = row.get(0);
-    let created_at: String = row.get(1);
+    let created_at: DateTime<Utc> = row.get(1);
     let event_json: String = row.get(2);
     let event = MEvent::from_str_trim(&event_json)
         .map_err(|e| format!("invalid history event payload for id={id}: {e}"))?;
     drop(row);
     Ok(PersistedEvent {
         id,
-        created_at,
+        created_at: history_timestamp_to_wire(created_at),
         event,
     })
+}
+
+fn history_timestamp_to_wire(created_at: DateTime<Utc>) -> String {
+    created_at.to_rfc3339()
 }
 
 fn redact_pg_url(url: &str) -> String {
@@ -1207,5 +1212,14 @@ mod tests {
             committed.get(),
             Some(Arc::new(CommittedHistoryEvent { key, row_id: 42 }))
         );
+    }
+
+    #[test]
+    fn postgres_timestamps_leave_the_adapter_as_rfc3339() {
+        let timestamp = DateTime::from_timestamp(1_777_777_777, 123_456_000).unwrap_or_default();
+        let wire_timestamp = history_timestamp_to_wire(timestamp);
+
+        assert!(DateTime::parse_from_rfc3339(&wire_timestamp).is_ok());
+        assert_eq!(wire_timestamp, "2026-05-03T03:09:37.123456+00:00");
     }
 }

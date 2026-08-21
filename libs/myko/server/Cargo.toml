@@ -25,7 +25,7 @@ tokio-tungstenite.workspace = true
 tungstenite.workspace = true
 tokio-util.workspace = true
 
-postgres = "0.19.13"
+postgres = { version = "0.19.13", features = ["with-chrono-0_4"] }
 
 # Async utilities
 futures-util.workspace = true

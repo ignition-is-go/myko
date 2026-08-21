@@ -5,8 +5,9 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use chrono::{DateTime, Utc};
+
 use crate::{
-    TS,
     common::with_id::{WithId, WithTypedId},
     core::capability::HistoryReading,
     hyphae::{Cell, CellImmutable, CellMutable, Mutable, Signal, Watchable},
@@ -18,16 +19,13 @@ use crate::{
 };
 
 /// A durable event returned by an entity-history lookup.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[ts(export)]
 pub struct HistoryEvent {
     pub id: i64,
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
     pub event: MEvent,
 }
-
-crate::register_typegen_type!(HistoryEvent);
 
 impl WithId for HistoryEvent {
     fn id(&self) -> Arc<str> {
@@ -93,7 +91,7 @@ impl HistoryEntityKey {
 }
 
 /// Live, server-windowed durable history for one entity, newest first.
-#[myko_macros::myko_query(HistoryEvent)]
+#[myko_macros::myko_query(HistoryEvent, export = false)]
 pub struct EntityHistory {
     pub item_type: String,
     pub item_id: Arc<str>,
@@ -366,7 +364,7 @@ mod tests {
     fn history_event(id: i64) -> HistoryEvent {
         HistoryEvent {
             id,
-            created_at: format!("event-{id}"),
+            created_at: DateTime::from_timestamp(id, 0).unwrap_or_default(),
             event: MEvent {
                 item: json!({ "id": "entity-1", "value": id }),
                 change_type: MEventType::SET,
@@ -376,6 +374,25 @@ mod tests {
                 source_id: None,
             },
         }
+    }
+
+    #[cfg(feature = "typegen")]
+    #[test]
+    fn rust_only_history_query_stays_out_of_typegen() {
+        let catalog = crate::codegen_types::TypegenCatalog::collect(env!("CARGO_CRATE_NAME"));
+
+        assert!(
+            catalog
+                .queries
+                .iter()
+                .all(|query| query.query_id != "EntityHistory")
+        );
+        assert!(
+            catalog
+                .types
+                .iter()
+                .all(|registration| registration.type_name != "HistoryEvent")
+        );
     }
 
     fn query_context(provider: Arc<TestHistoryProvider>) -> QueryBuildContext {

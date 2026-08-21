@@ -184,7 +184,7 @@ impl TypegenCatalog {
                 .collect(),
             queries: inventory::iter::<QueryRegistration>
                 .into_iter()
-                .filter(|entry| selected(entry.crate_name))
+                .filter(|entry| entry.include_in_typegen && selected(entry.crate_name))
                 .collect(),
             views: inventory::iter::<ViewRegistration>
                 .into_iter()
