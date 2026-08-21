@@ -11,7 +11,7 @@ bun = ["bun", "run", "check"]
 [tasks.build]
 workspace_batchable = true
 depends_on = ["gen"]
-cargo = ["cargo", "build"]
+cargo = ["cargo", "build", "--locked"]
 bun = ["bun", "run", "build"]
 
 [tasks.test]
@@ -42,7 +42,7 @@ default = ["cargo", "run", "-p", "myko", "--features", "codegen-ts", "--bin", "t
 cascade = "all"
 autoapply = "inherit"
 depends_on = ["build"]
-cargo = ["cargo", "publish"]
+cargo = ["cargo", "publish", "--locked"]
 bun = """cp package.json package.json.bak \
   && bun "$(git rev-parse --show-toplevel)/scripts/apply-publish-config.ts" \
   && VERSION=$(bun -p "require('./package.json').version") \

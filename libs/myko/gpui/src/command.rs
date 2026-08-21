@@ -233,6 +233,94 @@ impl<R: CellValue> CommandSlot<R> {
     }
 }
 
+/// Retains and observes multiple commands that may be pending concurrently.
+///
+/// Use [`CommandSlot`] for a single user action where a second invocation must
+/// be suppressed until the first completes. Use this tracker for event streams
+/// where every invocation is meaningful and dropping an overlapping command
+/// would lose a mutation.
+pub struct CommandTracker<R: CellValue> {
+    entries: Vec<(Entity<Command<R>>, Subscription)>,
+}
+
+impl<R: CellValue> Default for CommandTracker<R> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R: CellValue> CommandTracker<R> {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[must_use]
+    pub fn pending_count(&self, cx: &App) -> usize {
+        self.entries
+            .iter()
+            .filter(|(command, _)| command.read(cx).is_pending())
+            .count()
+    }
+
+    /// Drop completed entries while retaining every in-flight command.
+    pub fn prune_finished(&mut self, cx: &App) {
+        self.entries
+            .retain(|(command, _)| command.read(cx).is_pending());
+    }
+
+    /// Retain a command and deliver its one terminal transition to its owner.
+    pub fn track<Owner>(
+        &mut self,
+        command: Entity<Command<R>>,
+        cx: &mut Context<Owner>,
+        mut callback: impl FnMut(&mut Owner, CommandState<R>, &mut Context<Owner>) + 'static,
+    ) where
+        Owner: 'static,
+    {
+        self.prune_finished(cx);
+        let observation = on_command_change(&command, cx, move |owner, state, cx| {
+            callback(owner, state, cx);
+        });
+        self.entries.push((command, observation));
+        cx.notify();
+    }
+
+    /// Retain a command and report only its terminal failure to the owner.
+    ///
+    /// This is the common mutation-stream case where success is reflected by
+    /// a live query and only an error needs local UI state. The owner is
+    /// notified after the failure callback; successful completion is retained
+    /// until the next prune without invoking the callback.
+    pub fn track_failure<Owner>(
+        &mut self,
+        command: Entity<Command<R>>,
+        cx: &mut Context<Owner>,
+        mut callback: impl FnMut(&mut Owner, Arc<str>, &mut Context<Owner>) + 'static,
+    ) where
+        Owner: 'static,
+    {
+        self.track(command, cx, move |owner, state, cx| {
+            if let CommandState::Failed(message) = state {
+                callback(owner, message, cx);
+                cx.notify();
+            }
+        });
+    }
+}
+
 /// Observe a command from an owning entity and redraw it on lifecycle changes.
 pub fn observe_command<Owner, R>(
     command: &Entity<Command<R>>,
@@ -445,8 +533,8 @@ mod tests {
     use myko::hyphae::{Cell, Mutable as _};
 
     use super::{
-        CommandEvent, CommandHooks, CommandSlot, CommandState, boundary_for_command,
-        command_from_cell,
+        CommandEvent, CommandHooks, CommandSlot, CommandState, CommandTracker,
+        boundary_for_command, command_from_cell,
     };
 
     struct SlotOwner {
@@ -455,6 +543,12 @@ mod tests {
 
     struct Probe {
         _observation: gpui::Subscription,
+    }
+
+    struct TrackerOwner {
+        tracker: CommandTracker<u32>,
+        results: Vec<u32>,
+        errors: Vec<String>,
     }
 
     #[gpui::test]
@@ -700,5 +794,80 @@ mod tests {
             command.read_with(cx, |command, _| command.state().clone()),
             CommandState::Failed(error) if error.as_ref() == "encode"
         ));
+    }
+
+    #[gpui::test]
+    fn tracker_retains_overlapping_commands_without_suppressing_them(cx: &mut TestAppContext) {
+        let first_writer = Cell::new(None::<Result<u32, String>>);
+        let second_writer = Cell::new(None::<Result<u32, String>>);
+        let (first, second) = cx.update(|cx| {
+            (
+                command_from_cell(&first_writer.clone().lock(), cx),
+                command_from_cell(&second_writer.clone().lock(), cx),
+            )
+        });
+        let owner = cx.new(|_| TrackerOwner {
+            tracker: CommandTracker::new(),
+            results: Vec::new(),
+            errors: Vec::new(),
+        });
+        owner.update(cx, |owner, cx| {
+            owner.tracker.track(first, cx, |owner, state, _| {
+                if let CommandState::Success(value) = state {
+                    owner.results.push(*value);
+                }
+            });
+            owner.tracker.track(second, cx, |owner, state, _| {
+                if let CommandState::Success(value) = state {
+                    owner.results.push(*value);
+                }
+            });
+            assert_eq!(owner.tracker.len(), 2);
+            assert_eq!(owner.tracker.pending_count(cx), 2);
+        });
+
+        second_writer.set(Some(Ok(2)));
+        first_writer.set(Some(Ok(1)));
+        cx.run_until_parked();
+
+        owner.read_with(cx, |owner, cx| {
+            let mut results = owner.results.clone();
+            results.sort_unstable();
+            assert_eq!(results, [1, 2]);
+            assert_eq!(owner.tracker.pending_count(cx), 0);
+        });
+    }
+
+    #[gpui::test]
+    fn tracker_failure_callback_ignores_success_and_reports_errors(cx: &mut TestAppContext) {
+        let success_writer = Cell::new(None::<Result<u32, String>>);
+        let failure_writer = Cell::new(None::<Result<u32, String>>);
+        let (success, failure) = cx.update(|cx| {
+            (
+                command_from_cell(&success_writer.clone().lock(), cx),
+                command_from_cell(&failure_writer.clone().lock(), cx),
+            )
+        });
+        let owner = cx.new(|_| TrackerOwner {
+            tracker: CommandTracker::new(),
+            results: Vec::new(),
+            errors: Vec::new(),
+        });
+        owner.update(cx, |owner, cx| {
+            owner.tracker.track_failure(success, cx, |owner, error, _| {
+                owner.errors.push(error.to_string());
+            });
+            owner.tracker.track_failure(failure, cx, |owner, error, _| {
+                owner.errors.push(error.to_string());
+            });
+        });
+
+        success_writer.set(Some(Ok(7)));
+        failure_writer.set(Some(Err("network".into())));
+        cx.run_until_parked();
+
+        owner.read_with(cx, |owner, _| {
+            assert_eq!(owner.errors, ["network"]);
+        });
     }
 }
