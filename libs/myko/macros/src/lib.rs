@@ -551,10 +551,44 @@ pub fn myko_item(attr: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 #[proc_macro_attribute]
+/// Define a typed Myko query.
+///
+/// Queries are included in generated-language bindings by default. Pass
+/// `export = false` for Rust-only queries while retaining normal runtime
+/// registration and wire behavior.
 pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let query_item_type = parse_macro_input!(attr as syn::Path);
+    let args = parse_macro_input!(attr as QueryArgs);
     let input = parse_macro_input!(input as syn::ItemStruct);
-    query::myko_query_impl(&query_item_type, input).into()
+    query::myko_query_impl(&args.item_type, args.export, input).into()
+}
+
+struct QueryArgs {
+    item_type: syn::Path,
+    export: bool,
+}
+
+impl Parse for QueryArgs {
+    fn parse(input: ParseStream) -> syn::Result<Self> {
+        let item_type = input.parse()?;
+        if input.is_empty() {
+            return Ok(Self {
+                item_type,
+                export: true,
+            });
+        }
+
+        input.parse::<Token![,]>()?;
+        let option = syn::Ident::parse_any(input)?;
+        if option != "export" {
+            return Err(syn::Error::new_spanned(option, "expected `export = false`"));
+        }
+        input.parse::<Token![=]>()?;
+        let export = input.parse::<syn::LitBool>()?.value;
+        if !input.is_empty() {
+            return Err(input.error("unexpected query options"));
+        }
+        Ok(Self { item_type, export })
+    }
 }
 
 /// Defines a reactive view query.

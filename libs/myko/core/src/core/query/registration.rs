@@ -1400,6 +1400,8 @@ pub struct QueryRegistration {
     pub args: &'static [crate::reflection::OperationArgField],
     /// Query struct's doc comment, if any.
     pub description: Option<&'static str>,
+    /// Whether language binding generators should publish this query.
+    pub include_in_typegen: bool,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
