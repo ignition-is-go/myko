@@ -3183,6 +3183,76 @@ mod tests {
         assert!(ctx.compute_gates.is_empty());
     }
 
+    struct ClientStatusTestWriter;
+
+    impl crate::server::WsWriter for ClientStatusTestWriter {
+        fn send(&self, _msg: crate::wire::MykoMessage) {}
+
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: crate::wire::EncodedCommandMessage,
+        ) {
+        }
+    }
+
+    #[test]
+    fn client_status_uses_live_writer_registry_not_replayed_entity() {
+        use crate::{
+            entities::{
+                client::{Client, ClientId, ClientStatus},
+                server::ServerId,
+            },
+            request::RequestContext,
+            server::client_registry,
+        };
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let client_id: Arc<str> = format!("replayed-client-{}", Uuid::new_v4()).into();
+        let stale_client = Arc::new(Client {
+            id: ClientId::from(client_id.clone()),
+            server_id: ServerId::from(Arc::<str>::from(ctx.host_id.to_string())),
+            address: None,
+            windback: None,
+        });
+        let stale_item: Arc<dyn AnyItem> = stale_client;
+        let client_store = ctx.registry.get_or_create(Client::ENTITY_NAME_STATIC);
+        client_store.insert(client_id.clone(), stale_item);
+
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            ctx.host_id,
+            "test",
+        ));
+        let status = ctx.report(
+            ClientStatus {
+                client_id: ClientId::from(client_id.clone()),
+            },
+            request,
+        );
+
+        assert!(!status.get().online, "replayed entity is not a live client");
+
+        let registry = client_registry();
+        registry.register(client_id.clone(), Arc::new(ClientStatusTestWriter));
+        assert!(
+            status.get().online,
+            "registered writer makes the client live"
+        );
+
+        registry.unregister(&client_id);
+        assert!(
+            !status.get().online,
+            "unregistering the writer makes the client offline"
+        );
+        assert!(
+            client_store.get_value(&client_id).is_some(),
+            "the stale entity remains, proving it is not the liveness source"
+        );
+    }
+
     #[test]
     fn compute_gates_does_not_leak_after_report_cache_populates() {
         // Same invariant as compute_gates_does_not_leak_after_cache_populates,
