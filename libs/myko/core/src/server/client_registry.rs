@@ -3,9 +3,14 @@
 //! Provides a thread-safe mapping from `client_id` to `WsWriter`,
 //! enabling any part of the server to send messages to specific clients.
 
-use std::sync::{Arc, OnceLock};
+use std::{
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
-use dashmap::DashMap;
+use hyphae::{Cell, CellImmutable, CellMap, MapExt, Materialize};
+#[cfg(not(target_arch = "wasm32"))]
+use hyphae::{MapEntriesExt, MapQuery};
 use serde::Serialize;
 
 use super::WsWriter;
@@ -16,24 +21,62 @@ use crate::{
 
 /// Thread-safe registry mapping client IDs to their WebSocket writers.
 pub struct ClientRegistry {
-    writers: DashMap<Arc<str>, Arc<dyn WsWriter>>,
+    writers: CellMap<Arc<str>, RegisteredWriter>,
+}
+
+#[derive(Clone)]
+struct RegisteredWriter(Arc<dyn WsWriter>);
+
+impl fmt::Debug for RegisteredWriter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("RegisteredWriter").finish()
+    }
+}
+
+impl PartialEq for RegisteredWriter {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 impl ClientRegistry {
     fn new() -> Self {
         Self {
-            writers: DashMap::new(),
+            writers: CellMap::new().with_name("client_registry"),
         }
     }
 
     /// Register a client's writer.
     pub fn register(&self, client_id: Arc<str>, writer: Arc<dyn WsWriter>) {
-        self.writers.insert(client_id, writer);
+        self.writers.insert(client_id, RegisteredWriter(writer));
     }
 
     /// Unregister a client's writer.
     pub fn unregister(&self, client_id: &str) {
-        self.writers.remove(client_id);
+        self.writers.remove(&Arc::<str>::from(client_id));
+    }
+
+    /// Reactively track whether a client has a live WebSocket writer.
+    ///
+    /// This derives directly from the registry's per-key `CellMap` observation;
+    /// persisted `Client` entities are deliberately not part of liveness.
+    #[must_use]
+    pub(crate) fn watch_connected(&self, client_id: &Arc<str>) -> Cell<bool, CellImmutable> {
+        self.writers
+            .get(client_id)
+            .map(Option::is_some)
+            .materialize()
+    }
+
+    /// Reactively project the ids that currently have live WebSocket writers.
+    ///
+    /// Writer values stay private to the registry; consumers can compose this
+    /// membership plan with entity maps without exposing transport handles.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn connected_ids(&self) -> impl MapQuery<Key = Arc<str>, Value = ()> + use<> {
+        self.writers
+            .clone()
+            .map_entries(|client_id, _| (client_id.clone(), ()))
     }
 
     /// Send a message to a specific client.
@@ -41,26 +84,30 @@ impl ClientRegistry {
     /// Returns `true` if the client was found and the message was sent.
     #[must_use]
     pub fn send_to(&self, client_id: &str, msg: MykoMessage) -> bool {
-        self.writers.get(client_id).is_some_and(|writer| {
-            writer.send(msg);
-            true
-        })
+        self.writers
+            .get_value(&Arc::<str>::from(client_id))
+            .is_some_and(|writer| {
+                writer.0.send(msg);
+                true
+            })
     }
 
     pub fn send_command_request_to<C>(&self, client_id: &str, request: &CommandRequest<C>) -> bool
     where
         C: CommandId + Serialize,
     {
-        let Some(writer) = self.writers.get(client_id) else {
+        let Some(writer) = self.writers.get_value(&Arc::<str>::from(client_id)) else {
             return false;
         };
 
         let command_id = request.command_id().to_string();
-        let protocol = writer.protocol();
+        let protocol = writer.0.protocol();
 
         match encode_command_message(protocol, request) {
             Ok(payload) => {
-                writer.send_serialized_command(request.tx.clone(), command_id, payload);
+                writer
+                    .0
+                    .send_serialized_command(request.tx.clone(), command_id, payload);
                 true
             }
             Err(err) => {
@@ -78,7 +125,7 @@ impl ClientRegistry {
     /// Number of currently connected clients.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.writers.len()
+        self.writers.keys_snapshot().len()
     }
 
     /// Returns true when there are no connected clients.
@@ -113,4 +160,37 @@ pub fn client_registry() -> Arc<ClientRegistry> {
 /// Returns None if `init_client_registry()` has not been called.
 pub fn try_client_registry() -> Option<Arc<ClientRegistry>> {
     CLIENT_REGISTRY.get().cloned()
+}
+
+#[cfg(test)]
+mod liveness_tests {
+    use super::*;
+    use hyphae::Gettable;
+
+    use crate::server::client_session::WsWriter;
+    use crate::wire::message::MykoMessage;
+
+    struct NullWriter;
+    impl WsWriter for NullWriter {
+        fn send(&self, _msg: MykoMessage) {}
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: crate::wire::command::EncodedCommandMessage,
+        ) {
+        }
+    }
+
+    #[test]
+    fn cellmap_liveness_reflects_registered_writers() {
+        let registry = ClientRegistry::new();
+        let client_id = Arc::<str>::from("a");
+        let connected = registry.watch_connected(&client_id);
+        assert!(!connected.get());
+        registry.register("a".into(), Arc::new(NullWriter));
+        assert!(connected.get());
+        registry.unregister("a");
+        assert!(!connected.get());
+    }
 }
