@@ -62,6 +62,8 @@ jobs:
         run: cargo flux run lint
       - name: Run Rust and frontend tests
         run: cargo flux run test
+      - name: Verify myko-gpui is publishable
+        run: cargo publish --dry-run -p myko-gpui
       - name: Test typegen renderer and macro defaults
         run: |
           cargo test -p myko --lib --features codegen-ts codegen::typescript::

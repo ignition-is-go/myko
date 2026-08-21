@@ -97,8 +97,8 @@ parking_lot = "0.12"
 # Leptos adapter on the same Hyphae major so its extension traits share types.
 hyphae = { version = "^3.0", features = ["scheduler"] }
 hyphae-leptos = { version = "^3.0" }
-# GPUI adapters are Git-distributed; their core dependencies remain registry-backed.
-hyphae-gpui = { git = "https://github.com/ignition-is-go/hyphae.git" }
+# Keep the development source on Git while publishing the crates.io requirement.
+hyphae-gpui = { version = "3.1.1", git = "https://github.com/ignition-is-go/hyphae.git" }
 
 # GPUI native/web stack. Pin the unofficial packages so every adapter shares one type universe.
 gpui = { package = "gpui-unofficial", version = "=1.16.1" }
