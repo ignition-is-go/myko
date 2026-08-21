@@ -20,6 +20,7 @@ use myko::{
     client::MykoProtocol,
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
+    query::WindowedQuerySource,
     relationship::{
         iter_client_id_registrations, iter_fallback_to_id_registrations,
         iter_server_owned_registrations,
@@ -32,8 +33,8 @@ use myko::{
     },
     wire::{
         CancelSubscription, CommandError, CommandResponse, EncodedCommandMessage, MEvent,
-        MEventType, MykoMessage, QueryCursorWindowUpdate, QueryWindowUpdate, ViewError,
-        ViewWindowUpdate, WrappedQuery, WrappedView,
+        MEventType, MykoMessage, QueryCursorWindowUpdate, QueryWindow, QueryWindowUpdate,
+        ViewError, ViewWindowUpdate, WrappedQuery, WrappedView,
     },
 };
 use tokio::{
@@ -225,8 +226,19 @@ struct CommandJob {
     received_at: Instant,
 }
 
-/// Result of an async subscription build (query or view `cell_factory`).
+struct QueryWindowJob {
+    tx_id: Arc<str>,
+    source: WindowedQuerySource,
+    window: Option<QueryWindow>,
+}
+
+/// Result of an async subscription build (`cell_factory`).
 enum SubscriptionReady {
+    Report {
+        tx_id: Arc<str>,
+        report_id: Arc<str>,
+        cell: hyphae::Cell<Arc<dyn AnyOutput>, hyphae::CellImmutable>,
+    },
     WindowedQuery {
         tx_id: Arc<str>,
         query_id: Arc<str>,
@@ -259,6 +271,7 @@ struct MessageContext<'a> {
     command_started_by_tx: &'a SharedTxTimes,
     outbound_commands_by_tx: &'a SharedOutboundCommands,
     command_tx: &'a mpsc::UnboundedSender<CommandJob>,
+    query_window_tx: &'a mpsc::UnboundedSender<QueryWindowJob>,
     subscribe_tx: &'a mpsc::UnboundedSender<SubscriptionReady>,
 }
 
@@ -274,6 +287,7 @@ struct ReadLoopState {
     command_started_by_tx: SharedTxTimes,
     outbound_commands_by_tx: SharedOutboundCommands,
     command_tx: mpsc::UnboundedSender<CommandJob>,
+    query_window_tx: mpsc::UnboundedSender<QueryWindowJob>,
     subscribe_tx: mpsc::UnboundedSender<SubscriptionReady>,
     overload_rx: watch::Receiver<bool>,
 }
@@ -323,11 +337,16 @@ impl WsHandler {
         client_entity: &Client,
         client_id: Arc<str>,
         addr: SocketAddr,
-        tasks: (tokio::task::JoinHandle<()>, tokio::task::JoinHandle<()>),
+        tasks: (
+            tokio::task::JoinHandle<()>,
+            tokio::task::JoinHandle<()>,
+            tokio::task::JoinHandle<()>,
+        ),
     ) {
-        let (write_task, command_task) = tasks;
+        let (write_task, command_task, query_window_task) = tasks;
         write_task.abort();
         command_task.abort();
+        query_window_task.abort();
         if let Some(registry) = try_client_registry() {
             registry.unregister(&client_id);
         }
@@ -378,6 +397,7 @@ impl WsHandler {
                 command_started_by_tx: &state.command_started_by_tx,
                 outbound_commands_by_tx: &state.outbound_commands_by_tx,
                 command_tx: &state.command_tx,
+                query_window_tx: &state.query_window_tx,
                 subscribe_tx: &state.subscribe_tx,
             },
             message,
@@ -458,7 +478,8 @@ impl WsHandler {
                 // Completed subscription builds — register with session
                 Some(ready) = subscribe_rx.recv() => {
                     let tx_id = match &ready {
-                        SubscriptionReady::WindowedQuery { tx_id, .. }
+                        SubscriptionReady::Report { tx_id, .. }
+                        | SubscriptionReady::WindowedQuery { tx_id, .. }
                         | SubscriptionReady::Query { tx_id, .. }
                         | SubscriptionReady::View { tx_id, .. } => tx_id.clone(),
                     };
@@ -466,6 +487,9 @@ impl WsHandler {
                         map.remove(&tx_id);
                     }
                     match ready {
+                        SubscriptionReady::Report { tx_id, report_id, cell } => {
+                            session.subscribe_report(tx_id, report_id, cell);
+                        }
                         SubscriptionReady::WindowedQuery { tx_id, query_id, source } => {
                             session.subscribe_windowed_query(tx_id, query_id, source);
                         }
@@ -552,6 +576,28 @@ impl WsHandler {
                 map.remove(&tx_id);
             }
         }
+    }
+
+    async fn run_query_window_worker(mut query_window_rx: mpsc::UnboundedReceiver<QueryWindowJob>) {
+        while let Some(job) = query_window_rx.recv().await {
+            let tx_id = job.tx_id.clone();
+            if let Err(error) = tokio::task::spawn_blocking(move || {
+                job.source.set_window(job.window);
+            })
+            .await
+            {
+                tracing::error!(tx = %tx_id, %error, "query window worker panicked");
+            }
+        }
+    }
+
+    fn spawn_query_window_worker() -> (
+        mpsc::UnboundedSender<QueryWindowJob>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let task = tokio::spawn(Self::run_query_window_worker(rx));
+        (tx, task)
     }
 
     fn outbound_metadata(
@@ -821,9 +867,9 @@ impl WsHandler {
         let (deferred_tx, deferred_rx) = mpsc::channel::<DeferredOutbound>(10_000);
         let (priority_tx, priority_rx) = mpsc::channel::<MykoMessage>(1_000);
         let (command_tx, command_rx) = mpsc::unbounded_channel::<CommandJob>();
+        let (query_window_tx, query_window_task) = Self::spawn_query_window_worker();
         let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel::<SubscriptionReady>();
         let (overload_tx, overload_rx) = watch::channel(false);
-
         // Outgoing format for this session: defaults to JSON, sticky-promotes
         // to CBOR on the first received binary frame. Never demotes.
         let outgoing_format = Arc::new(AtomicU8::new(MykoProtocol::JSON.into()));
@@ -848,23 +894,15 @@ impl WsHandler {
         if let Some(registry) = try_client_registry() {
             registry.register(client_id.clone(), writer_arc);
         }
-
         let mut session = ClientSession::new(client_id.clone(), writer);
 
         let outgoing_format_writer = outgoing_format.clone();
-        let query_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let view_ids_by_tx: Arc<Mutex<HashMap<Arc<str>, Arc<str>>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let subscribe_started_by_tx: Arc<Mutex<HashMap<Arc<str>, Instant>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let command_started_by_tx: Arc<Mutex<HashMap<Arc<str>, Instant>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-        let outbound_commands_by_tx: Arc<Mutex<HashMap<String, (String, Instant)>>> =
-            Arc::new(Mutex::new(HashMap::new()));
-
+        let query_ids_by_tx: SharedTxNames = Arc::new(Mutex::new(HashMap::new()));
+        let view_ids_by_tx: SharedTxNames = Arc::new(Mutex::new(HashMap::new()));
+        let subscribe_started_by_tx: SharedTxTimes = Arc::new(Mutex::new(HashMap::new()));
+        let command_started_by_tx: SharedTxTimes = Arc::new(Mutex::new(HashMap::new()));
+        let outbound_commands_by_tx: SharedOutboundCommands = Arc::new(Mutex::new(HashMap::new()));
         let outbound_commands_by_tx_writer = outbound_commands_by_tx.clone();
-
         let client_entity = Self::publish_client(&ctx, client_id.clone(), addr);
 
         let write_ctx = ctx.clone();
@@ -898,7 +936,6 @@ impl WsHandler {
             command_client_id,
             command_started_by_tx.clone(),
         ));
-
         Self::run_read_loop(
             read,
             &mut session,
@@ -915,6 +952,7 @@ impl WsHandler {
                 command_started_by_tx: command_started_by_tx.clone(),
                 outbound_commands_by_tx: outbound_commands_by_tx.clone(),
                 command_tx: command_tx.clone(),
+                query_window_tx: query_window_tx.clone(),
                 subscribe_tx: subscribe_tx.clone(),
                 overload_rx,
             },
@@ -927,7 +965,7 @@ impl WsHandler {
             &client_entity,
             client_id,
             addr,
-            (write_task, command_task),
+            (write_task, command_task, query_window_task),
         );
 
         Ok(())
@@ -994,11 +1032,14 @@ impl WsHandler {
                                     return;
                                 }
                                 Ok(None) => {}
-                                Err(error) => tracing::warn!(
-                                    "Graph window pushdown unavailable for {}: {}; falling back to materialized windowing",
-                                    query_id,
-                                    error
-                                ),
+                                Err(error) => {
+                                    tracing::error!(
+                                        "Failed to create pushed query window for {}: {}",
+                                        query_id,
+                                        error
+                                    );
+                                    return;
+                                }
                             }
                         }
                         match factory(query, registry, request, Some(ctx)) {
@@ -1157,7 +1198,7 @@ impl WsHandler {
             message @ (MykoMessage::Report(_)
             | MykoMessage::Event(_)
             | MykoMessage::EventBatch(_)) => {
-                Self::handle_report_or_event(session, ctx, message);
+                Self::handle_report_or_event(session, ctx, message_context, message);
             }
             message @ (MykoMessage::Command(_) | MykoMessage::Ping(_)) => {
                 Self::handle_command_or_ping(session, message_context, message);
@@ -1204,7 +1245,16 @@ impl WsHandler {
                 session.cancel(&tx);
             }
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
-                session.update_query_window(&Arc::from(tx), window);
+                let tx_id: Arc<str> = tx.into();
+                if let Some((source, window)) = session.prepare_query_window_update(&tx_id, window)
+                    && let Err(error) = message_context.query_window_tx.send(QueryWindowJob {
+                        tx_id: tx_id.clone(),
+                        source,
+                        window,
+                    })
+                {
+                    tracing::error!(tx = %tx_id, %error, "query window worker is unavailable");
+                }
             }
             MykoMessage::QueryCursorWindow(QueryCursorWindowUpdate { tx, window }) => {
                 session.update_query_cursor_window(&Arc::from(tx), window);
@@ -1230,8 +1280,9 @@ impl WsHandler {
     }
 
     fn handle_report_or_event<W: WsWriter>(
-        session: &mut ClientSession<W>,
+        session: &ClientSession<W>,
         ctx: Arc<MykoServerContext>,
+        message_context: &MessageContext<'_>,
         message: MykoMessage,
     ) {
         match message {
@@ -1254,14 +1305,22 @@ impl WsHandler {
                             session.client_id.clone(),
                             ctx.host_id,
                         ));
-                        match (data.cell_factory)(report, request, ctx) {
-                            Ok(cell) => session.subscribe_report(tx, report_id.into(), cell),
+                        let factory = data.cell_factory;
+                        let sender = message_context.subscribe_tx.clone();
+                        tokio::task::spawn_blocking(move || match factory(report, request, ctx) {
+                            Ok(cell) => {
+                                let _ = sender.send(SubscriptionReady::Report {
+                                    tx_id: tx,
+                                    report_id: report_id.into(),
+                                    cell,
+                                });
+                            }
                             Err(error) => tracing::error!(
                                 "Failed to create report cell for {}: {}",
                                 report_id,
                                 error
                             ),
-                        }
+                        });
                     }
                     Err(error) => tracing::error!(
                         "Failed to parse report {}: {} | payload: {}",
@@ -1598,7 +1657,59 @@ impl WsWriter for ChannelWriter {
 
 #[cfg(test)]
 mod tests {
+    use myko::{hyphae::Cell, query::WindowedQuerySnapshot};
+
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn query_window_worker_runs_callbacks_outside_tokio_in_fifo_order() {
+        let snapshots = Cell::new(Arc::new(WindowedQuerySnapshot {
+            entries: Vec::new(),
+            total_count: 0,
+            window: Some(QueryWindow {
+                offset: 0,
+                limit: 24,
+            }),
+        }));
+        let observed = Arc::new(Mutex::new(Vec::new()));
+        let observed_for_source = observed.clone();
+        let source = WindowedQuerySource::new(snapshots.lock(), move |window| {
+            let runtime = tokio::runtime::Builder::new_current_thread().build();
+            assert!(runtime.is_ok());
+            let Ok(runtime) = runtime else {
+                return;
+            };
+            runtime.block_on(async {});
+            if let Some(window) = window {
+                observed_for_source
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(window.offset);
+            }
+        });
+        let (tx, rx) = mpsc::unbounded_channel();
+        let worker = tokio::spawn(WsHandler::run_query_window_worker(rx));
+
+        for offset in [24, 48] {
+            assert!(
+                tx.send(QueryWindowJob {
+                    tx_id: "history-query".into(),
+                    source: source.clone(),
+                    window: Some(QueryWindow { offset, limit: 24 }),
+                })
+                .is_ok()
+            );
+        }
+        drop(tx);
+        assert!(worker.await.is_ok());
+
+        assert_eq!(
+            *observed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![24, 48]
+        );
+    }
 
     #[test]
     fn test_channel_writer() {

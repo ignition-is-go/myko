@@ -74,6 +74,11 @@ impl Reporting for ReportContext {}
 // Native-only (server-only return types).
 impl Viewing for ReportContext {}
 impl PeerAccess for ReportContext {}
+impl crate::core::capability::HistoryReading for ReportContext {
+    fn __history_replay(&self) -> Option<&Arc<dyn crate::server::HistoryReplayProvider>> {
+        self.server_ctx.history_replay()
+    }
+}
 impl Replaying for ReportContext {}
 
 /// Trait for report handlers - defines how a report computes its output.

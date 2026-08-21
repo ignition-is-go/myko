@@ -87,7 +87,9 @@ pub use crate::{
 // Server-only re-exports (tokio-free types only; MykoServer lives in myko-server)
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::{
-    query::{QueryBuildContext, QueryFactory, QueryParseFn, QueryRegistration},
+    query::{
+        QueryBuildContext, QueryFactory, QueryParseFn, QueryRegistration, QueryWindowCellFactory,
+    },
     report::{ReportFactory, ReportParseFn, ReportRegistration},
     search::{
         EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,

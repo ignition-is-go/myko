@@ -17,8 +17,13 @@ use ::postgres::{Client, Config as PgClientConfig, NoTls};
 use confique::Config as _;
 use myko::{
     event::{MEvent, MEventType},
-    server::{HandlerRegistry, PersistError, PersistHealth, Persister},
+    hyphae::{Cell, CellImmutable, CellMutable, Mutable},
+    server::{
+        CommittedHistoryEvent, HandlerRegistry, HistoryEntityKey, HistoryEvent, HistoryPage,
+        PersistError, PersistHealth, Persister,
+    },
     store::StoreRegistry,
+    wire::QueryWindow,
 };
 use postgres::fallible_iterator::FallibleIterator;
 use tracing::{debug, error, info, trace, warn};
@@ -194,21 +199,101 @@ impl PostgresHistoryStore {
             .map(row_to_persisted_event)
             .collect::<Result<Vec<_>, _>>()
     }
+
+    /// Read durable events for one entity, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `PostgreSQL` cannot count, read, or decode the
+    /// requested history page.
+    pub fn load_entity_history_page(
+        &self,
+        item_type: &str,
+        item_id: &str,
+        window: &QueryWindow,
+    ) -> Result<HistoryPage, String> {
+        let mut client = connect_pg_client(&self.config, "history(entity)")?;
+        let count_sql = format!(
+            "SELECT COUNT(*)::bigint FROM {} WHERE item_type = $1 AND item_id = $2",
+            qi(&self.config.table)
+        );
+        let total_count: i64 = client
+            .query_one(&count_sql, &[&item_type, &item_id])
+            .map_err(|e| format!("history count query failed: {e}"))?
+            .get(0);
+        let total_count = usize::try_from(total_count)
+            .map_err(|_| "history row count does not fit usize".to_string())?;
+        let sql = format!(
+            "SELECT id, created_at::text, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
+            qi(&self.config.table)
+        );
+        let limit = i64::try_from(window.limit)
+            .map_err(|_| "history page size is too large".to_string())?;
+        let offset = i64::try_from(window.offset)
+            .map_err(|_| "history page offset is too large".to_string())?;
+        let rows = client
+            .query(&sql, &[&item_type, &item_id, &limit, &offset])
+            .map_err(|e| format!("history query failed: {e}"))?;
+        let events = rows
+            .into_iter()
+            .map(|row| {
+                let id: i64 = row.get(0);
+                let created_at: String = row.get(1);
+                let event_json: String = row.get(2);
+                let event = MEvent::from_str_trim(&event_json)
+                    .map_err(|e| format!("invalid history event payload for id={id}: {e}"))?;
+                Ok(HistoryEvent {
+                    id,
+                    created_at,
+                    event,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(HistoryPage {
+            events,
+            total_count,
+        })
+    }
 }
 
 /// `HistoryReplayProvider` backed by `PostgresHistoryStore`.
 pub struct PostgresHistoryReplayProvider {
     config: PostgresConfig,
+    committed: Cell<Option<Arc<CommittedHistoryEvent>>, CellMutable>,
 }
 
 impl PostgresHistoryReplayProvider {
     #[must_use]
-    pub const fn new(config: PostgresConfig) -> Self {
-        Self { config }
+    pub fn new(config: PostgresConfig) -> Self {
+        Self {
+            config,
+            committed: Cell::new(None),
+        }
+    }
+
+    fn observe_committed(&self, key: HistoryEntityKey, row_id: i64) {
+        self.committed
+            .set(Some(Arc::new(CommittedHistoryEvent { key, row_id })));
     }
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn committed_history_event(&self) -> Cell<Option<Arc<CommittedHistoryEvent>>, CellImmutable> {
+        self.committed.clone().lock()
+    }
+
+    fn entity_history_page(
+        &self,
+        key: &HistoryEntityKey,
+        window: &QueryWindow,
+    ) -> Result<HistoryPage, String> {
+        PostgresHistoryStore::new(self.config.clone())?.load_entity_history_page(
+            &key.item_type,
+            &key.item_id,
+            window,
+        )
+    }
+
     fn replay_to_store(
         &self,
         until: &str,
@@ -308,7 +393,6 @@ impl PostgresProducerHandle {
             event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
         }
         let entity_type = event.item_type.clone();
-
         if self.sender.send(event) == Ok(()) {
             self.health.record_enqueue();
             Ok(())
@@ -419,12 +503,12 @@ fn run_producer_loop(
         if tracing::enabled!(tracing::Level::DEBUG) {
             let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
                 std::collections::BTreeMap::new();
-            for ev in &batch {
-                let kind = match ev.change_type {
+            for event in &batch {
+                let kind = match event.change_type {
                     MEventType::SET => "SET",
                     MEventType::DEL => "DEL",
                 };
-                let count = counts.entry((&*ev.item_type, kind)).or_insert(0);
+                let count = counts.entry((&*event.item_type, kind)).or_insert(0);
                 *count = count.saturating_add(1);
             }
             let summary: Vec<String> = counts
@@ -674,6 +758,7 @@ impl PostgresConsumer {
         host_id: Uuid,
         handler_registry: Arc<HandlerRegistry>,
         registry: Arc<StoreRegistry>,
+        history_replay: Arc<PostgresHistoryReplayProvider>,
     ) -> Result<Self, String> {
         validate_ident(&config.table)?;
         validate_ident(&config.channel)?;
@@ -684,9 +769,14 @@ impl PostgresConsumer {
         let host_id_string = host_id.to_string();
 
         let handle = std::thread::spawn(move || {
-            if let Err(err) =
-                run_consumer_loop(&cfg, &host_id_string, &handler_registry, &registry, &status)
-            {
+            if let Err(err) = run_consumer_loop(
+                &cfg,
+                &host_id_string,
+                &handler_registry,
+                &registry,
+                &status,
+                &history_replay,
+            ) {
                 let reason = format!("Postgres consumer failed: {err}");
                 error!("{reason}");
                 status.fail(reason);
@@ -765,8 +855,9 @@ fn load_consumer_snapshot(
         }
         count = count.saturating_add(1);
     }
-    let fetch_sql =
-        format!("SELECT id, event::text FROM {table} WHERE id > $1 ORDER BY id ASC LIMIT $2");
+    let fetch_sql = format!(
+        "SELECT id, item_type, item_id, event::text FROM {table} WHERE id > $1 ORDER BY id ASC LIMIT $2"
+    );
     Ok((high_water, count, fetch_sql))
 }
 
@@ -776,6 +867,7 @@ fn run_consumer_loop(
     handler_registry: &Arc<HandlerRegistry>,
     registry: &Arc<StoreRegistry>,
     status: &Arc<CatchUpStatus>,
+    history_replay: &PostgresHistoryReplayProvider,
 ) -> Result<(), String> {
     let mut reader = connect_consumer_client("reader", config)?;
     let mut listener = connect_listener_client(config)?;
@@ -805,12 +897,16 @@ fn run_consumer_loop(
         if !rows.is_empty() {
             for row in rows {
                 let id: i64 = row.get(0);
-                let event_json: String = row.get(1);
+                let item_type: String = row.get(1);
+                let item_id: String = row.get(2);
+                let event_json: String = row.get(3);
                 last_seen_id = id;
 
                 match MEvent::from_str_trim(&event_json) {
                     Ok(event) => {
                         apply_remote_event(&event, host_id, handler_registry, registry);
+                        history_replay
+                            .observe_committed(HistoryEntityKey::new(item_type, item_id), id);
                     }
                     Err(err) => {
                         error!("Invalid postgres event row id={id}: {err}");
@@ -1087,4 +1183,29 @@ fn parse_pg_client_config(config: &PostgresConfig, role: &str) -> Result<PgClien
             redact_pg_url(&config.url)
         )
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use myko::{hyphae::Gettable, server::HistoryReplayProvider};
+
+    use super::*;
+
+    #[test]
+    fn committed_rows_flow_through_the_history_notification_cell() {
+        let provider = PostgresHistoryReplayProvider::new(PostgresConfig {
+            url: "postgres://test".to_string(),
+            table: "events".to_string(),
+            channel: "events_notify".to_string(),
+        });
+        let committed = provider.committed_history_event();
+        let key = HistoryEntityKey::new("TestItem", "item-1");
+
+        assert_eq!(committed.get(), None);
+        provider.observe_committed(key.clone(), 42);
+        assert_eq!(
+            committed.get(),
+            Some(Arc::new(CommittedHistoryEvent { key, row_id: 42 }))
+        );
+    }
 }

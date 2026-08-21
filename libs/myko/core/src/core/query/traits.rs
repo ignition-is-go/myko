@@ -92,6 +92,26 @@ pub trait QueryHandler: QueryItemType + Sized {
     {
         None::<FilteredCellMap>
     }
+
+    /// Optional pushed-down builder for a bounded query window.
+    ///
+    /// Implement this when the backing source can apply the requested window
+    /// before materializing results (for example, an indexed store or SQL
+    /// query). Returning `None` falls back to the ordinary reactive map and
+    /// session-side windowing.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backing source cannot create the requested
+    /// window.
+    fn build_window(
+        _ctx: QueryWindowBuildArgs<Self>,
+    ) -> Result<Option<super::WindowedQuerySource>, String>
+    where
+        Self: Send + Sync + 'static,
+    {
+        Ok(None)
+    }
 }
 
 pub struct QueryTestContext<TQuery: QueryItemType> {
@@ -112,6 +132,13 @@ impl<TQuery: QueryItemType> QueryTestContext<TQuery> {
 pub struct QueryBuildArgs<TQuery: QueryItemType> {
     pub query: Arc<TQuery>,
     pub query_context: QueryBuildContext,
+}
+
+/// Inputs for a query-specific pushed-down window source.
+pub struct QueryWindowBuildArgs<TQuery: QueryItemType> {
+    pub query: Arc<TQuery>,
+    pub query_context: QueryBuildContext,
+    pub window: crate::wire::QueryWindow,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

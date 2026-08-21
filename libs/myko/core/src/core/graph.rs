@@ -603,19 +603,10 @@ pub struct GraphQueryRegistration {
     pub edge_type: &'static str,
     pub parse: crate::query::QueryParseFn,
     pub cell_factory: crate::query::QueryCellFactory,
-    pub window_cell_factory: GraphWindowQueryCellFactory,
+    pub window_cell_factory: crate::query::QueryWindowCellFactory,
 }
 
 inventory::collect!(GraphQueryRegistration);
-
-pub type GraphWindowQueryCellFactory =
-    fn(
-        std::sync::Arc<dyn crate::query::AnyQuery>,
-        std::sync::Arc<crate::store::StoreRegistry>,
-        std::sync::Arc<crate::request::RequestContext>,
-        std::sync::Arc<crate::server::MykoServerContext>,
-        crate::wire::QueryWindow,
-    ) -> Result<Option<crate::query::WindowedQuerySource>, String>;
 
 /// Server-side bounded source generated for graph query parameter types.
 #[doc(hidden)]

@@ -445,6 +445,24 @@ impl<W: WsWriter> ClientSession<W> {
 
     /// Update window for an active query subscription.
     pub fn update_query_window(&mut self, tx: &Arc<str>, window: Option<QueryWindow>) {
+        if let Some((source, window)) = self.prepare_query_window_update(tx, window) {
+            source.set_window(window);
+        }
+    }
+
+    /// Apply an in-memory window update immediately, or return pushed-source
+    /// work for the server runtime to dispatch on its blocking executor.
+    ///
+    /// Pushed sources may perform durable backend reads. Separating their
+    /// callback from session bookkeeping lets async servers preserve request
+    /// ordering without invoking blocking providers on runtime workers.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn prepare_query_window_update(
+        &mut self,
+        tx: &Arc<str>,
+        window: Option<QueryWindow>,
+    ) -> Option<(WindowedQuerySource, Option<QueryWindow>)> {
         let Some(SubscriptionEntry::Query(sub)) = self.subscriptions.get(tx) else {
             tracing::trace!(
                 "ClientSession {} window update for unknown tx={} (active_subscriptions={})",
@@ -452,7 +470,7 @@ impl<W: WsWriter> ClientSession<W> {
                 tx,
                 self.subscriptions.len()
             );
-            return;
+            return None;
         };
 
         let response = match &sub.control {
@@ -464,18 +482,17 @@ impl<W: WsWriter> ClientSession<W> {
                         "Query subscription state poisoned on window update for tx={}",
                         tx
                     );
-                    return;
+                    return None;
                 }
             }
             QueryWindowControl::Pushed(source) => {
-                source.set_window(window);
                 tracing::trace!(
                     "ClientSession {} pushed query window tx={} (active_subscriptions={})",
                     self.client_id,
                     tx,
                     self.subscriptions.len()
                 );
-                return;
+                return Some((source.clone(), window));
             }
         };
 
@@ -486,7 +503,7 @@ impl<W: WsWriter> ClientSession<W> {
                 tx,
                 self.subscriptions.len()
             );
-            return;
+            return None;
         };
 
         match sub.kind {
@@ -499,6 +516,7 @@ impl<W: WsWriter> ClientSession<W> {
             tx,
             self.subscriptions.len()
         );
+        None
     }
 
     /// Move an active query to an exclusive ID-keyset page.

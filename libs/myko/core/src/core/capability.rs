@@ -286,6 +286,24 @@ pub trait EventPublishing: ServerScoped {
             .map_err(|e| self.__emit_err(e))
     }
 
+    /// Emit a live-only SET for an in-progress interaction. The final value
+    /// should be emitted with [`Self::emit_set`] when the interaction ends.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the transient update cannot be applied.
+    fn emit_set_transient<T>(
+        &self,
+        item: impl std::ops::Deref<Target = T>,
+    ) -> Result<(), CommandError>
+    where
+        T: Eventable + Serialize + Clone + 'static,
+    {
+        self.__server_ctx()
+            .set_transient(&*item)
+            .map_err(|e| self.__emit_err(e))
+    }
+
     /// Emit a batch of typed SET events (applied immediately, in one bulk pass).
     ///
     /// # Errors
@@ -448,8 +466,44 @@ pub trait PeerAccess: ServerScoped {
     }
 }
 
+/// Read-only access to durable entity history.
+///
+/// This capability deliberately does not require [`ServerScoped`], so query
+/// builders can read history without gaining access to command or event
+/// publishing facilities on the full server context.
+pub trait HistoryReading: sealed::Sealed {
+    #[doc(hidden)]
+    fn __history_replay(&self) -> Option<&Arc<dyn crate::server::HistoryReplayProvider>>;
+
+    /// Read one durable-history window for an entity, newest first.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no history provider is configured or the page
+    /// cannot be read.
+    fn entity_history_page(
+        &self,
+        key: &crate::server::HistoryEntityKey,
+        window: &crate::wire::QueryWindow,
+    ) -> Result<crate::server::HistoryPage, String> {
+        self.__history_replay()
+            .ok_or_else(|| "No history replay provider configured".to_string())?
+            .entity_history_page(key, window)
+    }
+
+    /// Stream cell for committed history rows observed by the backend.
+    fn committed_history_event(
+        &self,
+    ) -> Cell<Option<Arc<crate::server::CommittedHistoryEvent>>, CellImmutable> {
+        self.__history_replay().map_or_else(
+            || Cell::new(None).lock(),
+            |provider| provider.committed_history_event(),
+        )
+    }
+}
+
 /// Point-in-time history replay and persistence health.
-pub trait Replaying: ServerScoped {
+pub trait Replaying: ServerScoped + HistoryReading {
     /// Live persist-health counters (queued, errors, throughput).
     fn persist_health(&self) -> Arc<crate::server::PersistHealth> {
         self.__server_ctx().persist_health()
@@ -493,8 +547,10 @@ const fn capability_matrix() {
     const fn viewing<T: Viewing>() {}
     const fn peer_access<T: PeerAccess>() {}
     const fn replaying<T: Replaying>() {}
+    const fn history_reading<T: HistoryReading>() {}
 
     use crate::core::{
+        query::QueryBuildContext,
         report::ReportContext,
         view::{ViewBuildContext, ViewContext},
     };
@@ -517,6 +573,8 @@ const fn capability_matrix() {
     viewing::<ReportContext>();
     peer_access::<ReportContext>();
     replaying::<ReportContext>();
+    history_reading::<ReportContext>();
+    history_reading::<QueryBuildContext>();
     viewing::<ViewContext>();
     viewing::<ViewBuildContext>();
 }
