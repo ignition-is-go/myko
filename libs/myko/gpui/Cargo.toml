@@ -1,7 +1,7 @@
 [package]
 name = "myko-gpui"
 publish = false
-version = "6.3.0"
+version = "6.4.0"
 description = "Myko client bridge for GPUI, native and web"
 license = "AGPL-3.0-or-later"
 edition.workspace = true
