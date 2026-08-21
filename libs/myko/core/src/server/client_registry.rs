@@ -9,6 +9,8 @@ use std::{
 };
 
 use hyphae::{Cell, CellImmutable, CellMap, MapExt, Materialize};
+#[cfg(not(target_arch = "wasm32"))]
+use hyphae::{MapEntriesExt, MapQuery};
 use serde::Serialize;
 
 use super::WsWriter;
@@ -64,6 +66,17 @@ impl ClientRegistry {
             .get(client_id)
             .map(Option::is_some)
             .materialize()
+    }
+
+    /// Reactively project the ids that currently have live WebSocket writers.
+    ///
+    /// Writer values stay private to the registry; consumers can compose this
+    /// membership plan with entity maps without exposing transport handles.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn connected_ids(&self) -> impl MapQuery<Key = Arc<str>, Value = ()> + use<> {
+        self.writers
+            .clone()
+            .map_entries(|client_id, _| (client_id.clone(), ()))
     }
 
     /// Send a message to a specific client.

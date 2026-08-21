@@ -3198,10 +3198,10 @@ mod tests {
     }
 
     #[test]
-    fn client_status_uses_live_writer_registry_not_replayed_entity() {
+    fn client_liveness_uses_live_writer_registry_not_replayed_entity() {
         use crate::{
             entities::{
-                client::{Client, ClientId, ClientStatus},
+                client::{Client, ClientId, ClientStatus, ConnectedClients},
                 server::ServerId,
             },
             request::RequestContext,
@@ -3230,10 +3230,15 @@ mod tests {
             ClientStatus {
                 client_id: ClientId::from(client_id.clone()),
             },
-            request,
+            request.clone(),
         );
+        let connected_clients = ctx.view(ConnectedClients {}, request);
 
         assert!(!status.get().online, "replayed entity is not a live client");
+        assert!(
+            connected_clients.get_value(&client_id).is_none(),
+            "replayed entity is absent from connected clients"
+        );
 
         let registry = client_registry();
         registry.register(client_id.clone(), Arc::new(ClientStatusTestWriter));
@@ -3241,11 +3246,19 @@ mod tests {
             status.get().online,
             "registered writer makes the client live"
         );
+        assert!(
+            connected_clients.get_value(&client_id).is_some(),
+            "registered writer adds the client to the connected view"
+        );
 
         registry.unregister(&client_id);
         assert!(
             !status.get().online,
             "unregistering the writer makes the client offline"
+        );
+        assert!(
+            connected_clients.get_value(&client_id).is_none(),
+            "unregistering the writer removes the client from the connected view"
         );
         assert!(
             client_store.get_value(&client_id).is_some(),

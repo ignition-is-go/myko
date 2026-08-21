@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+use hyphae::LeftSemiJoinExt;
 use hyphae::MapExt;
-use myko_macros::{myko_command, myko_report, myko_report_output};
+use myko_macros::{myko_command, myko_report, myko_report_output, myko_view};
 
 use crate::{
     entities::server::{Server, ServerId},
@@ -25,6 +27,35 @@ pub struct Client {
     pub windback: Option<Arc<str>>,
 }
 crate::mark_framework_typegen_type!(ClientId);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Custom Views
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Clients with live WebSocket connections on this server.
+///
+/// Persisted or replayed `Client` entities are excluded unless their writer is
+/// currently registered. This view currently targets single-server clusters.
+#[myko_view(Client)]
+pub struct ConnectedClients {}
+
+impl ViewHandler for ConnectedClients {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>
+    where
+        Self: Send + Sync + 'static,
+    {
+        ctx.view_context
+            .query_map_by_str(GetAllClients {})
+            .left_semi_join_by(
+                client_registry().connected_ids(),
+                |client_id, _| client_id.clone(),
+                |client_id, ()| client_id.clone(),
+            )
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Custom Reports
