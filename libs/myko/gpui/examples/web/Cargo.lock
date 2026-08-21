@@ -524,7 +524,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autosocket"
-version = "6.1.0"
+version = "6.4.1"
 dependencies = [
  "dashmap",
  "flume 0.11.1",
@@ -2706,7 +2706,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-gpui"
-version = "3.1.1"
+version = "3.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed2011c68d533cdd154cb6071b16512edf2da3cf59730da2a6caf4dbc5ae2e50"
 dependencies = [
  "flume 0.11.1",
  "gpui-unofficial",
@@ -3392,7 +3394,7 @@ dependencies = [
 
 [[package]]
 name = "myko"
-version = "6.1.0"
+version = "6.4.1"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3415,6 +3417,7 @@ dependencies = [
  "nucleo-matcher",
  "num-traits",
  "opentelemetry",
+ "parking_lot",
  "pin-project-lite",
  "rayon",
  "roaring",
@@ -3432,7 +3435,7 @@ dependencies = [
 
 [[package]]
 name = "myko-gpui"
-version = "6.1.0"
+version = "6.4.1"
 dependencies = [
  "flume 0.11.1",
  "gpui-platform-gpui-unofficial",
@@ -3456,7 +3459,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "6.1.0"
+version = "6.4.1"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -7635,27 +7638,3 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "pulse-gpui"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "gpui-node-graph"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "myko-leptos"
-version = "6.1.0"
-
-[[patch.unused]]
-name = "myko-server"
-version = "6.1.0"
-
-[[patch.unused]]
-name = "gpui-command-palette"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "gpui-mullion"
-version = "0.1.0"

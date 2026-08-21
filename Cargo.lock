@@ -3476,7 +3476,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-gpui"
-version = "3.1.1"
+version = "3.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed2011c68d533cdd154cb6071b16512edf2da3cf59730da2a6caf4dbc5ae2e50"
 dependencies = [
  "flume 0.11.1",
  "gpui-unofficial",
@@ -10128,19 +10130,3 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "gpui-mullion"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "pulse-gpui"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "gpui-command-palette"
-version = "0.1.0"
-
-[[patch.unused]]
-name = "gpui-node-graph"
-version = "0.1.0"
