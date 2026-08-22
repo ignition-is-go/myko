@@ -15,6 +15,7 @@ pub mod peer_registry;
 pub mod postgres;
 pub mod router;
 pub mod server_ownership;
+mod stale_client_reaper;
 pub mod telemetry;
 pub mod ws_handler;
 pub mod ws_timing;
@@ -657,6 +658,14 @@ impl MykoServer {
         // Establish relations (cleanup orphans, ensure required entities)
         tracing::info!("Establishing relations...");
         self.establish_relations();
+
+        // A process that died with clients attached left their Client rows
+        // behind: durable, replayed on boot, and describing connections that
+        // can never disconnect. Delete them so the ordinary
+        // `belongs_to(Client)` cascade releases whatever hung off them
+        // (viewer presence, control locks) instead of leaving ghosts.
+        tracing::info!("Reaping stale client entities...");
+        stale_client_reaper::reap_stale_clients(&self.ctx());
 
         // Claim orphaned server-owned items and start death watch
         tracing::info!("Checking server-owned item ownership...");
