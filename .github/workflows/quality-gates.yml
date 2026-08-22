@@ -61,7 +61,17 @@ jobs:
       - name: Run strict Clippy and frontend lint
         run: cargo flux run lint
       - name: Run Rust and frontend tests
+        # One test at a time. hyphae's reactive world is process-global by
+        # design: `hyphae::batch` opens a window on a shared, deliberately
+        # cross-thread tick queue so several producer threads can feed one
+        # graph and settle together. Rust runs a binary's tests on parallel
+        # threads in ONE process, so two tests are two graphs in one world —
+        # while test A is inside a batch, test B's `set` is enqueued for A's
+        # drain instead of propagating, and B asserts on a stale value. That
+        # is what failed 8-16 tests at random on every run, main included.
         run: cargo flux run test
+        env:
+          RUST_TEST_THREADS: "1"
       - name: Verify myko-gpui is publishable
         run: cargo publish --dry-run --locked --allow-dirty -p myko-gpui
       - name: Test typegen renderer and macro defaults
