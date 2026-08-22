@@ -32,12 +32,20 @@ cargo flux run check
 
 ```bash
 cargo check --target-dir target/agent
-cargo test --target-dir target/agent -- --nocapture
+RUST_TEST_THREADS=1 cargo test --target-dir target/agent -- --nocapture
 cargo clippy --target-dir target/agent -- -D warnings
 cargo fmt --all
 ```
 
 - Always use `--target-dir target/agent` to avoid lock contention.
+- Always run tests with `RUST_TEST_THREADS=1`. hyphae's reactive world is
+  process-global by design (`hyphae::batch` opens a window on a shared,
+  deliberately cross-thread tick queue), and Rust runs a test binary's tests on
+  parallel threads in one process. Two tests are then two graphs in one world:
+  while one is inside a batch, the other's `set` is enqueued for that batch's
+  drain rather than propagating, and its assertion reads a stale value. Without
+  this, 8-16 tests fail per run, in whichever module loses the race. CI sets
+  the same variable.
 - Prefer `cargo check` during iteration.
 - Check `.bacon-locations` before broad Rust validation.
 

@@ -10130,3 +10130,19 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "myko"
+version = "6.5.1"
+
+[[patch.unused]]
+name = "myko-leptos"
+version = "6.5.1"
+
+[[patch.unused]]
+name = "myko-macros"
+version = "6.5.1"
+
+[[patch.unused]]
+name = "myko-server"
+version = "6.5.1"
