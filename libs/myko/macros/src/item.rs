@@ -575,7 +575,25 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
     crate::gate_ts_attrs(&mut input_struct.attrs);
     let filter_fields =
         if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
+            // `#[unfilterable]` marks a field as not queryable. Every other
+            // field's type must implement `Filterable`, which a downstream
+            // crate cannot provide for a type it does not own (orphan rule) —
+            // so embedding a shared contract type in an entity would otherwise
+            // be impossible. Such a field simply gets no query field.
+            let mut unfilterable: Vec<syn::Ident> = Vec::new();
             for field in named.iter_mut() {
+                if field
+                    .attrs
+                    .iter()
+                    .any(|attr| attr.path().is_ident("unfilterable"))
+                {
+                    if let Some(ident) = field.ident.clone() {
+                        unfilterable.push(ident);
+                    }
+                    field
+                        .attrs
+                        .retain(|attr| !attr.path().is_ident("unfilterable"));
+                }
                 relationship::strip_relationship_attrs(field);
                 setter::strip_setter_attrs(field);
                 crate::prepare_typegen_field(field);
@@ -585,6 +603,7 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
             named
                 .iter()
                 .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
+                .filter(|(ident, _)| !unfilterable.contains(ident))
                 .collect()
         } else {
             Vec::new()
