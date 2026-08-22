@@ -37,16 +37,16 @@ pub fn reap_stale_clients(ctx: &MykoServerContext) -> usize {
     // Defensive: the "no connections yet" invariant is what makes a blanket
     // reap safe. If a caller ever moves this after the listener binds, refuse
     // rather than delete rows for clients that are genuinely connected.
-    if let Some(registry) = try_client_registry() {
-        if !registry.is_empty() {
-            tracing::warn!(
-                "Skipping stale-client reap: {} live connection(s) already registered, so \
-                 persisted rows can no longer be assumed dead. This reap must run before the \
-                 listener binds.",
-                registry.len()
-            );
-            return 0;
-        }
+    if let Some(registry) = try_client_registry()
+        && !registry.is_empty()
+    {
+        tracing::warn!(
+            "Skipping stale-client reap: {} live connection(s) already registered, so \
+             persisted rows can no longer be assumed dead. This reap must run before the \
+             listener binds.",
+            registry.len()
+        );
+        return 0;
     }
 
     let host_id = ctx.host_id.to_string();
