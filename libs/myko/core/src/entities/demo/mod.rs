@@ -14,10 +14,12 @@ mod unfilterable_tests {
     use crate::prelude::*;
 
     /// Deliberately implements neither `Filterable` nor `Ord`: standing in for
-    /// a shared contract type owned by another crate.
+    /// a shared contract type owned by another crate. The `f64` is why `Eq` is
+    /// not derivable here either, which is typical of real editorial payloads.
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, crate::TS)]
     pub struct OpaquePayload {
         pub note: String,
+        pub weight: f64,
     }
 
     #[myko_item]

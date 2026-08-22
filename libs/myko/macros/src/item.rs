@@ -555,6 +555,48 @@ struct PreparedItem {
     ingest_registration: Option<TokenStream>,
 }
 
+/// Strip the macro's own field attributes, append the generated `id` field, and
+/// return the fields the query struct should filter on.
+///
+/// Every filterable field's type must implement `Filterable`, which a downstream
+/// crate cannot provide for a type it does not own — the orphan rule forbids it —
+/// so embedding a shared contract type in an entity would otherwise be
+/// impossible. `#[unfilterable]` marks such a field: it keeps its place on the
+/// entity and on the wire, and simply gets no query field.
+fn normalize_fields_and_collect_filterable(
+    input_struct: &mut ItemStruct,
+    id_type_ident: &syn::Ident,
+) -> Vec<(syn::Ident, syn::Type)> {
+    let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields else {
+        return Vec::new();
+    };
+    let mut unfilterable: Vec<syn::Ident> = Vec::new();
+    for field in named.iter_mut() {
+        if field
+            .attrs
+            .iter()
+            .any(|attr| attr.path().is_ident("unfilterable"))
+        {
+            if let Some(ident) = field.ident.clone() {
+                unfilterable.push(ident);
+            }
+            field
+                .attrs
+                .retain(|attr| !attr.path().is_ident("unfilterable"));
+        }
+        relationship::strip_relationship_attrs(field);
+        setter::strip_setter_attrs(field);
+        crate::prepare_typegen_field(field);
+    }
+    let id_field: Field = syn::parse_quote! { pub id: #id_type_ident };
+    named.push(id_field);
+    named
+        .iter()
+        .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
+        .filter(|(ident, _)| !unfilterable.contains(ident))
+        .collect()
+}
+
 fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
     let relationships = relationship::collect_relationships(&input_struct);
     let setters = setter::collect_setter_fields(&input_struct);
@@ -573,41 +615,7 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
         }
     });
     crate::gate_ts_attrs(&mut input_struct.attrs);
-    let filter_fields =
-        if let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields {
-            // `#[unfilterable]` marks a field as not queryable. Every other
-            // field's type must implement `Filterable`, which a downstream
-            // crate cannot provide for a type it does not own (orphan rule) —
-            // so embedding a shared contract type in an entity would otherwise
-            // be impossible. Such a field simply gets no query field.
-            let mut unfilterable: Vec<syn::Ident> = Vec::new();
-            for field in named.iter_mut() {
-                if field
-                    .attrs
-                    .iter()
-                    .any(|attr| attr.path().is_ident("unfilterable"))
-                {
-                    if let Some(ident) = field.ident.clone() {
-                        unfilterable.push(ident);
-                    }
-                    field
-                        .attrs
-                        .retain(|attr| !attr.path().is_ident("unfilterable"));
-                }
-                relationship::strip_relationship_attrs(field);
-                setter::strip_setter_attrs(field);
-                crate::prepare_typegen_field(field);
-            }
-            let id_field: Field = syn::parse_quote! { pub id: #id_type_ident };
-            named.push(id_field);
-            named
-                .iter()
-                .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
-                .filter(|(ident, _)| !unfilterable.contains(ident))
-                .collect()
-        } else {
-            Vec::new()
-        };
+    let filter_fields = normalize_fields_and_collect_filterable(&mut input_struct, &id_type_ident);
     let serde_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
     let deserialize = args
         .post_deserialize
