@@ -19,7 +19,7 @@ env:
 jobs:
   native:
     name: Native quality gates
-    runs-on: ubuntu-latest
+    runs-on: public-ci
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -33,10 +33,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-native
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install GPUI Linux dependencies
         run: |
+          sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update
-          sudo apt-get install -y libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+          sudo apt-get install -y build-essential pkg-config libssl-dev libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
       - run: bun install --frozen-lockfile
       - name: Check for cargo-binstall
         id: cargo-binstall
@@ -61,6 +63,8 @@ jobs:
       - name: Run strict Clippy and frontend lint
         run: cargo flux run lint
       - name: Run Rust and frontend tests
+        env:
+          RUST_TEST_THREADS: 1
         run: cargo flux run test
       - name: Verify myko-gpui is publishable
         run: cargo publish --dry-run --locked --allow-dirty -p myko-gpui
@@ -77,16 +81,18 @@ jobs:
 
   wasm:
     name: WebAssembly check
-    runs-on: ubuntu-latest
+    runs-on: public-ci
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y build-essential pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-wasm
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check for cargo-binstall
         id: cargo-binstall
         shell: bash
