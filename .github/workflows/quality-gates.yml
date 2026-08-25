@@ -33,6 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-native
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install GPUI Linux dependencies
         run: |
           sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources
@@ -91,6 +92,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           shared-key: ci-wasm
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check for cargo-binstall
         id: cargo-binstall
         shell: bash
