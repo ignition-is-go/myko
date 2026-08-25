@@ -35,6 +35,7 @@ jobs:
           shared-key: ci-native
       - name: Install GPUI Linux dependencies
         run: |
+          sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
       - run: bun install --frozen-lockfile
@@ -81,7 +82,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y build-essential pkg-config
+      - run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y build-essential pkg-config
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
