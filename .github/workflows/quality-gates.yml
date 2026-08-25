@@ -37,7 +37,7 @@ jobs:
         run: |
           sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
+          sudo apt-get install -y build-essential pkg-config libssl-dev libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev
       - run: bun install --frozen-lockfile
       - name: Check for cargo-binstall
         id: cargo-binstall
