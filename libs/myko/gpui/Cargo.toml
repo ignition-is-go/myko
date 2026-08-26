@@ -1,6 +1,6 @@
 [package]
 name = "myko-gpui"
-version = "6.5.2"
+version = "6.5.3"
 description = "Myko client bridge for GPUI, native and web"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/ignition-is-go/myko"
