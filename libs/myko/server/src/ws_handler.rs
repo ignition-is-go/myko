@@ -48,6 +48,8 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
+use crate::blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING};
+
 struct WsBenchmarkStats {
     message_count: AtomicU64,
     total_bytes: AtomicU64,
@@ -351,13 +353,13 @@ impl WsHandler {
             registry.unregister(&client_id);
         }
         let drop_client_id = client_id.clone();
-        std::mem::drop(tokio::task::spawn_blocking(move || {
+        WS_CLEANUP_BLOCKING.spawn("session-teardown", move || {
             drop(session);
             tracing::trace!(
                 "Client session subscriptions torn down for {}",
                 drop_client_id
             );
-        }));
+        });
         if let Err(error) = ctx.del(client_entity) {
             tracing::error!("Failed to delete client entity: {error}");
         }
@@ -554,18 +556,19 @@ impl WsHandler {
             let command_client_id = command_client_id.clone();
             let tx_id = job.tx_id.clone();
             let started_map = command_started_cleanup.clone();
-            match tokio::task::spawn_blocking(move || {
-                Self::execute_command_job(
-                    command_ctx,
-                    &command_deferred_tx,
-                    &command_priority_tx,
-                    command_drop_logger.as_ref(),
-                    command_client_id,
-                    job,
-                );
-            })
-            .await
-            {
+            let result = WS_COMMAND_BLOCKING
+                .run("command", move || {
+                    Self::execute_command_job(
+                        command_ctx,
+                        &command_deferred_tx,
+                        &command_priority_tx,
+                        command_drop_logger.as_ref(),
+                        command_client_id,
+                        job,
+                    );
+                })
+                .await;
+            match result {
                 Ok(()) => {}
                 Err(e) => {
                     tracing::error!("Command worker panicked: {}", e);
@@ -581,10 +584,11 @@ impl WsHandler {
     async fn run_query_window_worker(mut query_window_rx: mpsc::UnboundedReceiver<QueryWindowJob>) {
         while let Some(job) = query_window_rx.recv().await {
             let tx_id = job.tx_id.clone();
-            if let Err(error) = tokio::task::spawn_blocking(move || {
-                job.source.set_window(job.window);
-            })
-            .await
+            if let Err(error) = WS_SUBSCRIPTION_BLOCKING
+                .run("query-window", move || {
+                    job.source.set_window(job.window);
+                })
+                .await
             {
                 tracing::error!(tx = %tx_id, %error, "query window worker panicked");
             }
@@ -1012,7 +1016,7 @@ impl WsHandler {
                     let window_factory = query_data.window_cell_factory;
                     let window = wrapped.window;
                     let sender = message_context.subscribe_tx.clone();
-                    tokio::task::spawn_blocking(move || {
+                    WS_SUBSCRIPTION_BLOCKING.spawn("query-subscription", move || {
                         if let (Some(window_factory), Some(initial_window)) =
                             (window_factory, window.clone())
                         {
@@ -1121,23 +1125,25 @@ impl WsHandler {
                 let sender = message_context.subscribe_tx.clone();
                 let priority = message_context.priority_tx.clone();
                 let logger = message_context.drop_logger.clone();
-                tokio::task::spawn_blocking(move || match factory(view, registry, request, ctx) {
-                    Ok(cellmap) => {
-                        let _ = sender.send(SubscriptionReady::View {
-                            tx_id,
-                            view_id,
-                            cellmap,
-                            window,
-                        });
-                    }
-                    Err(error) => {
-                        let message = MykoMessage::ViewError(ViewError::new(
-                            tx_id.to_string(),
-                            view_id.to_string(),
-                            error,
-                        ));
-                        if let Err(error) = priority.try_send(message) {
-                            logger.on_drop("ViewError", &error);
+                WS_SUBSCRIPTION_BLOCKING.spawn("view-subscription", move || {
+                    match factory(view, registry, request, ctx) {
+                        Ok(cellmap) => {
+                            let _ = sender.send(SubscriptionReady::View {
+                                tx_id,
+                                view_id,
+                                cellmap,
+                                window,
+                            });
+                        }
+                        Err(error) => {
+                            let message = MykoMessage::ViewError(ViewError::new(
+                                tx_id.to_string(),
+                                view_id.to_string(),
+                                error,
+                            ));
+                            if let Err(error) = priority.try_send(message) {
+                                logger.on_drop("ViewError", &error);
+                            }
                         }
                     }
                 });
@@ -1307,20 +1313,23 @@ impl WsHandler {
                         ));
                         let factory = data.cell_factory;
                         let sender = message_context.subscribe_tx.clone();
-                        tokio::task::spawn_blocking(move || match factory(report, request, ctx) {
-                            Ok(cell) => {
-                                let _ = sender.send(SubscriptionReady::Report {
-                                    tx_id: tx,
-                                    report_id: report_id.into(),
-                                    cell,
-                                });
-                            }
-                            Err(error) => tracing::error!(
-                                "Failed to create report cell for {}: {}",
-                                report_id,
-                                error
-                            ),
-                        });
+                        WS_SUBSCRIPTION_BLOCKING.spawn(
+                            "report-subscription",
+                            move || match factory(report, request, ctx) {
+                                Ok(cell) => {
+                                    let _ = sender.send(SubscriptionReady::Report {
+                                        tx_id: tx,
+                                        report_id: report_id.into(),
+                                        cell,
+                                    });
+                                }
+                                Err(error) => tracing::error!(
+                                    "Failed to create report cell for {}: {}",
+                                    report_id,
+                                    error
+                                ),
+                            },
+                        );
                     }
                     Err(error) => tracing::error!(
                         "Failed to parse report {}: {} | payload: {}",
