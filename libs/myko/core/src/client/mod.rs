@@ -1867,16 +1867,16 @@ impl MykoClient {
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
+                sequences_for_status.reset_epoch();
+                if let Some(ready_writer) = ready_for_status.upgrade() {
+                    ready_writer.set(false);
+                }
                 if let ConnectionStatus::Connected(_) = &**status {
                     match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching query {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
                     }
                 } else {
-                    sequences_for_status.reset_epoch();
-                    if let Some(ready_writer) = ready_for_status.upgrade() {
-                        ready_writer.set(false);
-                    }
                     debug!("Query {send_query_id} disconnected");
                 }
             }
@@ -2168,16 +2168,16 @@ impl MykoClient {
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
+                sequences_for_status.reset_epoch();
+                if let Some(ready_writer) = ready_for_status.upgrade() {
+                    ready_writer.set(false);
+                }
                 if let ConnectionStatus::Connected(_) = &**status {
                     match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching view {send_view_id}"),
                         Err(e) => error!("Could not send view: {e:?}"),
                     }
                 } else {
-                    sequences_for_status.reset_epoch();
-                    if let Some(ready_writer) = ready_for_status.upgrade() {
-                        ready_writer.set(false);
-                    }
                     debug!("View {send_view_id} disconnected");
                 }
             }

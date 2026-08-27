@@ -836,16 +836,16 @@ impl MykoClient {
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
+                sequences_for_status.reset_epoch();
+                if let Some(ready_writer) = ready_for_status.upgrade() {
+                    ready_writer.set(false);
+                }
                 if let ConnectionStatus::Connected(_) = &**status {
                     match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching query map {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
                     }
                 } else {
-                    sequences_for_status.reset_epoch();
-                    if let Some(ready_writer) = ready_for_status.upgrade() {
-                        ready_writer.set(false);
-                    }
                     debug!("Query map {send_query_id} disconnected");
                 }
             }
@@ -1056,6 +1056,19 @@ impl MykoClient {
             let hyphae::Signal::Value(status) = signal else {
                 return;
             };
+            sequences.reset_epoch();
+            if let Some(writer) = ready_for_status.upgrade() {
+                writer.set(false);
+            }
+            if let Some(writer) = page_state_for_status.upgrade() {
+                let current = writer.get();
+                writer.set(super::WindowedQueryState::new(
+                    current.items,
+                    false,
+                    current.total_count,
+                    current.window,
+                ));
+            }
             if let ConnectionStatus::Connected(_) = &**status {
                 let cursor = cursor_for_status
                     .lock()
@@ -1084,20 +1097,6 @@ impl MykoClient {
                     if let Some(frame) = super::encode_protocol(&inner.protocol, &message) {
                         let _ = inner.socket.send(frame);
                     }
-                }
-            } else {
-                sequences.reset_epoch();
-                if let Some(writer) = ready_for_status.upgrade() {
-                    writer.set(false);
-                }
-                if let Some(writer) = page_state_for_status.upgrade() {
-                    let current = writer.get();
-                    writer.set(super::WindowedQueryState::new(
-                        current.items,
-                        false,
-                        current.total_count,
-                        current.window,
-                    ));
                 }
             }
         });
@@ -1275,9 +1274,12 @@ mod tests {
         assert!(watch.ready().get());
         assert_eq!(watch.map().snapshot().len(), 1);
 
-        transport.set_status(SocketConnectionStatus::Disconnected);
+        // A reconnect can publish Connected again without an observable
+        // intermediate status. The resend must still begin a fresh epoch.
+        transport.set_status(SocketConnectionStatus::Connected(
+            "ws://reconnected".to_owned(),
+        ));
         assert!(!watch.ready().get());
-        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
 
         let reconnected_frames = transport
             .sent_frames()
@@ -1400,6 +1402,11 @@ mod tests {
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
         assert!(watch.ready().get());
         assert_eq!(watch.items().get().len(), 1);
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://second".to_owned()));
+        assert!(!watch.ready().get());
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
+        assert!(watch.ready().get());
     }
 
     #[test]
@@ -1655,9 +1662,10 @@ mod tests {
             })
         );
 
-        transport.set_status(SocketConnectionStatus::Disconnected);
+        transport.set_status(SocketConnectionStatus::Connected(
+            "ws://reconnected".to_owned(),
+        ));
         assert!(!first.state().get().ready);
-        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
         let frames = transport.sent_frames();
         let resumed = frames.iter().rev().find_map(|frame| {
             let WsFrame::Text(text) = frame else {
@@ -1672,6 +1680,25 @@ mod tests {
                 .and_then(|value| value.pointer("/data/window/offset")),
             Some(&serde_json::json!(1))
         );
+        let restored = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [],
+                "changes": [{
+                    "kind": "windowOrder",
+                    "ids": [],
+                    "total_count": 0,
+                    "window": { "offset": 1, "limit": 1 }
+                }],
+                "totalCount": 0,
+                "window": { "offset": 1, "limit": 1 }
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
+        assert!(first.state().get().ready);
 
         drop(first);
         assert!(transport.sent_frames().iter().all(
@@ -1723,8 +1750,12 @@ mod tests {
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(empty.to_string()));
         assert!(watch.ready().get());
 
-        transport.set_status(SocketConnectionStatus::Disconnected);
+        transport.set_status(SocketConnectionStatus::Connected(
+            "ws://reconnected".to_owned(),
+        ));
         assert!(!watch.ready().get());
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(empty.to_string()));
+        assert!(watch.ready().get());
     }
 
     #[cfg(feature = "demo")]
@@ -1771,16 +1802,41 @@ mod tests {
         let map = client.watch_view_map(GetDemoTasksWithStatus {});
 
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
-        assert_eq!(
-            transport
-                .sent_frames()
-                .iter()
-                .filter(
-                    |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view\""))
-                )
-                .count(),
-            1
-        );
+        let view_frames = transport
+            .sent_frames()
+            .into_iter()
+            .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view\"")))
+            .collect::<Vec<_>>();
+        assert_eq!(view_frames.len(), 1);
+        let Some(WsFrame::Text(frame)) = view_frames.first() else {
+            return;
+        };
+        let request = serde_json::from_str::<serde_json::Value>(frame);
+        assert!(request.is_ok());
+        let Ok(request) = request else {
+            return;
+        };
+        let tx = request
+            .pointer("/data/view/tx")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert!(tx.is_some());
+        let Some(tx) = tx else {
+            return;
+        };
+        let initial = serde_json::json!({
+            "event": "ws:m:view-response",
+            "data": { "tx": &tx, "sequence": 0, "deletes": [], "upserts": [] }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        assert!(state.ready().get());
+
+        transport.set_status(SocketConnectionStatus::Connected(
+            "ws://reconnected".to_owned(),
+        ));
+        assert!(!state.ready().get());
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        assert!(state.ready().get());
 
         drop(state);
         assert!(transport.sent_frames().iter().all(

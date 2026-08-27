@@ -175,16 +175,16 @@ impl MykoClient {
         let send_view_id = view_id;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
+                sequences_for_status.reset_epoch();
+                if let Some(ready_writer) = ready_for_status.upgrade() {
+                    ready_writer.set(false);
+                }
                 if let ConnectionStatus::Connected(_) = &**status {
                     match socket.send(frame.clone()) {
                         Ok(()) => debug!("Watching view map {send_view_id}"),
                         Err(error) => error!("Could not send view: {error:?}"),
                     }
                 } else {
-                    sequences_for_status.reset_epoch();
-                    if let Some(ready_writer) = ready_for_status.upgrade() {
-                        ready_writer.set(false);
-                    }
                     debug!("View map {send_view_id} disconnected");
                 }
             }
