@@ -19,6 +19,18 @@ const OUTGOING_QUEUE_CAPACITY: usize = 1024;
 
 type SharedSocket = Arc<Mutex<WebSocket<MaybeTlsStream<TcpStream>>>>;
 
+struct OutgoingQueue {
+    tx: flume::Sender<WsFrame>,
+    rx: flume::Receiver<WsFrame>,
+}
+
+impl OutgoingQueue {
+    fn new() -> Self {
+        let (tx, rx) = flume::bounded(OUTGOING_QUEUE_CAPACITY);
+        Self { tx, rx }
+    }
+}
+
 struct ConnectionSession {
     cancel: Arc<AtomicBool>,
     read_handle: JoinHandle<()>,
@@ -77,9 +89,8 @@ pub struct AutoReconnectSocket {
     intended_status: Cell<SocketConnectionStatus, CellMutable>,
     /// What the socket is actually doing right now.
     actual_status: Cell<SocketConnectionStatus, CellMutable>,
-    /// Shared outgoing channel for sync+async producers.
-    outgoing_tx: flume::Sender<WsFrame>,
-    outgoing_rx: flume::Receiver<WsFrame>,
+    /// Outgoing channel for the active address generation.
+    outgoing: Mutex<OutgoingQueue>,
     /// Shared incoming channel for sync+async consumers.
     incoming_tx: flume::Sender<WsFrame>,
     incoming_rx: flume::Receiver<WsFrame>,
@@ -132,7 +143,13 @@ impl SocketTransport for AutoReconnectSocket {
     }
 
     fn send(&self, frame: WsFrame) -> Result<(), String> {
-        self.outgoing_tx.send(frame).map_err(|e| e.to_string())
+        let tx = self
+            .outgoing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tx
+            .clone();
+        tx.send(frame).map_err(|e| e.to_string())
     }
 
     fn read_rx(&self) -> flume::Receiver<WsFrame> {
@@ -162,15 +179,13 @@ impl AutoReconnectSocket {
         max_frame_size_bytes: usize,
     ) -> Self {
         // Bounded queue enforces backpressure: producers block when the writer can't keep up.
-        let (outgoing_tx, outgoing_rx) = flume::bounded(OUTGOING_QUEUE_CAPACITY);
         let (incoming_tx, incoming_rx) = flume::unbounded();
         Self {
             intended_status: Cell::new(SocketConnectionStatus::Idle)
                 .with_name("autosocket.intended_status"),
             actual_status: Cell::new(SocketConnectionStatus::Idle)
                 .with_name("autosocket.actual_status"),
-            outgoing_tx,
-            outgoing_rx,
+            outgoing: Mutex::new(OutgoingQueue::new()),
             incoming_tx,
             incoming_rx,
             worker_cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
@@ -213,6 +228,7 @@ impl AutoReconnectSocket {
 
         self.stop_worker();
         Self::set_status(&self.actual_status, SocketConnectionStatus::Disconnected);
+        self.rotate_outgoing_queue();
 
         // Start new connection if address provided
         if let Some(addr) = addr {
@@ -234,7 +250,12 @@ impl AutoReconnectSocket {
     fn build(&self, addr: String) {
         info!("Building Connection to {addr}");
 
-        let outgoing_rx = self.outgoing_rx.clone();
+        let outgoing_rx = self
+            .outgoing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rx
+            .clone();
         let incoming_tx = self.incoming_tx.clone();
         let actual_status = self.actual_status.clone();
         let worker_cancel = self
@@ -288,6 +309,11 @@ impl AutoReconnectSocket {
                     }
                 };
 
+                if worker_cancel.load(Ordering::SeqCst) {
+                    let _ = ws.close(None);
+                    break;
+                }
+
                 // Keep native socket limits aligned with myko transport settings.
                 ws.set_config(|cfg| {
                     cfg.max_message_size = Some(max_message_size_bytes);
@@ -325,7 +351,9 @@ impl AutoReconnectSocket {
                     info!("WebSocket worker for {} stopped by teardown", addr);
                 }
 
-                Self::set_status(&actual_status, SocketConnectionStatus::Disconnected);
+                if !worker_cancel.load(Ordering::SeqCst) {
+                    Self::set_status(&actual_status, SocketConnectionStatus::Disconnected);
+                }
                 if !auto_reconnect {
                     break;
                 }
@@ -489,6 +517,13 @@ impl AutoReconnectSocket {
         *guard = Arc::new(AtomicBool::new(false));
     }
 
+    fn rotate_outgoing_queue(&self) {
+        *self
+            .outgoing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = OutgoingQueue::new();
+    }
+
     pub fn intended_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
         self.intended_status.clone().lock()
     }
@@ -498,10 +533,121 @@ impl AutoReconnectSocket {
     }
 
     pub fn write_tx(&self) -> flume::Sender<WsFrame> {
-        self.outgoing_tx.clone()
+        self.outgoing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .tx
+            .clone()
     }
 
     pub fn read_rx(&self) -> flume::Receiver<WsFrame> {
         self.incoming_rx.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        net::TcpListener,
+        sync::{Arc, mpsc},
+        time::{Duration, Instant},
+    };
+
+    use hyphae::{Signal, Watchable};
+
+    use super::*;
+
+    fn websocket_receiver() -> std::io::Result<(String, mpsc::Receiver<String>, JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = format!("ws://{}/myko", listener.local_addr()?);
+        let (message_tx, message_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let Ok(mut websocket) = tungstenite::accept(stream) else {
+                return;
+            };
+            if let Ok(Message::Text(text)) = websocket.read() {
+                let _ = message_tx.send(text.to_string());
+            }
+        });
+        Ok((address, message_rx, handle))
+    }
+
+    fn wait_until_connected(socket: &AutoReconnectSocket, address: &str) -> bool {
+        let started = Instant::now();
+        while started.elapsed() < Duration::from_secs(2) {
+            if matches!(
+                socket.get_status(),
+                SocketConnectionStatus::Connected(ref current) if current == address
+            ) {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        false
+    }
+
+    #[test]
+    fn address_change_rotates_the_outgoing_queue() {
+        let socket = AutoReconnectSocket::with_auto_reconnect(false);
+        let stale_tx = socket.write_tx();
+
+        socket.set_addr(None);
+
+        assert!(stale_tx.send(WsFrame::Text("stale".into())).is_err());
+
+        let current_tx = socket.write_tx();
+        let current_rx = socket
+            .outgoing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .rx
+            .clone();
+        assert!(current_tx.send(WsFrame::Text("current".into())).is_ok());
+        assert!(matches!(
+            current_rx.recv().ok(),
+            Some(WsFrame::Text(text)) if text == "current"
+        ));
+    }
+
+    #[test]
+    fn address_change_sends_connected_callbacks_only_to_the_new_socket() -> std::io::Result<()> {
+        let (first_address, _first_messages, _first_server) = websocket_receiver()?;
+        let (second_address, second_messages, _second_server) = websocket_receiver()?;
+        let socket = Arc::new(AutoReconnectSocket::with_auto_reconnect(false));
+
+        socket.set_addr(Some(first_address.clone()));
+        if !wait_until_connected(&socket, &first_address) {
+            return Err(std::io::Error::other("first socket did not connect"));
+        }
+
+        let target = second_address.clone();
+        let socket_for_status = Arc::clone(&socket);
+        let _status_guard = socket.actual_connection_state().subscribe(move |signal| {
+            if let Signal::Value(status) = signal
+                && matches!(&**status, SocketConnectionStatus::Connected(address) if address == &target)
+            {
+                let _ = SocketTransport::send(
+                    socket_for_status.as_ref(),
+                    WsFrame::Text("new subscription".into()),
+                );
+            }
+        });
+
+        socket.set_addr(Some(second_address.clone()));
+        if !wait_until_connected(&socket, &second_address) {
+            return Err(std::io::Error::other("second socket did not connect"));
+        }
+        let received = second_messages
+            .recv_timeout(Duration::from_secs(2))
+            .map_err(std::io::Error::other)?;
+        if received != "new subscription" {
+            return Err(std::io::Error::other("new socket received wrong frame"));
+        }
+        socket.close();
+        Ok(())
     }
 }
