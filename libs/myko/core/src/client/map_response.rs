@@ -4,8 +4,11 @@ use serde::de::DeserializeOwned;
 
 use crate::wire::item::WrappedItem;
 
-/// Validates response sequences within one socket connection epoch.
-/// A reconnect starts a new epoch that must begin with a sequence-zero snapshot.
+/// Validates response sequences for a map subscription.
+///
+/// Sequence zero is an authoritative snapshot. It starts a socket connection
+/// epoch, but may also reset an existing subscription when the server rebuilds
+/// its query runtime and emits a new initial snapshot.
 pub(super) struct MapSequence {
     state: Mutex<SequenceState>,
 }
@@ -37,13 +40,13 @@ impl MapSequence {
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.awaiting_snapshot {
-            if sequence != 0 {
-                return false;
-            }
+        if sequence == 0 {
             state.awaiting_snapshot = false;
             state.next = 1;
             return true;
+        }
+        if state.awaiting_snapshot {
+            return false;
         }
         if sequence != state.next {
             return false;
@@ -81,15 +84,21 @@ mod tests {
     use super::MapSequence;
 
     #[test]
-    fn reconnect_rejects_delayed_old_epoch_and_duplicate_sequences() {
+    fn authoritative_snapshot_resets_sequence_with_or_without_reconnect() {
         let sequences = MapSequence::new();
         assert!(sequences.accept(0));
         assert!(sequences.accept(1));
         assert!(!sequences.accept(1));
+
+        // A live query runtime can emit a fresh authoritative snapshot without
+        // reconnecting. It resets the expected incremental sequence.
+        assert!(sequences.accept(0));
+        assert!(!sequences.accept(2));
+        assert!(sequences.accept(1));
+
         sequences.reset_epoch();
         assert!(!sequences.accept(2));
         assert!(sequences.accept(0));
-        assert!(!sequences.accept(0));
         assert!(!sequences.accept(2));
         assert!(sequences.accept(1));
     }
