@@ -28,7 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install Linux GPUI libraries
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
+        run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y libasound2-dev libfontconfig1-dev libwayland-dev libxkbcommon-x11-dev libx11-xcb-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 
       - run: bun install
       - name: Check for cargo-binstall
