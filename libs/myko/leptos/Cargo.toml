@@ -1,6 +1,6 @@
 [package]
 name = "myko-leptos"
-version = "6.5.4"
+version = "6.5.5"
 description = "Myko client for leptos"
 license = "AGPL-3.0-or-later"
 edition.workspace = true
