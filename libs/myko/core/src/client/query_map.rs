@@ -1321,6 +1321,99 @@ mod tests {
     }
 
     #[test]
+    fn live_authoritative_resnapshot_replaces_query_map() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_map_state(GetAllClients {});
+
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let frames = transport.sent_frames();
+        let Some(WsFrame::Text(frame)) = frames.first() else {
+            return;
+        };
+        let request = serde_json::from_str::<serde_json::Value>(frame);
+        assert!(request.is_ok());
+        let Ok(request) = request else {
+            return;
+        };
+        let tx = request
+            .pointer("/data/query/tx")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned);
+        assert!(tx.is_some());
+        let Some(tx) = tx else {
+            return;
+        };
+
+        let initial = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "client-1",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        assert_eq!(watch.map().snapshot().len(), 1);
+
+        let incremental = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 1,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "client-2",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(incremental.to_string()));
+        assert_eq!(watch.map().snapshot().len(), 2);
+
+        let resnapshot = serde_json::json!({
+            "event": "ws:m:query-response",
+            "data": {
+                "tx": &tx,
+                "sequence": 0,
+                "deletes": [],
+                "upserts": [{
+                    "item": {
+                        "id": "client-3",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]
+            }
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(resnapshot.to_string()));
+
+        assert!(watch.ready().get());
+        let snapshot = watch.map().snapshot();
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(
+            snapshot.first().map(|(id, _)| id.as_ref()),
+            Some("client-3")
+        );
+    }
+
+    #[test]
     fn list_watch_readiness_tracks_authoritative_response_epochs() {
         let transport = Arc::new(MockTransport::new());
         let client = MykoClient::with_transport(transport.clone());
