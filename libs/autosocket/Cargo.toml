@@ -1,6 +1,6 @@
 [package]
 name = "autosocket"
-version = "6.5.8"
+version = "6.5.9"
 edition = "2024"
 description = "Auto-reconnecting WebSocket transport adapters shared by myko clients"
 license = "AGPL-3.0-or-later"
