@@ -30,7 +30,7 @@ jobs:
         with:
           components: rustfmt
       - name: Install GitHub CLI
-        run: sudo apt-get update && sudo apt-get install -y gh
+        run: sudo sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources && sudo apt-get update && sudo apt-get install -y gh
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
 
