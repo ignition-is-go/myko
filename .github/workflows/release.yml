@@ -27,6 +27,8 @@ jobs:
           token: ${{ steps.app-token.outputs.token }}
 
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
 
