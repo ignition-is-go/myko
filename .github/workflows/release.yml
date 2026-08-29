@@ -29,6 +29,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
+      - name: Install GitHub CLI
+        run: sudo apt-get update && sudo apt-get install -y gh
       - uses: oven-sh/setup-bun@v2
       - uses: Swatinem/rust-cache@v2
 
@@ -97,7 +99,7 @@ jobs:
           git push origin HEAD "v$VERSION"
           BRANCH=$(git rev-parse --abbrev-ref HEAD)
           if [ "$BRANCH" = "main" ]; then
-            gh release create "v$VERSION" --title "v$VERSION" --generate-notes --latest
+            gh release create "v$VERSION" --verify-tag --title "v$VERSION" --generate-notes --latest
           else
-            gh release create "v$VERSION" --title "v$VERSION" --generate-notes --prerelease
+            gh release create "v$VERSION" --verify-tag --title "v$VERSION" --generate-notes --prerelease
           fi
