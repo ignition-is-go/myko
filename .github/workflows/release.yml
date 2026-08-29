@@ -6,7 +6,7 @@ on:
 
 jobs:
   release:
-    runs-on: [self-hosted, Linux, X64]
+    runs-on: public-ci
     permissions:
       contents: write
 
