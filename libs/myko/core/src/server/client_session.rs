@@ -1,6 +1,6 @@
-//! Client session management for WebSocket connections
+//! Transport-neutral client session and subscription management.
 //!
-//! Each WebSocket connection gets a `ClientSession` that manages:
+//! Each authenticated connection gets a `ClientSession` that manages:
 //! - Active subscriptions via `SubscriptionGuards`
 //! - Message sending to the client
 //! - Automatic cleanup on disconnect
@@ -24,11 +24,11 @@ use crate::{
     },
 };
 
-/// Trait for sending WebSocket messages.
+/// Transport-neutral sink for delivering typed Myko messages to a client.
 ///
-/// Implemented by the actual WebSocket writer to allow abstraction
-/// and easier testing.
-pub trait WsWriter: Send + Sync + 'static {
+/// In-process, Iroh, WebSocket, and test adapters can all implement this
+/// boundary without putting their framing protocol into session semantics.
+pub trait SessionSink: Send + Sync + 'static {
     /// Send a message to the client.
     fn send(&self, msg: MykoMessage);
 
@@ -116,14 +116,14 @@ impl PendingQueryResponse {
     }
 }
 
-/// A WebSocket client session that manages subscriptions.
+/// A connected client session that manages subscriptions.
 ///
 /// When dropped, all subscription guards are dropped, automatically
 /// cleaning up all reactive subscriptions.
-pub struct ClientSession<W: WsWriter> {
+pub struct ClientSession<W: SessionSink> {
     /// Unique client identifier
     pub client_id: Arc<str>,
-    /// WebSocket writer for sending messages
+    /// Transport sink for sending messages.
     writer: Arc<W>,
     /// Active subscriptions: tx -> entry
     subscriptions: HashMap<Arc<str>, SubscriptionEntry>,
@@ -168,7 +168,7 @@ struct PushedQuerySubscriptionState {
     visible_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
 }
 
-impl<W: WsWriter> ClientSession<W> {
+impl<W: SessionSink> ClientSession<W> {
     /// Create a new client session.
     pub fn new(client_id: Arc<str>, writer: W) -> Self {
         Self {
@@ -1048,7 +1048,7 @@ impl QuerySubscriptionState {
     }
 }
 
-impl<W: WsWriter> Drop for ClientSession<W> {
+impl<W: SessionSink> Drop for ClientSession<W> {
     fn drop(&mut self) {
         // All guards drop automatically
         tracing::trace!(
@@ -1103,7 +1103,7 @@ mod tests {
         }
     }
 
-    impl WsWriter for MockWriter {
+    impl SessionSink for MockWriter {
         fn send(&self, msg: MykoMessage) {
             self.messages
                 .lock()
@@ -1135,7 +1135,7 @@ mod tests {
     // Need Arc wrapper for test
     struct ArcMockWriter(Arc<MockWriter>);
 
-    impl WsWriter for ArcMockWriter {
+    impl SessionSink for ArcMockWriter {
         fn send(&self, msg: MykoMessage) {
             self.0.send(msg);
         }

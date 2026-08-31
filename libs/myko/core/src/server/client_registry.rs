@@ -1,6 +1,6 @@
-//! Global client registry for sending messages to connected WebSocket clients.
+//! Global registry for sending messages to connected clients.
 //!
-//! Provides a thread-safe mapping from `client_id` to `WsWriter`,
+//! Provides a thread-safe mapping from `client_id` to [`SessionSink`],
 //! enabling any part of the server to send messages to specific clients.
 
 use std::{
@@ -13,19 +13,19 @@ use hyphae::{Cell, CellImmutable, CellMap, MapExt, Materialize};
 use hyphae::{MapEntriesExt, MapQuery};
 use serde::Serialize;
 
-use super::WsWriter;
+use super::SessionSink;
 use crate::{
     command::{CommandId, CommandRequest},
     wire::{MykoMessage, encode_command_message},
 };
 
-/// Thread-safe registry mapping client IDs to their WebSocket writers.
+/// Thread-safe registry mapping client IDs to transport-neutral sinks.
 pub struct ClientRegistry {
     writers: CellMap<Arc<str>, RegisteredWriter>,
 }
 
 #[derive(Clone)]
-struct RegisteredWriter(Arc<dyn WsWriter>);
+struct RegisteredWriter(Arc<dyn SessionSink>);
 
 impl fmt::Debug for RegisteredWriter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -47,7 +47,7 @@ impl ClientRegistry {
     }
 
     /// Register a client's writer.
-    pub fn register(&self, client_id: Arc<str>, writer: Arc<dyn WsWriter>) {
+    pub fn register(&self, client_id: Arc<str>, writer: Arc<dyn SessionSink>) {
         self.writers.insert(client_id, RegisteredWriter(writer));
     }
 
@@ -56,7 +56,7 @@ impl ClientRegistry {
         self.writers.remove(&Arc::<str>::from(client_id));
     }
 
-    /// Reactively track whether a client has a live WebSocket writer.
+    /// Reactively track whether a client has a live transport sink.
     ///
     /// This derives directly from the registry's per-key `CellMap` observation;
     /// persisted `Client` entities are deliberately not part of liveness.
@@ -68,7 +68,7 @@ impl ClientRegistry {
             .materialize()
     }
 
-    /// Reactively project the ids that currently have live WebSocket writers.
+    /// Reactively project the ids that currently have live transport sinks.
     ///
     /// Writer values stay private to the registry; consumers can compose this
     /// membership plan with entity maps without exposing transport handles.
@@ -167,11 +167,11 @@ mod liveness_tests {
     use super::*;
     use hyphae::Gettable;
 
-    use crate::server::client_session::WsWriter;
+    use crate::server::client_session::SessionSink;
     use crate::wire::message::MykoMessage;
 
     struct NullWriter;
-    impl WsWriter for NullWriter {
+    impl SessionSink for NullWriter {
         fn send(&self, _msg: MykoMessage) {}
         fn send_serialized_command(
             &self,

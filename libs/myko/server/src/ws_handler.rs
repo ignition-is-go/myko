@@ -28,7 +28,7 @@ use myko::{
     report::AnyOutput,
     request::RequestContext,
     server::{
-        ClientSession, MykoServerContext, PendingQueryResponse, WsWriter,
+        ClientSession, MykoServerContext, PendingQueryResponse, SessionSink,
         client_registry::try_client_registry,
     },
     wire::{
@@ -333,7 +333,7 @@ enum DeferredOutbound {
 pub struct WsHandler;
 
 impl WsHandler {
-    fn cleanup_connection<W: WsWriter>(
+    fn cleanup_connection<W: SessionSink>(
         session: ClientSession<W>,
         ctx: &MykoServerContext,
         client_entity: &Client,
@@ -382,7 +382,7 @@ impl WsHandler {
         client
     }
 
-    fn dispatch_incoming<W: WsWriter>(
+    fn dispatch_incoming<W: SessionSink>(
         session: &mut ClientSession<W>,
         state: &ReadLoopState,
         message: MykoMessage,
@@ -406,7 +406,7 @@ impl WsHandler {
         );
     }
 
-    async fn handle_ws_frame<W: WsWriter>(
+    async fn handle_ws_frame<W: SessionSink>(
         session: &mut ClientSession<W>,
         state: &ReadLoopState,
         message: Message,
@@ -457,7 +457,7 @@ impl WsHandler {
         true
     }
 
-    async fn run_read_loop<W: WsWriter>(
+    async fn run_read_loop<W: SessionSink>(
         mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
         session: &mut ClientSession<W>,
         mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionReady>,
@@ -889,7 +889,7 @@ impl WsHandler {
         };
 
         // Register writer in the global client registry (if initialized)
-        let writer_arc: Arc<dyn WsWriter> = Arc::new(ChannelWriter {
+        let writer_arc: Arc<dyn SessionSink> = Arc::new(ChannelWriter {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
@@ -975,7 +975,7 @@ impl WsHandler {
         Ok(())
     }
 
-    fn handle_query_request<W: WsWriter>(
+    fn handle_query_request<W: SessionSink>(
         session: &mut ClientSession<W>,
         ctx: Arc<MykoServerContext>,
         message_context: &MessageContext<'_>,
@@ -1078,7 +1078,7 @@ impl WsHandler {
         }
     }
 
-    fn handle_view_request<W: WsWriter>(
+    fn handle_view_request<W: SessionSink>(
         session: &ClientSession<W>,
         ctx: Arc<MykoServerContext>,
         message_context: &MessageContext<'_>,
@@ -1174,7 +1174,7 @@ impl WsHandler {
     }
 
     /// Handle a parsed `MykoMessage`.
-    fn handle_message<W: WsWriter>(
+    fn handle_message<W: SessionSink>(
         session: &mut ClientSession<W>,
         ctx: Arc<MykoServerContext>,
         message_context: &MessageContext<'_>,
@@ -1234,7 +1234,7 @@ impl WsHandler {
         }
     }
 
-    fn handle_subscription_control<W: WsWriter>(
+    fn handle_subscription_control<W: SessionSink>(
         session: &mut ClientSession<W>,
         message_context: &MessageContext<'_>,
         message: MykoMessage,
@@ -1285,7 +1285,7 @@ impl WsHandler {
         }
     }
 
-    fn handle_report_or_event<W: WsWriter>(
+    fn handle_report_or_event<W: SessionSink>(
         session: &ClientSession<W>,
         ctx: Arc<MykoServerContext>,
         message_context: &MessageContext<'_>,
@@ -1368,7 +1368,7 @@ impl WsHandler {
         }
     }
 
-    fn handle_command_or_ping<W: WsWriter>(
+    fn handle_command_or_ping<W: SessionSink>(
         session: &ClientSession<W>,
         message_context: &MessageContext<'_>,
         message: MykoMessage,
@@ -1421,7 +1421,7 @@ impl WsHandler {
         }
     }
 
-    fn handle_command_result<W: WsWriter>(
+    fn handle_command_result<W: SessionSink>(
         session: &ClientSession<W>,
         message_context: &MessageContext<'_>,
         message: MykoMessage,
@@ -1594,7 +1594,7 @@ impl ChannelWriter {
     }
 }
 
-impl WsWriter for ChannelWriter {
+impl SessionSink for ChannelWriter {
     fn send(&self, msg: MykoMessage) {
         // Fast path: writer is gone. Don't try to send and don't log; the
         // dead-channel state is expected after the client disconnects, and

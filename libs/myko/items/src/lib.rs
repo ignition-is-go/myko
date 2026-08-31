@@ -10,10 +10,41 @@ extern crate self as myko_items;
 
 use std::{collections::BTreeMap, fmt::Debug};
 
-pub use myko_items_macros::{myko_command, myko_item};
+pub use myko_items_macros::{myko_command, myko_item, myko_subtype};
 pub use serde;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
+
+#[cfg(test)]
+mod subtype_tests {
+    use super::myko_subtype;
+
+    #[myko_subtype(derive(Eq))]
+    struct ExampleSubtype {
+        field_name: String,
+    }
+
+    #[myko_subtype(derive(Eq))]
+    enum ExampleVariant {
+        NamedValue,
+    }
+
+    #[test]
+    fn subtype_owns_value_derives_and_wire_casing() -> Result<(), serde_json::Error> {
+        let value = ExampleSubtype {
+            field_name: "value".to_owned(),
+        };
+        assert_eq!(
+            serde_json::to_value(&value)?,
+            serde_json::json!({"fieldName": "value"})
+        );
+        assert_eq!(
+            serde_json::to_value(ExampleVariant::NamedValue)?,
+            serde_json::json!("NamedValue")
+        );
+        Ok(())
+    }
+}
 
 /// Static placement metadata declared by an item schema.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -4,10 +4,32 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    Fields, Ident, ItemStruct, LitStr, Path, Token, Type,
+    Fields, Ident, Item, ItemStruct, LitStr, Meta, Path, Token, Type,
     parse::{Parse, ParseStream},
     parse_macro_input,
+    punctuated::Punctuated,
 };
+
+struct SubtypeArguments {
+    extra_derives: Vec<Path>,
+}
+
+impl Parse for SubtypeArguments {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut extra_derives = Vec::new();
+        for meta in Punctuated::<Meta, Token![,]>::parse_terminated(input)? {
+            let Meta::List(list) = &meta else {
+                return Err(syn::Error::new_spanned(meta, "expected `derive(...)`"));
+            };
+            if !list.path.is_ident("derive") {
+                return Err(syn::Error::new_spanned(meta, "expected `derive(...)`"));
+            }
+            extra_derives
+                .extend(list.parse_args_with(Punctuated::<Path, Token![,]>::parse_terminated)?);
+        }
+        Ok(Self { extra_derives })
+    }
+}
 
 struct CommandArguments {
     service: LitStr,
@@ -120,6 +142,17 @@ pub fn myko_item(arguments: TokenStream, input: TokenStream) -> TokenStream {
         .into()
 }
 
+/// Declares a transport-neutral application subtype with Myko's canonical
+/// serialization and baseline value semantics.
+#[proc_macro_attribute]
+pub fn myko_subtype(arguments: TokenStream, input: TokenStream) -> TokenStream {
+    let arguments = parse_macro_input!(arguments as SubtypeArguments);
+    let item = parse_macro_input!(input as Item);
+    expand_subtype(arguments, item)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
 /// Declares a typed application command body and its stable wire contract.
 #[proc_macro_attribute]
 pub fn myko_command(arguments: TokenStream, input: TokenStream) -> TokenStream {
@@ -144,6 +177,32 @@ fn expand_command(arguments: CommandArguments, item: &ItemStruct) -> TokenStream
             const COMMAND_TYPE: &'static str = #command_name;
         }
     }
+}
+
+fn expand_subtype(arguments: SubtypeArguments, item: Item) -> syn::Result<TokenStream2> {
+    let serde_attributes = match &item {
+        Item::Struct(_) => quote!(#[serde(rename_all = "camelCase")]),
+        Item::Enum(_) => quote!(),
+        _ => {
+            return Err(syn::Error::new_spanned(
+                item,
+                "#[myko_subtype] only supports structs and enums",
+            ));
+        }
+    };
+    let extra_derives = arguments.extra_derives;
+    Ok(quote! {
+        #[derive(
+            Debug,
+            Clone,
+            PartialEq,
+            ::myko_items::serde::Serialize,
+            ::myko_items::serde::Deserialize
+            #(, #extra_derives)*
+        )]
+        #serde_attributes
+        #item
+    })
 }
 
 fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<TokenStream2> {

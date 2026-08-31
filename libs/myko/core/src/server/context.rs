@@ -3185,7 +3185,7 @@ mod tests {
 
     struct ClientStatusTestWriter;
 
-    impl crate::server::WsWriter for ClientStatusTestWriter {
+    impl crate::server::SessionSink for ClientStatusTestWriter {
         fn send(&self, _msg: crate::wire::MykoMessage) {}
 
         fn send_serialized_command(

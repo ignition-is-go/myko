@@ -3,7 +3,7 @@
 //! This module contains the tokio-free server types:
 //! - `MykoServerContext` — server context for queries, reports, and event publishing
 //! - `HandlerRegistry` — registry of item/query/report handlers from inventory
-//! - `ClientRegistry` — global WebSocket client writer registry
+//! - `ClientRegistry` — global connected-client sink registry
 //! - `ClientSession` — per-connection subscription management
 //! - `RelationshipManager` — cascade operations for entity relationships
 //! - `Persister` trait — abstraction for event persistence
@@ -46,7 +46,10 @@ mod relationship_manager;
 pub mod report_cache_stats;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
-pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
+/// Compatibility alias for the pre-7.0 WebSocket-shaped sink name.
+#[deprecated(note = "use SessionSink; delivery is transport-neutral")]
+pub use client_session::SessionSink as WsWriter;
+pub use client_session::{ClientSession, PendingQueryResponse, SessionSink};
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 pub use handler_registry::HandlerRegistry;
