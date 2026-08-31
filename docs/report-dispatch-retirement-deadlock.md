@@ -2,9 +2,9 @@
 
 ## Scope and status
 
-This is an evidence-only draft. No Myko implementation or test source is included
-in this commit. A candidate fix and three regression tests remain uncommitted in
-the investigation checkout. Nothing has been published or deployed.
+This draft includes the candidate lock fix and three regression tests, following
+operator approval to add source edits. It is not approved for merge, release,
+or deployment. Nothing has been released or deployed.
 
 Investigated baseline: Myko 6.5.9, commit
 `9c8ff87fdd277cf1778a4f9d5c1546f7be543482`.
@@ -78,8 +78,8 @@ not depend on the probability of encountering the race in a live restart loop.
 
 ## Local evidence
 
-Tests were added locally; they are not present in this docs-only branch's Git
-history. For the negative control, only the dispatch helper was temporarily
+The three regression tests are included in this branch. For the negative
+control, only the dispatch helper was temporarily
 changed back to invoking the callback under the original DashMap read guard.
 That reproduces the baseline's locking behavior while retaining the test harness.
 

@@ -392,7 +392,20 @@ type CommandResponseHandler = Box<dyn FnOnce(Result<Value, String>) + Send>;
 type QueryHandler = Box<dyn Fn(Value) + Send + Sync>;
 
 /// Handler for incoming report responses.
-type ReportHandler = Box<dyn Fn(Value) + Send + Sync>;
+type ReportHandler = Arc<dyn Fn(Value) + Send + Sync>;
+
+fn dispatch_report_response(
+    handlers: &DashMap<Arc<str>, ReportHandler>,
+    tx: &Arc<str>,
+    response: Value,
+) {
+    // The callback can release the last report Cell, whose cancellation guard
+    // removes this handler. Never execute it while holding a DashMap read guard.
+    let handler = handlers.get(tx).map(|entry| Arc::clone(entry.value()));
+    if let Some(handler) = handler {
+        handler(response);
+    }
+}
 
 type QueryState<T> = Arc<Mutex<HashMap<Arc<str>, Arc<T>>>>;
 type SharedMapWatchParts<T> = (
@@ -1013,9 +1026,7 @@ impl MykoClient {
                     match rx.recv_timeout(std::time::Duration::from_millis(100)) {
                         Ok((tx, response)) => {
                             let Some(inner) = weak.upgrade() else { break };
-                            if let Some(handler) = inner.report_handlers.get(&tx) {
-                                handler(response);
-                            }
+                            dispatch_report_response(&inner.report_handlers, &tx, response);
                         }
                         Err(flume::RecvTimeoutError::Timeout) => {}
                         Err(flume::RecvTimeoutError::Disconnected) => break,
@@ -1033,9 +1044,7 @@ impl MykoClient {
                 loop {
                     while let Ok((tx, response)) = rx.try_recv() {
                         let Some(inner) = weak.upgrade() else { return };
-                        if let Some(handler) = inner.report_handlers.get(&tx) {
-                            handler(response);
-                        }
+                        dispatch_report_response(&inner.report_handlers, &tx, response);
                     }
                     if rx.is_disconnected() {
                         break;
@@ -1961,7 +1970,7 @@ impl MykoClient {
         let tx_for_handler = tx.clone();
         self.inner.report_handlers.insert(
             tx.clone(),
-            Box::new(move |response: Value| {
+            Arc::new(move |response: Value| {
                 let Some(cell_writer) = cell_weak.upgrade() else {
                     warn!(
                         "watch_report: weak cell dead for report={} tx={}",
@@ -2503,7 +2512,7 @@ impl MykoClient {
 
         self.inner.report_handlers.insert(
             tx.clone(),
-            Box::new(move |response: Value| {
+            Arc::new(move |response: Value| {
                 let Some(cell_writer) = cell_weak.upgrade() else {
                     return;
                 };
@@ -2607,6 +2616,107 @@ fn address_has_explicit_port(addr: &str) -> bool {
     authority
         .rsplit_once(':')
         .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
+}
+
+#[cfg(test)]
+mod report_dispatch_tests {
+    use super::{MykoClient, ReportHandler, dispatch_report_response};
+    use dashmap::DashMap;
+    use serde_json::Value;
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::time::Duration;
+
+    #[test]
+    fn report_callback_can_cancel_itself_without_deadlocking_dispatch() {
+        let handlers: Arc<DashMap<Arc<str>, ReportHandler>> = Arc::new(DashMap::new());
+        let tx: Arc<str> = "retiring-report".into();
+        let callback_handlers = Arc::clone(&handlers);
+        let callback_tx = Arc::clone(&tx);
+        handlers.insert(
+            Arc::clone(&tx),
+            Arc::new(move |_| {
+                // This is the same removal performed by report_cancel_guard when
+                // a response callback drops the last Cell during lease renewal.
+                callback_handlers.remove(&callback_tx);
+            }),
+        );
+        let (done, completed) = mpsc::channel();
+        let dispatch_handlers = Arc::clone(&handlers);
+        let worker = std::thread::spawn(move || {
+            dispatch_report_response(&dispatch_handlers, &tx, Value::Null);
+            let _ = done.send(());
+        });
+        assert!(
+            completed.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "report dispatch deadlocked while its callback cancelled the subscription"
+        );
+        assert!(worker.join().is_ok());
+        assert!(handlers.is_empty());
+    }
+
+    #[test]
+    fn cancelled_report_responses_are_ignored() {
+        let handlers = DashMap::new();
+        dispatch_report_response(&handlers, &Arc::from("already-cancelled"), Value::Null);
+        assert!(handlers.is_empty());
+    }
+
+    #[test]
+    fn retiring_report_during_response_does_not_block_subsequent_reports() {
+        let client = MykoClient::new_with_auto_reconnect(false);
+        let tx: Arc<str> = "renewal-race".into();
+        let report = client.watch_report_raw(crate::report::WrappedReport {
+            report_id: "RegressionReport".into(),
+            report: serde_json::json!({"tx": tx.as_ref(), "report": {}}),
+        });
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let callback_entered = Arc::clone(&entered);
+        let callback_release = Arc::clone(&release);
+        let weak_report = report.downgrade();
+        client.inner.report_handlers.insert(
+            Arc::clone(&tx),
+            Arc::new(move |_| {
+                // Mirror watch_report's weak upgrade, with barriers at the point
+                // where the callback owns the report and renewal can retire it.
+                let last_writer = weak_report.upgrade();
+                assert!(last_writer.is_some());
+                callback_entered.wait();
+                callback_release.wait();
+                drop(last_writer);
+            }),
+        );
+        let inner = Arc::clone(&client.inner);
+        let dispatch_tx = Arc::clone(&tx);
+        let (done, completed) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            dispatch_report_response(&inner.report_handlers, &dispatch_tx, Value::Bool(true));
+            let _ = done.send(());
+        });
+        entered.wait();
+        // The response handler now owns the last writer. Releasing it must run
+        // the real report_cancel_guard without deadlocking the dispatcher.
+        drop(report);
+        release.wait();
+        assert!(
+            completed.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "retiring a report deadlocked its response callback"
+        );
+        assert!(worker.join().is_ok());
+        assert!(!client.inner.report_handlers.contains_key(&tx));
+        // Prove the same dispatcher can subsequently deliver a new report.
+        let next_tx: Arc<str> = "next-report".into();
+        let (sent, received) = mpsc::channel();
+        client.inner.report_handlers.insert(
+            Arc::clone(&next_tx),
+            Arc::new(move |_| {
+                let _ = sent.send(());
+            }),
+        );
+        dispatch_report_response(&client.inner.report_handlers, &next_tx, Value::Null);
+        assert!(received.recv_timeout(Duration::from_secs(2)).is_ok());
+        client.inner.report_handlers.remove(&next_tx);
+    }
 }
 
 #[cfg(test)]
