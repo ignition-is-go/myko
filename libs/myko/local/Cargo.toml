@@ -1,0 +1,23 @@
+[package]
+name = "myko-local"
+version = "7.0.0-alpha.1"
+edition.workspace = true
+description = "Owner-local peer transport for Myko nodes"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[dependencies]
+flume.workspace = true
+hyphae.workspace = true
+myko-app.workspace = true
+myko-federation.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+myko-items.workspace = true
+tempfile = "3"

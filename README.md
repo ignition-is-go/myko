@@ -1,401 +1,188 @@
-# Myko
+# Myko 7
 
-**Event-sourcing CQRS framework with reactive queries.** Define entities once in Rust; get commands, events, queries, real-time subscriptions, and cross-language bindings automatically.
+Myko 7 is a greenfield application framework for typed, event-sourced,
+federated applications. Application code declares entities, commands, scopes,
+queries, and authorization policy; Myko owns immutable history, persistence,
+current-state materialization, native replication, resumable subscriptions,
+Hyphae reactivity, and transport cursors.
 
-License: MIT OR Apache-2.0 · Workspace version: see `Cargo.toml`
+The v7 alpha lives beside the legacy v6 crates while the new model is proven by
+Forrest. Ordinary Cargo commands at this repository root target the v7 native
+stack. Legacy v6 packages and the optional WebSocket gateway remain available
+through explicit package or `--workspace` commands.
 
----
+## Foundation
 
-## Core concept
+```text
+application command
+        |
+        v
+typed Myko context -----> immutable atomic batch -----> typed projections
+        |                           |                         |
+        |                           +---- Redb history        +---- app views
+        |                           +---- Iroh federation     +---- subscriptions
+        v
+typed result
 
-```
-Command ──▶ Handler ──▶ Event ──▶ Store ──▶ Reactive Query ──▶ Client
-   │                       │
-   │                       └──▶ Saga ──▶ Command
-   └── validation
-```
-
-- **Commands** mutate state. Synchronous validation, then events.
-- **Events** are persisted (Postgres) and replicated.
-- **Stores** hold current state, derived from events.
-- **Queries** and **reports** are reactive views of stores.
-- **Sagas** subscribe to events and emit follow-up commands.
-- **Clients** subscribe to queries/reports over WebSocket and receive live diffs.
-
-The framework handles persistence, real-time sync, federation between server peers, and type generation across language bindings.
-
----
-
-## Workspace layout
-
-```
-libs/
-├── myko/
-│   ├── core/         Canonical Rust framework (entities, queries, commands, sagas, stores)
-│   ├── macros/       #[myko_item] proc macro + relationship attributes
-│   ├── server/       Tokio-based server runtime: WS gateway, Postgres backend,
-│   │                 peer federation, MCP endpoint
-│   ├── leptos/       Leptos integration (web UI)
-│   ├── ts/           TypeScript port + generated bindings
-│   ├── py/, python/  Python bindings
-│   ├── cpp/          C++ bindings
-│   ├── csharp/       C# bindings
-│   ├── ui-svelte/    Svelte UI integration
-│   ├── ui-vue/       Vue UI integration
-│   └── debug/        Diagnostic tooling
-└── autosocket/       Auto-reconnecting WebSocket transport (native + WASM)
-
-docs/superpowers/specs/   Design specs for in-flight features
+optional short-lived edge: WebSocket gateway -> the same Myko node
 ```
 
-**External dependency:** [hyphae](https://github.com/ignition-is-go/hyphae) (reactive dataflow). Consumed from crates.io (`^0.5.1`).
+The v7 boundary is deliberately not a socket protocol:
 
----
+- `#[myko_item(service = "...", ...)]` declares an entity's stable owning
+  service, typed ID, schema version, and scope placement.
+- `#[myko_command(service = "...", name = "...")]` declares a stable command
+  body and typed result.
+- command contexts enforce service and scope atomicity, encode mutations, and
+  durably commit or reject work;
+- current-state queries and follows infer service from the item schema;
+- Redb and Iroh are replaceable framework adapters;
+- WebSocket is an opt-in compatibility edge for short-lived clients, not a
+  dependency of nodes, persistence, commands, federation, or native clients.
 
-## Quick start
+## V7 crates
 
-Prerequisites: **Rust** (edition 2024), **Bun** (1.3+), **Postgres** if running the server with durability.
+| Crate | Responsibility |
+| --- | --- |
+| `myko-items-macros` | `#[myko_item]` and `#[myko_command]` generation |
+| `myko-items` | typed item, mutation, projection, and query contracts |
+| `myko-app` | registered reactive query, report, and view handlers over Hyphae |
+| `myko-federation` | transport-neutral nodes, commands, history, scopes, and Hyphae subscription lifecycle |
+| `myko-redb` | durable immutable journal and replication checkpoints |
+| `myko-iroh` | authenticated native replication, control, and typed streams |
+| `myko-local` | owner-local Unix peer transport for typed state and command follows |
+| `myko-node` | restartable Redb + Iroh node composition and peer supervision |
+| `myko-ratatui` | non-visual Hyphae lifecycle and coalesced redraw helpers |
+| `myko-websocket-gateway` | optional short-lived edge adapter |
+
+## Declaring application state
+
+```rust
+use myko_items::{myko_command, myko_item};
+
+#[myko_item(service = "example.projects", scope_root)]
+pub struct Project {
+    pub title: String,
+}
+
+#[myko_item(service = "example.projects", scoped_by = Project)]
+pub struct Task {
+    pub project_id: ProjectId,
+    pub title: String,
+    pub complete: bool,
+}
+
+#[myko_command(
+    service = "example.projects",
+    name = "example.create_task",
+    result = Task
+)]
+pub struct CreateTask {
+    pub project_id: ProjectId,
+    pub title: String,
+}
+```
+
+The macros generate typed IDs and baseline queries. Item mutations also carry
+the owning service. Myko rejects a handler write or forged raw batch when its
+item service differs from the command's service, preventing one Rust entity
+from silently splitting into unrelated service namespaces.
+
+## Native nodes and clients
+
+`myko-node::DurableIrohNode` restores a stable Myko identity, Iroh key, Redb
+journal, configured peers, and source-aware follower cursors from one data
+directory. `myko-iroh` exposes authenticated command clients, bounded typed
+current-state reads, cursor-stable snapshot-then-live item and command streams,
+scope-filtered history, and provisional live topics.
+
+`myko_iroh::load_or_create_secret_key` gives lightweight clients the same
+owner-only persistent transport identity handling without requiring Redb or a
+durable replication node. This lets an application grant a TUI or mobile client
+once and retain that authenticated principal across launches while keeping its
+Myko projection ephemeral.
+
+Native bootstrap uses a versioned descriptor that binds the authenticated Iroh
+endpoint to the expected Myko source log. Clients can verify that pair through
+a bounded identity handshake before submitting commands, and durable pinned
+followers reject a source mismatch without ingesting history.
+
+Myko also supplies a versioned, bounded pairing protocol on a separate Iroh
+ALPN. A node issues an expiring one-use bearer while retaining only its SHA-256
+verifier. Redemption authenticates the remote Iroh endpoint, binds both Iroh
+and Myko identities into an HMAC transcript, and gives both operators the same
+six-digit comparison code. It does not install a durable follower or grant any
+application capability; applications make those decisions explicitly after
+confirmation. The outer ticket, QR, file, or discovery encoding remains
+application-selectable, and restarting the issuing node safely invalidates its
+in-memory outstanding invitations.
+
+Native and owner-local applications do not import raw event history or poll current state just
+to render a screen. Embedded Redb nodes and authenticated Iroh peers can
+materialize typed snapshot-then-live queries as one coherent Hyphae cell
+containing the value, source cursor, and liveness state. `myko-local` carries
+the same typed snapshot/follow contract over a protected Unix socket without
+making the local app an Iroh endpoint. `myko-app` registers application-owned
+query, report, and view handlers, retains their long-lived dependency drivers,
+and erases them only at a transport boundary. Handler subscriptions may use a
+single log cursor or an application-defined composite frontier. Transport-backed
+reactive subscriptions retain their last coherent value while disconnected,
+publish `Resynchronizing`, and restore the same Hyphae cell from a fresh gap-free
+snapshot/follow boundary after the peer returns. `myko-ratatui` retains those cell
+subscriptions and emits bounded, coalesced redraw wakeups; it does not provide
+widgets or copy Myko data into a second UI store. Replicas use the separate
+durable history follower.
+
+The optional edge is explicit:
 
 ```bash
-# Install JS deps (used for type generation, formatting, UI bindings)
-bun install
-
-# Type-check the whole workspace
-cargo flux run check
-
-# Run all tests
-cargo flux run test
-
-# Lint (cargo clippy + biome)
-cargo flux run lint
-
-# Regenerate TS bindings from Rust types
-cargo flux run gen
+cargo test -p myko-websocket-gateway
 ```
 
-[`cargo flux`](https://github.com/ignition-is-go/cargo-flux) orchestrates the polyglot workspace. Tasks are defined in `flux.toml`.
+Starting or linking a durable/native node does not bind a WebSocket listener.
+An application may supervise `myko-websocket-gateway` over the same node when a
+browser or other short-lived compatibility client needs one.
 
----
+## Development
 
-## Defining entities
-
-```rust
-use myko_macros::myko_item;
-
-#[myko_item]
-pub struct Target {
-    pub name: String,
-}
-```
-
-Auto-generated for every `myko_item`:
-
-| Item                | Purpose                                |
-| ------------------- | -------------------------------------- |
-| `id: Arc<str>`      | Stable entity identity (UUID)          |
-| `hash: Arc<str>`    | Content hash for change detection      |
-| `GetAllTargets`     | Query — every target                   |
-| `GetTargetsByIds`   | Query — by id set                      |
-| `GetTargetsByQuery` | Query — filtered                       |
-| `GetTargetById`     | Query — single                         |
-| `CountAllTargets`   | Report — count                         |
-| `DeleteTarget`      | Command — delete one                   |
-| `DeleteTargets`     | Command — delete many                  |
-| `TargetQuery`       | Filter type for query parameters       |
-
-### Relationship attributes
-
-```rust
-#[myko_item]
-pub struct BindingNode {
-    #[belongs_to(Scene)]            // cascade delete: parent DEL → child DEL
-    pub scene_id: Arc<str>,
-
-    #[owns_many(BindingEdge)]       // parent DEL → children DEL; child DEL → parent UPDATE
-    pub edges: Vec<Arc<str>>,
-
-    #[ensure_for(Project)]          // auto-create one per Project
-    pub project_id: Arc<str>,
-
-    #[searchable]                   // index for full-text search
-    pub label: String,
-
-    #[myko_client_id]               // auto-populate with connecting WS client id
-    pub created_by: Arc<str>,
-}
-```
-
----
-
-## Running a server
-
-```rust
-use myko_server::{MykoServer, postgres::PostgresConfig};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let _telemetry = myko_server::telemetry::init_from_env();
-
-    let server = MykoServer::builder()
-        .with_bind_addr("0.0.0.0:5155".parse()?)
-        .with_postgres(PostgresConfig::from_env()?)   // durable event log + LISTEN/NOTIFY
-        .build();
-
-    server.run().await
-}
-```
-
-On startup the server logs:
-
-```
-Myko gateway: ws://0.0.0.0:5155/myko | MCP: /myko/mcp (POST + WS + SSE)
-```
-
-### Endpoints
-
-| Path        | Method                              | Purpose                                       |
-| ----------- | ----------------------------------- | --------------------------------------------- |
-| `/myko`     | `GET` + WS upgrade                  | Main Myko gateway (clients, federation peers) |
-| `/myko/mcp` | `POST`                              | MCP JSON-RPC (Streamable HTTP)                |
-| `/myko/mcp` | `GET` + WS upgrade                  | MCP over WebSocket (subprotocol `mcp`)        |
-| `/myko/mcp` | `GET` + `Accept: text/event-stream` | MCP SSE stream (keepalive in v1)              |
-
-All endpoints share a single TCP listener; the front-door router peeks at the HTTP request line + headers and dispatches.
-
-### Environment
-
-| Variable                         | Default               | Description                                |
-| -------------------------------- | --------------------- | ------------------------------------------ |
-| `MYKO_ADDRESS`                   | `ws://localhost:5155` | Used by the stdio MCP binary and clients   |
-| `MYKO_POSTGRES_URL`              | —                     | Postgres connection string                 |
-| `MYKO_PORT`                      | `5155`                | Server bind port (when wired through env)  |
-| `MYKO_TRACING_ENDPOINT`          | —                     | OTLP/HTTP endpoint for traces+metrics (see `myko_server::telemetry::init_from_env`); unset = local console logging only |
-| `MYKO_CCMD_MONITOR`              | `0`                   | Set `1` to log command timing              |
-| `MYKO_CCMD_TIMEOUT_MS`           | —                     | Slow-command threshold for warn logs       |
-| `MYKO_MEM_PROFILE_INTERVAL_SECS` | `60`                  | Metrics export interval (seconds); only applies when `MYKO_TRACING_ENDPOINT` is set |
-| `MYKO_MALLOC_TRIM_INTERVAL_SECS` | —                     | Periodic `malloc_trim(0)` probe: logs RSS before/after returning free glibc arena pages (distinguishes allocator page retention from real retention). Unset/0 = off; glibc-only. Measures glibc arenas only — meaningless if the host binary sets a non-glibc `#[global_allocator]` (e.g. jemalloc); use that allocator's own stats instead |
-
----
-
-## Cross-language bindings
-
-> **Rule:** Logic lives in Rust. Cross-language types are *generated*, not duplicated by hand. If a binding needs a type, add it to the Rust side and re-run `cargo flux run gen`.
-
-| Language   | Path                       | Notes                                     |
-| ---------- | -------------------------- | ----------------------------------------- |
-| TypeScript | `libs/myko/ts/`            | Generated by `cargo flux run gen` (ts-rs) |
-| Python     | `libs/myko/py/`, `python/` | pyproject-based                           |
-| C++        | `libs/myko/cpp/`           |                                           |
-| C#         | `libs/myko/csharp/`        |                                           |
-| Leptos     | `libs/myko/leptos/`        | Rust web client integration               |
-| Svelte     | `libs/myko/ui-svelte/`     | Wraps the TS client                       |
-| Vue        | `libs/myko/ui-vue/`        | Wraps the TS client                       |
-
----
-
-## Development workflow
-
-### Iteration loop
+The default commands exercise the v7 native foundation:
 
 ```bash
-# Fast check during edits (preferred over cargo build)
 cargo check
-
-# Tests
-cargo test -p myko-server
-
-# Single test
-cargo test -p myko my_test_name -- --exact --nocapture
-
-# Lint as CI would (strict)
+cargo test
 cargo clippy --all-targets --all-features -- -D warnings
-
-# Format
-cargo fmt --all          # Rust
-bun run format:all       # JS/TS via Prettier
+cargo fmt --all -- --check
 ```
 
-Respect the checkout’s configured Cargo target directory. Managed workspaces isolate build output without per-agent overrides.
-
-### Bacon (background type checker)
-
-`bacon.toml` is configured. `.bacon-locations` is updated by bacon — **check it before running clippy/check** to fix errors in order, since later errors often resolve when the first is fixed.
-
-### Hot reload
-
-Assume the user is running entities and codegen in hot-reload mode. **Do not** start dev servers, run `cargo flux run gen`, or kick off long-running tasks yourself unless explicitly asked.
-
-### Type generation
-
-Whenever a type that crosses the Rust↔TS boundary changes, run:
+To include every retained legacy v6 workspace member, use `--workspace`
+explicitly. To exercise the complete v7 adapter matrix, name the packages:
 
 ```bash
-cargo flux run gen
+cargo test \
+  -p myko-items-macros -p myko-items -p myko-app -p myko-federation \
+  -p myko-redb -p myko-iroh -p myko-local -p myko-node -p myko-ratatui \
+  -p myko-websocket-gateway \
+  --all-features
 ```
 
-This regenerates `libs/myko/ts/src/generated/`. Never hand-edit generated files.
+The strict workspace lint policy forbids unsafe code, panics, unchecked
+indexing, unchecked arithmetic, TODO stubs, and related shortcuts in the new
+foundation.
 
-### Conventional commits
+## Design status
 
-```
-feat(scope): add new feature
-fix(scope):  fix a bug
-chore(scope): tooling, dependencies, release plumbing
-docs(scope): documentation only
-refactor(scope): no behavior change
-perf(scope): performance work
-test(scope): tests only
-```
+The current implementation proves native command control, typed entities,
+durable journals, authenticated Iroh replication, paginated typed state,
+snapshot-then-live reactive subscriptions, scoped access control, revocation, peer
+supervision, identity-bound one-use pairing, registered query/report/view handlers,
+owner-local handler streams, gap-free service wakeups, and
+optional WebSocket edges. Forrest is the application-level proof: it
+multiplexes many harness sessions per node and uses Myko for durable messages,
+commands, agent mail, access grants, federation, and native clients.
 
-Scopes match crate or area: `myko`, `myko-server`, `mcp`, `autosocket`, `ts`, `leptos`, `ws`, etc.
+Multi-writer reconciliation, scoped readiness, coordinated invariants, richer
+discovery and pairing UX, snapshots, retention, richer cross-source derived views,
+and production mobile/TUI clients are still active design and implementation work. The governing constraints are in
+[the federation first-principles document](docs/superpowers/specs/2026-08-22-myko-federation-first-principles.md).
 
-### Release
-
-Automated. Pushing to `main` or `dev` stamps a version, tags, creates a GitHub Release, and publishes to crates.io and npm. Canary versions ship from `dev`, stable from `main`.
-
----
-
-## Performance
-
-See [`libs/myko/core/OPTIMIZATION.md`](libs/myko/core/OPTIMIZATION.md) for strategies, benchmarks, and the rationale behind the cell-based hot path.
-
-Diagnostic features (memory profiles, ingest stats, command timing) are opt-in via env vars and have near-zero overhead when disabled.
-
----
-
-## MCP — Model Context Protocol
-
-Myko ships an MCP endpoint so AI agents can call your queries / reports / commands as tools. Two modes:
-
-1. **In-server HTTP/WS/SSE** at `/myko/mcp` on the same port as the Myko gateway. Auto-discovered tools, per-client filtering via headers. See [Endpoints](#endpoints) above.
-2. **Stdio binary** (`myko::mcp::McpServer::run_stdio`) for editor integrations that prefer stdio MCP. Connects to a running Myko server via `MYKO_ADDRESS`.
-
-### Tool naming
-
-| Prefix              | Source                | Example                              |
-| ------------------- | --------------------- | ------------------------------------ |
-| `query:`            | `QueryRegistration`   | `query:GetAllTargets`                |
-| `view:`             | `ViewRegistration`    | `view:GetTargetTreeByParentFiltered` |
-| `report:`           | `ReportRegistration`  | `report:CountAllTargets`             |
-| `command:`          | `CommandRegistration` | `command:DeleteTarget`               |
-| `connection_status` | built-in              | health check                         |
-
-Each prefix also surfaces as a resource at `myko://schema/<prefix>/<id>` so MCP clients can fetch the input schema separately from calling the tool.
-
-### Per-client filtering
-
-Lock down what an MCP-client config can call without trusting the client itself. Two filter layers, both **client-configured**, composed AND. Both follow an Allow/Deny header pair with the same precedence (deny wins).
-
-**1. Tool visibility** — glob allow/deny over tool names. A hidden tool is omitted from `tools/list` and a `tools/call` against it returns the MCP **Protocol Error** (`-32602`, `"Unknown tool: …"`) — indistinguishable from a tool that doesn't exist.
-
-```
-X-Myko-Tool-Visibility-Allow: query:*,report:*
-X-Myko-Tool-Visibility-Deny:  command:Delete*
-```
-
-Patterns: `*`, `prefix*`, `*suffix`, exact.
-
-**2. Tool callability** — per-tool, per-arg JSON value lists. Failure surfaces as an MCP **Tool Execution Error** (`isError: true` content) — the spec's "Invalid input data" category, distinct from a Protocol Error.
-
-```
-X-Myko-Tool-Callable-Allow: {"command:RunPlaybook":{"playbook_id":["site","deploy"]}}
-X-Myko-Tool-Callable-Deny:  {"command:Tag":{"namespace":["prod"]}}
-```
-
-JSON shape per header: `{ "<tool_name>": { "<arg_path>": [values] } }`. Allow is positive (the arg must be present and its value must be in the list). Deny excludes (the arg's value must not be in the list).
-
-**Stdio transport** has no headers; the same four knobs come from env vars:
-- `MYKO_MCP_TOOL_VISIBILITY_ALLOW`
-- `MYKO_MCP_TOOL_VISIBILITY_DENY`
-- `MYKO_MCP_TOOL_CALLABLE_ALLOW` (JSON)
-- `MYKO_MCP_TOOL_CALLABLE_DENY` (JSON)
-
-Visibility applies to `tools/list`, `tools/call`, `resources/list`, `resources/read`. Callability applies only to `tools/call`.
-
-### Connecting a client
-
-**curl sanity check:**
-
-```bash
-curl -sS -X POST http://localhost:5155/myko/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | jq
-```
-
-**Claude Code (project `.mcp.json`)** — name filter only:
-
-```json
-{
-  "mcpServers": {
-    "myko": {
-      "type": "http",
-      "url": "http://localhost:5155/myko/mcp",
-      "headers": {
-        "X-Myko-Tool-Visibility-Allow": "query:*,report:*"
-      }
-    }
-  }
-}
-```
-
-**With argument allowlist** (e.g. only let the agent run two specific playbooks):
-
-```json
-{
-  "mcpServers": {
-    "myko-restricted": {
-      "type": "http",
-      "url": "http://localhost:5155/myko/mcp",
-      "headers": {
-        "X-Myko-Tool-Visibility-Allow": "query:*,report:*,command:RunPlaybook",
-        "X-Myko-Tool-Callable-Allow": "{\"command:RunPlaybook\":{\"playbook_id\":[\"site\",\"deploy\"]}}"
-      }
-    }
-  }
-}
-```
-
-**Claude Desktop / Inspector:** point them at the same URL with the same headers.
-
-Behind a TLS-terminating reverse proxy the public URL is `https://<host>/myko/mcp`.
-
----
-
-## AI agents
-
-This repo is set up for AI-assisted development with both [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) and other agents.
-
-- [`CLAUDE.md`](CLAUDE.md) — project-specific instructions Claude Code loads automatically.
-- [`AGENTS.md`](AGENTS.md) — generic agent guidance (toolchain commands, formatting, conventions).
-
-### The short version for agents
-
-1. **Rust first.** New logic goes in Rust unless you're explicitly working on a legacy TS path. Generate bindings; never duplicate types by hand.
-2. **`cargo check`, not `cargo build`.** Respect the checkout’s configured target directory.
-3. **Check `.bacon-locations`** before running clippy/check. Fix errors in order.
-4. **Don't run `cargo flux run gen` or start dev servers yourself** — assume the user has hot reload running.
-5. **No hardcoded field/type name strings.** Use macros and type constructors.
-6. **Use real entities in tests.** Don't construct JSON manually.
-7. **Comments explain *why*, not *what*.** Initials and tags: `// TODO(ts): ...`, `// NOTE(ts): ...`.
-8. **Conventional commits** with scope; never bundle unrelated changes.
-
-### Specs and design docs
-
-Every non-trivial change starts with a spec under `docs/superpowers/specs/<date>-<topic>-design.md`. The spec is the source of truth; implementation plans and PRs reference it.
-
----
-
-## Architecture references
-
-| Topic                     | Where                                                                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Optimization & benchmarks | [`libs/myko/core/OPTIMIZATION.md`](libs/myko/core/OPTIMIZATION.md)                                                             |
-| MCP endpoint spec         | [`docs/superpowers/specs/2026-05-20-mcp-http-endpoint-design.md`](docs/superpowers/specs/2026-05-20-mcp-http-endpoint-design.md) |
-| Agent instructions        | [`CLAUDE.md`](CLAUDE.md), [`AGENTS.md`](AGENTS.md)                                                                             |
-
----
-
-## License
-
-MIT OR Apache-2.0 for the framework crates (`myko`, `myko-macros`, `autosocket`).
-The server runtime (`myko-server`) is AGPL-3.0-or-later. See individual crate `Cargo.toml` for specifics.
+License: AGPL-3.0-or-later.

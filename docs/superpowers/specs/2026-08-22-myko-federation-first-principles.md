@@ -17,6 +17,149 @@ is meant to provide.
 This document starts with the application model and its invariants. Infrastructure choices must be
 derived from these constraints rather than becoming constraints themselves.
 
+### 1.1 Current alpha implementation boundary
+
+The Myko 7 alpha keeps the foundation transport-neutral in `myko-federation`.
+`myko-items` is the transport-neutral application-schema layer: consuming
+applications declare `#[myko_item(service = "...", ...)]` entities (including
+`scope_root` and `scoped_by` placement), and the macro generates stable typed
+IDs plus basic typed queries. Owning service is part of the item schema and
+every immutable `ItemMutation`; command contexts and raw-batch validation reject
+cross-service mutations before commit. Typed item requests infer service from
+the entity rather than accepting a caller-supplied string. `Node::query_items_in`
+performs source/service/scope filtering and current-state materialization behind
+a typed query API, so applications do not need to replay federation envelopes
+or decode stored payloads. `Node::watch_items_in` extends the same typed query from an
+initial replay cursor into gap-free live updates; it applies an entire atomic
+batch before publishing each recomputed value.
+
+The alpha also owns the service-side command boundary. `Node::begin_command`
+admits only commands whose immutable origin is the executing node and returns a
+typed `CommandContext`. The context lets application code query scoped items,
+emit typed set/delete mutations, and commit one atomic batch plus a serialized
+result without constructing federation envelopes, cursors, or batch IDs.
+Applications can declare the stable payload/result contract with
+`#[myko_command(service = "...", name = "...", result = Type)]`.
+`DeclaredCommand` then owns request encoding, and
+`Node::begin_declared_command` validates the wire identity and decodes the body
+before the command is claimed. A schema mismatch therefore cannot strand the
+command in an executing state.
+
+`DeclaredCommandContext` is an owned execution capability, not a callback-only
+borrow. A long-running application handler may carry it with its resident task
+or session while awaiting model output, tools, or operator approval, then use
+that same context to emit typed items and commit, reject, or retry. If the
+process dies instead, the durable backend requeues the abandoned local claim;
+application code does not reconstruct an atomic batch from lifecycle history.
+
+`Node::pending_local_commands` and `dispatch_declared` own admission ordering,
+local-origin filtering, decoding, atomic commit, and malformed-body rejection.
+A handler explicitly classifies failures as terminal `Reject` or transient
+`Retry`; retries append a durable reason and return the command to the ordered
+pending set. Applications therefore do not rescan raw lifecycle envelopes or
+conflate temporary local dependency failures with invalid domain commands.
+`Node::watch_pending_declared` and the service-wide
+`watch_pending_local_service_commands` extend that pending set into a gap-free
+work feed. Myko materializes restart catch-up at one history boundary, then
+delivers new local submissions and retries from its lossless event stream.
+Foreign replicated submissions remain projections and never become executable
+work, while supervisors can use bounded receives for cooperative shutdown
+without timer-polling durable history.
+
+The transport-neutral `CommandClient` contract supplies the same unclaimed
+submit/query/cancel surface for an embedded `Node` and an authenticated
+`IrohCommandClient`. Native clients select Iroh without changing the
+application command API. WebSocket remains an optional short-lived edge
+adapter rather than the framework's client or node foundation.
+`Node::watch_command` and `IrohCommandClient::watch_command` extend that
+surface with one current-then-live lifecycle stream. The node reconstructs the
+initial state from the same bounded history prefix used to establish the
+subscription, preventing a query-to-subscribe gap. Open native command streams
+are reauthorized on policy revision and close immediately after revocation, so
+clients can await terminal state instead of polling command queries.
+
+Scope-level command state uses the parallel `CommandStateClient` contract.
+`CommandStateRequest` collects bounded pages of current lifecycle state for one
+declared service/scope/command type against a fixed serving-log ceiling. Entries
+retain both source admission order and the serving position of their latest
+authoritative transition; stale replicated transitions cannot regress the
+catalog. `CommandStateSnapshot::declared` decodes application bodies and typed
+results without exposing event envelopes. `CommandStateStream` and
+`IrohCommandClient::watch_commands` continue the completed snapshot through a
+filtered replay-then-live `FollowCommands` stream. Every page and open stream is
+authorized independently, policy revocation closes the stream, and reconnect
+starts from a fresh cursor-stable snapshot.
+
+The parallel `ItemClient` contract supplies bounded current-state reads for an
+embedded `Node` and an authenticated `IrohItemClient`. A request identifies the
+declared item schema and scope, with service generated from that schema, and may either name an already
+replicated source or select the serving node's own authoritative state. The
+response is paginated by stable item ID. Its first page fixes an immutable log
+ceiling, and every continuation carries that ceiling, so concurrent commits do
+not create gaps or duplicates in the collected snapshot. Each page is bounded,
+schema-validated, and authorized independently. Myko's client collector checks
+source, server, schema, cursor, ordering, and page limits before rehydrating the
+normal generated typed query; applications do not replay history or repair
+pagination. This one-shot surface is for initial screens and short-lived
+consumers. Callers that want incremental processing may consume pages directly.
+Each current-state entry also retains the authoritative source-log position and
+mutation index of its latest set. `ItemProjection::values_by_last_change` makes
+that framework metadata available to typed application queries without adding
+transport cursors to `#[myko_item]` payloads. Snapshot collection, embedded
+watches, and native stream updates all preserve the same ordering metadata;
+mutations from one atomic batch remain in their original order.
+For native non-replica clients, `ItemQueryStream` turns that collected snapshot
+into a transport-neutral typed materializer. `IrohItemClient` opens a
+`FollowItems` request strictly after the snapshot cursor; the server establishes
+a replay-then-live subscription before acknowledging the stream and sends only
+matching schema mutations from complete atomic batches. Command envelopes,
+unrelated item bodies, and raw scope history do not cross the client API. Each
+policy revision reauthorizes the open stream, while a disconnect is recovered
+by collecting a fresh snapshot and subscribing again. Embedded typed watches or
+scoped replay-then-follow streams remain available when a durable local replica
+is actually desired.
+
+`myko-redb` is an optional immutable journal and cursor store, `myko-iroh` is an
+optional authenticated native transport, and `myko-node` composes those two
+adapters into a restartable long-running node with stable Myko and Iroh
+identities plus durable peer followers. `myko-websocket-gateway` is a separate
+short-lived edge adapter; it is not required by the node, journal, replication,
+command, query, or subscription foundations. An application may supervise that
+gateway over the same `Node` without changing native peer identity or durable
+state. These mechanisms implement part of the constraints below without
+changing their first-principles status.
+
+Native pairing binds both stable identities in a versioned
+`NativeNodeDescriptor`: the cryptographic Iroh endpoint and the Myko source log
+it is expected to serve. A bounded identity handshake lets short-lived clients
+verify the descriptor before application authorization or command submission.
+Pinned durable followers verify the same source during every replication
+handshake and ingest nothing on mismatch. Endpoint-only peer files remain a
+legacy unpinned mode that deliberately retains replacement-history reset
+semantics. Myko's default pairing exchange uses a separate bounded Iroh ALPN,
+an expiring one-use bearer whose server retains only a verifier, an HMAC
+transcript over both stable identities, and a shared six-digit comparison code.
+Successful redemption neither grants application authority nor persists a
+follower; those remain explicit application/operator decisions. The outer
+ticket, QR, file, and discovery encoding remain pluggable.
+
+This crate split is an implementation boundary, not the intended application
+experience. Myko remains an application framework: its public facade should
+compose schema registration, command execution, typed reactive queries,
+persistence, federation, and subscriptions. Redb, Iroh, cursors, mutation
+encoding, and replay are framework concerns unless an application explicitly
+replaces an adapter.
+
+Hyphae is the framework's first-class reactive graph. A durable adapter such as
+Redb owns restartable history and materialization inputs; it does not replace
+live cells, dependency tracking, reports, or derived views with request-time
+reads. UI integrations such as `myko-gpui`, `myko-leptos`, and `myko-ratatui`
+own lifecycle and rerender bridging rather than visual components or a second
+state store. `myko-app` is the application boundary for explicitly registered
+query, report, and view handlers. It retains the gap-free dependency drivers,
+materializes their Hyphae pipelines once, and gives every transport the same
+type-erased wire lifecycle without making the transport own the handler.
+
 The intended system supports:
 
 - long-running and short-lived nodes;
@@ -59,6 +202,12 @@ It owns:
 Services are semantic atomicity boundaries, not necessarily one-to-one with binaries, processes,
 crates, or deployment units. An application may package several services in one binary or distribute
 one service capability across several deployments without changing the service boundary.
+
+An item schema declares exactly one owning service. Myko includes that service
+in mutation identity and rejects a command batch that attempts to mutate an
+item owned by another service. Cross-service work therefore uses an explicit
+command or typed view rather than accidentally creating a second current-state
+namespace for the same Rust entity.
 
 ### 2.3 Node
 
@@ -240,7 +389,11 @@ Submitted
   -> Reconciled
 ```
 
-It may instead become `Rejected` before commitment or `ReplicationDelayed` after commitment.
+It may instead become `Rejected` or `Cancelled` before commitment, or
+`ReplicationDelayed` after commitment. Cancellation is itself durable and
+idempotent. It prevents a later local claim or commit, while a command that
+already committed remains committed if cancellation loses that terminal-state
+race.
 
 `CommittedLocally` is the decisive business transition:
 
@@ -359,6 +512,20 @@ The owning service publishes typed query and view contracts. A consumer receives
 The consumer maintains the result only as live subscription state. It does not persist a foreign
 authoritative replica or treat a disconnected last value as current.
 
+In Rust, the value, cursor, and liveness revision are exposed coherently through
+a Hyphae cell. Transport adapters drive that cell from the same typed
+snapshot/follow contract; application reports, views, and UI adapters compose
+the cell without polling the transport or persistence backend. The cursor type
+is part of the handler contract: a direct query commonly uses one
+`LogPosition`, while a joined view may expose a composite frontier covering
+several durable dependencies.
+
+A service may also publish typed provisional progress as coalescible live state. This progress is
+not immutable history and has no replay guarantee. Each source supplies a monotonic sequence per
+live topic so a filtered subscriber can detect loss under bounded backpressure without confusing
+unrelated topics for gaps. After a gap or reconnect, the subscriber must query or resume a durable
+stream to recover authoritative state.
+
 Views may compose typed live views from several services:
 
 ```text
@@ -382,10 +549,58 @@ Durable streams are suitable for operational effects such as notifications, exte
 audit export, and explicit workflows. Consuming a durable stream does not implicitly create graph
 state; authoritative mutation still requires a command.
 
+Consumer and peer cursors are node-local operational metadata, not replicated authoritative graph
+state. A cursor advances durably only after the corresponding immutable batch was ingested or its
+effect checkpointed. A crash before cursor persistence may replay idempotent work; persisting the
+cursor first could omit history and is forbidden. Cursor storage is transport-neutral and keyed by a
+transport namespace plus stable peer or consumer identity. A peer checkpoint also records the
+source node identity whose position space it describes. If the same transport identity begins serving
+a different source history, the consumer replaces the checkpoint with that identity and resumes from
+the new history's beginning; it must never reuse a position from the old source.
+
+A subscriber granted one scope does not need the source's complete log. A scope-filtered durable
+stream omits unrelated event bodies while retaining a watermark in the source log's position space.
+Included event positions may therefore contain gaps, and an empty batch may still advance the
+watermark across unrelated activity. The consumer keeps that cursor per `(source, scope)`, validates
+that every included event belongs to the requested scope, and never treats it as a cursor for another
+scope or for full-node replication. The cursor value therefore carries both source and scope identity,
+not merely a numeric position. If the same transport peer begins serving a different source history,
+the consumer discards the old position and replays the scope from its beginning.
+
+A short-lived client also needs to discover which scopes it may choose without first knowing their
+identifiers. Scope discovery is a bounded, lexically ordered, cursor-paginated projection of scope
+identifiers—not event bodies. A transport evaluates the same exact-scope read policy independently
+for every candidate before disclosure. Thus discovery cannot be used to enumerate unauthorized
+scope names, and selecting a returned scope still requires a separate authorized scoped query or
+subscription. A client rejects pagination that changes source node identity mid-scan.
+
 ### 9.3 Typed commands
 
 A command asks the owning service to perform an authoritative operation. Cross-service workflows use
 causally linked service-local commands rather than hidden distributed transactions.
+
+Application handlers receive a Myko-owned command context rather than direct
+access to the journal protocol. They express domain decisions as typed item
+mutations and one result; Myko validates and commits those mutations atomically,
+records the lifecycle transition, and enforces the execution placement policy.
+An application should not need to assemble `ChangeBatch` values or inspect raw
+event envelopes for ordinary command execution.
+
+Handler failure has two explicit meanings. `Reject` records a terminal domain
+decision. `Retry` records a non-terminal reason and releases the claim so the
+same stable command can be dispatched again without restarting the node.
+
+```rust
+#[myko_command(service = "planning", name = "planning.rename", result = bool)]
+struct RenameProject {
+    project: ProjectId,
+    title: String,
+}
+```
+
+The stable ID, scope, and principal wrap this typed body in a
+`DeclaredCommand`; they are admission metadata, not repeated application
+payload fields.
 
 When a service makes a durable decision using a foreign live view, its history records the exact
 source revisions it observed. This preserves provenance without copying the foreign graph into its
@@ -483,6 +698,16 @@ The precise grant representation remains open, but the semantic properties are f
 - history access may cover current state only, changes since sharing, a bounded window, or complete
   history;
 - revocation stops future replication, subscriptions, commands, history access, and delegation.
+
+Transport adapters present authenticated request metadata to one transport-neutral access-policy
+contract before exposing history or applying a mutation. That metadata includes the transport
+principal, operation, exact service/scope when known, command identity and claimed command principal,
+or exact live topics. A permissive bootstrap policy may be used for local development, but it is an
+explicit policy rather than an implicit property of an authenticated connection. Durable grant
+materialization and policy evaluation remain application/node concerns shared by every transport.
+Long-lived transport streams re-evaluate their original authenticated request
+when the installed policy changes. A newly denied stream closes explicitly;
+revocation is not limited to rejecting the principal's next connection.
 
 Revocation cannot make an untrusted party forget plaintext it previously received. Granting State
 access is therefore an infrastructure trust decision. Cooperative local eviction removes a node's

@@ -1,0 +1,24 @@
+[package]
+name = "myko-websocket-gateway"
+version = "7.0.0-alpha.1"
+edition.workspace = true
+description = "Optional WebSocket edge gateway for short-lived Myko 7 clients"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[dependencies]
+futures-util.workspace = true
+flume.workspace = true
+hyphae.workspace = true
+myko-app.workspace = true
+myko-federation.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
+
+[dev-dependencies]
+myko-items.workspace = true

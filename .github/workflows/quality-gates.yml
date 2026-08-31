@@ -56,6 +56,13 @@ jobs:
         run: cargo binstall cargo-flux --no-confirm --force
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
+      - name: Check Myko 7 native default
+        run: |
+          cargo check --locked
+          cargo test --locked
+          cargo clippy --locked --all-targets --all-features -- -D warnings
+      - name: Check optional Myko 7 WebSocket edge
+        run: cargo check --locked -p myko-websocket-gateway
       - name: Check Rust and generated TypeScript
         run: cargo flux run check
       - name: Run strict Clippy and frontend lint

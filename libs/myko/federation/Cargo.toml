@@ -1,0 +1,19 @@
+[package]
+name = "myko-federation"
+version = "7.0.0-alpha.1"
+edition.workspace = true
+description = "Transport-neutral command, history, and subscription foundation for Myko 7"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+flume.workspace = true
+hyphae.workspace = true
+myko-items.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true

@@ -1,7 +1,28 @@
 [workspace]
 resolver = "2"
+default-members = [
+  "libs/myko/app",
+  "libs/myko/federation",
+  "libs/myko/items",
+  "libs/myko/items-macros",
+  "libs/myko/iroh",
+  "libs/myko/local",
+  "libs/myko/node",
+  "libs/myko/ratatui",
+  "libs/myko/redb",
+]
 members = [
+  "libs/myko/app",
   "libs/myko/core",
+  "libs/myko/federation",
+  "libs/myko/items",
+  "libs/myko/items-macros",
+  "libs/myko/websocket-gateway",
+  "libs/myko/iroh",
+  "libs/myko/local",
+  "libs/myko/node",
+  "libs/myko/ratatui",
+  "libs/myko/redb",
   "libs/myko/macros",
   "libs/myko/server",
   "libs/myko/leptos",
@@ -59,9 +80,14 @@ async-stream = "0.3"
 futures = "0.3"
 futures-util = "0.3"
 pin-project-lite = "0.2"
+hmac = "0.12"
+sha2 = "0.10"
+hex = "0.4"
+getrandom = "0.3"
 
 # Error handling
 anyhow = "1.0"
+thiserror = "2"
 
 # Typed layered application configuration
 confique = "0.4"
@@ -99,6 +125,7 @@ hyphae = { version = "^3.0", features = ["scheduler"] }
 hyphae-leptos = { version = "^3.0" }
 # Pin the published bridge so Myko and Hyphae share one GPUI type universe.
 hyphae-gpui = "=3.1.2"
+iroh = "1.1"
 
 # GPUI native/web stack. Pin the unofficial packages so every adapter shares one type universe.
 gpui = { package = "gpui-unofficial", version = "=1.16.1" }
@@ -110,6 +137,16 @@ myko-gpui = { version = "6.5.9", path = "libs/myko/gpui" }
 myko-leptos = { version = "6.5.9", path = "libs/myko/leptos" }
 myko-macros = { version = "6.5.9", path = "libs/myko/macros" }
 myko = { version = "6.5.9", path = "libs/myko/core" }
+myko-app = { version = "7.0.0-alpha.1", path = "libs/myko/app" }
+myko-federation = { version = "7.0.0-alpha.1", path = "libs/myko/federation" }
+myko-items = { version = "7.0.0-alpha.1", path = "libs/myko/items" }
+myko-items-macros = { version = "7.0.0-alpha.1", path = "libs/myko/items-macros" }
+myko-iroh = { version = "7.0.0-alpha.1", path = "libs/myko/iroh" }
+myko-local = { version = "7.0.0-alpha.1", path = "libs/myko/local" }
+myko-node = { version = "7.0.0-alpha.1", path = "libs/myko/node" }
+myko-ratatui = { version = "7.0.0-alpha.1", path = "libs/myko/ratatui" }
+myko-redb = { version = "7.0.0-alpha.1", path = "libs/myko/redb" }
+myko-websocket-gateway = { version = "7.0.0-alpha.1", path = "libs/myko/websocket-gateway" }
 myko-server = { version = "6.5.9", path = "libs/myko/server" }
 
 [patch.crates-io]

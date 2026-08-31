@@ -1,0 +1,17 @@
+[package]
+name = "myko-redb"
+version = "7.0.0-alpha.1"
+edition.workspace = true
+description = "Durable embedded event journal for Myko 7 federation nodes"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[dependencies]
+myko-federation.workspace = true
+redb = "4.2"
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3"
