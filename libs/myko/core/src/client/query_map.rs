@@ -752,7 +752,7 @@ impl MykoClient {
 
         // Duplicate explicit transaction IDs must not replace another watch;
         // otherwise dropping the older watch could remove the newer handler.
-        let handler: super::QueryHandler = Box::new(move |response_value: Value| {
+        let handler: super::QueryHandler = Arc::new(move |response_value: Value| {
             let Some(map_writer) = map_weak.upgrade() else {
                 return;
             };
@@ -951,7 +951,7 @@ impl MykoClient {
         let total_count_for_handler = total_count.clone();
         let window_for_handler = window.clone();
         let page_state_for_handler = page_state.clone();
-        let handler: super::QueryHandler = Box::new(move |response_value: Value| {
+        let handler: super::QueryHandler = Arc::new(move |response_value: Value| {
             let Some(items_writer) = items_weak.upgrade() else {
                 return;
             };

@@ -389,21 +389,51 @@ impl<T: CellValue> WindowedQueryWatch<T> {
 type CommandResponseHandler = Box<dyn FnOnce(Result<Value, String>) + Send>;
 
 /// Handler for incoming query responses.
-type QueryHandler = Box<dyn Fn(Value) + Send + Sync>;
+type QueryHandler = Arc<dyn Fn(Value) + Send + Sync>;
 
 /// Handler for incoming report responses.
 type ReportHandler = Arc<dyn Fn(Value) + Send + Sync>;
+
+/// Handler for incoming command requests (from server).
+type CommandRequestHandler = Arc<dyn Fn(Value, CommandResponder) + Send + Sync>;
+
+fn clone_handler<H: ?Sized>(
+    handlers: &DashMap<Arc<str>, Arc<H>>,
+    key: &Arc<str>,
+) -> Option<Arc<H>> {
+    // Callbacks may cancel or replace their own registration. Return only an
+    // owned handler so every caller releases the DashMap guard before invoking it.
+    handlers.get(key).map(|entry| Arc::clone(entry.value()))
+}
+
+fn dispatch_query_response(
+    handlers: &DashMap<Arc<str>, QueryHandler>,
+    tx: &Arc<str>,
+    response: Value,
+) {
+    if let Some(handler) = clone_handler(handlers, tx) {
+        handler(response);
+    }
+}
 
 fn dispatch_report_response(
     handlers: &DashMap<Arc<str>, ReportHandler>,
     tx: &Arc<str>,
     response: Value,
 ) {
-    // The callback can release the last report Cell, whose cancellation guard
-    // removes this handler. Never execute it while holding a DashMap read guard.
-    let handler = handlers.get(tx).map(|entry| Arc::clone(entry.value()));
-    if let Some(handler) = handler {
+    if let Some(handler) = clone_handler(handlers, tx) {
         handler(response);
+    }
+}
+
+fn dispatch_command_request(
+    handlers: &DashMap<Arc<str>, CommandRequestHandler>,
+    command_id: &Arc<str>,
+    command: Value,
+    responder: CommandResponder,
+) {
+    if let Some(handler) = clone_handler(handlers, command_id) {
+        handler(command, responder);
     }
 }
 
@@ -412,9 +442,6 @@ type SharedMapWatchParts<T> = (
     CellMap<Arc<str>, Arc<T>, CellImmutable>,
     Cell<bool, CellImmutable>,
 );
-
-/// Handler for incoming command requests (from server).
-type CommandRequestHandler = Box<dyn Fn(Value, CommandResponder) + Send + Sync>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // CommandResponder — allows sync command handlers to send responses
@@ -1351,9 +1378,7 @@ impl MykoClient {
                 let data_val = data();
                 let tx_str = data_val.get("tx").and_then(|v| v.as_str()).unwrap_or("");
                 let tx: Arc<str> = Arc::from(tx_str);
-                if let Some(handler) = inner.query_handlers.get(&tx) {
-                    handler(data_val);
-                }
+                dispatch_query_response(&inner.query_handlers, &tx, data_val);
             }
             "ws:m:report-response" => {
                 if let Ok(response) = serde_json::from_value::<crate::wire::ReportResponse>(data())
@@ -1404,24 +1429,27 @@ impl MykoClient {
             "ws:m:command" => {
                 if let Ok(wrapped) = serde_json::from_value::<crate::wire::WrappedCommand>(data()) {
                     let command_id: Arc<str> = wrapped.command_id.clone().into();
-                    if let Some(handler) = inner.command_request_handlers.get(&command_id) {
-                        let tx = wrapped
-                            .command
-                            .get("tx")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("")
-                            .to_string();
-                        if tx.is_empty() {
-                            return;
-                        }
-                        let responder = CommandResponder {
-                            socket: inner.socket.clone(),
-                            protocol: inner.protocol.clone(),
-                            tx,
-                            command_id: command_id.clone(),
-                        };
-                        handler(wrapped.command, responder);
+                    let tx = wrapped
+                        .command
+                        .get("tx")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    if tx.is_empty() {
+                        return;
                     }
+                    let responder = CommandResponder {
+                        socket: inner.socket.clone(),
+                        protocol: inner.protocol.clone(),
+                        tx,
+                        command_id: command_id.clone(),
+                    };
+                    dispatch_command_request(
+                        &inner.command_request_handlers,
+                        &command_id,
+                        wrapped.command,
+                        responder,
+                    );
                 }
             }
             "ws:m:ping" => {
@@ -1778,7 +1806,7 @@ impl MykoClient {
         let query_id_for_handler = query_id.clone();
 
         // Register handler for query responses matching this tx
-        let handler: QueryHandler = Box::new(move |response_value: Value| {
+        let handler: QueryHandler = Arc::new(move |response_value: Value| {
             let Some(cell_writer) = cell_weak.upgrade() else {
                 warn!(
                     "watch_query: weak cell dead for query={} tx={}",
@@ -2092,7 +2120,7 @@ impl MykoClient {
         let tx_for_handler = tx.clone();
         let view_id_for_handler = view_id.clone();
 
-        let handler: QueryHandler = Box::new(move |response_value: Value| {
+        let handler: QueryHandler = Arc::new(move |response_value: Value| {
             let Some(cell_writer) = cell_weak.upgrade() else {
                 return;
             };
@@ -2310,7 +2338,7 @@ impl MykoClient {
 
         self.inner.command_request_handlers.insert(
             command_id.clone(),
-            Box::new(move |value: Value, responder: CommandResponder| {
+            Arc::new(move |value: Value, responder: CommandResponder| {
                 if let Ok(cmd) = serde_json::from_value::<C>(value) {
                     handler(cmd, responder);
                 }
@@ -2352,7 +2380,7 @@ impl MykoClient {
 
         self.inner.query_handlers.insert(
             tx.clone(),
-            Box::new(move |response_value: Value| {
+            Arc::new(move |response_value: Value| {
                 let Some(cell_writer) = cell_weak.upgrade() else {
                     return;
                 };
@@ -2435,7 +2463,7 @@ impl MykoClient {
 
         self.inner.query_handlers.insert(
             tx.clone(),
-            Box::new(move |response_value: Value| {
+            Arc::new(move |response_value: Value| {
                 let Some(cell_writer) = cell_weak.upgrade() else {
                     return;
                 };
@@ -2716,6 +2744,127 @@ mod report_dispatch_tests {
         dispatch_report_response(&client.inner.report_handlers, &next_tx, Value::Null);
         assert!(received.recv_timeout(Duration::from_secs(2)).is_ok());
         client.inner.report_handlers.remove(&next_tx);
+    }
+}
+
+#[cfg(test)]
+mod callback_dispatch_tests {
+    use super::{
+        Cell, CellImmutable, CommandRequestHandler, CommandResponder, MykoClient, QueryHandler,
+        dispatch_command_request, dispatch_query_response,
+    };
+    use dashmap::DashMap;
+    use serde_json::Value;
+    use std::sync::{Arc, Barrier, mpsc};
+    use std::time::Duration;
+
+    fn registered_query_tx(client: &MykoClient) -> Result<Arc<str>, &'static str> {
+        client
+            .inner
+            .query_handlers
+            .iter()
+            .next()
+            .map(|entry| Arc::clone(entry.key()))
+            .ok_or("raw watch did not register a response handler")
+    }
+
+    fn assert_subscription_retirement_does_not_deadlock(
+        client: &MykoClient,
+        tx: &Arc<str>,
+        subscription: Cell<Vec<Value>, CellImmutable>,
+        kind: &str,
+    ) {
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let callback_entered = Arc::clone(&entered);
+        let callback_release = Arc::clone(&release);
+        let weak_subscription = subscription.downgrade();
+        let handler: QueryHandler = Arc::new(move |_| {
+            let last_writer = weak_subscription.upgrade();
+            assert!(last_writer.is_some());
+            callback_entered.wait();
+            callback_release.wait();
+            drop(last_writer);
+        });
+        client.inner.query_handlers.insert(Arc::clone(tx), handler);
+
+        let inner = Arc::clone(&client.inner);
+        let dispatch_tx = Arc::clone(tx);
+        let (done, completed) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            dispatch_query_response(&inner.query_handlers, &dispatch_tx, Value::Null);
+            let _ = done.send(());
+        });
+        entered.wait();
+        drop(subscription);
+        release.wait();
+        assert!(
+            completed.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "retiring a {kind} subscription deadlocked its response callback"
+        );
+        assert!(worker.join().is_ok());
+        assert!(!client.inner.query_handlers.contains_key(tx));
+    }
+
+    #[test]
+    fn retiring_query_during_response_does_not_deadlock_dispatch() -> Result<(), &'static str> {
+        let client = MykoClient::new_with_auto_reconnect(false);
+        let subscription = client.watch_query_raw(crate::wire::WrappedQuery {
+            query: serde_json::json!({}),
+            query_id: "RegressionQuery".into(),
+            query_item_type: "RegressionItem".into(),
+            window: None,
+        });
+        let tx = registered_query_tx(&client)?;
+        assert_subscription_retirement_does_not_deadlock(&client, &tx, subscription, "query");
+        Ok(())
+    }
+
+    #[test]
+    fn retiring_view_during_response_does_not_deadlock_dispatch() -> Result<(), &'static str> {
+        let client = MykoClient::new_with_auto_reconnect(false);
+        let subscription = client.watch_view_raw(crate::wire::WrappedView {
+            view: serde_json::json!({}),
+            view_id: "RegressionView".into(),
+            view_item_type: "RegressionItem".into(),
+            window: None,
+        });
+        let tx = registered_query_tx(&client)?;
+        assert_subscription_retirement_does_not_deadlock(&client, &tx, subscription, "view");
+        Ok(())
+    }
+
+    #[test]
+    fn command_callback_can_cancel_itself_without_deadlocking_dispatch() {
+        let client = MykoClient::new_with_auto_reconnect(false);
+        let handlers: Arc<DashMap<Arc<str>, CommandRequestHandler>> = Arc::new(DashMap::new());
+        let command_id: Arc<str> = "RegressionCommand".into();
+        let callback_handlers = Arc::clone(&handlers);
+        let callback_command_id = Arc::clone(&command_id);
+        handlers.insert(
+            Arc::clone(&command_id),
+            Arc::new(move |_, _| {
+                callback_handlers.remove(&callback_command_id);
+            }),
+        );
+        let responder = CommandResponder {
+            socket: client.inner.socket.clone(),
+            protocol: client.inner.protocol.clone(),
+            tx: "regression-command-tx".to_owned(),
+            command_id: Arc::clone(&command_id),
+        };
+        let (done, completed) = mpsc::channel();
+        let dispatch_handlers = Arc::clone(&handlers);
+        let worker = std::thread::spawn(move || {
+            dispatch_command_request(&dispatch_handlers, &command_id, Value::Null, responder);
+            let _ = done.send(());
+        });
+        assert!(
+            completed.recv_timeout(Duration::from_secs(2)).is_ok(),
+            "command dispatch deadlocked while its callback cancelled the registration"
+        );
+        assert!(worker.join().is_ok());
+        assert!(handlers.is_empty());
     }
 }
 

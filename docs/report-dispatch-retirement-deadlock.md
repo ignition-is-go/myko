@@ -2,9 +2,12 @@
 
 ## Scope and status
 
-This draft includes the candidate lock fix and three regression tests, following
-operator approval to add source edits. It is not approved for merge, release,
-or deployment. Nothing has been released or deployed.
+This draft includes the candidate report lock fix and three report regression
+tests, following operator approval to add source edits. Review then found the
+same callback-under-DashMap-guard pattern in query, view, and command-request
+dispatch; the candidate now applies one lock-release rule to all four handler
+types and adds three corresponding regressions. It is not approved for merge,
+release, or deployment. Nothing has been released or deployed.
 
 Investigated baseline: Myko 6.5.9, commit
 `9c8ff87fdd277cf1778a4f9d5c1546f7be543482`.
@@ -106,24 +109,41 @@ Observed result: **3 passed, 0 failed**:
 - `cancelled_report_responses_are_ignored`
 - `retiring_report_during_response_does_not_block_subsequent_reports`
 
+Review follow-up command:
+
+```sh
+cargo test -p myko --lib callback_dispatch_tests --target-dir target/agent -- --nocapture
+```
+
+Observed result: **3 passed, 0 failed**:
+
+- `retiring_query_during_response_does_not_deadlock_dispatch`
+- `retiring_view_during_response_does_not_deadlock_dispatch`
+- `command_callback_can_cancel_itself_without_deadlocking_dispatch`
+
 Broader default-feature library testing was **not green**:
 
 | Checkout | Result |
 | --- | --- |
 | Candidate fix and three added tests | 174 passed, 11 failed |
+| Widened callback fix and six added tests | 181 passed, 7 failed |
 | Unmodified baseline, no added tests | 171 passed, 11 failed |
 
 Failures involved query-map, graph, relation-index, and history-reactivity tests.
 The failing sets were not identical between runs. This establishes that the
 baseline is also red in this environment, not that every broader failure has
-been diagnosed or proven unrelated. No full-suite or fleet validation is claimed.
+been diagnosed or proven unrelated. The windowed query test that failed in the
+widened full-suite run passed when rerun alone. No green full-suite or fleet
+validation is claimed.
 
 ## Proposed correction for review
 
-Store report handlers with shared ownership, clone the handler while holding
+Store callback handlers with shared ownership, clone the handler while holding
 the table guard, release the guard, and only then invoke the callback. Apply the
-same rule to native and WASM dispatch and both typed/raw report registration.
-Do not alter lifecycle policy, action fences, journal replay, or readiness rules.
+same rule to native and WASM dispatch for reports, queries, views, and incoming
+commands, including typed, raw, map, and windowed subscription registrations.
+Do not alter scheduling, lifecycle policy, action fences, journal replay, or
+readiness rules.
 
 Before promotion, review cancellation concurrency semantics, validate against
 the deployed dependency set, resolve or account for broader test failures, and
