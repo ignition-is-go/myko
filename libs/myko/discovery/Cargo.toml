@@ -18,3 +18,9 @@ tokio.workspace = true
 [target.'cfg(any(target_os = "ios", target_os = "macos"))'.dependencies]
 async-dnssd = "0.5.1"
 futures-util.workspace = true
+
+[target.'cfg(not(any(target_os = "ios", target_os = "macos")))'.dependencies]
+mdns-sd = "0.21.1"
+
+[dev-dependencies]
+mdns-sd = "0.21.1"

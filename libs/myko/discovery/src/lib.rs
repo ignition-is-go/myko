@@ -12,34 +12,20 @@ use std::{
     time::{Duration, Instant},
 };
 
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket};
-
 use myko_federation::NodeId;
 use myko_iroh::{EndpointId, NativeNodeDescriptor, PairingInvitation};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::watch, task::JoinHandle};
 
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
-use tokio::{
-    net::UdpSocket,
-    time::{MissedTickBehavior, interval},
-};
-
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 mod apple;
+mod bonjour;
+#[cfg(any(test, not(any(target_os = "ios", target_os = "macos"))))]
+mod portable;
 
-/// Bonjour service type used for nearby Myko node advertisements on Apple platforms.
+/// DNS-SD service type used for nearby Myko node advertisements on every platform.
 pub const MYKO_BONJOUR_SERVICE_TYPE: &str = "_myko-node._udp";
-/// IPv4 multicast group used for nearby Myko node advertisements on non-Apple platforms.
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
-pub const MYKO_LAN_DISCOVERY_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 75, 82);
-/// UDP port used with [`MYKO_LAN_DISCOVERY_GROUP`].
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
-pub const MYKO_LAN_DISCOVERY_PORT: u16 = 47_826;
 const LAN_DISCOVERY_PROTOCOL_VERSION: u16 = 1;
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
-const MAX_LAN_DISCOVERY_PACKET_BYTES: usize = 16 * 1024;
 const DEFAULT_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(3);
 const DEFAULT_EXPIRY: Duration = Duration::from_secs(12);
 
@@ -234,7 +220,7 @@ impl LanDiscovery {
     /// Returns an error when the local discovery transport cannot be configured.
     #[allow(
         clippy::needless_pass_by_value,
-        reason = "the non-Apple multicast task owns the advertisement for its lifetime"
+        reason = "the discovery driver owns its complete startup configuration"
     )]
     pub fn start(advertisement: LanAdvertisement) -> Result<Self, String> {
         Self::start_with_timing(&advertisement, DEFAULT_ANNOUNCE_INTERVAL, DEFAULT_EXPIRY)
@@ -255,61 +241,7 @@ impl LanDiscovery {
         announce_interval: Duration,
         expiry: Duration,
     ) -> Result<Self, String> {
-        if announce_interval.is_zero() || expiry < announce_interval {
-            return Err("LAN discovery timing is invalid".to_owned());
-        }
-        let group = SocketAddr::V4(SocketAddrV4::new(
-            MYKO_LAN_DISCOVERY_GROUP,
-            MYKO_LAN_DISCOVERY_PORT,
-        ));
-        let socket = bind_lan_socket()?;
-        let roster = Arc::new(Mutex::new(LanRoster::default()));
-        let (updates, _) = watch::channel(Vec::new());
-        let (shutdown, mut shutdown_rx) = watch::channel(false);
-        let task_roster = Arc::clone(&roster);
-        let task_updates = updates.clone();
-        let local_endpoint = advertisement.descriptor.endpoint.id;
-        let advertisement = advertisement.clone();
-        let task = tokio::spawn(async move {
-            let Ok(packet) = serde_json::to_vec(&LanPacket {
-                version: LAN_DISCOVERY_PROTOCOL_VERSION,
-                advertisement,
-            }) else {
-                return;
-            };
-            let mut announces = interval(announce_interval);
-            announces.set_missed_tick_behavior(MissedTickBehavior::Skip);
-            let mut buffer = vec![0_u8; MAX_LAN_DISCOVERY_PACKET_BYTES];
-            loop {
-                tokio::select! {
-                    _ = announces.tick() => {
-                        let _sent = socket.send_to(&packet, group).await;
-                        publish_expired(&task_roster, &task_updates, expiry);
-                    }
-                    received = socket.recv_from(&mut buffer) => {
-                        let Ok((length, _sender)) = received else { break };
-                        let Some(encoded) = buffer.get(..length) else { continue };
-                        let Ok(packet) = serde_json::from_slice::<LanPacket>(encoded) else { continue };
-                        if packet.version != LAN_DISCOVERY_PROTOCOL_VERSION
-                            || packet.advertisement.descriptor.endpoint.id == local_endpoint
-                            || packet.advertisement.descriptor.validate().is_err() { continue; }
-                        let changed = task_roster.lock().is_ok_and(|mut roster| {
-                            roster.observe(&packet.advertisement, Instant::now())
-                        });
-                        if changed { publish_roster(&task_roster, &task_updates); }
-                    }
-                    changed = shutdown_rx.changed() => {
-                        if changed.is_err() || *shutdown_rx.borrow() { break; }
-                    }
-                }
-            }
-        });
-        Ok(Self {
-            roster,
-            updates,
-            shutdown,
-            task: Mutex::new(Some(task)),
-        })
+        portable::start(advertisement, announce_interval, expiry)
     }
 
     /// Returns the current nearby-node projection.
@@ -331,39 +263,14 @@ impl LanDiscovery {
     pub async fn shutdown(&self) {
         self.shutdown.send_replace(true);
         let task = self.task.lock().ok().and_then(|mut task| task.take());
-        if let Some(task) = task {
+        if let Some(mut task) = task
+            && tokio::time::timeout(Duration::from_secs(2), &mut task)
+                .await
+                .is_err()
+        {
             task.abort();
             let _finished = task.await;
         }
-    }
-}
-
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
-fn bind_lan_socket() -> Result<UdpSocket, String> {
-    let bind = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MYKO_LAN_DISCOVERY_PORT);
-    let socket = StdUdpSocket::bind(bind)
-        .map_err(|error| format!("could not bind LAN discovery UDP socket: {error}"))?;
-    socket
-        .join_multicast_v4(&MYKO_LAN_DISCOVERY_GROUP, &Ipv4Addr::UNSPECIFIED)
-        .map_err(|error| format!("could not join LAN discovery multicast group: {error}"))?;
-    socket
-        .set_nonblocking(true)
-        .map_err(|error| format!("could not configure LAN discovery socket: {error}"))?;
-    UdpSocket::from_std(socket)
-        .map_err(|error| format!("could not start LAN discovery socket: {error}"))
-}
-
-#[cfg(not(any(target_os = "ios", target_os = "macos")))]
-fn publish_expired(
-    roster: &Mutex<LanRoster>,
-    updates: &watch::Sender<Vec<DiscoveredNode>>,
-    expiry: Duration,
-) {
-    let changed = roster
-        .lock()
-        .is_ok_and(|mut roster| roster.expire(Instant::now(), expiry));
-    if changed {
-        publish_roster(roster, updates);
     }
 }
 
@@ -385,5 +292,72 @@ mod tests {
         assert!(!capabilities.supports(ParticipantCapability::HostWorkloads));
         assert!(!capabilities.supports(ParticipantCapability::LocalWorkspaces));
         assert!(!capabilities.supports(ParticipantCapability::BackgroundTransport));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[ignore = "requires a live multicast-capable local network"]
+    async fn native_apple_and_portable_dns_sd_interoperate() -> Result<(), String> {
+        use myko_iroh::{EndpointAddr, NativeNodeDescriptor, SecretKey};
+
+        let native_advertisement = LanAdvertisement::full_node(
+            NativeNodeDescriptor::new(
+                NodeId::new(),
+                EndpointAddr::new(SecretKey::generate().public()),
+            ),
+            "Native Bonjour test node",
+        );
+        let portable_advertisement = LanAdvertisement::full_node(
+            NativeNodeDescriptor::new(
+                NodeId::new(),
+                EndpointAddr::new(SecretKey::generate().public()),
+            ),
+            "Portable DNS-SD test node",
+        );
+        let native = apple::start(
+            &native_advertisement,
+            Duration::from_secs(1),
+            Duration::from_secs(4),
+        )?;
+        let portable = portable::start(
+            &portable_advertisement,
+            Duration::from_secs(1),
+            Duration::from_secs(4),
+        )?;
+
+        wait_for_endpoint(
+            native.subscribe(),
+            portable_advertisement.descriptor.endpoint.id,
+        )
+        .await?;
+        wait_for_endpoint(
+            portable.subscribe(),
+            native_advertisement.descriptor.endpoint.id,
+        )
+        .await?;
+        native.shutdown().await;
+        portable.shutdown().await;
+        Ok(())
+    }
+
+    #[cfg(target_os = "macos")]
+    async fn wait_for_endpoint(
+        mut updates: watch::Receiver<Vec<DiscoveredNode>>,
+        expected: EndpointId,
+    ) -> Result<(), String> {
+        tokio::time::timeout(Duration::from_secs(10), async move {
+            loop {
+                if updates
+                    .borrow()
+                    .iter()
+                    .any(|node| node.endpoint_id() == expected)
+                {
+                    return Ok(());
+                }
+                updates.changed().await.map_err(|error| error.to_string())?;
+            }
+        })
+        .await
+        .map_err(|_| format!("timed out discovering DNS-SD endpoint {expected}"))?
     }
 }
