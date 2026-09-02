@@ -71,7 +71,7 @@ public final class MykoSubscriptionBinding<Subscription: MykoBlockingSubscriptio
     private var run: MykoSubscriptionRun<Subscription>?
 
     public init(label: String) {
-        worker = DispatchQueue(label: label, qos: .userInitiated)
+        worker = DispatchQueue(label: label, qos: .utility)
     }
 
     public convenience init() {
