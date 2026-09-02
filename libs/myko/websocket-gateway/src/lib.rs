@@ -11,12 +11,12 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use futures_util::{SinkExt, StreamExt};
-use hyphae::Watchable as _;
-use myko_app::{ApplicationNode, ErasedHandlerState, HandlerRequest};
-use myko_federation::{
-    CommandId, CommandRequest, CommandSnapshot, EventEnvelope, LogPosition, Node,
+use myko_app::ApplicationNode;
+use myko_federation::{AllowAllAccessPolicy, Node, PrincipalId};
+use myko_session::NodeSessionService;
+pub use myko_wire::{
+    NodeFrame as ServerMessage, NodeRequest as ClientRequest, NodeRequestEnvelope, WireEnvelope,
 };
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::{
     net::{TcpListener, TcpStream},
@@ -24,45 +24,6 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 use tokio_tungstenite::{accept_async, tungstenite::Message};
-
-/// Requests accepted from a short-lived WebSocket client.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ClientRequest {
-    Submit {
-        command: CommandRequest,
-    },
-    Cancel {
-        command_id: CommandId,
-        reason: String,
-    },
-    Command {
-        command_id: CommandId,
-    },
-    EventsAfter {
-        after: Option<LogPosition>,
-    },
-    Subscribe {
-        after: Option<LogPosition>,
-    },
-    FollowHandler {
-        request: HandlerRequest,
-    },
-}
-
-/// Typed responses emitted by the optional gateway.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum ServerMessage {
-    Submitted { command: CommandSnapshot },
-    Cancelled { command: CommandSnapshot },
-    Command { command: Option<CommandSnapshot> },
-    Events { events: Vec<EventEnvelope> },
-    Subscribed,
-    Event { event: EventEnvelope },
-    HandlerState { state: Box<ErasedHandlerState> },
-    Error { message: String },
-}
 
 /// Failures that stop a gateway listener or connection.
 #[derive(Debug, Error)]
@@ -82,6 +43,7 @@ pub enum GatewayError {
 pub struct WebSocketGatewayServer {
     local_addr: SocketAddr,
     shutdown: watch::Sender<bool>,
+    finished: watch::Receiver<bool>,
     task: JoinHandle<Result<(), GatewayError>>,
 }
 
@@ -92,10 +54,10 @@ impl WebSocketGatewayServer {
         self.local_addr
     }
 
-    /// Returns whether the listener stopped unexpectedly.
+    /// Subscribes to listener completion without polling the join handle.
     #[must_use]
-    pub fn is_finished(&self) -> bool {
-        self.task.is_finished()
+    pub fn subscribe_finished(&self) -> watch::Receiver<bool> {
+        self.finished.clone()
     }
 
     /// Stops accepting clients, closes supervised connections, and waits for
@@ -115,16 +77,14 @@ impl WebSocketGatewayServer {
 /// Opt-in WebSocket view of a Myko node.
 #[derive(Clone)]
 pub struct WebSocketGateway {
-    node: Node,
-    application: Option<ApplicationNode>,
+    sessions: NodeSessionService,
 }
 
 impl std::fmt::Debug for WebSocketGateway {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("WebSocketGateway")
-            .field("node_id", &self.node.node_id())
-            .field("application", &self.application.is_some())
+            .field("node_id", &self.sessions.node().node_id())
             .finish()
     }
 }
@@ -132,21 +92,31 @@ impl std::fmt::Debug for WebSocketGateway {
 impl WebSocketGateway {
     /// Wraps a node without changing its storage or mesh transports.
     #[must_use]
-    pub const fn new(node: Node) -> Self {
+    pub fn new(node: Node) -> Self {
         Self {
-            node,
-            application: None,
+            sessions: NodeSessionService::new(node, Arc::new(AllowAllAccessPolicy)),
         }
     }
 
     /// Exposes a node together with its registered query, report, and view
-    /// schema through the compatibility gateway.
+    /// application through the compatibility gateway.
     #[must_use]
     pub fn for_application(application: ApplicationNode) -> Self {
         Self {
-            node: application.node().clone(),
-            application: Some(application),
+            sessions: NodeSessionService::for_application(
+                application,
+                Arc::new(AllowAllAccessPolicy),
+            ),
         }
+    }
+
+    /// Exposes an existing transport-neutral semantic endpoint.
+    ///
+    /// This is the preferred constructor when native and local transports are
+    /// already serving the same node.
+    #[must_use]
+    pub const fn for_sessions(sessions: NodeSessionService) -> Self {
+        Self { sessions }
     }
 
     /// Binds and serves the gateway until the listener fails or is cancelled.
@@ -184,14 +154,18 @@ impl WebSocketGateway {
         let local_addr = listener.local_addr()?;
         let gateway = self.clone();
         let (shutdown, shutdown_requested) = watch::channel(false);
+        let (finished_sender, finished) = watch::channel(false);
         let task = tokio::spawn(async move {
-            gateway
+            let result = gateway
                 .serve_listener_inner(listener, Some(shutdown_requested))
-                .await
+                .await;
+            finished_sender.send_replace(true);
+            result
         });
         Ok(WebSocketGatewayServer {
             local_addr,
             shutdown,
+            finished,
             task,
         })
     }
@@ -240,6 +214,7 @@ impl WebSocketGateway {
     }
 
     async fn handle_stream(&self, stream: TcpStream) -> Result<(), GatewayError> {
+        self.sessions.node().wait_until_ready().await;
         let socket = accept_async(stream).await?;
         let (mut write, mut read) = socket.split();
         while let Some(frame) = read.next().await {
@@ -250,7 +225,13 @@ impl WebSocketGateway {
                 }
                 continue;
             };
-            let request = match serde_json::from_str::<ClientRequest>(&text) {
+            let request = match serde_json::from_str::<WireEnvelope<NodeRequestEnvelope>>(&text)
+                .map_err(GatewayError::from)
+                .and_then(|envelope| {
+                    envelope
+                        .into_current()
+                        .map_err(|error| GatewayError::Task(error.to_string()))
+                }) {
                 Ok(request) => request,
                 Err(error) => {
                     send(
@@ -263,136 +244,13 @@ impl WebSocketGateway {
                     continue;
                 }
             };
-            if let ClientRequest::Subscribe { after } = request {
-                send(&mut write, &ServerMessage::Subscribed).await?;
-                let mut subscription = match self.node.subscribe(after) {
-                    Ok(subscription) => subscription,
-                    Err(error) => {
-                        send(
-                            &mut write,
-                            &ServerMessage::Error {
-                                message: error.to_string(),
-                            },
-                        )
-                        .await?;
-                        continue;
-                    }
-                };
-                loop {
-                    let event = subscription.recv_async().await;
-                    match event {
-                        Ok(event) => send(&mut write, &ServerMessage::Event { event }).await?,
-                        Err(error) => {
-                            send(
-                                &mut write,
-                                &ServerMessage::Error {
-                                    message: error.to_string(),
-                                },
-                            )
-                            .await?;
-                            break;
-                        }
-                    }
-                }
-                continue;
+            let principal = PrincipalId::new("websocket:compatibility-client");
+            let mut frames = self.sessions.open(principal, request).await;
+            while let Some(frame) = frames.recv().await {
+                send(&mut write, &frame).await?;
             }
-            if let ClientRequest::FollowHandler { request } = request {
-                self.serve_handler(&mut write, &request).await?;
-                continue;
-            }
-            let response = self.dispatch(request);
-            send(&mut write, &response).await?;
         }
         Ok(())
-    }
-
-    async fn serve_handler<S>(
-        &self,
-        write: &mut S,
-        request: &HandlerRequest,
-    ) -> Result<(), GatewayError>
-    where
-        S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
-    {
-        let Some(application) = &self.application else {
-            return send(
-                write,
-                &ServerMessage::Error {
-                    message: "this gateway does not expose an application schema".to_owned(),
-                },
-            )
-            .await;
-        };
-        let subscription = match application.watch_handler(request) {
-            Ok(subscription) => subscription,
-            Err(error) => {
-                return send(
-                    write,
-                    &ServerMessage::Error {
-                        message: error.to_string(),
-                    },
-                )
-                .await;
-            }
-        };
-        let (wake_tx, wake_rx) = flume::bounded(1);
-        let _guard = subscription.live().state().subscribe(move |_| {
-            let _ignored = wake_tx.try_send(());
-        });
-        let mut last_state: Option<ErasedHandlerState> = None;
-        loop {
-            let current = subscription.live().current();
-            if last_state.as_ref() != Some(&current) {
-                send(
-                    write,
-                    &ServerMessage::HandlerState {
-                        state: Box::new(current.clone()),
-                    },
-                )
-                .await?;
-                last_state = Some(current);
-            }
-            if wake_rx.recv_async().await.is_err() {
-                return Ok(());
-            }
-        }
-    }
-
-    fn dispatch(&self, request: ClientRequest) -> ServerMessage {
-        match request {
-            ClientRequest::Submit { command } => self.node.submit(command).map_or_else(
-                |error| ServerMessage::Error {
-                    message: error.to_string(),
-                },
-                |command| ServerMessage::Submitted { command },
-            ),
-            ClientRequest::Cancel { command_id, reason } => {
-                self.node.cancel(command_id, reason).map_or_else(
-                    |error| ServerMessage::Error {
-                        message: error.to_string(),
-                    },
-                    |command| ServerMessage::Cancelled { command },
-                )
-            }
-            ClientRequest::Command { command_id } => self.node.command(command_id).map_or_else(
-                |error| ServerMessage::Error {
-                    message: error.to_string(),
-                },
-                |command| ServerMessage::Command { command },
-            ),
-            ClientRequest::EventsAfter { after } => self.node.events_after(after).map_or_else(
-                |error| ServerMessage::Error {
-                    message: error.to_string(),
-                },
-                |events| ServerMessage::Events { events },
-            ),
-            ClientRequest::Subscribe { .. } => ServerMessage::Error {
-                message: "subscription dispatch escaped the connection loop".to_owned(),
-            },
-            ClientRequest::FollowHandler { .. } => ServerMessage::Error {
-                message: "handler dispatch escaped the connection loop".to_owned(),
-            },
-        }
     }
 }
 
@@ -411,7 +269,7 @@ async fn send<S>(sink: &mut S, message: &ServerMessage) -> Result<(), GatewayErr
 where
     S: futures_util::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
 {
-    let json = serde_json::to_string(message)?;
+    let json = serde_json::to_string(&WireEnvelope::new(message.clone()))?;
     sink.send(Message::Text(json.into())).await?;
     Ok(())
 }
@@ -427,19 +285,44 @@ pub type SharedWebSocketGateway = Arc<WebSocketGateway>;
 mod tests {
     use super::*;
     use futures_util::{SinkExt, StreamExt};
-    use myko_app::{AppError, ApplicationSchema, HandlerContext, ReportHandler};
-    use myko_federation::{
-        BatchId, ChangeBatch, ItemMutation, LiveSubscription, PrincipalId, ScopeId, ServiceId,
+    use myko_app::capability::Querying as _;
+    use myko_app::{
+        AppError, CommandContext, CommandError, CommandHandler, HandlerRequest, MykoApplication,
+        ReportContext, ReportHandler, myko_report,
     };
-    use myko_items::myko_item;
+    use myko_federation::{
+        BatchId, ChangeBatch, CommandId, CommandRequest, CommandSnapshot, CommandSubmission,
+        ItemMutation, LiveSubscription, LogPosition, PrincipalId, ScopeId, ServiceId,
+    };
+    use myko_items::{myko_command, myko_item, myko_service};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
 
-    #[myko_item(service = "gateway.test", scope_root)]
+    #[myko_service(GatewayRecord)]
+    pub struct GatewayService;
+
+    #[myko_item(service = GatewayService, scope_root)]
     pub struct GatewayRecord {
         pub value: String,
     }
 
-    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[myko_command((), item = GatewayRecord)]
+    struct QueueGatewayCommand;
+
+    impl CommandHandler for QueueGatewayCommand {
+        fn scope(&self, _node_id: myko_federation::NodeId) -> GatewayRecordId {
+            GatewayRecordId::from("gateway")
+        }
+
+        fn execute(
+            self,
+            _context: CommandContext<GatewayService, GatewayRecord>,
+        ) -> Result<(), CommandError> {
+            Ok(())
+        }
+    }
+
+    #[myko_report(u64, item = GatewayRecord)]
+    #[derive(Copy)]
     struct GatewayCount {
         source_node: myko_federation::NodeId,
     }
@@ -448,11 +331,9 @@ mod tests {
         type Output = u64;
         type Cursor = LogPosition;
 
-        const REPORT_ID: &'static str = "gateway.test.count";
-
         fn build(
             &self,
-            context: &HandlerContext,
+            context: &ReportContext,
         ) -> Result<LiveSubscription<Self::Output>, AppError> {
             Ok(context
                 .query(
@@ -470,9 +351,11 @@ mod tests {
     ) -> Result<ServerMessage, String> {
         client
             .send(Message::Text(
-                serde_json::to_string(request)
-                    .map_err(|error| error.to_string())?
-                    .into(),
+                serde_json::to_string(&WireEnvelope::new(NodeRequestEnvelope::connected(
+                    request.clone(),
+                )))
+                .map_err(|error| error.to_string())?
+                .into(),
             ))
             .await
             .map_err(|error| error.to_string())?;
@@ -483,13 +366,21 @@ mod tests {
         let Message::Text(text) = frame else {
             return Err("gateway returned a non-text response".to_owned());
         };
-        serde_json::from_str(&text).map_err(|error| error.to_string())
+        serde_json::from_str::<WireEnvelope<ServerMessage>>(&text)
+            .map_err(|error| error.to_string())?
+            .into_current()
+            .map_err(|error| error.to_string())
     }
 
     #[tokio::test]
     async fn loopback_client_can_submit_without_claiming_execution() -> Result<(), String> {
         let node = Node::in_memory();
-        let gateway = WebSocketGateway::new(node.clone());
+        let application = MykoApplication::builder()
+            .service::<GatewayService>()
+            .map_err(|error| error.to_string())?
+            .build();
+        let gateway =
+            WebSocketGateway::for_application(ApplicationNode::new(node.clone(), application));
         let server = gateway
             .spawn(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
@@ -497,26 +388,21 @@ mod tests {
         let (mut client, _) = connect_async(format!("ws://{}", server.local_addr()))
             .await
             .map_err(|error| error.to_string())?;
-        let command_id = CommandId::new();
-        let request = ClientRequest::Submit {
-            command: CommandRequest {
-                id: command_id,
-                service_id: ServiceId::new("test"),
-                scope_id: ScopeId::new("test"),
-                principal_id: PrincipalId::new("human:test"),
-                command_type: "test".to_owned(),
-                payload: Vec::new(),
-            },
-        };
+        let command = CommandSubmission::for_command(&QueueGatewayCommand)
+            .map_err(|error| error.to_string())?;
+        let command_id = command.id;
+        let request = ClientRequest::Submit { command };
         let response = round_trip(&mut client, &request).await?;
         if !matches!(
             response,
-            ServerMessage::Submitted {
-                command: CommandSnapshot {
-                    state: myko_federation::CommandState::Submitted,
-                    ..
-                }
-            }
+            ServerMessage::Command { response }
+                if matches!(
+                    response.command,
+                    Some(CommandSnapshot {
+                        state: myko_federation::CommandState::Submitted,
+                        ..
+                    })
+                )
         ) {
             return Err("gateway did not return a submitted command".to_owned());
         }
@@ -539,12 +425,14 @@ mod tests {
         .await?;
         if !matches!(
             response,
-            ServerMessage::Cancelled {
-                command: CommandSnapshot {
-                    state: myko_federation::CommandState::Cancelled { .. },
-                    ..
-                }
-            }
+            ServerMessage::Command { response }
+                if matches!(
+                    response.command,
+                    Some(CommandSnapshot {
+                        state: myko_federation::CommandState::Cancelled { .. },
+                        ..
+                    })
+                )
         ) {
             return Err("gateway did not durably cancel the submitted command".to_owned());
         }
@@ -559,14 +447,12 @@ mod tests {
     #[tokio::test]
     async fn handler_protocol_matches_native_application_lifecycle() -> Result<(), String> {
         let node = Node::in_memory();
-        let mut schema = ApplicationSchema::new();
-        schema
-            .register_query::<GetAllGatewayRecords>()
-            .map_err(|error| error.to_string())?;
-        schema
-            .register_report::<GatewayCount>()
-            .map_err(|error| error.to_string())?;
-        let gateway = WebSocketGateway::for_application(ApplicationNode::new(node.clone(), schema));
+        let application = MykoApplication::builder()
+            .service::<GatewayService>()
+            .map_err(|error| error.to_string())?
+            .build();
+        let gateway =
+            WebSocketGateway::for_application(ApplicationNode::new(node.clone(), application));
         let server = gateway
             .spawn(SocketAddr::from(([127, 0, 0, 1], 0)))
             .await
@@ -599,7 +485,9 @@ mod tests {
         }
         let command = CommandRequest {
             id: CommandId::new(),
-            service_id: ServiceId::new("gateway.test"),
+            service_id: ServiceId::new(
+                <GatewayService as myko_federation::MykoService>::SERVICE_ID,
+            ),
             scope_id: ScopeId::new("gateway"),
             principal_id: PrincipalId::new("test:gateway"),
             command_type: "gateway.test.set".to_owned(),
@@ -633,8 +521,10 @@ mod tests {
         let Message::Text(updated) = updated else {
             return Err("WebSocket handler returned a non-text update".to_owned());
         };
-        let updated: ServerMessage =
-            serde_json::from_str(&updated).map_err(|error| error.to_string())?;
+        let updated: ServerMessage = serde_json::from_str::<WireEnvelope<ServerMessage>>(&updated)
+            .map_err(|error| error.to_string())?
+            .into_current()
+            .map_err(|error| error.to_string())?;
         if !matches!(
             updated,
             ServerMessage::HandlerState { state }

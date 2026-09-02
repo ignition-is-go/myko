@@ -29,14 +29,13 @@ use std::{
     io::Write,
     num::NonZeroUsize,
     path::Path,
-    sync::{Arc, Mutex, RwLock},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 
-use hyphae::Watchable as _;
 use iroh::{
     Endpoint,
     endpoint::{BindOpts, Connection, RecvStream, SendStream, presets},
@@ -44,22 +43,27 @@ use iroh::{
 };
 pub use iroh::{EndpointAddr, EndpointId, SecretKey};
 use myko_app::{
-    ApplicationNode, ErasedHandlerState, HandlerKind, HandlerRequest, QueryHandler, ReportHandler,
-    ViewHandler,
+    ApplicationNode, ErasedHandlerState, ErasedViewDelta, HandlerKind, HandlerRequest,
+    QueryHandler, ReportHandler, ViewHandler,
 };
 use myko_federation::{
-    AccessOperation, AccessPolicy, AccessRequest, AllowAllAccessPolicy, CommandClient,
-    CommandClientFuture, CommandFollowRequest, CommandId, CommandRequest, CommandResponse,
-    CommandSnapshot, CommandStateClient, CommandStatePage, CommandStatePageFuture,
-    CommandStateRequest, CommandStateSnapshot, CommandStateStream, CommandStateUpdate, ItemClient,
-    ItemFollowRequest, ItemProjection, ItemQuery, ItemQuerySnapshot, ItemQueryStream,
+    AccessPolicy, AllowAllAccessPolicy, CommandClient, CommandClientFuture, CommandId,
+    CommandResponse, CommandSnapshot, CommandStateClient, CommandStatePage, CommandStatePageFuture,
+    CommandStateRequest, CommandStateSnapshot, CommandStateStream, CommandSubmission,
+    CommandSubscription, CommandSubscriptionFuture, CommandWatchFuture, CommandWatchingClient,
+    DenyAllAccessPolicy, ItemClient, ItemProjection, ItemQuery, ItemQuerySnapshot, ItemQueryStream,
     ItemQueryUpdate, ItemStatePage, ItemStatePageFuture, ItemStateRequest, ItemStateSnapshot,
-    ItemStateUpdate, LiveEvent, LiveEventHub, LivePublishReport, LiveSubscription,
-    LiveSubscriptionState, LogPosition, Node, NodeId, PrincipalId, ReconnectPolicy,
-    ReplicationBatch, ReplicationCheckpoint, ReplicationCursorKey, ReplicationCursorStore,
+    LiveCollection, LiveCollectionState, LiveCollectionWriter, LiveEvent, LivePublishReport,
+    LiveSubscription, LiveSubscriptionState, LogPosition, Node, NodeId, PrincipalId,
+    ReconnectPolicy, ReplicationCheckpoint, ReplicationCursorKey, ReplicationCursorStore,
     ReplicationReport, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
-    ScopedReplicationCheckpoint, ScopedReplicationReport, ServiceId, SubscriptionLiveness,
+    ScopedReplicationCheckpoint, ScopedReplicationReport, SubscriptionLiveness, live_collection,
     live_subscription,
+};
+use myko_session::NodeSessionService;
+use myko_wire::{
+    NodeFrame as ReplicationFrame, NodeRequest as ReplicationRequest, NodeRequestEnvelope,
+    WireEnvelope,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -73,10 +77,7 @@ const NATIVE_NODE_DESCRIPTOR_VERSION: u32 = 1;
 const MAX_LIVE_TOPICS: usize = 256;
 const MAX_LIVE_TOPIC_BYTES: usize = 512;
 const MAX_SCOPE_CATALOG_PAGE: usize = 1_024;
-const LIVE_SUBSCRIPTION_CAPACITY: NonZeroUsize = match NonZeroUsize::new(256) {
-    Some(value) => value,
-    None => NonZeroUsize::MIN,
-};
+type IrohViewDelta<T> = fn(&mut T, &ErasedViewDelta) -> Result<(), IrohReplicationError>;
 
 /// Maps an authenticated Iroh endpoint to its transport-neutral principal ID.
 #[must_use]
@@ -140,110 +141,8 @@ fn create_secret_key(path: &Path) -> Result<SecretKey, IrohReplicationError> {
     Ok(secret)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "snake_case")]
-enum ReplicationRequest {
-    Identify,
-    ListScopes {
-        after: Option<ScopeId>,
-        limit: u32,
-    },
-    Pull {
-        after: Option<LogPosition>,
-    },
-    PullScope {
-        scope_id: ScopeId,
-        after: Option<LogPosition>,
-    },
-    Follow {
-        after: Option<LogPosition>,
-    },
-    FollowScope {
-        scope_id: ScopeId,
-        after: Option<LogPosition>,
-    },
-    FollowLive {
-        topics: Vec<String>,
-    },
-    Submit {
-        command: CommandRequest,
-    },
-    Command {
-        command_id: CommandId,
-    },
-    CommandState {
-        request: CommandStateRequest,
-    },
-    FollowCommands {
-        request: CommandFollowRequest,
-    },
-    FollowCommand {
-        command_id: CommandId,
-    },
-    Cancel {
-        command_id: CommandId,
-        reason: String,
-    },
-    ItemState {
-        request: ItemStateRequest,
-    },
-    FollowItems {
-        request: ItemFollowRequest,
-    },
-    FollowHandler {
-        request: HandlerRequest,
-    },
-}
-
 /// Backwards-compatible name for Myko's transport-neutral command response.
 pub type RemoteCommandResponse = CommandResponse;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ReplicationFrame {
-    Hello {
-        source_node: NodeId,
-    },
-    Batch {
-        batch: Box<ReplicationBatch>,
-    },
-    ScopedBatch {
-        batch: Box<ScopedReplicationBatch>,
-    },
-    ScopeCatalog {
-        page: Box<ScopeCatalogPage>,
-    },
-    Command {
-        response: Box<RemoteCommandResponse>,
-    },
-    CommandState {
-        page: Box<CommandStatePage>,
-    },
-    CommandFollowReady {
-        request: Box<CommandFollowRequest>,
-    },
-    CommandUpdate {
-        update: Box<CommandStateUpdate>,
-    },
-    ItemState {
-        page: Box<ItemStatePage>,
-    },
-    ItemFollowReady {
-        request: Box<ItemFollowRequest>,
-    },
-    ItemUpdate {
-        update: Box<ItemStateUpdate>,
-    },
-    HandlerState {
-        state: Box<ErasedHandlerState>,
-    },
-    Live {
-        event: Box<LiveEvent>,
-    },
-    Error {
-        message: String,
-    },
-}
 
 /// Errors produced by the Iroh replication adapter.
 #[derive(Debug, Error)]
@@ -365,7 +264,7 @@ pub struct PeerSyncStatus {
 pub struct PeerSync {
     shutdown: watch::Sender<bool>,
     task: JoinHandle<()>,
-    status: Arc<Mutex<PeerSyncStatus>>,
+    status: watch::Receiver<PeerSyncStatus>,
 }
 
 /// One authenticated remote subscription to best-effort Myko live events.
@@ -403,12 +302,13 @@ impl IrohLiveEventSubscription {
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
-            | ReplicationFrame::HandlerState { .. } => Err(IrohReplicationError::Stream(
+            | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. } => Err(IrohReplicationError::Stream(
                 "peer sent a non-live frame on a live subscription".to_owned(),
             )),
         }
@@ -430,6 +330,7 @@ impl IrohLiveEventSubscription {
 pub struct PeerSupervisor {
     replicator: IrohReplicator,
     peers: Mutex<HashMap<EndpointId, PeerSync>>,
+    status_revision: watch::Sender<u64>,
 }
 
 impl PeerSync {
@@ -439,10 +340,13 @@ impl PeerSync {
     ///
     /// Returns an error if the supervisor state lock is poisoned.
     pub fn status(&self) -> Result<PeerSyncStatus, IrohReplicationError> {
-        self.status
-            .lock()
-            .map(|status| status.clone())
-            .map_err(|_| IrohReplicationError::Supervisor("status lock is poisoned".to_owned()))
+        Ok(self.status.borrow().clone())
+    }
+
+    /// Subscribes to status changes for this follower.
+    #[must_use]
+    pub fn subscribe_status(&self) -> watch::Receiver<PeerSyncStatus> {
+        self.status.clone()
     }
 
     /// Stops the follower and waits for its current pull or retry delay to finish.
@@ -462,9 +366,11 @@ impl PeerSupervisor {
     /// Creates an empty peer supervisor over a running replication endpoint.
     #[must_use]
     pub fn new(replicator: IrohReplicator) -> Self {
+        let (status_revision, _status_updates) = watch::channel(0);
         Self {
             replicator,
             peers: Mutex::new(HashMap::new()),
+            status_revision,
         }
     }
 
@@ -541,11 +447,23 @@ impl PeerSupervisor {
         peer_id: EndpointId,
         follower: PeerSync,
     ) -> Result<bool, IrohReplicationError> {
+        let mut follower_status = follower.subscribe_status();
+        let status_revision = self.status_revision.clone();
+        tokio::spawn(async move {
+            while follower_status.changed().await.is_ok() {
+                status_revision.send_modify(|revision| {
+                    *revision = revision.saturating_add(1);
+                });
+            }
+        });
         let replaced = self
             .peers
             .lock()
             .map_err(|_| IrohReplicationError::Supervisor("peer lock is poisoned".to_owned()))?
             .insert(peer_id, follower);
+        self.status_revision.send_modify(|revision| {
+            *revision = revision.saturating_add(1);
+        });
         let was_replaced = replaced.is_some();
         if let Some(replaced) = replaced {
             replaced.shutdown().await?;
@@ -568,6 +486,11 @@ impl PeerSupervisor {
             .map_err(|_| IrohReplicationError::Supervisor("peer lock is poisoned".to_owned()))?
             .remove(&peer_id);
         let was_removed = removed.is_some();
+        if was_removed {
+            self.status_revision.send_modify(|revision| {
+                *revision = revision.saturating_add(1);
+            });
+        }
         if let Some(removed) = removed {
             removed.shutdown().await?;
         }
@@ -593,6 +516,34 @@ impl PeerSupervisor {
         Ok(statuses)
     }
 
+    /// Subscribes to any follower status or membership change.
+    #[must_use]
+    pub fn subscribe_statuses(&self) -> watch::Receiver<u64> {
+        self.status_revision.subscribe()
+    }
+
+    /// Stops every peer follower while retaining the empty supervisor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if supervisor state is poisoned or a follower cannot be
+    /// shut down cleanly.
+    pub async fn shutdown_all(&self) -> Result<(), IrohReplicationError> {
+        let peers = {
+            let mut peers = self.peers.lock().map_err(|_| {
+                IrohReplicationError::Supervisor("peer lock is poisoned".to_owned())
+            })?;
+            std::mem::take(&mut *peers)
+        };
+        self.status_revision.send_modify(|revision| {
+            *revision = revision.saturating_add(1);
+        });
+        for follower in peers.into_values() {
+            follower.shutdown().await?;
+        }
+        Ok(())
+    }
+
     /// Stops every peer follower, leaving the shared Iroh endpoint running.
     ///
     /// # Errors
@@ -600,14 +551,7 @@ impl PeerSupervisor {
     /// Returns an error if supervisor state is poisoned or a follower cannot be
     /// shut down cleanly.
     pub async fn shutdown(self) -> Result<(), IrohReplicationError> {
-        let peers = self
-            .peers
-            .into_inner()
-            .map_err(|_| IrohReplicationError::Supervisor("peer lock is poisoned".to_owned()))?;
-        for follower in peers.into_values() {
-            follower.shutdown().await?;
-        }
-        Ok(())
+        self.shutdown_all().await
     }
 }
 
@@ -615,10 +559,8 @@ impl PeerSupervisor {
 #[derive(Debug, Clone)]
 pub struct IrohReplicator {
     node: Node,
-    live_events: LiveEventHub,
+    sessions: NodeSessionService,
     pairing: pairing::PairingRegistry,
-    access_policy: Arc<RwLock<Arc<dyn AccessPolicy>>>,
-    policy_revision: watch::Sender<u64>,
     router: Router,
 }
 
@@ -670,6 +612,7 @@ where
     connection: Connection,
     receive: RecvStream,
     current: LiveSubscriptionState<T, C>,
+    view_delta: Option<IrohViewDelta<T>>,
 }
 
 /// Runtime owner for a reconnecting Iroh application-handler cell.
@@ -681,6 +624,40 @@ where
     live: LiveSubscription<T, C>,
     writer: myko_federation::LiveSubscriptionWriter<T, C>,
     task: JoinHandle<()>,
+}
+
+/// Runtime owner for a reconnecting identity-preserving Iroh view.
+pub struct IrohReactiveViewSubscription<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    live: LiveCollection<T, C>,
+    writer: LiveCollectionWriter<T, C>,
+    task: JoinHandle<()>,
+}
+
+impl<T, C> IrohReactiveViewSubscription<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    /// Returns the authoritative keyed rows and coherent lifecycle cells.
+    #[must_use]
+    pub const fn live(&self) -> &LiveCollection<T, C> {
+        &self.live
+    }
+}
+
+impl<T, C> Drop for IrohReactiveViewSubscription<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    fn drop(&mut self) {
+        self.writer.invalidate("subscription owner dropped");
+        self.task.abort();
+    }
 }
 
 impl<T, C> IrohReactiveHandlerSubscription<T, C>
@@ -751,7 +728,10 @@ where
 impl CommandClient for IrohCommandClient {
     type Error = IrohReplicationError;
 
-    fn submit_command(&self, command: CommandRequest) -> CommandClientFuture<'_, Self::Error> {
+    fn submit_submission(
+        &self,
+        command: CommandSubmission,
+    ) -> CommandClientFuture<'_, Self::Error> {
         Box::pin(self.replicator.submit_remote(self.peer.clone(), command))
     }
 
@@ -771,6 +751,33 @@ impl CommandClient for IrohCommandClient {
             self.replicator
                 .cancel_remote(self.peer.clone(), command_id, reason),
         )
+    }
+}
+
+impl CommandSubscription for IrohCommandSubscription {
+    type Error = IrohReplicationError;
+
+    fn current(&self) -> &CommandSnapshot {
+        &self.current
+    }
+
+    fn recv(&mut self) -> CommandSubscriptionFuture<'_, Self::Error> {
+        Box::pin(self.recv())
+    }
+}
+
+impl CommandWatchingClient for IrohCommandClient {
+    type Subscription = IrohCommandSubscription;
+
+    fn watch_command(
+        &self,
+        command_id: CommandId,
+    ) -> CommandWatchFuture<'_, Self::Subscription, Self::Error> {
+        Box::pin(async move {
+            self.watch_command(command_id)
+                .await
+                .map(|(_initial, subscription)| subscription)
+        })
     }
 }
 
@@ -811,7 +818,8 @@ impl IrohApplicationClient {
     ///
     /// # Errors
     ///
-    /// Returns an error when the initial stream cannot be established.
+    /// Retries transport failures indefinitely. Returns an error when the
+    /// initial typed request cannot be encoded or materialized.
     pub async fn watch_query_reactive<Q>(
         &self,
         source_node: NodeId,
@@ -857,7 +865,8 @@ impl IrohApplicationClient {
     ///
     /// # Errors
     ///
-    /// Returns an error when the initial stream cannot be established.
+    /// Retries transport failures indefinitely. Returns an error when the
+    /// initial typed request cannot be encoded or materialized.
     pub async fn watch_report_reactive<R>(
         &self,
         report: &R,
@@ -887,13 +896,16 @@ impl IrohApplicationClient {
     where
         V: ViewHandler,
     {
-        self.watch(HandlerRequest {
-            kind: HandlerKind::View,
-            handler_id: V::VIEW_ID.to_owned(),
-            source_node: None,
-            scope_id: None,
-            params: serde_json::to_value(view)?,
-        })
+        self.watch_with_delta(
+            HandlerRequest {
+                kind: HandlerKind::View,
+                handler_id: V::VIEW_ID.to_owned(),
+                source_node: None,
+                scope_id: None,
+                params: serde_json::to_value(view)?,
+            },
+            Some(apply_view_delta::<V>),
+        )
         .await
     }
 
@@ -901,22 +913,30 @@ impl IrohApplicationClient {
     ///
     /// # Errors
     ///
-    /// Returns an error when the initial stream cannot be established.
+    /// Retries transport failures indefinitely. Returns an error when the
+    /// initial typed request cannot be encoded or materialized.
     pub async fn watch_view_reactive<V>(
         &self,
         view: &V,
-    ) -> Result<IrohReactiveHandlerSubscription<Vec<V::Item>, V::Cursor>, IrohReplicationError>
+    ) -> Result<IrohReactiveViewSubscription<V::Item, V::Cursor>, IrohReplicationError>
     where
         V: ViewHandler,
     {
-        self.watch_reactive(HandlerRequest {
+        let request = HandlerRequest {
             kind: HandlerKind::View,
             handler_id: V::VIEW_ID.to_owned(),
             source_node: None,
             scope_id: None,
             params: serde_json::to_value(view)?,
-        })
-        .await
+        };
+        let subscription = self
+            .watch_with_delta_reconnecting(request.clone(), Some(apply_view_delta::<V>))
+            .await?;
+        Ok(drive_reactive_view_subscription::<V>(
+            self.clone(),
+            request,
+            subscription,
+        ))
     }
 
     async fn watch_reactive<T, C>(
@@ -927,7 +947,9 @@ impl IrohApplicationClient {
         T: hyphae::CellValue + DeserializeOwned,
         C: hyphae::CellValue + DeserializeOwned,
     {
-        let subscription = self.watch(request.clone()).await?;
+        let subscription = self
+            .watch_with_delta_reconnecting(request.clone(), None)
+            .await?;
         Ok(drive_reactive_handler_subscription(
             self.clone(),
             request,
@@ -935,9 +957,43 @@ impl IrohApplicationClient {
         ))
     }
 
+    async fn watch_with_delta_reconnecting<T, C>(
+        &self,
+        request: HandlerRequest,
+        view_delta: Option<IrohViewDelta<T>>,
+    ) -> Result<IrohHandlerSubscription<T, C>, IrohReplicationError>
+    where
+        T: hyphae::CellValue + DeserializeOwned,
+        C: hyphae::CellValue + DeserializeOwned,
+    {
+        let mut delay = self.reconnect_policy.initial_delay();
+        loop {
+            match self.watch_with_delta(request.clone(), view_delta).await {
+                Ok(subscription) => return Ok(subscription),
+                Err(error) if reactive_item_error_is_recoverable(&error) => {
+                    tokio::time::sleep(delay).await;
+                    delay = self.reconnect_policy.next_delay(delay);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     async fn watch<T, C>(
         &self,
         request: HandlerRequest,
+    ) -> Result<IrohHandlerSubscription<T, C>, IrohReplicationError>
+    where
+        T: hyphae::CellValue + DeserializeOwned,
+        C: hyphae::CellValue + DeserializeOwned,
+    {
+        self.watch_with_delta(request, None).await
+    }
+
+    async fn watch_with_delta<T, C>(
+        &self,
+        request: HandlerRequest,
+        view_delta: Option<IrohViewDelta<T>>,
     ) -> Result<IrohHandlerSubscription<T, C>, IrohReplicationError>
     where
         T: hyphae::CellValue + DeserializeOwned,
@@ -960,6 +1016,7 @@ impl IrohApplicationClient {
                 connection,
                 receive,
                 current: decode_handler_state(*state)?,
+                view_delta,
             }),
             ReplicationFrame::Error { message } => Err(IrohReplicationError::Stream(format!(
                 "remote application handler failed: {message}"
@@ -993,6 +1050,28 @@ where
                 self.current = decode_handler_state(*state)?;
                 Ok(self.current.clone())
             }
+            ReplicationFrame::HandlerViewDelta { delta } => {
+                let apply = self.view_delta.ok_or_else(|| {
+                    IrohReplicationError::Stream(
+                        "peer sent a keyed view delta to a snapshot handler".to_owned(),
+                    )
+                })?;
+                let through = delta
+                    .through
+                    .clone()
+                    .map(serde_json::from_value)
+                    .transpose()?;
+                if let Some(value) = self.current.value.as_mut() {
+                    apply(value, &delta)?;
+                } else if delta.order.as_ref().is_some_and(|order| !order.is_empty()) {
+                    return Err(IrohReplicationError::Stream(
+                        "keyed view delta arrived before its initial snapshot".to_owned(),
+                    ));
+                }
+                self.current.through = through;
+                self.current.liveness = delta.liveness.clone();
+                Ok(self.current.clone())
+            }
             ReplicationFrame::Error { message } => Err(IrohReplicationError::Stream(format!(
                 "remote application handler failed: {message}"
             ))),
@@ -1006,6 +1085,58 @@ where
     pub fn close(self) {
         self.connection.close(0u32.into(), b"handler follow closed");
     }
+}
+
+fn apply_view_delta<V>(
+    items: &mut Vec<V::Item>,
+    delta: &ErasedViewDelta,
+) -> Result<(), IrohReplicationError>
+where
+    V: ViewHandler,
+{
+    let previous = std::mem::take(items);
+    let mut by_key = previous
+        .iter()
+        .cloned()
+        .map(|item| (V::item_key(&item), item))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for key in &delta.deletes {
+        by_key.remove(key.as_str());
+    }
+    for encoded in &delta.upserts {
+        let item = serde_json::from_value::<V::Item>(encoded.clone())?;
+        by_key.insert(V::item_key(&item), item);
+    }
+    if let Some(order) = &delta.order {
+        let mut ordered = Vec::with_capacity(order.len());
+        for key in order {
+            let item = by_key.remove(key.as_str()).ok_or_else(|| {
+                IrohReplicationError::Stream(format!("keyed view delta omitted row {key:?}"))
+            })?;
+            ordered.push(item);
+        }
+        if !by_key.is_empty() {
+            return Err(IrohReplicationError::Stream(
+                "keyed view delta left rows outside its authoritative order".to_owned(),
+            ));
+        }
+        *items = ordered;
+    } else {
+        let mut retained = Vec::with_capacity(previous.len());
+        for item in previous {
+            let key = V::item_key(&item);
+            if let Some(current) = by_key.remove(&key) {
+                retained.push(current);
+            }
+        }
+        if !by_key.is_empty() {
+            return Err(IrohReplicationError::Stream(
+                "keyed view delta inserted rows without an ordering revision".to_owned(),
+            ));
+        }
+        *items = retained;
+    }
+    Ok(())
 }
 
 fn decode_handler_state<T, C>(
@@ -1032,6 +1163,7 @@ where
     C: hyphae::CellValue + DeserializeOwned,
 {
     let (writer, live) = live_subscription(subscription.current().clone());
+    let view_delta = subscription.view_delta;
     let task_writer = writer.clone();
     let task = tokio::spawn(async move {
         loop {
@@ -1051,7 +1183,7 @@ where
             let mut delay = client.reconnect_policy.initial_delay();
             loop {
                 tokio::time::sleep(delay).await;
-                match client.watch(request.clone()).await {
+                match client.watch_with_delta(request.clone(), view_delta).await {
                     Ok(next) => {
                         task_writer.replace(next.current().clone());
                         subscription = next;
@@ -1072,6 +1204,97 @@ where
     IrohReactiveHandlerSubscription { live, writer, task }
 }
 
+fn drive_reactive_view_subscription<V>(
+    client: IrohApplicationClient,
+    request: HandlerRequest,
+    mut subscription: IrohHandlerSubscription<Vec<V::Item>, V::Cursor>,
+) -> IrohReactiveViewSubscription<V::Item, V::Cursor>
+where
+    V: ViewHandler,
+{
+    let initial = subscription.current().clone();
+    let rows = initial
+        .value
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .cloned()
+        .map(|item| (V::item_key(&item), Arc::new(item)))
+        .collect();
+    let (writer, live) = live_collection(
+        rows,
+        LiveCollectionState {
+            through: initial.through,
+            liveness: initial.liveness,
+        },
+    );
+    let task_writer = writer.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            match subscription.recv().await {
+                Ok(state) => {
+                    publish_iroh_view_state::<V>(&task_writer, state);
+                    continue;
+                }
+                Err(error) if reactive_item_error_is_recoverable(&error) => {
+                    task_writer.resynchronizing(error.to_string());
+                }
+                Err(error) => {
+                    task_writer.invalidate(error.to_string());
+                    return;
+                }
+            }
+            let mut delay = client.reconnect_policy.initial_delay();
+            loop {
+                tokio::time::sleep(delay).await;
+                match client
+                    .watch_with_delta(request.clone(), Some(apply_view_delta::<V>))
+                    .await
+                {
+                    Ok(next) => {
+                        publish_iroh_view_state::<V>(&task_writer, next.current().clone());
+                        subscription = next;
+                        break;
+                    }
+                    Err(error) if reactive_item_error_is_recoverable(&error) => {
+                        task_writer.resynchronizing(error.to_string());
+                        delay = client.reconnect_policy.next_delay(delay);
+                    }
+                    Err(error) => {
+                        task_writer.invalidate(error.to_string());
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    IrohReactiveViewSubscription { live, writer, task }
+}
+
+fn publish_iroh_view_state<V>(
+    writer: &LiveCollectionWriter<V::Item, V::Cursor>,
+    state: LiveSubscriptionState<Vec<V::Item>, V::Cursor>,
+) where
+    V: ViewHandler,
+{
+    match state.liveness {
+        SubscriptionLiveness::Current => {
+            let rows = state
+                .value
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| (V::item_key(&item), Arc::new(item)))
+                .collect();
+            if let Err(error) = writer.reconcile(rows, state.through) {
+                writer.invalidate(error.to_string());
+            }
+        }
+        SubscriptionLiveness::Resynchronizing { reason } => writer.resynchronizing(reason),
+        SubscriptionLiveness::Invalid { reason } => writer.invalidate(reason),
+        SubscriptionLiveness::Connecting => {}
+    }
+}
+
 impl CommandStateClient for IrohCommandClient {
     type Error = IrohReplicationError;
 
@@ -1087,7 +1310,7 @@ impl CommandStateClient for IrohCommandClient {
 }
 
 impl IrohCommandClient {
-    /// Reads one current command state and follows its durable transitions
+    /// Reads one current command state and watches its durable transitions
     /// without a query-to-subscribe cursor gap.
     ///
     /// # Errors
@@ -1101,7 +1324,7 @@ impl IrohCommandClient {
         IrohCommandSubscription::connect(&self.replicator, self.peer.clone(), command_id).await
     }
 
-    /// Reads one filtered command catalog and follows subsequent durable
+    /// Reads one filtered command catalog and watches subsequent durable
     /// transitions without a snapshot-to-subscribe cursor gap.
     ///
     /// # Errors
@@ -1113,11 +1336,11 @@ impl IrohCommandClient {
         request: CommandStateRequest,
     ) -> Result<(CommandStateSnapshot, IrohCommandStateSubscription), IrohReplicationError> {
         let snapshot = self.command_states(request).await?;
-        let subscription = self.follow_command_states(&snapshot).await?;
+        let subscription = self.watch_command_states(&snapshot).await?;
         Ok((snapshot, subscription))
     }
 
-    /// Follows a command catalog from an already collected snapshot.
+    /// Watches a command catalog from an already collected snapshot.
     ///
     /// This is useful when an application pins several typed projections to
     /// one shared serving-log ceiling before establishing their live streams.
@@ -1126,7 +1349,7 @@ impl IrohCommandClient {
     ///
     /// Returns an error if the snapshot is invalid, access is denied, or the
     /// peer does not confirm the exact serving/source cursor.
-    pub async fn follow_command_states(
+    pub async fn watch_command_states(
         &self,
         snapshot: &CommandStateSnapshot,
     ) -> Result<IrohCommandStateSubscription, IrohReplicationError> {
@@ -1152,10 +1375,10 @@ impl IrohCommandSubscription {
             .open_bi()
             .await
             .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
-        write_request(&mut send, &ReplicationRequest::FollowCommand { command_id }).await?;
+        write_request(&mut send, &ReplicationRequest::WatchCommand { command_id }).await?;
         let response = read_command_frame(&mut receive, command_id).await?;
         let current = response.command.clone().ok_or_else(|| {
-            IrohReplicationError::Stream("command follow returned no initial state".to_owned())
+            IrohReplicationError::Stream("command watch returned no initial state".to_owned())
         })?;
         let subscription = Self {
             connection,
@@ -1201,7 +1424,7 @@ impl IrohCommandSubscription {
 
     /// Closes the lifecycle stream without shutting down either node.
     pub fn close(self) {
-        self.connection.close(0u32.into(), b"command follow closed");
+        self.connection.close(0u32.into(), b"command watch closed");
     }
 }
 
@@ -1223,13 +1446,13 @@ impl IrohCommandStateSubscription {
             .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
         write_request(
             &mut send,
-            &ReplicationRequest::FollowCommands {
+            &ReplicationRequest::WatchCommands {
                 request: stream.request().clone(),
             },
         )
         .await?;
         match read_frame(&mut receive).await? {
-            ReplicationFrame::CommandFollowReady { request }
+            ReplicationFrame::CommandWatchReady { request }
                 if request.as_ref() == stream.request() => {}
             ReplicationFrame::Error { message } => {
                 return Err(IrohReplicationError::Stream(format!(
@@ -1306,8 +1529,8 @@ impl IrohItemClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if snapshot collection, authorization, validation, or
-    /// stream establishment fails.
+    /// Retries transport failures indefinitely. Returns an error if typed
+    /// snapshot validation or materialization fails.
     pub async fn watch_items_reactive<Q>(
         &self,
         source_node: NodeId,
@@ -1329,8 +1552,8 @@ impl IrohItemClient {
     ///
     /// # Errors
     ///
-    /// Returns an error if snapshot collection, authorization, validation, or
-    /// stream establishment fails.
+    /// Retries transport failures indefinitely. Returns an error if typed
+    /// snapshot validation or materialization fails.
     pub async fn watch_serving_items_reactive<Q>(
         &self,
         scope_id: ScopeId,
@@ -1356,7 +1579,17 @@ impl IrohItemClient {
         Q: ItemQuery + Send + 'static,
         Q::Output: hyphae::CellValue,
     {
-        let (initial, subscription) = self.watch_request(request.clone(), query.clone()).await?;
+        let mut delay = self.reconnect_policy.initial_delay();
+        let (initial, subscription) = loop {
+            match self.watch_request(request.clone(), query.clone()).await {
+                Ok(connected) => break connected,
+                Err(error) if reactive_item_error_is_recoverable(&error) => {
+                    tokio::time::sleep(delay).await;
+                    delay = self.reconnect_policy.next_delay(delay);
+                }
+                Err(error) => return Err(error),
+            }
+        };
         Ok(drive_reactive_item_subscription(
             self.clone(),
             request,
@@ -1648,21 +1881,18 @@ impl FollowerConfig {
     }
 }
 
-type AccessMetadata = (
-    AccessOperation,
-    Option<ServiceId>,
-    Option<ScopeId>,
-    Option<CommandId>,
-    Option<String>,
-    Option<PrincipalId>,
-    Vec<String>,
-);
-
 async fn write_request(
     send: &mut SendStream,
     request: &ReplicationRequest,
 ) -> Result<(), IrohReplicationError> {
-    let encoded = serde_json::to_vec(request)?;
+    write_request_envelope(send, &NodeRequestEnvelope::connected(request.clone())).await
+}
+
+async fn write_request_envelope(
+    send: &mut SendStream,
+    request: &NodeRequestEnvelope,
+) -> Result<(), IrohReplicationError> {
+    let encoded = serde_json::to_vec(&WireEnvelope::new(request.clone()))?;
     send.write_all(&encoded)
         .await
         .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
@@ -1692,7 +1922,7 @@ async fn write_frame(
     send: &mut SendStream,
     frame: &ReplicationFrame,
 ) -> Result<(), IrohReplicationError> {
-    let encoded = serde_json::to_vec(frame)?;
+    let encoded = serde_json::to_vec(&WireEnvelope::new(frame.clone()))?;
     if encoded.len() > MAX_FRAME_BYTES {
         return Err(IrohReplicationError::Stream(format!(
             "replication frame exceeds {MAX_FRAME_BYTES} bytes"
@@ -1710,9 +1940,27 @@ async fn write_frame(
 }
 
 async fn read_frame(receive: &mut RecvStream) -> Result<ReplicationFrame, IrohReplicationError> {
+    read_frame_optional(receive).await?.ok_or_else(|| {
+        IrohReplicationError::Stream("peer closed before sending a response frame".to_owned())
+    })
+}
+
+async fn read_frame_optional(
+    receive: &mut RecvStream,
+) -> Result<Option<ReplicationFrame>, IrohReplicationError> {
     let mut header = [0_u8; size_of::<u32>()];
+    let Some(read) = receive
+        .read(&mut header)
+        .await
+        .map_err(|error| IrohReplicationError::Stream(error.to_string()))?
+    else {
+        return Ok(None);
+    };
+    let remainder = header.get_mut(read..).ok_or_else(|| {
+        IrohReplicationError::Stream("peer returned an invalid frame header length".to_owned())
+    })?;
     receive
-        .read_exact(&mut header)
+        .read_exact(remainder)
         .await
         .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
     let length = usize::try_from(u32::from_be_bytes(header)).map_err(|error| {
@@ -1728,7 +1976,12 @@ async fn read_frame(receive: &mut RecvStream) -> Result<ReplicationFrame, IrohRe
         .read_exact(&mut encoded)
         .await
         .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
-    serde_json::from_slice(&encoded).map_err(IrohReplicationError::from)
+    let envelope: WireEnvelope<ReplicationFrame> =
+        serde_json::from_slice(&encoded).map_err(IrohReplicationError::from)?;
+    envelope
+        .into_current()
+        .map(Some)
+        .map_err(|error| IrohReplicationError::Stream(error.to_string()))
 }
 
 async fn read_command_frame(
@@ -1745,20 +1998,22 @@ async fn read_command_frame(
             Ok(*response)
         }
         ReplicationFrame::Error { message } => Err(IrohReplicationError::Stream(format!(
-            "remote command follow failed: {message}"
+            "remote command watch failed: {message}"
         ))),
         _ => Err(IrohReplicationError::Stream(
-            "peer sent a mismatched frame for a command follow".to_owned(),
+            "peer sent a mismatched frame for a command watch".to_owned(),
         )),
     }
 }
 
-async fn read_request(receive: &mut RecvStream) -> Result<ReplicationRequest, AcceptError> {
+async fn read_request(receive: &mut RecvStream) -> Result<NodeRequestEnvelope, AcceptError> {
     let encoded = receive
         .read_to_end(MAX_REQUEST_BYTES)
         .await
         .map_err(AcceptError::from_err)?;
-    serde_json::from_slice(&encoded).map_err(AcceptError::from_err)
+    let envelope: WireEnvelope<NodeRequestEnvelope> =
+        serde_json::from_slice(&encoded).map_err(AcceptError::from_err)?;
+    envelope.into_current().map_err(AcceptError::from_err)
 }
 
 fn persist_cursor(
@@ -1831,6 +2086,17 @@ impl IrohReplicator {
         Ok(Self::from_endpoint(node, endpoint, initial_policy))
     }
 
+    /// Binds a network endpoint that serves registered application handlers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Iroh endpoint cannot bind.
+    pub async fn bind_application(
+        application: ApplicationNode,
+    ) -> Result<Self, IrohReplicationError> {
+        Self::bind_application_with_policy(application, Arc::new(AllowAllAccessPolicy)).await
+    }
+
     /// Binds a network endpoint that serves both node and registered
     /// application protocols.
     ///
@@ -1886,6 +2152,18 @@ impl IrohReplicator {
             .await
             .map_err(|error| IrohReplicationError::Endpoint(format!("{error:?}")))?;
         Ok(Self::from_endpoint(node, endpoint, initial_policy))
+    }
+
+    /// Binds a loopback endpoint that serves registered application handlers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the loopback endpoint cannot bind.
+    pub async fn bind_loopback_application(
+        application: ApplicationNode,
+    ) -> Result<Self, IrohReplicationError> {
+        Self::bind_loopback_application_with_policy(application, Arc::new(AllowAllAccessPolicy))
+            .await
     }
 
     /// Binds a loopback endpoint that serves registered application handlers.
@@ -2002,6 +2280,21 @@ impl IrohReplicator {
         Self::bind_with_secret_and_policy(node, secret_key, Arc::new(AllowAllAccessPolicy)).await
     }
 
+    /// Binds a foreground edge endpoint with a stable identity.
+    ///
+    /// The endpoint may pair and initiate outbound Myko operations, but it
+    /// never serves its local journal or application handlers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the Iroh endpoint cannot bind.
+    pub async fn bind_edge_with_secret(
+        node: Node,
+        secret_key: SecretKey,
+    ) -> Result<Self, IrohReplicationError> {
+        Self::bind_with_secret_and_policy(node, secret_key, Arc::new(DenyAllAccessPolicy)).await
+    }
+
     /// Binds a persistent identity with policy installed before serving.
     ///
     /// # Errors
@@ -2066,17 +2359,13 @@ impl IrohReplicator {
         endpoint: Endpoint,
         initial_policy: Arc<dyn AccessPolicy>,
     ) -> Self {
-        let live_events = LiveEventHub::new(node.node_id());
-        let access_policy: Arc<RwLock<Arc<dyn AccessPolicy>>> =
-            Arc::new(RwLock::new(initial_policy));
-        let (policy_revision, _) = watch::channel(0_u64);
+        let sessions = match application {
+            Some(application) => NodeSessionService::for_application(application, initial_policy),
+            None => NodeSessionService::new(node.clone(), initial_policy),
+        };
         let pairing = pairing::PairingRegistry::new();
         let protocol = ReplicationProtocol {
-            node: node.clone(),
-            application,
-            live_events: live_events.clone(),
-            access_policy: access_policy.clone(),
-            policy_revision: policy_revision.clone(),
+            sessions: sessions.clone(),
         };
         let router = Router::builder(endpoint)
             .accept(MYKO_REPLICATION_ALPN, protocol)
@@ -2087,10 +2376,8 @@ impl IrohReplicator {
             .spawn();
         Self {
             node,
-            live_events,
+            sessions,
             pairing,
-            access_policy,
-            policy_revision,
             router,
         }
     }
@@ -2105,6 +2392,15 @@ impl IrohReplicator {
     #[must_use]
     pub fn descriptor(&self) -> NativeNodeDescriptor {
         NativeNodeDescriptor::new(self.node.node_id(), self.address())
+    }
+
+    /// Returns the transport-neutral semantic endpoint served by Iroh.
+    ///
+    /// Local sockets and compatibility gateways should share this value so
+    /// every transport observes identical handlers, policy, and live events.
+    #[must_use]
+    pub const fn sessions(&self) -> &NodeSessionService {
+        &self.sessions
     }
 
     /// Issues an expiring one-use invitation for this identity-pinned node.
@@ -2235,13 +2531,45 @@ impl IrohReplicator {
         &self,
         policy: Arc<dyn AccessPolicy>,
     ) -> Result<(), IrohReplicationError> {
-        let mut current = self.access_policy.write().map_err(|_| {
-            IrohReplicationError::Supervisor("access-policy lock is poisoned".to_owned())
-        })?;
-        *current = policy;
-        drop(current);
-        self.policy_revision
-            .send_modify(|revision| *revision = revision.saturating_add(1));
+        self.sessions
+            .set_access_policy(policy)
+            .map_err(IrohReplicationError::Supervisor)
+    }
+
+    /// Forwards one canonical request envelope to an authenticated native peer.
+    ///
+    /// Frames are emitted unchanged until the destination completes the
+    /// request. This is the transport primitive used by the generic node
+    /// router; it does not interpret command, query, report, view, or
+    /// subscription semantics.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the endpoint cannot be reached, framing fails, or
+    /// the receiving frame stream has been dropped.
+    pub async fn forward_request(
+        &self,
+        peer: EndpointAddr,
+        request: NodeRequestEnvelope,
+        frames: &flume::Sender<ReplicationFrame>,
+    ) -> Result<(), IrohReplicationError> {
+        let connection = self
+            .router
+            .endpoint()
+            .connect(peer, MYKO_REPLICATION_ALPN)
+            .await
+            .map_err(|error| IrohReplicationError::Endpoint(error.to_string()))?;
+        let (mut send, mut receive) = connection
+            .open_bi()
+            .await
+            .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
+        write_request_envelope(&mut send, &request).await?;
+        while let Some(frame) = read_frame_optional(&mut receive).await? {
+            frames.send_async(frame).await.map_err(|_| {
+                IrohReplicationError::Stream("request frame receiver was dropped".to_owned())
+            })?;
+        }
+        connection.close(0u32.into(), b"request complete");
         Ok(())
     }
 
@@ -2255,7 +2583,8 @@ impl IrohReplicator {
         topic: impl Into<String>,
         payload: Vec<u8>,
     ) -> Result<LivePublishReport, IrohReplicationError> {
-        self.live_events
+        self.sessions
+            .live_events()
             .publish(topic, payload)
             .map_err(IrohReplicationError::Ingest)
     }
@@ -2298,12 +2627,13 @@ impl IrohReplicator {
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a live event before its source identity".to_owned(),
@@ -2371,12 +2701,13 @@ impl IrohReplicator {
             | ReplicationFrame::ScopedBatch { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent an unexpected frame for a scope catalog".to_owned(),
@@ -2437,12 +2768,13 @@ impl IrohReplicator {
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a batch before its source identity".to_owned(),
@@ -2456,12 +2788,13 @@ impl IrohReplicator {
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. }
             | ReplicationFrame::Error { .. } => {
                 return Err(IrohReplicationError::Stream(
@@ -2554,12 +2887,13 @@ impl IrohReplicator {
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a scoped batch before its source identity".to_owned(),
@@ -2573,12 +2907,13 @@ impl IrohReplicator {
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. }
             | ReplicationFrame::Error { .. } => {
                 return Err(IrohReplicationError::Stream(
@@ -2623,12 +2958,13 @@ impl IrohReplicator {
             | ReplicationFrame::ScopedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a replication frame for a command request".to_owned(),
@@ -2713,11 +3049,12 @@ impl IrohReplicator {
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a replication frame for an item query".to_owned(),
@@ -2734,10 +3071,10 @@ impl IrohReplicator {
     ///
     /// Returns an error if the peer cannot be reached, rejects conflicting
     /// command reuse, or cannot durably store the submission.
-    pub async fn submit_remote(
+    async fn submit_remote(
         &self,
         peer: EndpointAddr,
-        command: CommandRequest,
+        command: CommandSubmission,
     ) -> Result<RemoteCommandResponse, IrohReplicationError> {
         self.remote_command_request(peer, ReplicationRequest::Submit { command })
             .await
@@ -2931,7 +3268,7 @@ impl IrohReplicator {
             selection,
         } = config;
         let replicator = self.clone();
-        let status = Arc::new(Mutex::new(PeerSyncStatus {
+        let initial_status = PeerSyncStatus {
             peer: peer.clone(),
             expected_source_node: cursor.expected_source_node,
             source_node: cursor.source_node,
@@ -2940,8 +3277,8 @@ impl IrohReplicator {
             successful_connections: 0,
             successful_batches: 0,
             last_error: None,
-        }));
-        let task_status = status.clone();
+        };
+        let (task_status, status) = watch::channel(initial_status);
         let (shutdown, mut shutdown_requested) = watch::channel(false);
         let task = tokio::spawn(async move {
             loop {
@@ -2960,12 +3297,12 @@ impl IrohReplicator {
                         continue;
                     }
                 };
-                if let Ok(mut current) = task_status.lock() {
+                task_status.send_modify(|current| {
                     current.connected = false;
                     current.source_node = cursor.source_node;
                     current.cursor = cursor.cursor;
                     current.last_error = result.as_ref().err().map(ToString::to_string);
-                }
+                });
                 if result.is_ok() {
                     continue;
                 }
@@ -2992,7 +3329,7 @@ impl IrohReplicator {
         peer: EndpointAddr,
         cursor: &mut FollowCursorState,
         persistence: Option<&CursorPersistence>,
-        status: &Arc<Mutex<PeerSyncStatus>>,
+        status: &watch::Sender<PeerSyncStatus>,
         selection: &FollowSelection,
     ) -> Result<(), IrohReplicationError> {
         let peer_id = peer.id;
@@ -3028,12 +3365,13 @@ impl IrohReplicator {
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
-            | ReplicationFrame::CommandFollowReady { .. }
+            | ReplicationFrame::CommandWatchReady { .. }
             | ReplicationFrame::CommandUpdate { .. }
             | ReplicationFrame::ItemState { .. }
             | ReplicationFrame::ItemFollowReady { .. }
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
+            | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a batch before its source identity".to_owned(),
@@ -3048,12 +3386,12 @@ impl IrohReplicator {
                 "peer {peer_id} advertised Myko source {advertised_source}, expected {expected_source_node}"
             )));
         }
-        if let Ok(mut current) = status.lock() {
+        status.send_modify(|current| {
             current.connected = true;
             current.source_node = Some(advertised_source);
             current.successful_connections = current.successful_connections.saturating_add(1);
             current.last_error = None;
-        }
+        });
         if cursor
             .source_node
             .is_some_and(|source| source != advertised_source)
@@ -3081,11 +3419,11 @@ impl IrohReplicator {
                 ReplicationCheckpoint::new(advertised_source, through),
             )?;
             cursor.cursor = through;
-            if let Ok(mut current) = status.lock() {
+            status.send_modify(|current| {
                 current.cursor = cursor.cursor;
                 current.successful_batches = current.successful_batches.saturating_add(1);
                 current.last_error = None;
-            }
+            });
         }
     }
 
@@ -3146,989 +3484,85 @@ impl IrohReplicator {
 
 #[derive(Clone)]
 struct ReplicationProtocol {
-    node: Node,
-    application: Option<ApplicationNode>,
-    live_events: LiveEventHub,
-    access_policy: Arc<RwLock<Arc<dyn AccessPolicy>>>,
-    policy_revision: watch::Sender<u64>,
+    sessions: NodeSessionService,
 }
 
 impl std::fmt::Debug for ReplicationProtocol {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ReplicationProtocol")
-            .field("node_id", &self.node.node_id())
-            .field("application", &self.application.is_some())
+            .field("node_id", &self.sessions.node().node_id())
             .finish_non_exhaustive()
     }
 }
 
 impl ProtocolHandler for ReplicationProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        self.sessions.node().wait_until_ready().await;
         let (mut send, mut receive) = connection.accept_bi().await?;
         let request = read_request(&mut receive).await?;
         let principal = endpoint_principal_id(connection.remote_id());
-        if let Err(message) = self.authorize(&principal, &request) {
-            return Self::serve_error(connection, &mut send, format!("access denied: {message}"))
-                .await;
-        }
-        match request {
-            ReplicationRequest::Identify => self.serve_identity(connection, &mut send).await,
-            ReplicationRequest::ListScopes { after, limit } => {
-                self.serve_scope_catalog(connection, &mut send, principal, after, limit)
-                    .await
-            }
-            ReplicationRequest::Pull { after } => {
-                self.serve_pull(connection, &mut send, after).await
-            }
-            ReplicationRequest::PullScope { scope_id, after } => {
-                let batch = self
-                    .node
-                    .export_scope(scope_id, after)
-                    .map_err(AcceptError::from_err)?;
-                write_frame(
-                    &mut send,
-                    &ReplicationFrame::Hello {
-                        source_node: self.node.node_id(),
-                    },
-                )
+        let mut frames = self.sessions.open(principal, request).await;
+        while let Some(frame) = frames.recv().await {
+            write_frame(&mut send, &frame)
                 .await
                 .map_err(AcceptError::from_err)?;
-                write_frame(
-                    &mut send,
-                    &ReplicationFrame::ScopedBatch {
-                        batch: Box::new(batch),
-                    },
-                )
-                .await
-                .map_err(AcceptError::from_err)?;
-                send.finish().map_err(AcceptError::from_err)?;
-                connection.closed().await;
-                Ok(())
-            }
-            ReplicationRequest::Follow { after } => {
-                self.serve_follow(connection, &mut send, principal, after)
-                    .await
-            }
-            ReplicationRequest::FollowScope { scope_id, after } => {
-                self.serve_follow_scope(connection, &mut send, principal, scope_id, after)
-                    .await
-            }
-            ReplicationRequest::FollowLive { topics } => {
-                self.serve_live(connection, &mut send, principal, topics)
-                    .await
-            }
-            ReplicationRequest::Submit { command } => {
-                let result = self.node.submit(command).map(Some);
-                self.serve_command(connection, &mut send, result).await
-            }
-            ReplicationRequest::Command { command_id } => {
-                let result = self.node.command(command_id);
-                self.serve_command(connection, &mut send, result).await
-            }
-            ReplicationRequest::CommandState { request } => {
-                let result = self.node.command_state_page(request);
-                self.serve_command_state(connection, &mut send, result)
-                    .await
-            }
-            ReplicationRequest::FollowCommands { request } => {
-                self.serve_command_state_updates(connection, &mut send, principal, request)
-                    .await
-            }
-            ReplicationRequest::FollowCommand { command_id } => {
-                self.serve_command_updates(connection, &mut send, principal, command_id)
-                    .await
-            }
-            ReplicationRequest::Cancel { command_id, reason } => {
-                let result = self.node.cancel(command_id, reason).map(Some);
-                self.serve_command(connection, &mut send, result).await
-            }
-            ReplicationRequest::ItemState { request } => {
-                let result = self.node.item_state_page(request);
-                self.serve_item_state(connection, &mut send, result).await
-            }
-            ReplicationRequest::FollowItems { request } => {
-                self.serve_item_updates(connection, &mut send, principal, request)
-                    .await
-            }
-            ReplicationRequest::FollowHandler { request } => {
-                self.serve_handler_updates(connection, &mut send, principal, request)
-                    .await
-            }
         }
-    }
-}
-
-impl ReplicationProtocol {
-    async fn serve_identity(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-    ) -> Result<(), AcceptError> {
-        write_frame(
-            send,
-            &ReplicationFrame::Hello {
-                source_node: self.node.node_id(),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
         send.finish().map_err(AcceptError::from_err)?;
         connection.closed().await;
         Ok(())
-    }
-
-    fn authorize(
-        &self,
-        principal_id: &PrincipalId,
-        request: &ReplicationRequest,
-    ) -> Result<(), String> {
-        if matches!(
-            request,
-            ReplicationRequest::Identify | ReplicationRequest::ListScopes { .. }
-        ) {
-            return Ok(());
-        }
-        let (
-            operation,
-            service_id,
-            scope_id,
-            command_id,
-            command_type,
-            command_principal_id,
-            live_topics,
-        ) = self.access_metadata(request)?;
-        let access = AccessRequest {
-            principal_id: principal_id.clone(),
-            operation,
-            service_id,
-            scope_id,
-            command_id,
-            command_type,
-            command_principal_id,
-            live_topics,
-        };
-        let policy = self
-            .access_policy
-            .read()
-            .map_err(|_| "access-policy lock is poisoned".to_owned())?;
-        policy.authorize(&access)
-    }
-
-    fn access_metadata(&self, request: &ReplicationRequest) -> Result<AccessMetadata, String> {
-        Ok(match request {
-            ReplicationRequest::Identify | ReplicationRequest::ListScopes { .. } => {
-                return Err("request is authorized outside access metadata".to_owned());
-            }
-            ReplicationRequest::Pull { .. } => (
-                AccessOperation::ReadHistory,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Vec::new(),
-            ),
-            ReplicationRequest::PullScope { scope_id, .. } => (
-                AccessOperation::ReadHistory,
-                None,
-                Some(scope_id.clone()),
-                None,
-                None,
-                None,
-                Vec::new(),
-            ),
-            ReplicationRequest::Follow { .. } => (
-                AccessOperation::FollowHistory,
-                None,
-                None,
-                None,
-                None,
-                None,
-                Vec::new(),
-            ),
-            ReplicationRequest::FollowScope { scope_id, .. } => (
-                AccessOperation::FollowHistory,
-                None,
-                Some(scope_id.clone()),
-                None,
-                None,
-                None,
-                Vec::new(),
-            ),
-            ReplicationRequest::FollowLive { topics } => (
-                AccessOperation::SubscribeLive,
-                None,
-                None,
-                None,
-                None,
-                None,
-                topics.clone(),
-            ),
-            ReplicationRequest::Submit { command } => (
-                AccessOperation::SubmitCommand,
-                Some(command.service_id.clone()),
-                Some(command.scope_id.clone()),
-                Some(command.id),
-                Some(command.command_type.clone()),
-                Some(command.principal_id.clone()),
-                Vec::new(),
-            ),
-            ReplicationRequest::Command { command_id } => {
-                self.command_access(AccessOperation::ReadCommand, *command_id)?
-            }
-            ReplicationRequest::CommandState { request } => Self::command_catalog_access(
-                AccessOperation::ReadCommands,
-                &request.service_id,
-                &request.scope_id,
-                &request.command_type,
-            ),
-            ReplicationRequest::FollowCommands { request } => Self::command_catalog_access(
-                AccessOperation::FollowCommands,
-                &request.service_id,
-                &request.scope_id,
-                &request.command_type,
-            ),
-            ReplicationRequest::FollowCommand { command_id } => {
-                self.command_access(AccessOperation::FollowCommand, *command_id)?
-            }
-            ReplicationRequest::Cancel { command_id, .. } => {
-                self.command_access(AccessOperation::CancelCommand, *command_id)?
-            }
-            ReplicationRequest::ItemState { request } => (
-                AccessOperation::ReadItems,
-                Some(request.service_id.clone()),
-                Some(request.scope_id.clone()),
-                None,
-                None,
-                None,
-                Vec::new(),
-            ),
-            ReplicationRequest::FollowItems { request } => (
-                AccessOperation::FollowItems,
-                Some(request.service_id.clone()),
-                Some(request.scope_id.clone()),
-                None,
-                None,
-                None,
-                Vec::new(),
-            ),
-            ReplicationRequest::FollowHandler { request } => Self::handler_access(request),
-        })
-    }
-
-    fn handler_access(request: &HandlerRequest) -> AccessMetadata {
-        (
-            AccessOperation::FollowHandler,
-            None,
-            request.scope_id.clone(),
-            None,
-            None,
-            None,
-            vec![format!(
-                "handler:{}:{}",
-                request.kind.as_str(),
-                request.handler_id
-            )],
-        )
-    }
-
-    fn command_catalog_access(
-        operation: AccessOperation,
-        service_id: &ServiceId,
-        scope_id: &ScopeId,
-        command_type: &str,
-    ) -> AccessMetadata {
-        (
-            operation,
-            Some(service_id.clone()),
-            Some(scope_id.clone()),
-            None,
-            Some(command_type.to_owned()),
-            None,
-            Vec::new(),
-        )
-    }
-
-    async fn serve_pull(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        after: Option<LogPosition>,
-    ) -> Result<(), AcceptError> {
-        let batch = self.node.export(after).map_err(AcceptError::from_err)?;
-        write_frame(
-            send,
-            &ReplicationFrame::Hello {
-                source_node: self.node.node_id(),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        write_frame(
-            send,
-            &ReplicationFrame::Batch {
-                batch: Box::new(batch),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        send.finish().map_err(AcceptError::from_err)?;
-        connection.closed().await;
-        Ok(())
-    }
-
-    async fn serve_scope_catalog(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        principal_id: PrincipalId,
-        after: Option<ScopeId>,
-        limit: u32,
-    ) -> Result<(), AcceptError> {
-        let limit = usize::try_from(limit).map_err(AcceptError::from_err)?;
-        if limit == 0 || limit > MAX_SCOPE_CATALOG_PAGE {
-            return Self::serve_error(
-                connection,
-                send,
-                format!("scope catalog limit must be between 1 and {MAX_SCOPE_CATALOG_PAGE}"),
-            )
-            .await;
-        }
-        let policy = self
-            .access_policy
-            .read()
-            .map_err(|_| {
-                AcceptError::from_err(std::io::Error::other("access-policy lock is poisoned"))
-            })?
-            .clone();
-        let mut scopes = Vec::with_capacity(limit.saturating_add(1));
-        for scope_id in self.node.scope_ids().map_err(AcceptError::from_err)? {
-            if after
-                .as_ref()
-                .is_some_and(|cursor| scope_id.as_str() <= cursor.as_str())
-            {
-                continue;
-            }
-            let access = AccessRequest {
-                principal_id: principal_id.clone(),
-                operation: AccessOperation::ReadHistory,
-                service_id: None,
-                scope_id: Some(scope_id.clone()),
-                command_id: None,
-                command_type: None,
-                command_principal_id: None,
-                live_topics: Vec::new(),
-            };
-            if policy.authorize(&access).is_ok() {
-                scopes.push(scope_id);
-                if scopes.len() > limit {
-                    break;
-                }
-            }
-        }
-        let has_more = scopes.len() > limit;
-        if has_more {
-            let _extra = scopes.pop();
-        }
-        let next_after = if has_more {
-            scopes.last().cloned()
-        } else {
-            None
-        };
-        let page = ScopeCatalogPage {
-            source_node: self.node.node_id(),
-            scopes,
-            next_after,
-        };
-        write_frame(
-            send,
-            &ReplicationFrame::ScopeCatalog {
-                page: Box::new(page),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        send.finish().map_err(AcceptError::from_err)?;
-        connection.closed().await;
-        Ok(())
-    }
-
-    fn command_access(
-        &self,
-        operation: AccessOperation,
-        command_id: CommandId,
-    ) -> Result<AccessMetadata, String> {
-        let command = self
-            .node
-            .command(command_id)
-            .map_err(|error| error.to_string())?;
-        Ok(match command {
-            Some(command) => (
-                operation,
-                Some(command.request.service_id),
-                Some(command.request.scope_id),
-                Some(command_id),
-                Some(command.request.command_type),
-                Some(command.request.principal_id),
-                Vec::new(),
-            ),
-            None => (
-                operation,
-                None,
-                None,
-                Some(command_id),
-                None,
-                None,
-                Vec::new(),
-            ),
-        })
-    }
-
-    async fn serve_error(
-        connection: Connection,
-        send: &mut SendStream,
-        message: String,
-    ) -> Result<(), AcceptError> {
-        write_frame(send, &ReplicationFrame::Error { message })
-            .await
-            .map_err(AcceptError::from_err)?;
-        send.finish().map_err(AcceptError::from_err)?;
-        connection.closed().await;
-        Ok(())
-    }
-
-    async fn serve_command(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        result: Result<Option<CommandSnapshot>, myko_federation::NodeError>,
-    ) -> Result<(), AcceptError> {
-        let frame = match result {
-            Ok(command) => ReplicationFrame::Command {
-                response: Box::new(RemoteCommandResponse {
-                    source_node: self.node.node_id(),
-                    command,
-                }),
-            },
-            Err(error) => ReplicationFrame::Error {
-                message: error.to_string(),
-            },
-        };
-        write_frame(send, &frame)
-            .await
-            .map_err(AcceptError::from_err)?;
-        send.finish().map_err(AcceptError::from_err)?;
-        connection.closed().await;
-        Ok(())
-    }
-
-    async fn serve_command_state(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        result: Result<CommandStatePage, myko_federation::NodeError>,
-    ) -> Result<(), AcceptError> {
-        let frame = match result {
-            Ok(page) => ReplicationFrame::CommandState {
-                page: Box::new(page),
-            },
-            Err(error) => ReplicationFrame::Error {
-                message: error.to_string(),
-            },
-        };
-        write_frame(send, &frame)
-            .await
-            .map_err(AcceptError::from_err)?;
-        send.finish().map_err(AcceptError::from_err)?;
-        connection.closed().await;
-        Ok(())
-    }
-
-    async fn serve_command_state_updates(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        principal_id: PrincipalId,
-        request: CommandFollowRequest,
-    ) -> Result<(), AcceptError> {
-        if request.serving_node != self.node.node_id() {
-            return Self::serve_error(
-                connection,
-                send,
-                "command follow cursor belongs to another serving node".to_owned(),
-            )
-            .await;
-        }
-        let access_request = ReplicationRequest::FollowCommands {
-            request: request.clone(),
-        };
-        let mut policy_changes = self.policy_revision.subscribe();
-        if let Err(message) = self.authorize(&principal_id, &access_request) {
-            return Self::serve_error(connection, send, format!("access denied: {message}")).await;
-        }
-        let mut events = self
-            .node
-            .subscribe(request.after)
-            .map_err(AcceptError::from_err)?;
-        write_frame(
-            send,
-            &ReplicationFrame::CommandFollowReady {
-                request: Box::new(request.clone()),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        loop {
-            let event = tokio::select! {
-                event = events.recv_async() => Some(event.map_err(AcceptError::from_err)?),
-                changed = policy_changes.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                    None
-                }
-                _ = connection.closed() => return Ok(()),
-            };
-            if let Err(message) = self.authorize(&principal_id, &access_request) {
-                return Self::serve_error(connection, send, format!("access denied: {message}"))
-                    .await;
-            }
-            let Some(event) = event else {
-                continue;
-            };
-            let Some(update) = request.update_from_envelope(&event) else {
-                continue;
-            };
-            write_frame(
-                send,
-                &ReplicationFrame::CommandUpdate {
-                    update: Box::new(update),
-                },
-            )
-            .await
-            .map_err(AcceptError::from_err)?;
-        }
-    }
-
-    async fn serve_command_updates(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        principal_id: PrincipalId,
-        command_id: CommandId,
-    ) -> Result<(), AcceptError> {
-        let access_request = ReplicationRequest::FollowCommand { command_id };
-        let mut policy_changes = self.policy_revision.subscribe();
-        if let Err(message) = self.authorize(&principal_id, &access_request) {
-            return Self::serve_error(connection, send, format!("access denied: {message}")).await;
-        }
-        let (initial, mut watch) = self
-            .node
-            .watch_command(command_id)
-            .map_err(AcceptError::from_err)?;
-        write_frame(
-            send,
-            &ReplicationFrame::Command {
-                response: Box::new(initial),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        loop {
-            let command = tokio::select! {
-                command = watch.recv_async() => Some(command.map_err(AcceptError::from_err)?),
-                changed = policy_changes.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                    None
-                }
-                _ = connection.closed() => return Ok(()),
-            };
-            if let Err(message) = self.authorize(&principal_id, &access_request) {
-                return Self::serve_error(connection, send, format!("access denied: {message}"))
-                    .await;
-            }
-            let Some(command) = command else {
-                continue;
-            };
-            write_frame(
-                send,
-                &ReplicationFrame::Command {
-                    response: Box::new(RemoteCommandResponse {
-                        source_node: self.node.node_id(),
-                        command: Some(command),
-                    }),
-                },
-            )
-            .await
-            .map_err(AcceptError::from_err)?;
-        }
-    }
-
-    async fn serve_item_state(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        result: Result<ItemStatePage, myko_federation::NodeError>,
-    ) -> Result<(), AcceptError> {
-        let frame = match result {
-            Ok(page) => ReplicationFrame::ItemState {
-                page: Box::new(page),
-            },
-            Err(error) => ReplicationFrame::Error {
-                message: error.to_string(),
-            },
-        };
-        write_frame(send, &frame)
-            .await
-            .map_err(AcceptError::from_err)?;
-        send.finish().map_err(AcceptError::from_err)?;
-        connection.closed().await;
-        Ok(())
-    }
-
-    async fn serve_item_updates(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        principal_id: PrincipalId,
-        request: ItemFollowRequest,
-    ) -> Result<(), AcceptError> {
-        if request.serving_node != self.node.node_id()
-            || request.item_type.is_empty()
-            || request.schema_version == 0
-        {
-            return Self::serve_error(
-                connection,
-                send,
-                "typed item stream does not match this serving node or a valid schema".to_owned(),
-            )
-            .await;
-        }
-        let access_request = ReplicationRequest::FollowItems {
-            request: request.clone(),
-        };
-        let mut policy_changes = self.policy_revision.subscribe();
-        if let Err(message) = self.authorize(&principal_id, &access_request) {
-            return Self::serve_error(connection, send, format!("access denied: {message}")).await;
-        }
-        let mut subscription = self
-            .node
-            .subscribe(request.after)
-            .map_err(AcceptError::from_err)?;
-        write_frame(
-            send,
-            &ReplicationFrame::ItemFollowReady {
-                request: Box::new(request.clone()),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        loop {
-            let event = tokio::select! {
-                event = subscription.recv_async() => Some(event.map_err(AcceptError::from_err)?),
-                changed = policy_changes.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                    None
-                }
-                _ = connection.closed() => return Ok(()),
-            };
-            if let Err(message) = self.authorize(&principal_id, &access_request) {
-                return Self::serve_error(connection, send, format!("access denied: {message}"))
-                    .await;
-            }
-            let Some(event) = event else {
-                continue;
-            };
-            let Some(update) = request
-                .update_from_envelope(&event)
-                .map_err(AcceptError::from_err)?
-            else {
-                continue;
-            };
-            write_frame(
-                send,
-                &ReplicationFrame::ItemUpdate {
-                    update: Box::new(update),
-                },
-            )
-            .await
-            .map_err(AcceptError::from_err)?;
-        }
-    }
-
-    async fn serve_handler_updates(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        principal_id: PrincipalId,
-        request: HandlerRequest,
-    ) -> Result<(), AcceptError> {
-        let access_request = ReplicationRequest::FollowHandler {
-            request: request.clone(),
-        };
-        let mut policy_changes = self.policy_revision.subscribe();
-        if let Err(message) = self.authorize(&principal_id, &access_request) {
-            return Self::serve_error(connection, send, format!("access denied: {message}")).await;
-        }
-        let Some(application) = &self.application else {
-            return Self::serve_error(
-                connection,
-                send,
-                "this node does not expose an application schema".to_owned(),
-            )
-            .await;
-        };
-        let subscription = match application.watch_handler(&request) {
-            Ok(subscription) => subscription,
-            Err(error) => return Self::serve_error(connection, send, error.to_string()).await,
-        };
-        let (wake_tx, wake_rx) = flume::bounded(1);
-        let _guard = subscription.live().state().subscribe(move |_| {
-            let _ignored = wake_tx.try_send(());
-        });
-        let mut last_state: Option<ErasedHandlerState> = None;
-        loop {
-            if let Err(message) = self.authorize(&principal_id, &access_request) {
-                return Self::serve_error(connection, send, format!("access denied: {message}"))
-                    .await;
-            }
-            let current = subscription.live().current();
-            if last_state.as_ref() != Some(&current) {
-                write_frame(
-                    send,
-                    &ReplicationFrame::HandlerState {
-                        state: Box::new(current.clone()),
-                    },
-                )
-                .await
-                .map_err(AcceptError::from_err)?;
-                last_state = Some(current);
-            }
-            tokio::select! {
-                wake = wake_rx.recv_async() => {
-                    if wake.is_err() {
-                        return Ok(());
-                    }
-                }
-                changed = policy_changes.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                }
-                _ = connection.closed() => return Ok(()),
-            }
-        }
-    }
-
-    async fn serve_follow(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        principal_id: PrincipalId,
-        after: Option<LogPosition>,
-    ) -> Result<(), AcceptError> {
-        let request = ReplicationRequest::Follow { after };
-        let mut policy_changes = self.policy_revision.subscribe();
-        if let Err(message) = self.authorize(&principal_id, &request) {
-            return Self::serve_error(connection, send, format!("access denied: {message}")).await;
-        }
-        let mut subscription = self.node.subscribe(after).map_err(AcceptError::from_err)?;
-        write_frame(
-            send,
-            &ReplicationFrame::Hello {
-                source_node: self.node.node_id(),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        let mut cursor = after;
-        loop {
-            let event = tokio::select! {
-                event = subscription.recv_async() => Some(event.map_err(AcceptError::from_err)?),
-                changed = policy_changes.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                    None
-                }
-                _ = connection.closed() => return Ok(()),
-            };
-            if let Err(message) = self.authorize(&principal_id, &request) {
-                return Self::serve_error(connection, send, format!("access denied: {message}"))
-                    .await;
-            }
-            let Some(event) = event else {
-                continue;
-            };
-            let through = event.position;
-            let batch = ReplicationBatch {
-                source_node: self.node.node_id(),
-                after: cursor,
-                through: Some(through),
-                events: vec![event],
-            };
-            write_frame(
-                send,
-                &ReplicationFrame::Batch {
-                    batch: Box::new(batch),
-                },
-            )
-            .await
-            .map_err(AcceptError::from_err)?;
-            cursor = Some(through);
-        }
-    }
-
-    async fn serve_follow_scope(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        principal_id: PrincipalId,
-        scope_id: ScopeId,
-        after: Option<LogPosition>,
-    ) -> Result<(), AcceptError> {
-        let request = ReplicationRequest::FollowScope {
-            scope_id: scope_id.clone(),
-            after,
-        };
-        let mut policy_changes = self.policy_revision.subscribe();
-        if let Err(message) = self.authorize(&principal_id, &request) {
-            return Self::serve_error(connection, send, format!("access denied: {message}")).await;
-        }
-        let mut subscription = self.node.subscribe(after).map_err(AcceptError::from_err)?;
-        write_frame(
-            send,
-            &ReplicationFrame::Hello {
-                source_node: self.node.node_id(),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        let mut cursor = after;
-        loop {
-            let event = tokio::select! {
-                event = subscription.recv_async() => Some(event.map_err(AcceptError::from_err)?),
-                changed = policy_changes.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                    None
-                }
-                _ = connection.closed() => return Ok(()),
-            };
-            if let Err(message) = self.authorize(&principal_id, &request) {
-                return Self::serve_error(connection, send, format!("access denied: {message}"))
-                    .await;
-            }
-            let Some(event) = event else {
-                continue;
-            };
-            let through = event.position;
-            let events = if event.event.scope_id() == &scope_id {
-                vec![event]
-            } else {
-                Vec::new()
-            };
-            let batch = ScopedReplicationBatch {
-                source_node: self.node.node_id(),
-                scope_id: scope_id.clone(),
-                after: cursor,
-                through: Some(through),
-                events,
-            };
-            write_frame(
-                send,
-                &ReplicationFrame::ScopedBatch {
-                    batch: Box::new(batch),
-                },
-            )
-            .await
-            .map_err(AcceptError::from_err)?;
-            cursor = Some(through);
-        }
-    }
-
-    async fn serve_live(
-        &self,
-        connection: Connection,
-        send: &mut SendStream,
-        principal_id: PrincipalId,
-        topics: Vec<String>,
-    ) -> Result<(), AcceptError> {
-        if let Err(message) = validate_live_topics(&topics) {
-            return Self::serve_error(connection, send, message).await;
-        }
-        let request = ReplicationRequest::FollowLive {
-            topics: topics.clone(),
-        };
-        let mut policy_changes = self.policy_revision.subscribe();
-        if let Err(message) = self.authorize(&principal_id, &request) {
-            return Self::serve_error(connection, send, format!("access denied: {message}")).await;
-        }
-        let mut subscription = self
-            .live_events
-            .subscribe(topics, LIVE_SUBSCRIPTION_CAPACITY)
-            .map_err(AcceptError::from_err)?;
-        write_frame(
-            send,
-            &ReplicationFrame::Hello {
-                source_node: self.node.node_id(),
-            },
-        )
-        .await
-        .map_err(AcceptError::from_err)?;
-        loop {
-            let event = tokio::select! {
-                event = subscription.recv_async() => Some(event.map_err(AcceptError::from_err)?),
-                changed = policy_changes.changed() => {
-                    if changed.is_err() {
-                        return Ok(());
-                    }
-                    None
-                }
-                _ = connection.closed() => return Ok(()),
-            };
-            if let Err(message) = self.authorize(&principal_id, &request) {
-                return Self::serve_error(connection, send, format!("access denied: {message}"))
-                    .await;
-            }
-            let Some(event) = event else {
-                continue;
-            };
-            write_frame(
-                send,
-                &ReplicationFrame::Live {
-                    event: Box::new(event),
-                },
-            )
-            .await
-            .map_err(AcceptError::from_err)?;
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use myko_app::{AppError, ApplicationSchema, HandlerContext, ReportHandler};
-    use myko_federation::{
-        BatchId, ChangeBatch, CommandId, CommandRequest, CommandState, ItemMutation, PrincipalId,
-        ScopeId, ServiceId,
+    use myko_app::capability::{EventPublishing as _, Querying as _};
+    use myko_app::{
+        AppError, CommandClient as _, CommandContext, CommandError, CommandHandler,
+        MykoApplication, ReportContext, ReportHandler, myko_report,
     };
-    use myko_items::myko_item;
+    use myko_federation::{
+        AccessOperation, AccessRequest, BatchId, ChangeBatch, CommandId, CommandRequest,
+        CommandState, ItemMutation, MykoService as _, PrincipalId, ScopeId, ServiceId,
+    };
+    use myko_items::{myko_command, myko_item, myko_service};
     use myko_redb::RedbJournal;
 
-    #[myko_item(service = "records")]
+    #[myko_service(RemoteRecord)]
+    pub struct RemoteService;
+
+    #[myko_item(service = RemoteService, scope_root)]
     pub struct RemoteRecord {
         pub value: String,
     }
 
-    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    #[myko_command(bool, item = RemoteRecord)]
+    struct SetRemoteRecord {
+        id: RemoteRecordId,
+        scope: String,
+        value: String,
+    }
+
+    impl CommandHandler for SetRemoteRecord {
+        fn scope(&self, _node_id: NodeId) -> RemoteRecordId {
+            RemoteRecordId::from(self.scope.clone())
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<RemoteService, RemoteRecord>,
+        ) -> Result<bool, CommandError> {
+            context.emit_set(&RemoteRecord {
+                id: self.id,
+                value: self.value,
+            })?;
+            Ok(true)
+        }
+    }
+
+    #[myko_report(u64, item = RemoteRecord)]
+    #[derive(Copy)]
     struct RemoteRecordCount {
         source_node: NodeId,
     }
@@ -4137,11 +3571,9 @@ mod tests {
         type Output = u64;
         type Cursor = LogPosition;
 
-        const REPORT_ID: &'static str = "records.remote_count";
-
         fn build(
             &self,
-            context: &HandlerContext,
+            context: &ReportContext,
         ) -> Result<LiveSubscription<Self::Output>, AppError> {
             Ok(context
                 .query(
@@ -4156,15 +3588,12 @@ mod tests {
     #[tokio::test]
     async fn registered_report_streams_over_authenticated_iroh() -> Result<(), String> {
         let source = Node::in_memory();
-        let mut schema = ApplicationSchema::new();
-        schema
-            .register_query::<GetAllRemoteRecords>()
-            .map_err(|error| error.to_string())?;
-        schema
-            .register_report::<RemoteRecordCount>()
-            .map_err(|error| error.to_string())?;
+        let application = MykoApplication::builder()
+            .service::<RemoteService>()
+            .map_err(|error| error.to_string())?
+            .build();
         let server = IrohReplicator::bind_loopback_application_with_policy(
-            ApplicationNode::new(source.clone(), schema),
+            ApplicationNode::new(source.clone(), application),
             Arc::new(AllowAllAccessPolicy),
         )
         .await
@@ -4224,8 +3653,8 @@ mod tests {
                     | AccessOperation::FollowHistory
                     | AccessOperation::ReadCommand
                     | AccessOperation::ReadCommands
-                    | AccessOperation::FollowCommand
-                    | AccessOperation::FollowCommands
+                    | AccessOperation::WatchCommand
+                    | AccessOperation::WatchCommands
             );
             if is_read && request.scope_id.as_ref() == Some(&self.scope_id) {
                 Ok(())
@@ -4308,7 +3737,7 @@ mod tests {
     ) -> Result<RemoteRecord, String> {
         let request = CommandRequest {
             id: CommandId::new(),
-            service_id: ServiceId::new("records"),
+            service_id: ServiceId::new(RemoteService::SERVICE_ID),
             scope_id,
             principal_id: PrincipalId::new("node:test"),
             command_type: "records.put".to_owned(),
@@ -4387,7 +3816,7 @@ mod tests {
     #[tokio::test]
     async fn remote_item_client_executes_the_same_typed_query_contract() -> Result<(), String> {
         let source = Node::in_memory();
-        let service_id = ServiceId::new("records");
+        let service_id = ServiceId::new(RemoteService::SERVICE_ID);
         let scope_id = ScopeId::new("session:records");
         let request = CommandRequest {
             id: CommandId::new(),
@@ -4460,7 +3889,7 @@ mod tests {
     #[tokio::test]
     async fn every_item_state_page_is_authorized_independently() -> Result<(), String> {
         let source = Node::in_memory();
-        let service_id = ServiceId::new("records");
+        let service_id = ServiceId::new(RemoteService::SERVICE_ID);
         let scope_id = ScopeId::new("session:paged-policy");
         let request = CommandRequest {
             id: CommandId::new(),
@@ -5289,29 +4718,29 @@ mod tests {
     #[tokio::test]
     async fn embedded_command_client_uses_the_same_unclaimed_contract() -> Result<(), String> {
         let node = Node::in_memory();
-        let command = CommandRequest {
-            id: CommandId::new(),
-            service_id: ServiceId::new("embedded-control"),
-            scope_id: ScopeId::new("session:test"),
-            principal_id: PrincipalId::new("human:tui"),
-            command_type: "prompt".to_owned(),
-            payload: b"hello in process".to_vec(),
-        };
-        let submitted = node
-            .submit_command(command.clone())
+        let application = MykoApplication::builder()
+            .service::<RemoteService>()
+            .map_err(|error| error.to_string())?
+            .build();
+        let application = ApplicationNode::new(node.clone(), application);
+        let submitted = application
+            .submit_command(SetRemoteRecord {
+                id: RemoteRecordId::from("embedded-command"),
+                scope: "session:test".to_owned(),
+                value: "hello in process".to_owned(),
+            })
             .await
             .map_err(|error| error.to_string())?;
-        if submitted.source_node != node.node_id()
-            || submitted.command.as_ref().is_none_or(|snapshot| {
-                snapshot.request != command || snapshot.state != CommandState::Submitted
-            })
-        {
+        let Some(snapshot) = submitted.command.as_ref() else {
+            return Err("embedded command returned no state".to_owned());
+        };
+        if submitted.source_node != node.node_id() || snapshot.state != CommandState::Submitted {
             return Err(format!("unexpected embedded response: {submitted:?}"));
         }
-        let queried = node
-            .command_state(command.id)
-            .await
-            .map_err(|error| error.to_string())?;
+        let queried =
+            myko_federation::CommandClient::command_state(&application, snapshot.request.id)
+                .await
+                .map_err(|error| error.to_string())?;
         if queried != submitted {
             return Err("embedded command facade changed the command projection".to_owned());
         }
@@ -5376,7 +4805,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn native_command_catalog_follows_new_and_changed_commands() -> Result<(), String> {
+    async fn native_command_catalog_watches_new_and_changed_commands() -> Result<(), String> {
         let source = Node::in_memory();
         let scope_id = ScopeId::new("session:catalog-follow");
         let first = commit_test_command_in_scope(&source, "prompt", scope_id.clone())?;
@@ -5410,21 +4839,21 @@ mod tests {
             .is_none_or(|entry| entry.command.request.id != first.id)
             || initial.commands.len() != 1
         {
-            return Err("command follow returned the wrong initial catalog".to_owned());
+            return Err("command watch returned the wrong initial catalog".to_owned());
         }
         let mut wrong_server = initial.clone();
         wrong_server.serving_node = Node::in_memory().node_id();
-        match remote.follow_command_states(&wrong_server).await {
+        match remote.watch_command_states(&wrong_server).await {
             Err(IrohReplicationError::Stream(message))
                 if message.contains("another serving node") => {}
             Err(error) => {
                 return Err(format!(
-                    "command follow returned the wrong serving-node error: {error}"
+                    "command watch returned the wrong serving-node error: {error}"
                 ));
             }
             Ok(unexpected) => {
                 unexpected.close();
-                return Err("command follow accepted another server's cursor".to_owned());
+                return Err("command watch accepted another server's cursor".to_owned());
             }
         }
 
@@ -5484,47 +4913,58 @@ mod tests {
     -> Result<(), String> {
         let server = Node::in_memory();
         let client = Node::in_memory();
-        let server_transport = IrohReplicator::bind_loopback(server.clone())
-            .await
-            .map_err(|error| error.to_string())?;
+        let application = MykoApplication::builder()
+            .service::<RemoteService>()
+            .map_err(|error| error.to_string())?
+            .build();
+        let server_transport = IrohReplicator::bind_loopback_application_with_policy(
+            ApplicationNode::new(server.clone(), application),
+            Arc::new(AllowAllAccessPolicy),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         let client_transport = IrohReplicator::bind_loopback(client)
             .await
             .map_err(|error| error.to_string())?;
         let server_address = server_transport.address();
-        let remote = client_transport.command_client(server_address.clone());
-        let command = CommandRequest {
-            id: CommandId::new(),
-            service_id: ServiceId::new("remote-control"),
-            scope_id: ScopeId::new("session:test"),
-            principal_id: PrincipalId::new("human:tui"),
-            command_type: "prompt".to_owned(),
-            payload: b"hello over native iroh".to_vec(),
-        };
+        let command = CommandSubmission::for_command(&SetRemoteRecord {
+            id: RemoteRecordId::from("remote-command"),
+            scope: "session:test".to_owned(),
+            value: "hello over native iroh".to_owned(),
+        })
+        .map_err(|error| error.to_string())?;
 
-        let submitted = remote
-            .submit_command(command.clone())
+        let submitted = client_transport
+            .submit_remote(server_address.clone(), command.clone())
             .await
             .map_err(|error| error.to_string())?;
         let Some(snapshot) = submitted.command else {
             return Err("remote submission returned no command".to_owned());
         };
         if submitted.source_node != server.node_id()
-            || snapshot.request != command
+            || snapshot.request.id != command.id
             || snapshot.state != CommandState::Submitted
         {
             return Err(format!("unexpected remote submission: {snapshot:?}"));
         }
 
-        let repeated = remote
-            .submit_command(command.clone())
+        let repeated = client_transport
+            .submit_remote(server_address.clone(), command.clone())
             .await
             .map_err(|error| error.to_string())?;
         if repeated.command.as_ref() != Some(&snapshot) {
             return Err("stable remote submission was not idempotent".to_owned());
         }
         let mut conflicting = command.clone();
-        conflicting.payload = b"conflicting reuse".to_vec();
-        let conflict = remote.submit_command(conflicting).await;
+        conflicting.payload = serde_json::to_vec(&SetRemoteRecord {
+            id: RemoteRecordId::from("remote-command"),
+            scope: "session:test".to_owned(),
+            value: "conflicting reuse".to_owned(),
+        })
+        .map_err(|error| error.to_string())?;
+        let conflict = client_transport
+            .submit_remote(server_address.clone(), conflicting)
+            .await;
         if !matches!(
             conflict,
             Err(IrohReplicationError::Stream(ref message))
@@ -5534,7 +4974,8 @@ mod tests {
                 "conflicting remote command was accepted: {conflict:?}"
             ));
         }
-        let queried = remote
+        let queried = client_transport
+            .command_client(server_address)
             .command_state(command.id)
             .await
             .map_err(|error| error.to_string())?;
@@ -5570,9 +5011,16 @@ mod tests {
         let granted = commit_test_command_in_scope(&source, "granted", granted_scope.clone())?;
         let hidden =
             commit_test_command_in_scope(&source, "hidden", ScopeId::new("session:hidden-policy"))?;
-        let source_transport = IrohReplicator::bind_loopback(source.clone())
-            .await
-            .map_err(|error| error.to_string())?;
+        let application = MykoApplication::builder()
+            .service::<RemoteService>()
+            .map_err(|error| error.to_string())?
+            .build();
+        let source_transport = IrohReplicator::bind_loopback_application_with_policy(
+            ApplicationNode::new(source.clone(), application),
+            Arc::new(AllowAllAccessPolicy),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
         source_transport
             .set_access_policy(Arc::new(ReadOnlyScopePolicy {
                 scope_id: granted_scope.clone(),
@@ -5615,14 +5063,12 @@ mod tests {
         {
             return Err("read-only policy allowed command cancellation".to_owned());
         }
-        let denied = CommandRequest {
-            id: CommandId::new(),
-            service_id: ServiceId::new("test"),
-            scope_id: granted_scope,
-            principal_id: PrincipalId::new("node:client"),
-            command_type: "denied-submit".to_owned(),
-            payload: Vec::new(),
-        };
+        let denied = CommandSubmission::for_command(&SetRemoteRecord {
+            id: RemoteRecordId::from("denied-submit"),
+            scope: granted_scope.to_string(),
+            value: "denied".to_owned(),
+        })
+        .map_err(|error| error.to_string())?;
         if target_transport
             .submit_remote(address.clone(), denied.clone())
             .await

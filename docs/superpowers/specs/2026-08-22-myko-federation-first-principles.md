@@ -21,9 +21,10 @@ derived from these constraints rather than becoming constraints themselves.
 
 The Myko 7 alpha keeps the foundation transport-neutral in `myko-federation`.
 `myko-items` is the transport-neutral application-schema layer: consuming
-applications declare `#[myko_item(service = "...", ...)]` entities (including
-`scope_root` and `scoped_by` placement), and the macro generates stable typed
-IDs plus basic typed queries. Owning service is part of the item schema and
+applications declare typed `#[myko_service(Item, ...)]` boundaries and
+`#[myko_item(service = ServiceType, ...)]` entities (including `scope_root` and
+`scoped_by` placement). The macros generate stable IDs and basic typed queries;
+application code never supplies textual service identities. Owning service is part of the item schema and
 every immutable `ItemMutation`; command contexts and raw-batch validation reject
 cross-service mutations before commit. Typed item requests infer service from
 the entity rather than accepting a caller-supplied string. `Node::query_items_in`
@@ -38,19 +39,27 @@ admits only commands whose immutable origin is the executing node and returns a
 typed `CommandContext`. The context lets application code query scoped items,
 emit typed set/delete mutations, and commit one atomic batch plus a serialized
 result without constructing federation envelopes, cursors, or batch IDs.
-Applications can declare the stable payload/result contract with
-`#[myko_command(service = "...", name = "...", result = Type)]`.
-`DeclaredCommand` then owns request encoding, and
-`Node::begin_declared_command` validates the wire identity and decodes the body
-before the command is claimed. A schema mismatch therefore cannot strand the
-command in an executing state.
+Applications declare the stable payload/result contract with
+`#[myko_command(ResultType, item = ItemType)]`; the item supplies the typed
+service and both wire identities are generated.
+The caller submits only that typed command value. Myko generates its command
+identity and wire encoding internally. At the serving node, the registered
+typed handler decodes the body, derives its application scope through
+`CommandHandler::scope`, binds the principal authenticated by the transport,
+authorizes the resulting admission metadata, and only then records the durable
+command. A schema mismatch therefore cannot strand the command in an executing
+state, and application code cannot choose its own principal or wire envelope.
 
-`DeclaredCommandContext` is an owned execution capability, not a callback-only
-borrow. A long-running application handler may carry it with its resident task
-or session while awaiting model output, tools, or operator approval, then use
-that same context to emit typed items and commit, reject, or retry. If the
-process dies instead, the durable backend requeues the abandoned local claim;
-application code does not reconstruct an atomic batch from lifecycle history.
+`CommandContext` is an owned execution capability, not a callback-only
+borrow. A bounded handler may move it to the execution locus that owns the
+atomic decision, then use that same context to emit typed items and commit,
+reject, or retry. It is not a durable workflow or task handle. Work that waits
+indefinitely for model output, tools, operators, or external systems is modeled
+as application entities with their own lifecycle; short commands create and
+advance those entities, while reports and views expose their live state. If a
+bounded handler process dies before committing, the durable backend requeues
+the abandoned local claim; application code does not reconstruct an atomic
+batch from lifecycle history.
 
 `Node::pending_local_commands` and `dispatch_declared` own admission ordering,
 local-origin filtering, decoding, atomic commit, and malformed-body rejection.
@@ -208,6 +217,12 @@ in mutation identity and rejects a command batch that attempts to mutate an
 item owned by another service. Cross-service work therefore uses an explicit
 command or typed view rather than accidentally creating a second current-state
 namespace for the same Rust entity.
+
+Each item remains its own module, containing its generated queries and linked
+commands, reports, and views. A service groups one or more of those item
+modules. Applications activate services, not individual modules; the typed
+service declaration is the complete module list and registration rejects any
+item whose declared service differs.
 
 ### 2.3 Node
 
@@ -586,21 +601,30 @@ records the lifecycle transition, and enforces the execution placement policy.
 An application should not need to assemble `ChangeBatch` values or inspect raw
 event envelopes for ordinary command execution.
 
+A command lifecycle is not an application task lifecycle. Genuinely
+long-running work is represented by a typed graph entity created by a bounded
+command. Subsequent bounded commands advance that entity through explicit
+application-defined states. Supervisors and clients watch typed reports or
+views of the entity rather than retaining a command handler, request
+connection, or command context for the duration of the work. Durable change
+streams remain available when every transition must be processed; coalescible
+reports and views remain the normal live-state surface.
+
 Handler failure has two explicit meanings. `Reject` records a terminal domain
 decision. `Retry` records a non-terminal reason and releases the claim so the
 same stable command can be dispatched again without restarting the node.
 
 ```rust
-#[myko_command(service = "planning", name = "planning.rename", result = bool)]
+#[myko_command(bool, item = Project)]
 struct RenameProject {
     project: ProjectId,
     title: String,
 }
 ```
 
-The stable ID, scope, and principal wrap this typed body in a
-`DeclaredCommand`; they are admission metadata, not repeated application
-payload fields.
+The command ID, derived scope, and authenticated principal are Myko-owned
+admission metadata. They are neither arguments at the call site nor repeated
+application payload fields.
 
 When a service makes a durable decision using a foreign live view, its history records the exact
 source revisions it observed. This preserves provenance without copying the foreign graph into its

@@ -10,6 +10,8 @@ workspace = true
 
 [dependencies]
 hyphae.workspace = true
+inventory = "0.3.24"
+myko-app-macros.workspace = true
 myko-federation.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -4,7 +4,7 @@ use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use quote::{format_ident, quote};
 use syn::{
-    Fields, Ident, Item, ItemStruct, LitStr, Meta, Path, Token, Type,
+    Fields, Ident, Item, ItemStruct, Meta, Path, Token, Type,
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
@@ -32,39 +32,85 @@ impl Parse for SubtypeArguments {
 }
 
 struct CommandArguments {
-    service: LitStr,
-    name: LitStr,
     result: Type,
+    owner: CommandOwner,
+    scope: Option<Path>,
+}
+
+enum CommandOwner {
+    Item(Path),
+    Service(Path),
 }
 
 impl Parse for CommandArguments {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut service: Option<LitStr> = None;
-        let mut name = None;
         let mut result = None;
-        while !input.is_empty() {
-            let key: Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-            if key == "service" {
-                service = Some(input.parse()?);
-            } else if key == "name" {
-                name = Some(input.parse()?);
-            } else if key == "result" {
-                result = Some(input.parse()?);
-            } else {
-                return Err(syn::Error::new(
-                    key.span(),
-                    "expected `service`, `name`, or `result`",
-                ));
-            }
+        let mut owner = None;
+        let mut scope = None;
+        let lookahead = input.fork();
+        let starts_with_named_argument = lookahead.parse::<Ident>().is_ok_and(|key| {
+            (key == "item" || key == "service" || key == "scope") && lookahead.peek(Token![=])
+        });
+        if !input.is_empty() && !starts_with_named_argument {
+            result = Some(input.parse()?);
             if !input.is_empty() {
                 input.parse::<Token![,]>()?;
             }
         }
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            if key == "item" {
+                if owner.is_some() {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "a command must name exactly one `item` or `service` owner",
+                    ));
+                }
+                owner = Some(CommandOwner::Item(input.parse()?));
+            } else if key == "service" {
+                if owner.is_some() {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "a command must name exactly one `item` or `service` owner",
+                    ));
+                }
+                owner = Some(CommandOwner::Service(input.parse()?));
+            } else if key == "scope" {
+                if scope.is_some() {
+                    return Err(syn::Error::new(key.span(), "duplicate `scope`"));
+                }
+                scope = Some(input.parse()?);
+            } else {
+                return Err(syn::Error::new(
+                    key.span(),
+                    "expected `item = ItemType`, `service = ServiceType`, or `scope = ScopeType`",
+                ));
+            }
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+                if input.is_empty() {
+                    return Err(input.error("unexpected trailing command argument separator"));
+                }
+            }
+        }
+        let owner = owner
+            .ok_or_else(|| input.error("missing `item = ItemType` or `service = ServiceType`"))?;
+        match (&owner, &scope) {
+            (CommandOwner::Item(_), Some(_)) => {
+                return Err(input.error(
+                    "`scope` is inferred from the command item; remove the explicit `scope`",
+                ));
+            }
+            (CommandOwner::Service(_), None) => {
+                return Err(input.error("service commands must declare `scope = ScopeItem`"));
+            }
+            _ => {}
+        }
         Ok(Self {
-            service: service.ok_or_else(|| input.error("missing `service = \"...\"`"))?,
-            name: name.ok_or_else(|| input.error("missing `name = \"...\"`"))?,
             result: result.unwrap_or_else(|| syn::parse_quote!(())),
+            owner,
+            scope,
         })
     }
 }
@@ -76,13 +122,13 @@ enum ScopeArgument {
 }
 
 struct ItemArguments {
-    service: LitStr,
+    service: Path,
     scope: ScopeArgument,
 }
 
 impl Parse for ItemArguments {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
-        let mut service: Option<LitStr> = None;
+        let mut service: Option<Path> = None;
         let mut scope = None;
         while !input.is_empty() {
             let argument: Ident = input.parse()?;
@@ -112,25 +158,43 @@ impl Parse for ItemArguments {
             } else {
                 return Err(syn::Error::new(
                     argument.span(),
-                    "expected `service = \"...\"`, `scope_root`, or `scoped_by = ItemType`",
+                    "expected `service = ServiceType`, `scope_root`, or `scoped_by = ItemType`",
                 ));
             }
             if !input.is_empty() {
                 input.parse::<Token![,]>()?;
             }
         }
-        let service = service.ok_or_else(|| input.error("missing `service = \"...\"`"))?;
-        if service.value().is_empty() {
-            return Err(syn::Error::new(
-                service.span(),
-                "item service cannot be empty",
-            ));
-        }
+        let service = service.ok_or_else(|| input.error("missing `service = ServiceType`"))?;
         Ok(Self {
             service,
             scope: scope.unwrap_or(ScopeArgument::Unscoped),
         })
     }
+}
+
+struct ServiceArguments {
+    items: Punctuated<Path, Token![,]>,
+}
+
+impl Parse for ServiceArguments {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let items = Punctuated::<Path, Token![,]>::parse_terminated(input)?;
+        if items.is_empty() {
+            return Err(input.error("a Myko service must contain at least one item module"));
+        }
+        Ok(Self { items })
+    }
+}
+
+/// Declares a typed atomicity boundary and the item modules it contains.
+#[proc_macro_attribute]
+pub fn myko_service(arguments: TokenStream, input: TokenStream) -> TokenStream {
+    let arguments = parse_macro_input!(arguments as ServiceArguments);
+    let service = parse_macro_input!(input as ItemStruct);
+    expand_service(arguments, service)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 #[proc_macro_attribute]
@@ -154,6 +218,10 @@ pub fn myko_subtype(arguments: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 /// Declares a typed application command body and its stable wire contract.
+///
+/// Item-owned commands infer both service and immediate scope family from the
+/// item. Service-owned commands declare `scope = ScopeItem` because one
+/// service may operate in several entity scope families.
 #[proc_macro_attribute]
 pub fn myko_command(arguments: TokenStream, input: TokenStream) -> TokenStream {
     let arguments = parse_macro_input!(arguments as CommandArguments);
@@ -163,20 +231,98 @@ pub fn myko_command(arguments: TokenStream, input: TokenStream) -> TokenStream {
 
 fn expand_command(arguments: CommandArguments, item: &ItemStruct) -> TokenStream2 {
     let name = item.ident.clone();
-    let service = arguments.service;
-    let command_name = arguments.name;
-    let result = arguments.result;
+    let CommandArguments {
+        result,
+        owner,
+        scope,
+    } = arguments;
+    let (service, item_type, scope, registration) = match owner {
+        CommandOwner::Item(owner) => (
+            quote!(<#owner as ::myko_items::MykoItem>::Service),
+            quote!(::std::option::Option::Some(<#owner as ::myko_items::MykoItem>::ITEM_TYPE)),
+            quote!(<#owner as ::myko_items::MykoItem>::Scope),
+            quote!(::myko_app::HandlerRegistration::command::<#owner, #name>()),
+        ),
+        CommandOwner::Service(owner) => (
+            quote!(#owner),
+            quote!(::std::option::Option::None),
+            {
+                let Some(scope) = scope else {
+                    return quote!(::core::compile_error!(
+                        "service commands must declare `scope = ScopeItem`"
+                    ));
+                };
+                quote!(#scope)
+            },
+            quote!(::myko_app::HandlerRegistration::service_command::<#owner, #name>()),
+        ),
+    };
     quote! {
         #[derive(Clone, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize, Debug)]
         #[serde(rename_all = "camelCase")]
         #item
 
-        impl ::myko_items::MykoCommand for #name {
+        impl ::myko_items::MykoOperation for #name {
+            const OPERATION_ID: &'static str = stringify!(#name);
+        }
+
+        impl ::myko_items::MykoCommandContract for #name {
             type Output = #result;
-            const SERVICE_ID: &'static str = #service;
-            const COMMAND_TYPE: &'static str = #command_name;
+            type Service = #service;
+            type Scope = #scope;
+            const ITEM_TYPE: ::std::option::Option<&'static str> = #item_type;
+        }
+
+        impl ::myko_items::MykoCommand for #name {}
+
+        const _: fn() = || {
+            fn require_handler<C: ::myko_app::CommandHandler>() {}
+            require_handler::<#name>();
+        };
+
+        ::myko_app::__private::inventory::submit! {
+            #registration
         }
     }
+}
+
+fn expand_service(arguments: ServiceArguments, service: ItemStruct) -> syn::Result<TokenStream2> {
+    let empty = match &service.fields {
+        Fields::Unit => true,
+        Fields::Named(fields) => fields.named.is_empty(),
+        Fields::Unnamed(fields) => fields.unnamed.is_empty(),
+    };
+    if !empty {
+        return Err(syn::Error::new_spanned(
+            service,
+            "Myko services are zero-sized type markers",
+        ));
+    }
+
+    let name = service.ident.clone();
+    let items = arguments.items;
+    let item_tuple = items.iter().map(|item| quote!(#item,));
+    let item_checks = items.iter().map(|item| {
+        quote! {
+            require_item::<#item>();
+        }
+    });
+    Ok(quote! {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+        #service
+
+        impl ::myko_items::MykoService for #name {
+            type Items = (#(#item_tuple)*);
+            const SERVICE_ID: ::myko_items::ServiceTypeId = ::myko_items::ServiceTypeId::new(
+                concat!(module_path!(), "::", stringify!(#name)),
+            );
+        }
+
+        const _: fn() = || {
+            fn require_item<I: ::myko_items::MykoItem<Service = #name>>() {}
+            #(#item_checks)*
+        };
+    })
 }
 
 fn expand_subtype(arguments: SubtypeArguments, item: Item) -> syn::Result<TokenStream2> {
@@ -234,16 +380,20 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
     let equality = equal_fields
         .reduce(|left, right| quote!((#left) && (#right)))
         .unwrap_or_else(|| quote!(true));
-    let scope = match arguments.scope {
-        ScopeArgument::Unscoped => quote!(::myko_items::ItemScope::Unscoped),
-        ScopeArgument::Root => quote!(::myko_items::ItemScope::Root),
-        ScopeArgument::ScopedBy(parent) => {
-            quote!(::myko_items::ItemScope::ScopedBy(<#parent as ::myko_items::MykoItem>::ITEM_TYPE))
-        }
+    let (scope, scope_type) = match arguments.scope {
+        ScopeArgument::Unscoped => (quote!(::myko_items::ItemScope::Unscoped), quote!(#name)),
+        ScopeArgument::Root => (quote!(::myko_items::ItemScope::Root), quote!(#name)),
+        ScopeArgument::ScopedBy(parent) => (
+            quote!(::myko_items::ItemScope::ScopedBy(<#parent as ::myko_items::MykoItem>::ITEM_TYPE)),
+            quote!(#parent),
+        ),
     };
 
     let id_definition = generate_id(&id);
-    let queries = generate_queries(&name, &id, &service);
+    let get_all = format_ident!("GetAll{name}s");
+    let get_one = format_ident!("Get{name}ById");
+    let get_many = format_ident!("Get{name}sByIds");
+    let queries = generate_queries(&name, &id);
     Ok(quote! {
         #id_definition
 
@@ -259,7 +409,11 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
 
         impl ::myko_items::MykoItem for #name {
             type Id = #id;
-            const SERVICE_ID: &'static str = #service;
+            type Service = #service;
+            type Scope = #scope_type;
+            type GetAllQuery = #get_all;
+            type GetByIdQuery = #get_one;
+            type GetByIdsQuery = #get_many;
             const ITEM_TYPE: &'static str = stringify!(#name);
             const SCOPE: ::myko_items::ItemScope = #scope;
 
@@ -313,7 +467,7 @@ fn generate_id(id: &Ident) -> TokenStream2 {
     }
 }
 
-fn generate_queries(name: &Ident, id: &Ident, service: &LitStr) -> TokenStream2 {
+fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
     let get_all = format_ident!("GetAll{name}s");
     let get_one = format_ident!("Get{name}ById");
     let get_many = format_ident!("Get{name}sByIds");
@@ -322,10 +476,13 @@ fn generate_queries(name: &Ident, id: &Ident, service: &LitStr) -> TokenStream2 
         #[derive(Debug, Clone, Copy, Default, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
         pub struct #get_all;
 
+        impl ::myko_items::MykoOperation for #get_all {
+            const OPERATION_ID: &'static str = stringify!(#get_all);
+        }
+
         impl ::myko_items::ItemQuery for #get_all {
             type Item = #name;
             type Output = ::std::vec::Vec<#name>;
-            const QUERY_ID: &'static str = concat!(#service, ".", stringify!(#get_all));
 
             fn execute(self, projection: &::myko_items::ItemProjection<Self::Item>) -> Self::Output {
                 projection.values().cloned().collect()
@@ -337,10 +494,13 @@ fn generate_queries(name: &Ident, id: &Ident, service: &LitStr) -> TokenStream2 
             pub id: #id,
         }
 
+        impl ::myko_items::MykoOperation for #get_one {
+            const OPERATION_ID: &'static str = stringify!(#get_one);
+        }
+
         impl ::myko_items::ItemQuery for #get_one {
             type Item = #name;
             type Output = ::std::option::Option<#name>;
-            const QUERY_ID: &'static str = concat!(#service, ".", stringify!(#get_one));
 
             fn execute(self, projection: &::myko_items::ItemProjection<Self::Item>) -> Self::Output {
                 projection.get(&self.id).cloned()
@@ -352,10 +512,13 @@ fn generate_queries(name: &Ident, id: &Ident, service: &LitStr) -> TokenStream2 
             pub ids: ::std::vec::Vec<#id>,
         }
 
+        impl ::myko_items::MykoOperation for #get_many {
+            const OPERATION_ID: &'static str = stringify!(#get_many);
+        }
+
         impl ::myko_items::ItemQuery for #get_many {
             type Item = #name;
             type Output = ::std::vec::Vec<#name>;
-            const QUERY_ID: &'static str = concat!(#service, ".", stringify!(#get_many));
 
             fn execute(self, projection: &::myko_items::ItemProjection<Self::Item>) -> Self::Output {
                 self.ids

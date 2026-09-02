@@ -7,8 +7,12 @@
 
 #![forbid(unsafe_code)]
 
-use hyphae::{Cell, CellImmutable, SubscriptionGuard, Watchable as _};
-use myko_federation::{LiveSubscription, LiveSubscriptionState};
+use std::sync::Arc;
+
+use hyphae::{Cell, CellImmutable, CellMap, SubscriptionGuard, Watchable as _};
+use myko_federation::{
+    LiveCollection, LiveCollectionState, LiveSubscription, LiveSubscriptionState,
+};
 
 /// Coalescing redraw notifications retained for a terminal view's lifetime.
 ///
@@ -119,9 +123,70 @@ where
     }
 }
 
+/// A keyed Myko collection paired with its Ratatui redraw lifecycle.
+///
+/// Rendering reads the authoritative `CellMap` directly. The redraw signal is
+/// driven by atomic collection revisions, so a render sees the cursor and
+/// liveness that cover the changed rows without copying the collection.
+pub struct CollectionBinding<T, C = myko_federation::LogPosition>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    collection: LiveCollection<T, C>,
+    rerenders: RerenderSubscriptions,
+}
+
+impl<T, C> CollectionBinding<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    /// Binds a keyed collection to coalescing terminal redraw notifications.
+    #[must_use]
+    pub fn new(collection: LiveCollection<T, C>) -> Self {
+        let mut rerenders = RerenderSubscriptions::new();
+        rerenders.observe(collection.revision());
+        Self {
+            collection,
+            rerenders,
+        }
+    }
+
+    /// Returns the authoritative keyed rows used directly by rendering code.
+    #[must_use]
+    pub const fn rows(&self) -> &CellMap<Arc<str>, Arc<T>, CellImmutable> {
+        self.collection.rows()
+    }
+
+    /// Reads the newest coherent cursor and liveness revision.
+    #[must_use]
+    pub fn state(&self) -> LiveCollectionState<C> {
+        self.collection.current_state()
+    }
+
+    /// Waits until the terminal should render again.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error only if the retained observation is closed.
+    pub async fn changed(&self) -> Result<(), flume::RecvError> {
+        self.rerenders.changed().await
+    }
+
+    /// Returns the underlying collection for further Hyphae composition.
+    #[must_use]
+    pub const fn collection(&self) -> &LiveCollection<T, C> {
+        &self.collection
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use myko_federation::{LiveSubscriptionState, SubscriptionLiveness, live_subscription};
+    use myko_federation::{
+        LiveCollectionState, LiveSubscriptionState, SubscriptionLiveness, live_collection,
+        live_subscription,
+    };
 
     use super::*;
 
@@ -155,5 +220,37 @@ mod tests {
         writer.publish(vec![4], None);
         assert!(binding.rerenders.take_pending());
         assert_eq!(binding.current().liveness, SubscriptionLiveness::Current);
+    }
+
+    #[test]
+    fn collection_binding_reads_rows_without_a_second_store() {
+        let (writer, collection) = live_collection(
+            vec![(Arc::<str>::from("row-1"), Arc::new("one".to_owned()))],
+            LiveCollectionState {
+                through: Some(myko_federation::LogPosition::new(1)),
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        let binding = CollectionBinding::new(collection);
+        assert!(binding.rerenders.take_pending());
+
+        writer.apply(
+            hyphae::MapDiff::Update {
+                key: Arc::<str>::from("row-1"),
+                old_value: Arc::new("one".to_owned()),
+                new_value: Arc::new("two".to_owned()),
+            },
+            Some(myko_federation::LogPosition::new(2)),
+        );
+
+        assert!(binding.rerenders.take_pending());
+        assert_eq!(
+            binding.rows().get_value(&Arc::<str>::from("row-1")),
+            Some(Arc::new("two".to_owned()))
+        );
+        assert_eq!(
+            binding.state().through,
+            Some(myko_federation::LogPosition::new(2))
+        );
     }
 }

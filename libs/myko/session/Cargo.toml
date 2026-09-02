@@ -1,0 +1,16 @@
+[package]
+name = "myko-session"
+version = "7.0.0-alpha.1"
+edition.workspace = true
+description = "Transport-neutral request sessions for Myko nodes"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[dependencies]
+flume.workspace = true
+myko-app.workspace = true
+myko-federation.workspace = true
+myko-wire.workspace = true
+tokio.workspace = true

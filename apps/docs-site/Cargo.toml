@@ -1,0 +1,15 @@
+[package]
+name = "myko-docs-site"
+version = "0.1.0"
+edition.workspace = true
+publish = false
+description = "Interactive architecture field guide for Myko 7"
+
+[package.metadata.flux]
+tasks = ["check", "build", "check-wasm"]
+
+[dependencies]
+leptos = { version = "0.8.20", features = ["csr"] }
+
+[lints]
+workspace = true

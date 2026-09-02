@@ -1,0 +1,17 @@
+[package]
+name = "myko-wire"
+version = "7.0.0-alpha.1"
+edition.workspace = true
+description = "Canonical versioned transport messages for Myko 7 nodes"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[dependencies]
+myko-app.workspace = true
+myko-federation.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

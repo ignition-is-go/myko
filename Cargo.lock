@@ -4618,6 +4618,7 @@ dependencies = [
  "cfg-if",
  "either_of",
  "futures",
+ "getrandom 0.4.3",
  "hydration_context",
  "leptos_config",
  "leptos_dom",
@@ -5194,12 +5195,41 @@ version = "7.0.0-alpha.1"
 dependencies = [
  "flume 0.11.1",
  "hyphae",
+ "inventory",
+ "myko-app-macros",
  "myko-federation",
  "myko-items",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
+]
+
+[[package]]
+name = "myko-app-macros"
+version = "7.0.0-alpha.1"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "myko-discovery"
+version = "7.0.0-alpha.1"
+dependencies = [
+ "myko-federation",
+ "myko-iroh",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "myko-docs-site"
+version = "0.1.0"
+dependencies = [
+ "leptos",
 ]
 
 [[package]]
@@ -5244,6 +5274,8 @@ dependencies = [
  "myko-federation",
  "myko-items",
  "myko-redb",
+ "myko-session",
+ "myko-wire",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -5291,6 +5323,8 @@ dependencies = [
  "myko-app",
  "myko-federation",
  "myko-items",
+ "myko-session",
+ "myko-wire",
  "serde",
  "serde_json",
  "tempfile",
@@ -5314,10 +5348,14 @@ dependencies = [
  "flume 0.11.1",
  "hyphae",
  "myko-app",
+ "myko-discovery",
  "myko-federation",
  "myko-iroh",
  "myko-items",
+ "myko-local",
  "myko-redb",
+ "myko-session",
+ "myko-wire",
  "serde",
  "serde_json",
  "tempfile",
@@ -5379,6 +5417,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "myko-session"
+version = "7.0.0-alpha.1"
+dependencies = [
+ "flume 0.11.1",
+ "myko-app",
+ "myko-federation",
+ "myko-wire",
+ "tokio",
+]
+
+[[package]]
 name = "myko-websocket-gateway"
 version = "7.0.0-alpha.1"
 dependencies = [
@@ -5388,11 +5437,23 @@ dependencies = [
  "myko-app",
  "myko-federation",
  "myko-items",
+ "myko-session",
+ "myko-wire",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
+]
+
+[[package]]
+name = "myko-wire"
+version = "7.0.0-alpha.1"
+dependencies = [
+ "myko-app",
+ "myko-federation",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

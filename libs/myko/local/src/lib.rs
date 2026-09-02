@@ -14,19 +14,25 @@ use std::{
     sync::Arc,
 };
 
-use hyphae::Watchable as _;
 use myko_app::{
-    ApplicationNode, ApplicationSchema, ErasedHandlerState, HandlerKind, HandlerRequest,
-    QueryHandler, ReportHandler, ViewHandler,
+    ApplicationNode, ErasedHandlerState, ErasedViewDelta, HandlerKind, HandlerRequest,
+    MykoApplication, QueryHandler, ReportHandler, ViewHandler,
 };
 use myko_federation::{
-    AccessOperation, AccessPolicy, AccessRequest, CommandClient, CommandClientFuture, CommandId,
-    CommandRequest, CommandResponse, CommandSnapshot, ItemClient, ItemFollowRequest, ItemQuery,
-    ItemQuerySnapshot, ItemQueryStream, ItemQueryUpdate, ItemStatePage, ItemStatePageFuture,
-    ItemStateRequest, ItemStateUpdate, LiveSubscription, LiveSubscriptionState, Node, NodeError,
-    PrincipalId, ReconnectPolicy, ScopeId, SubscriptionLiveness, live_subscription,
+    AccessPolicy, CommandClient, CommandClientFuture, CommandId, CommandResponse, CommandSnapshot,
+    CommandSubmission, CommandSubscription, CommandSubscriptionFuture, CommandWatchFuture,
+    CommandWatchingClient, ItemClient, ItemQuery, ItemQuerySnapshot, ItemQueryStream,
+    ItemQueryUpdate, ItemStatePageFuture, ItemStateRequest, LiveCollection, LiveCollectionState,
+    LiveCollectionWriter, LiveEvent, LiveSubscription, LiveSubscriptionState, Node, NodeError,
+    NodeId, PrincipalId, ReconnectPolicy, ScopeId, SubscriptionLiveness, live_collection,
+    live_subscription,
 };
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use myko_session::NodeSessionService;
+use myko_wire::{
+    NodeFrame as PeerFrame, NodeRequest as PeerRequest, NodeRequestEnvelope,
+    WireEnvelope as Envelope,
+};
+use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::{
     io::{AsyncReadExt as _, AsyncWriteExt as _},
@@ -35,9 +41,19 @@ use tokio::{
     task::{JoinHandle, JoinSet},
 };
 
-const PROTOCOL_VERSION: u32 = 2;
 const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 64;
+type LocalViewDelta<T> = fn(&mut T, &ErasedViewDelta) -> Result<(), LocalPeerError>;
+
+const fn request_envelope(
+    destination: Option<NodeId>,
+    request: PeerRequest,
+) -> Envelope<NodeRequestEnvelope> {
+    Envelope::new(NodeRequestEnvelope {
+        destination,
+        request,
+    })
+}
 
 /// Failure while serving or consuming the owner-local peer transport.
 #[derive(Debug, Error)]
@@ -50,59 +66,6 @@ pub enum LocalPeerError {
     Json(#[from] serde_json::Error),
     #[error("local peer protocol failed: {0}")]
     Protocol(String),
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct Envelope<T> {
-    version: u32,
-    body: T,
-}
-
-impl<T> Envelope<T> {
-    const fn new(body: T) -> Self {
-        Self {
-            version: PROTOCOL_VERSION,
-            body,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum PeerRequest {
-    ItemState {
-        request: ItemStateRequest,
-    },
-    FollowItems {
-        request: ItemFollowRequest,
-    },
-    SubmitCommand {
-        command: CommandRequest,
-    },
-    CommandState {
-        command_id: CommandId,
-    },
-    CancelCommand {
-        command_id: CommandId,
-        reason: String,
-    },
-    FollowCommand {
-        command_id: CommandId,
-    },
-    FollowHandler {
-        request: HandlerRequest,
-    },
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum PeerFrame {
-    ItemState { page: Box<ItemStatePage> },
-    ItemFollowReady { request: Box<ItemFollowRequest> },
-    ItemUpdate { update: Box<ItemStateUpdate> },
-    Command { response: Box<CommandResponse> },
-    HandlerState { state: Box<ErasedHandlerState> },
-    Error { message: String },
 }
 
 /// Protected local peer endpoint for one Myko node.
@@ -127,7 +90,7 @@ impl LocalNodeServer {
     ) -> Result<Self, LocalPeerError> {
         Self::spawn_application(
             socket_path,
-            ApplicationNode::new(node, ApplicationSchema::new()),
+            ApplicationNode::new(node, MykoApplication::new()),
             principal_id,
             access_policy,
         )
@@ -149,18 +112,34 @@ impl LocalNodeServer {
         principal_id: PrincipalId,
         access_policy: Arc<dyn AccessPolicy>,
     ) -> Result<Self, LocalPeerError> {
+        Self::spawn_sessions(
+            socket_path,
+            NodeSessionService::for_application(application, access_policy),
+            principal_id,
+        )
+        .await
+    }
+
+    /// Binds an owner-only socket to an existing semantic node endpoint.
+    ///
+    /// Use this when Iroh and WebSocket adapters serve the same node so all
+    /// transports share handlers, authorization, and live events.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe or active path, bind failure, or
+    /// permission failure.
+    pub async fn spawn_sessions(
+        socket_path: impl AsRef<Path>,
+        sessions: NodeSessionService,
+        principal_id: PrincipalId,
+    ) -> Result<Self, LocalPeerError> {
         let socket_path = socket_path.as_ref().to_path_buf();
         prepare_socket_path(&socket_path).await?;
         let listener = UnixListener::bind(&socket_path)?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600))?;
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let task = tokio::spawn(serve(
-            listener,
-            application,
-            principal_id,
-            access_policy,
-            shutdown_rx,
-        ));
+        let task = tokio::spawn(serve(listener, sessions, principal_id, shutdown_rx));
         Ok(Self {
             socket_path,
             shutdown,
@@ -184,10 +163,140 @@ impl LocalNodeServer {
     }
 }
 
+/// Transport-level client for one owner-local Myko node.
+///
+/// Application commands, items, and handlers retain their specialized typed
+/// clients. This client exposes the remaining canonical node-session
+/// operations without introducing an application-specific local protocol.
+/// Connection attempts continue until the socket becomes available or the
+/// pending operation is cancelled.
+#[derive(Debug, Clone)]
+pub struct LocalNodeClient {
+    socket_path: PathBuf,
+    destination: Option<NodeId>,
+    reconnect_policy: ReconnectPolicy,
+}
+
+impl LocalNodeClient {
+    /// Creates a client for one protected local Myko socket.
+    #[must_use]
+    pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        Self {
+            socket_path: socket_path.as_ref().to_path_buf(),
+            destination: None,
+            reconnect_policy: ReconnectPolicy::default(),
+        }
+    }
+
+    /// Addresses subsequent requests to one node through the connected node.
+    #[must_use]
+    pub const fn at(mut self, destination: NodeId) -> Self {
+        self.destination = Some(destination);
+        self
+    }
+
+    /// Overrides reconnect timing for subsequent local requests and streams.
+    #[must_use]
+    pub const fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.reconnect_policy = policy;
+        self
+    }
+
+    /// Returns the stable identity of the serving Myko node.
+    ///
+    /// # Errors
+    ///
+    /// Waits through transient socket unavailability. Returns an error if an
+    /// established connection violates the canonical identify exchange.
+    pub async fn identify(&self) -> Result<NodeId, LocalPeerError> {
+        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
+        write_frame(
+            &mut stream,
+            &request_envelope(self.destination, PeerRequest::Identify),
+        )
+        .await?;
+        match read_peer_frame(&mut stream).await? {
+            PeerFrame::Hello { source_node } => Ok(source_node),
+            PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
+            _ => Err(LocalPeerError::Protocol(
+                "local peer returned a non-identity frame".to_owned(),
+            )),
+        }
+    }
+
+    /// Opens a best-effort stream of canonical Myko live events.
+    ///
+    /// Topics are exact matches. An empty list follows every event. Durable
+    /// application views remain the recovery path after a sequence gap.
+    ///
+    /// # Errors
+    ///
+    /// Waits through transient socket unavailability. Returns an error if the
+    /// live-stream handshake does not identify its serving node.
+    pub async fn follow_live(
+        &self,
+        topics: Vec<String>,
+    ) -> Result<LocalLiveEventSubscription, LocalPeerError> {
+        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
+        write_frame(
+            &mut stream,
+            &request_envelope(self.destination, PeerRequest::FollowLive { topics }),
+        )
+        .await?;
+        let source_node = match read_peer_frame(&mut stream).await? {
+            PeerFrame::Hello { source_node } => source_node,
+            PeerFrame::Error { message } => return Err(LocalPeerError::Protocol(message)),
+            _ => {
+                return Err(LocalPeerError::Protocol(
+                    "local peer sent a live event before its source identity".to_owned(),
+                ));
+            }
+        };
+        Ok(LocalLiveEventSubscription {
+            stream,
+            source_node,
+        })
+    }
+}
+
+/// One best-effort canonical live-event stream over the local Unix transport.
+#[derive(Debug)]
+pub struct LocalLiveEventSubscription {
+    stream: UnixStream,
+    source_node: NodeId,
+}
+
+impl LocalLiveEventSubscription {
+    /// Returns the stable identity advertised by the serving node.
+    #[must_use]
+    pub const fn source_node(&self) -> NodeId {
+        self.source_node
+    }
+
+    /// Receives the next canonical live event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the stream closes or changes frame type.
+    pub async fn recv(&mut self) -> Result<LiveEvent, LocalPeerError> {
+        match read_peer_frame(&mut self.stream).await? {
+            PeerFrame::Live { event } => Ok(*event),
+            PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
+            _ => Err(LocalPeerError::Protocol(
+                "local peer returned a non-live frame".to_owned(),
+            )),
+        }
+    }
+}
+
 /// Typed item client bound to one local Myko peer socket.
+///
+/// Connection attempts continue until the socket becomes available or the
+/// pending operation is cancelled.
 #[derive(Debug, Clone)]
 pub struct LocalItemClient {
     socket_path: PathBuf,
+    destination: Option<NodeId>,
     reconnect_policy: ReconnectPolicy,
 }
 
@@ -197,11 +306,19 @@ impl LocalItemClient {
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
         Self {
             socket_path: socket_path.as_ref().to_path_buf(),
+            destination: None,
             reconnect_policy: ReconnectPolicy::default(),
         }
     }
 
-    /// Overrides reconnect timing for subsequently created reactive streams.
+    /// Addresses subsequent requests to one node through the connected node.
+    #[must_use]
+    pub const fn at(mut self, destination: NodeId) -> Self {
+        self.destination = Some(destination);
+        self
+    }
+
+    /// Overrides reconnect timing for subsequent requests and streams.
     #[must_use]
     pub const fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
         self.reconnect_policy = policy;
@@ -327,7 +444,13 @@ impl LocalItemClient {
     {
         let snapshot = self.item_state(request).await?;
         let (initial, stream) = ItemQueryStream::from_snapshot(&snapshot, query)?;
-        let subscription = LocalItemQuerySubscription::connect(&self.socket_path, stream).await?;
+        let subscription = LocalItemQuerySubscription::connect(
+            &self.socket_path,
+            self.destination,
+            self.reconnect_policy,
+            stream,
+        )
+        .await?;
         Ok((initial, subscription))
     }
 }
@@ -337,10 +460,10 @@ impl ItemClient for LocalItemClient {
 
     fn item_state_page(&self, request: ItemStateRequest) -> ItemStatePageFuture<'_, Self::Error> {
         Box::pin(async move {
-            let mut stream = UnixStream::connect(&self.socket_path).await?;
+            let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
             write_frame(
                 &mut stream,
-                &Envelope::new(PeerRequest::ItemState { request }),
+                &request_envelope(self.destination, PeerRequest::ItemState { request }),
             )
             .await?;
             match read_peer_frame(&mut stream).await? {
@@ -355,9 +478,14 @@ impl ItemClient for LocalItemClient {
 }
 
 /// Command client bound to one owner-local Myko peer socket.
+///
+/// Connection attempts continue until the socket becomes available or the
+/// pending operation is cancelled.
 #[derive(Debug, Clone)]
 pub struct LocalCommandClient {
     socket_path: PathBuf,
+    destination: Option<NodeId>,
+    reconnect_policy: ReconnectPolicy,
 }
 
 impl LocalCommandClient {
@@ -366,24 +494,45 @@ impl LocalCommandClient {
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
         Self {
             socket_path: socket_path.as_ref().to_path_buf(),
+            destination: None,
+            reconnect_policy: ReconnectPolicy::default(),
         }
     }
 
-    /// Reads one command and follows its lifecycle without polling.
+    /// Addresses subsequent requests to one node through the connected node.
+    #[must_use]
+    pub const fn at(mut self, destination: NodeId) -> Self {
+        self.destination = Some(destination);
+        self
+    }
+
+    /// Overrides reconnect timing for subsequent local requests and streams.
+    #[must_use]
+    pub const fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.reconnect_policy = policy;
+        self
+    }
+
+    /// Reads one command and watches its lifecycle without polling.
     ///
     /// # Errors
     ///
-    /// Returns an error if the command is unknown or follow setup fails.
+    /// Returns an error if the command is unknown or watch setup fails.
     pub async fn watch_command(
         &self,
         command_id: CommandId,
     ) -> Result<(CommandResponse, LocalCommandSubscription), LocalPeerError> {
-        let mut stream = UnixStream::connect(&self.socket_path).await?;
-        write_frame(
-            &mut stream,
-            &Envelope::new(PeerRequest::FollowCommand { command_id }),
-        )
-        .await?;
+        self.watch_command_request(command_id, PeerRequest::WatchCommand { command_id })
+            .await
+    }
+
+    async fn watch_command_request(
+        &self,
+        command_id: CommandId,
+        request: PeerRequest,
+    ) -> Result<(CommandResponse, LocalCommandSubscription), LocalPeerError> {
+        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
+        write_frame(&mut stream, &request_envelope(self.destination, request)).await?;
         match read_peer_frame(&mut stream).await? {
             PeerFrame::Command { response } if response.command.is_some() => Ok((
                 (*response).clone(),
@@ -393,21 +542,21 @@ impl LocalCommandClient {
                     command_id,
                     current: response.command.clone().ok_or_else(|| {
                         LocalPeerError::Protocol(
-                            "local command follow omitted initial state".to_owned(),
+                            "local command watch omitted initial state".to_owned(),
                         )
                     })?,
                 },
             )),
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
             _ => Err(LocalPeerError::Protocol(
-                "local peer did not return command follow state".to_owned(),
+                "local peer did not return command watch state".to_owned(),
             )),
         }
     }
 
     async fn request(&self, request: PeerRequest) -> Result<CommandResponse, LocalPeerError> {
-        let mut stream = UnixStream::connect(&self.socket_path).await?;
-        write_frame(&mut stream, &Envelope::new(request)).await?;
+        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
+        write_frame(&mut stream, &request_envelope(self.destination, request)).await?;
         match read_peer_frame(&mut stream).await? {
             PeerFrame::Command { response } => Ok(*response),
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
@@ -421,12 +570,15 @@ impl LocalCommandClient {
 impl CommandClient for LocalCommandClient {
     type Error = LocalPeerError;
 
-    fn submit_command(&self, command: CommandRequest) -> CommandClientFuture<'_, Self::Error> {
-        Box::pin(self.request(PeerRequest::SubmitCommand { command }))
+    fn submit_submission(
+        &self,
+        command: CommandSubmission,
+    ) -> CommandClientFuture<'_, Self::Error> {
+        Box::pin(self.request(PeerRequest::Submit { command }))
     }
 
     fn command_state(&self, command_id: CommandId) -> CommandClientFuture<'_, Self::Error> {
-        Box::pin(self.request(PeerRequest::CommandState { command_id }))
+        Box::pin(self.request(PeerRequest::Command { command_id }))
     }
 
     fn cancel_command(
@@ -434,14 +586,45 @@ impl CommandClient for LocalCommandClient {
         command_id: CommandId,
         reason: String,
     ) -> CommandClientFuture<'_, Self::Error> {
-        Box::pin(self.request(PeerRequest::CancelCommand { command_id, reason }))
+        Box::pin(self.request(PeerRequest::Cancel { command_id, reason }))
+    }
+}
+
+impl CommandSubscription for LocalCommandSubscription {
+    type Error = LocalPeerError;
+
+    fn current(&self) -> &CommandSnapshot {
+        &self.current
+    }
+
+    fn recv(&mut self) -> CommandSubscriptionFuture<'_, Self::Error> {
+        Box::pin(self.recv())
+    }
+}
+
+impl CommandWatchingClient for LocalCommandClient {
+    type Subscription = LocalCommandSubscription;
+
+    fn watch_command(
+        &self,
+        command_id: CommandId,
+    ) -> CommandWatchFuture<'_, Self::Subscription, Self::Error> {
+        Box::pin(async move {
+            self.watch_command(command_id)
+                .await
+                .map(|(_initial, subscription)| subscription)
+        })
     }
 }
 
 /// Typed client for application-registered query, report, and view handlers.
+///
+/// Connection attempts continue until the socket becomes available or the
+/// pending operation is cancelled.
 #[derive(Debug, Clone)]
 pub struct LocalApplicationClient {
     socket_path: PathBuf,
+    destination: Option<NodeId>,
     reconnect_policy: ReconnectPolicy,
 }
 
@@ -451,11 +634,19 @@ impl LocalApplicationClient {
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
         Self {
             socket_path: socket_path.as_ref().to_path_buf(),
+            destination: None,
             reconnect_policy: ReconnectPolicy::default(),
         }
     }
 
-    /// Overrides reconnect timing for subsequently created reactive handlers.
+    /// Addresses subsequent requests to one node through the connected node.
+    #[must_use]
+    pub const fn at(mut self, destination: NodeId) -> Self {
+        self.destination = Some(destination);
+        self
+    }
+
+    /// Overrides reconnect timing for subsequent requests and streams.
     #[must_use]
     pub const fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
         self.reconnect_policy = policy;
@@ -574,13 +765,16 @@ impl LocalApplicationClient {
     where
         V: ViewHandler,
     {
-        self.watch(HandlerRequest {
-            kind: HandlerKind::View,
-            handler_id: V::VIEW_ID.to_owned(),
-            source_node: None,
-            scope_id: None,
-            params: serde_json::to_value(view)?,
-        })
+        self.watch_with_delta(
+            HandlerRequest {
+                kind: HandlerKind::View,
+                handler_id: V::VIEW_ID.to_owned(),
+                source_node: None,
+                scope_id: None,
+                params: serde_json::to_value(view)?,
+            },
+            Some(apply_view_delta::<V>),
+        )
         .await
     }
 
@@ -592,7 +786,7 @@ impl LocalApplicationClient {
     pub async fn watch_view_reactive<V>(
         &self,
         view: &V,
-    ) -> Result<LocalReactiveHandlerSubscription<Vec<V::Item>, V::Cursor>, LocalPeerError>
+    ) -> Result<LocalReactiveViewSubscription<V::Item, V::Cursor>, LocalPeerError>
     where
         V: ViewHandler,
     {
@@ -603,8 +797,14 @@ impl LocalApplicationClient {
             scope_id: None,
             params: serde_json::to_value(view)?,
         };
-        let subscription = self.watch(request.clone()).await?;
-        Ok(drive_handler_reactive(self.clone(), request, subscription))
+        let subscription = self
+            .watch_with_delta(request.clone(), Some(apply_view_delta::<V>))
+            .await?;
+        Ok(drive_view_reactive::<V>(
+            self.clone(),
+            request,
+            subscription,
+        ))
     }
 
     async fn watch<T, C>(
@@ -615,16 +815,29 @@ impl LocalApplicationClient {
         T: hyphae::CellValue + DeserializeOwned,
         C: hyphae::CellValue + DeserializeOwned,
     {
-        let mut stream = UnixStream::connect(&self.socket_path).await?;
+        self.watch_with_delta(request, None).await
+    }
+
+    async fn watch_with_delta<T, C>(
+        &self,
+        request: HandlerRequest,
+        view_delta: Option<LocalViewDelta<T>>,
+    ) -> Result<LocalHandlerSubscription<T, C>, LocalPeerError>
+    where
+        T: hyphae::CellValue + DeserializeOwned,
+        C: hyphae::CellValue + DeserializeOwned,
+    {
+        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
         write_frame(
             &mut stream,
-            &Envelope::new(PeerRequest::FollowHandler { request }),
+            &request_envelope(self.destination, PeerRequest::FollowHandler { request }),
         )
         .await?;
         match read_peer_frame(&mut stream).await? {
             PeerFrame::HandlerState { state } => Ok(LocalHandlerSubscription {
                 stream,
                 current: decode_handler_state(*state)?,
+                view_delta,
             }),
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
             _ => Err(LocalPeerError::Protocol(
@@ -642,6 +855,7 @@ where
 {
     stream: UnixStream,
     current: LiveSubscriptionState<T, C>,
+    view_delta: Option<LocalViewDelta<T>>,
 }
 
 impl<T, C> LocalHandlerSubscription<T, C>
@@ -667,12 +881,93 @@ where
                 self.current = decode_handler_state(*state)?;
                 Ok(self.current.clone())
             }
+            PeerFrame::HandlerViewDelta { delta } => {
+                let apply = self.view_delta.ok_or_else(|| {
+                    LocalPeerError::Protocol(
+                        "peer sent a keyed view delta to a snapshot handler".to_owned(),
+                    )
+                })?;
+                let through = delta
+                    .through
+                    .clone()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|error| {
+                        LocalPeerError::Protocol(format!(
+                            "keyed view cursor decoding failed: {error}"
+                        ))
+                    })?;
+                if let Some(value) = self.current.value.as_mut() {
+                    apply(value, &delta)?;
+                } else if delta.order.as_ref().is_some_and(|order| !order.is_empty()) {
+                    return Err(LocalPeerError::Protocol(
+                        "keyed view delta arrived before its initial snapshot".to_owned(),
+                    ));
+                }
+                self.current.through = through;
+                self.current.liveness = delta.liveness.clone();
+                Ok(self.current.clone())
+            }
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
             _ => Err(LocalPeerError::Protocol(
                 "local peer changed application handler stream type".to_owned(),
             )),
         }
     }
+}
+
+fn apply_view_delta<V>(
+    items: &mut Vec<V::Item>,
+    delta: &ErasedViewDelta,
+) -> Result<(), LocalPeerError>
+where
+    V: ViewHandler,
+{
+    let previous = std::mem::take(items);
+    let mut by_key = previous
+        .iter()
+        .cloned()
+        .map(|item| (V::item_key(&item), item))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for key in &delta.deletes {
+        by_key.remove(key.as_str());
+    }
+    for encoded in &delta.upserts {
+        let item = serde_json::from_value::<V::Item>(encoded.clone()).map_err(|error| {
+            LocalPeerError::Protocol(format!("keyed view item decoding failed: {error}"))
+        })?;
+        by_key.insert(V::item_key(&item), item);
+    }
+    if let Some(order) = &delta.order {
+        let mut ordered = Vec::with_capacity(order.len());
+        for key in order {
+            let item = by_key.remove(key.as_str()).ok_or_else(|| {
+                LocalPeerError::Protocol(format!("keyed view delta omitted row {key:?}"))
+            })?;
+            ordered.push(item);
+        }
+        if !by_key.is_empty() {
+            return Err(LocalPeerError::Protocol(
+                "keyed view delta left rows outside its authoritative order".to_owned(),
+            ));
+        }
+        *items = ordered;
+    } else {
+        let mut retained = Vec::with_capacity(previous.len());
+        for item in previous {
+            let key = V::item_key(&item);
+            if let Some(current) = by_key.remove(&key) {
+                retained.push(current);
+            }
+        }
+        if !by_key.is_empty() {
+            return Err(LocalPeerError::Protocol(
+                "keyed view delta inserted rows without an ordering revision".to_owned(),
+            ));
+        }
+        *items = retained;
+    }
+    Ok(())
 }
 
 fn decode_handler_state<T, C>(
@@ -712,6 +1007,40 @@ where
     task: JoinHandle<()>,
 }
 
+/// Runtime owner for a local application's identity-preserving view.
+pub struct LocalReactiveViewSubscription<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    live: LiveCollection<T, C>,
+    writer: LiveCollectionWriter<T, C>,
+    task: JoinHandle<()>,
+}
+
+impl<T, C> LocalReactiveViewSubscription<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    /// Returns the authoritative keyed rows and coherent lifecycle cells.
+    #[must_use]
+    pub const fn live(&self) -> &LiveCollection<T, C> {
+        &self.live
+    }
+}
+
+impl<T, C> Drop for LocalReactiveViewSubscription<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    fn drop(&mut self) {
+        self.writer.invalidate("subscription owner dropped");
+        self.task.abort();
+    }
+}
+
 impl<T, C> LocalReactiveHandlerSubscription<T, C>
 where
     T: hyphae::CellValue,
@@ -745,6 +1074,7 @@ where
     C: hyphae::CellValue + DeserializeOwned,
 {
     let (writer, live) = live_subscription(subscription.current().clone());
+    let view_delta = subscription.view_delta;
     let task_writer = writer.clone();
     let task = tokio::spawn(async move {
         loop {
@@ -764,7 +1094,7 @@ where
             let mut delay = client.reconnect_policy.initial_delay();
             loop {
                 tokio::time::sleep(delay).await;
-                match client.watch(request.clone()).await {
+                match client.watch_with_delta(request.clone(), view_delta).await {
                     Ok(next) => {
                         task_writer.replace(next.current().clone());
                         subscription = next;
@@ -784,6 +1114,97 @@ where
         }
     });
     LocalReactiveHandlerSubscription { live, writer, task }
+}
+
+fn drive_view_reactive<V>(
+    client: LocalApplicationClient,
+    request: HandlerRequest,
+    mut subscription: LocalHandlerSubscription<Vec<V::Item>, V::Cursor>,
+) -> LocalReactiveViewSubscription<V::Item, V::Cursor>
+where
+    V: ViewHandler,
+{
+    let initial = subscription.current().clone();
+    let rows = initial
+        .value
+        .as_deref()
+        .unwrap_or_default()
+        .iter()
+        .cloned()
+        .map(|item| (V::item_key(&item), Arc::new(item)))
+        .collect();
+    let (writer, live) = live_collection(
+        rows,
+        LiveCollectionState {
+            through: initial.through,
+            liveness: initial.liveness,
+        },
+    );
+    let task_writer = writer.clone();
+    let task = tokio::spawn(async move {
+        loop {
+            match subscription.recv().await {
+                Ok(state) => {
+                    publish_local_view_state::<V>(&task_writer, state);
+                    continue;
+                }
+                Err(error) if local_subscription_error_is_recoverable(&error) => {
+                    task_writer.resynchronizing(error.to_string());
+                }
+                Err(error) => {
+                    task_writer.invalidate(error.to_string());
+                    return;
+                }
+            }
+            let mut delay = client.reconnect_policy.initial_delay();
+            loop {
+                tokio::time::sleep(delay).await;
+                match client
+                    .watch_with_delta(request.clone(), Some(apply_view_delta::<V>))
+                    .await
+                {
+                    Ok(next) => {
+                        publish_local_view_state::<V>(&task_writer, next.current().clone());
+                        subscription = next;
+                        break;
+                    }
+                    Err(error) if local_subscription_error_is_recoverable(&error) => {
+                        task_writer.resynchronizing(error.to_string());
+                        delay = client.reconnect_policy.next_delay(delay);
+                    }
+                    Err(error) => {
+                        task_writer.invalidate(error.to_string());
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    LocalReactiveViewSubscription { live, writer, task }
+}
+
+fn publish_local_view_state<V>(
+    writer: &LiveCollectionWriter<V::Item, V::Cursor>,
+    state: LiveSubscriptionState<Vec<V::Item>, V::Cursor>,
+) where
+    V: ViewHandler,
+{
+    match state.liveness {
+        SubscriptionLiveness::Current => {
+            let rows = state
+                .value
+                .unwrap_or_default()
+                .into_iter()
+                .map(|item| (V::item_key(&item), Arc::new(item)))
+                .collect();
+            if let Err(error) = writer.reconcile(rows, state.through) {
+                writer.invalidate(error.to_string());
+            }
+        }
+        SubscriptionLiveness::Resynchronizing { reason } => writer.resynchronizing(reason),
+        SubscriptionLiveness::Invalid { reason } => writer.invalidate(reason),
+        SubscriptionLiveness::Connecting => {}
+    }
 }
 
 /// Current-then-live command lifecycle over an owner-local socket.
@@ -843,14 +1264,19 @@ pub struct LocalItemQuerySubscription<Q: ItemQuery> {
 impl<Q: ItemQuery> LocalItemQuerySubscription<Q> {
     async fn connect(
         socket_path: &Path,
+        destination: Option<NodeId>,
+        reconnect_policy: ReconnectPolicy,
         query: ItemQueryStream<Q>,
     ) -> Result<Self, LocalPeerError> {
-        let mut stream = UnixStream::connect(socket_path).await?;
+        let mut stream = connect_local_peer(socket_path, reconnect_policy).await;
         write_frame(
             &mut stream,
-            &Envelope::new(PeerRequest::FollowItems {
-                request: query.request().clone(),
-            }),
+            &request_envelope(
+                destination,
+                PeerRequest::FollowItems {
+                    request: query.request().clone(),
+                },
+            ),
         )
         .await?;
         match read_peer_frame(&mut stream).await? {
@@ -978,11 +1404,21 @@ const fn local_subscription_error_is_recoverable(error: &LocalPeerError) -> bool
     matches!(error, LocalPeerError::Io(_) | LocalPeerError::Protocol(_))
 }
 
+async fn connect_local_peer(socket_path: &Path, policy: ReconnectPolicy) -> UnixStream {
+    let mut delay = policy.initial_delay();
+    loop {
+        if let Ok(stream) = UnixStream::connect(socket_path).await {
+            return stream;
+        }
+        tokio::time::sleep(delay).await;
+        delay = policy.next_delay(delay);
+    }
+}
+
 async fn serve(
     listener: UnixListener,
-    application: ApplicationNode,
+    sessions: NodeSessionService,
     principal_id: PrincipalId,
-    access_policy: Arc<dyn AccessPolicy>,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<(), LocalPeerError> {
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
@@ -1002,9 +1438,8 @@ async fn serve(
                 };
                 connections.spawn(handle_connection(
                     stream,
-                    application.clone(),
+                    sessions.clone(),
                     principal_id.clone(),
-                    Arc::clone(&access_policy),
                     shutdown.clone(),
                     permit,
                 ));
@@ -1025,24 +1460,17 @@ async fn serve(
 
 async fn handle_connection(
     mut stream: UnixStream,
-    application: ApplicationNode,
+    sessions: NodeSessionService,
     principal_id: PrincipalId,
-    access_policy: Arc<dyn AccessPolicy>,
     shutdown: watch::Receiver<bool>,
     _permit: tokio::sync::OwnedSemaphorePermit,
 ) {
     let result = async {
-        let request: Envelope<PeerRequest> = read_frame(&mut stream).await?;
-        require_version(request.version)?;
-        serve_request(
-            &mut stream,
-            &application,
-            &principal_id,
-            access_policy.as_ref(),
-            shutdown,
-            request.body,
-        )
-        .await
+        let request: Envelope<NodeRequestEnvelope> = read_frame(&mut stream).await?;
+        let request = request
+            .into_current()
+            .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+        serve_session_request(&mut stream, &sessions, principal_id, shutdown, request).await
     }
     .await;
     if let Err(error) = result {
@@ -1056,351 +1484,32 @@ async fn handle_connection(
     }
 }
 
-async fn serve_request(
+async fn serve_session_request(
     stream: &mut UnixStream,
-    application: &ApplicationNode,
-    principal_id: &PrincipalId,
-    access_policy: &dyn AccessPolicy,
-    shutdown: watch::Receiver<bool>,
-    request: PeerRequest,
-) -> Result<(), LocalPeerError> {
-    let node = application.node();
-    match request {
-        PeerRequest::ItemState { request } => {
-            authorize_items(
-                access_policy,
-                principal_id,
-                AccessOperation::ReadItems,
-                &request,
-            )?;
-            let page = node.item_state_page(request)?;
-            write_frame(
-                stream,
-                &Envelope::new(PeerFrame::ItemState {
-                    page: Box::new(page),
-                }),
-            )
-            .await
-        }
-        PeerRequest::FollowItems { request } => {
-            serve_item_follow(stream, node, principal_id, access_policy, shutdown, request).await
-        }
-        PeerRequest::SubmitCommand { command } => {
-            authorize_command(
-                access_policy,
-                principal_id,
-                AccessOperation::SubmitCommand,
-                &command,
-            )?;
-            let command = node.submit(command)?;
-            write_command(stream, node.node_id(), Some(command)).await
-        }
-        PeerRequest::CommandState { command_id } => {
-            let command = node.command(command_id)?;
-            authorize_command_state(
-                access_policy,
-                principal_id,
-                AccessOperation::ReadCommand,
-                command_id,
-                command.as_ref(),
-            )?;
-            write_command(stream, node.node_id(), command).await
-        }
-        PeerRequest::CancelCommand { command_id, reason } => {
-            let current = node.command(command_id)?;
-            authorize_command_state(
-                access_policy,
-                principal_id,
-                AccessOperation::CancelCommand,
-                command_id,
-                current.as_ref(),
-            )?;
-            let command = node.cancel(command_id, reason)?;
-            write_command(stream, node.node_id(), Some(command)).await
-        }
-        PeerRequest::FollowCommand { command_id } => {
-            serve_command_follow(
-                stream,
-                node,
-                principal_id,
-                access_policy,
-                shutdown,
-                command_id,
-            )
-            .await
-        }
-        PeerRequest::FollowHandler { request } => {
-            serve_handler_follow(
-                stream,
-                application,
-                principal_id,
-                access_policy,
-                shutdown,
-                request,
-            )
-            .await
-        }
-    }
-}
-
-async fn serve_handler_follow(
-    stream: &mut UnixStream,
-    application: &ApplicationNode,
-    principal_id: &PrincipalId,
-    access_policy: &dyn AccessPolicy,
+    sessions: &NodeSessionService,
+    principal_id: PrincipalId,
     mut shutdown: watch::Receiver<bool>,
-    request: HandlerRequest,
+    request: NodeRequestEnvelope,
 ) -> Result<(), LocalPeerError> {
-    authorize_handler(access_policy, principal_id, &request)?;
-    let subscription = application
-        .watch_handler(&request)
-        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
-    let (wake_tx, wake_rx) = flume::bounded(1);
-    let _guard = subscription.live().state().subscribe(move |_| {
-        let _ignored = wake_tx.try_send(());
-    });
-    let mut sent: Option<ErasedHandlerState> = None;
-    loop {
-        let current = subscription.live().current();
-        if sent.as_ref() != Some(&current) {
-            write_frame(
-                stream,
-                &Envelope::new(PeerFrame::HandlerState {
-                    state: Box::new(current.clone()),
-                }),
-            )
-            .await?;
-            sent = Some(current);
-        }
-        tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
-                }
-            }
-            wake = wake_rx.recv_async() => {
-                if wake.is_err() {
-                    return Ok(());
-                }
-            }
-        }
-    }
-}
-
-async fn serve_item_follow(
-    stream: &mut UnixStream,
-    node: &Node,
-    principal_id: &PrincipalId,
-    access_policy: &dyn AccessPolicy,
-    mut shutdown: watch::Receiver<bool>,
-    request: ItemFollowRequest,
-) -> Result<(), LocalPeerError> {
-    if request.serving_node != node.node_id() {
-        return Err(LocalPeerError::Protocol(
-            "local item follow names another serving node".to_owned(),
-        ));
-    }
-    authorize_follow(access_policy, principal_id, &request)?;
-    let mut events = node.subscribe(request.after)?;
-    write_frame(
-        stream,
-        &Envelope::new(PeerFrame::ItemFollowReady {
-            request: Box::new(request.clone()),
-        }),
-    )
-    .await?;
+    let mut frames = sessions.open(principal_id, request).await;
     loop {
         tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
-                }
+            frame = frames.recv() => {
+                let Some(frame) = frame else { return Ok(()); };
+                write_frame(stream, &Envelope::new(frame)).await?;
             }
-            event = events.recv_async() => {
-                if let Some(update) = request.update_from_envelope(&event?)? {
-                    write_frame(
-                        stream,
-                        &Envelope::new(PeerFrame::ItemUpdate {
-                            update: Box::new(update),
-                        }),
-                    ).await?;
-                }
+            changed = shutdown.changed() => {
+                if changed.is_err() || *shutdown.borrow() { return Ok(()); }
             }
         }
-    }
-}
-
-async fn serve_command_follow(
-    stream: &mut UnixStream,
-    node: &Node,
-    principal_id: &PrincipalId,
-    access_policy: &dyn AccessPolicy,
-    mut shutdown: watch::Receiver<bool>,
-    command_id: CommandId,
-) -> Result<(), LocalPeerError> {
-    let (response, mut commands) = node.watch_command_eventually(command_id).await?;
-    authorize_command_state(
-        access_policy,
-        principal_id,
-        AccessOperation::FollowCommand,
-        command_id,
-        response.command.as_ref(),
-    )?;
-    write_frame(
-        stream,
-        &Envelope::new(PeerFrame::Command {
-            response: Box::new(response),
-        }),
-    )
-    .await?;
-    loop {
-        tokio::select! {
-            changed = shutdown.changed() => {
-                if changed.is_err() || *shutdown.borrow() {
-                    return Ok(());
-                }
-            }
-            command = commands.recv_async() => {
-                write_command(stream, node.node_id(), Some(command?)).await?;
-            }
-        }
-    }
-}
-
-async fn write_command(
-    stream: &mut UnixStream,
-    source_node: myko_federation::NodeId,
-    command: Option<CommandSnapshot>,
-) -> Result<(), LocalPeerError> {
-    write_frame(
-        stream,
-        &Envelope::new(PeerFrame::Command {
-            response: Box::new(CommandResponse {
-                source_node,
-                command,
-            }),
-        }),
-    )
-    .await
-}
-
-fn authorize_command(
-    policy: &dyn AccessPolicy,
-    principal_id: &PrincipalId,
-    operation: AccessOperation,
-    command: &CommandRequest,
-) -> Result<(), LocalPeerError> {
-    policy
-        .authorize(&AccessRequest {
-            principal_id: principal_id.clone(),
-            operation,
-            service_id: Some(command.service_id.clone()),
-            scope_id: Some(command.scope_id.clone()),
-            command_id: Some(command.id),
-            command_type: Some(command.command_type.clone()),
-            command_principal_id: Some(command.principal_id.clone()),
-            live_topics: Vec::new(),
-        })
-        .map_err(LocalPeerError::Protocol)
-}
-
-fn authorize_command_state(
-    policy: &dyn AccessPolicy,
-    principal_id: &PrincipalId,
-    operation: AccessOperation,
-    command_id: CommandId,
-    command: Option<&CommandSnapshot>,
-) -> Result<(), LocalPeerError> {
-    policy
-        .authorize(&AccessRequest {
-            principal_id: principal_id.clone(),
-            operation,
-            service_id: command.map(|command| command.request.service_id.clone()),
-            scope_id: command.map(|command| command.request.scope_id.clone()),
-            command_id: Some(command_id),
-            command_type: command.map(|command| command.request.command_type.clone()),
-            command_principal_id: command.map(|command| command.request.principal_id.clone()),
-            live_topics: Vec::new(),
-        })
-        .map_err(LocalPeerError::Protocol)
-}
-
-fn authorize_items(
-    policy: &dyn AccessPolicy,
-    principal_id: &PrincipalId,
-    operation: AccessOperation,
-    request: &ItemStateRequest,
-) -> Result<(), LocalPeerError> {
-    policy
-        .authorize(&AccessRequest {
-            principal_id: principal_id.clone(),
-            operation,
-            service_id: Some(request.service_id.clone()),
-            scope_id: Some(request.scope_id.clone()),
-            command_id: None,
-            command_type: None,
-            command_principal_id: None,
-            live_topics: Vec::new(),
-        })
-        .map_err(LocalPeerError::Protocol)
-}
-
-fn authorize_follow(
-    policy: &dyn AccessPolicy,
-    principal_id: &PrincipalId,
-    request: &ItemFollowRequest,
-) -> Result<(), LocalPeerError> {
-    policy
-        .authorize(&AccessRequest {
-            principal_id: principal_id.clone(),
-            operation: AccessOperation::FollowItems,
-            service_id: Some(request.service_id.clone()),
-            scope_id: Some(request.scope_id.clone()),
-            command_id: None,
-            command_type: None,
-            command_principal_id: None,
-            live_topics: Vec::new(),
-        })
-        .map_err(LocalPeerError::Protocol)
-}
-
-fn authorize_handler(
-    policy: &dyn AccessPolicy,
-    principal_id: &PrincipalId,
-    request: &HandlerRequest,
-) -> Result<(), LocalPeerError> {
-    policy
-        .authorize(&AccessRequest {
-            principal_id: principal_id.clone(),
-            operation: AccessOperation::FollowHandler,
-            service_id: None,
-            scope_id: request.scope_id.clone(),
-            command_id: None,
-            command_type: None,
-            command_principal_id: None,
-            live_topics: vec![format!(
-                "handler:{}:{}",
-                request.kind.as_str(),
-                request.handler_id
-            )],
-        })
-        .map_err(LocalPeerError::Protocol)
-}
-
-fn require_version(version: u32) -> Result<(), LocalPeerError> {
-    if version == PROTOCOL_VERSION {
-        Ok(())
-    } else {
-        Err(LocalPeerError::Protocol(format!(
-            "unsupported local peer protocol version {version}"
-        )))
     }
 }
 
 async fn read_peer_frame(stream: &mut UnixStream) -> Result<PeerFrame, LocalPeerError> {
     let envelope: Envelope<PeerFrame> = read_frame(stream).await?;
-    require_version(envelope.version)?;
-    Ok(envelope.body)
+    envelope
+        .into_current()
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))
 }
 
 async fn write_frame<T: Serialize + Sync>(
@@ -1481,34 +1590,67 @@ fn remove_owned_socket(path: &Path) -> Result<(), LocalPeerError> {
 mod tests {
     use std::{sync::Arc, time::Duration};
 
-    use hyphae::{Signal, Watchable as _};
-    use myko_federation::{
-        AllowAllAccessPolicy, BatchId, ChangeBatch, CommandId, CommandRequest, PrincipalId,
-        ServiceId, SubscriptionLiveness,
-    };
-    use myko_items::{ItemMutation, ItemProjection, ItemQuery, myko_item};
-
     use super::*;
+    use hyphae::{Signal, Watchable as _};
+    use myko_app::capability::{CollectionBuilding as _, EventPublishing as _, Querying as _};
+    use myko_app::{
+        CommandClient as _, CommandContext, CommandError, CommandHandler, QueryHandler, myko_query,
+        myko_report, myko_view,
+    };
+    use myko_federation::{
+        AllowAllAccessPolicy, BatchId, ChangeBatch, CommandRequest, PrincipalId, ServiceId,
+        SubscriptionLiveness,
+    };
+    use myko_items::{
+        ItemMutation, ItemProjection, ItemQuery, myko_command, myko_item, myko_service,
+    };
 
-    #[myko_item(service = "myko.local.test", scope_root)]
+    #[myko_service(LocalRecord)]
+    pub struct LocalService;
+
+    #[myko_item(service = LocalService, scope_root)]
     pub struct LocalRecord {
         value: String,
     }
 
-    #[derive(Debug, Clone, Serialize, Deserialize)]
+    #[myko_command(bool, item = LocalRecord)]
+    struct SetLocalRecord {
+        id: LocalRecordId,
+        value: String,
+    }
+
+    impl CommandHandler for SetLocalRecord {
+        fn scope(&self, _node_id: NodeId) -> LocalRecordId {
+            LocalRecordId::from("local-scope")
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<LocalService, LocalRecord>,
+        ) -> Result<bool, CommandError> {
+            context.emit_set(&LocalRecord {
+                id: self.id,
+                value: self.value,
+            })?;
+            Ok(true)
+        }
+    }
+
+    #[myko_query(LocalRecord)]
     struct AllLocalRecords;
 
     impl ItemQuery for AllLocalRecords {
         type Item = LocalRecord;
         type Output = Vec<LocalRecord>;
-        const QUERY_ID: &'static str = "local.all_records";
-
         fn execute(self, projection: &ItemProjection<Self::Item>) -> Self::Output {
             projection.values().cloned().collect()
         }
     }
 
-    #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+    impl QueryHandler for AllLocalRecords {}
+
+    #[myko_report(u64, item = LocalRecord)]
+    #[derive(Copy)]
     struct LocalRecordCount {
         source_node: myko_federation::NodeId,
     }
@@ -1516,11 +1658,9 @@ mod tests {
     impl ReportHandler for LocalRecordCount {
         type Output = u64;
         type Cursor = myko_federation::LogPosition;
-        const REPORT_ID: &'static str = "local.record_count";
-
         fn build(
             &self,
-            context: &myko_app::HandlerContext,
+            context: &myko_app::ReportContext,
         ) -> Result<LiveSubscription<Self::Output>, myko_app::AppError> {
             Ok(context
                 .query(
@@ -1532,15 +1672,37 @@ mod tests {
         }
     }
 
+    #[myko_view(LocalRecord, item = LocalRecord)]
+    #[derive(Copy)]
+    struct LocalRecordsView {
+        source_node: myko_federation::NodeId,
+    }
+
+    impl ViewHandler for LocalRecordsView {
+        type Item = LocalRecord;
+        type Cursor = myko_federation::LogPosition;
+        fn item_key(item: &Self::Item) -> Arc<str> {
+            Arc::from(item.id.to_string())
+        }
+
+        fn build(
+            &self,
+            context: &myko_app::ViewContext,
+        ) -> Result<LiveCollection<Self::Item>, myko_app::AppError> {
+            let live = context.query(
+                self.source_node,
+                ScopeId::new("local-scope"),
+                AllLocalRecords,
+            )?;
+            context.collection_from_subscription(&live, Self::item_key)
+        }
+    }
+
     fn local_record_application(node: Node) -> Result<ApplicationNode, LocalPeerError> {
-        let mut schema = ApplicationSchema::new();
-        schema
-            .register_query::<AllLocalRecords>()
+        let application = MykoApplication::builder()
+            .service::<LocalService>()
             .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
-        schema
-            .register_report::<LocalRecordCount>()
-            .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
-        Ok(ApplicationNode::new(node, schema))
+        Ok(ApplicationNode::new(node, application.build()))
     }
 
     fn commit_record(
@@ -1550,7 +1712,7 @@ mod tests {
     ) -> Result<LocalRecord, LocalPeerError> {
         let request = CommandRequest {
             id: CommandId::new(),
-            service_id: ServiceId::new("myko.local.test"),
+            service_id: ServiceId::new(<LocalService as myko_federation::MykoService>::SERVICE_ID),
             scope_id: scope_id.clone(),
             principal_id: PrincipalId::new("local:test"),
             command_type: "local.insert".to_owned(),
@@ -1685,44 +1847,40 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn local_peer_follows_command_lifecycle_without_polling() -> Result<(), LocalPeerError> {
+    async fn local_peer_watches_command_lifecycle_without_polling() -> Result<(), LocalPeerError> {
         let directory = tempfile::tempdir()?;
         let socket = directory.path().join("myko.sock");
         let node = Node::in_memory();
-        let server = LocalNodeServer::spawn(
+        let application = local_record_application(node.clone())?;
+        let server = LocalNodeServer::spawn_application(
             &socket,
-            node.clone(),
+            application,
             PrincipalId::new("local:owner"),
             Arc::new(AllowAllAccessPolicy),
         )
         .await?;
         let client = LocalCommandClient::new(&socket);
-        let request = CommandRequest {
-            id: CommandId::new(),
-            service_id: ServiceId::new("myko.local.command"),
-            scope_id: ScopeId::new("local-command-scope"),
-            principal_id: PrincipalId::new("local:owner"),
-            command_type: "local.execute".to_owned(),
-            payload: Vec::new(),
-        };
-        let submitted = client.submit_command(request.clone()).await?;
-        if !matches!(
-            submitted.command.as_ref().map(|command| &command.state),
-            Some(myko_federation::CommandState::Submitted)
-        ) {
+        let submitted = client
+            .submit_command(SetLocalRecord {
+                id: LocalRecordId::from("lifecycle-record"),
+                value: "pending".to_owned(),
+            })
+            .await?;
+        let Some(snapshot) = submitted.command else {
             return Err(LocalPeerError::Protocol(
-                "local command was not submitted".to_owned(),
+                "local command submission returned no state".to_owned(),
             ));
-        }
-        let (_initial, mut subscription) = client.watch_command(request.id).await?;
-        let admission = node.claim(request.id)?;
+        };
+        let command_id = snapshot.request.id;
+        let (_initial, mut subscription) = client.watch_command(command_id).await?;
+        let admission = node.claim(command_id)?;
         node.commit(
-            request.id,
+            command_id,
             ChangeBatch {
                 id: BatchId::new(),
-                command_id: request.id,
-                service_id: request.service_id,
-                scope_id: request.scope_id,
+                command_id,
+                service_id: snapshot.request.service_id,
+                scope_id: snapshot.request.scope_id,
                 causal_parents: vec![admission.snapshot().updated_at],
                 changes: Vec::new(),
             },
@@ -1737,10 +1895,59 @@ mod tests {
             }
         })
         .await
-        .map_err(|_| LocalPeerError::Protocol("local command follow timed out".to_owned()))??;
+        .map_err(|_| LocalPeerError::Protocol("local command watch timed out".to_owned()))??;
         if !committed.state.is_committed() {
             return Err(LocalPeerError::Protocol(
-                "local command follow returned a non-commit".to_owned(),
+                "local command watch returned a non-commit".to_owned(),
+            ));
+        }
+        server.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn local_peer_executes_typed_command_to_its_result() -> Result<(), LocalPeerError> {
+        let directory = tempfile::tempdir()?;
+        let socket = directory.path().join("myko.sock");
+        let node = Node::in_memory();
+        let application = local_record_application(node.clone())?;
+        let server = LocalNodeServer::spawn_application(
+            &socket,
+            application.clone(),
+            PrincipalId::new("local:owner"),
+            Arc::new(AllowAllAccessPolicy),
+        )
+        .await?;
+        let client = LocalCommandClient::new(&socket);
+        let mut pending = application
+            .watch_pending_commands()
+            .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+        let command_application = application.clone();
+        let (result, handled) = tokio::join!(
+            client.exec_command(SetLocalRecord {
+                id: LocalRecordId::from("record-command"),
+                value: "typed result".to_owned(),
+            }),
+            async move {
+                let command = pending.recv_async().await?;
+                command_application
+                    .dispatch_registered_command(command.request.id)
+                    .map_err(|error| LocalPeerError::Protocol(error.to_string()))
+            }
+        );
+        if !result? {
+            return Err(LocalPeerError::Protocol(
+                "typed command returned the wrong result".to_owned(),
+            ));
+        }
+        handled.map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+        let records = node.query_items_in(
+            node.node_id(),
+            &ScopeId::for_item::<LocalRecord>(&LocalRecordId::from("local-scope")),
+            AllLocalRecords,
+        )?;
+        if !matches!(records.as_slice(), [record] if record.value == "typed result") {
+            return Err(LocalPeerError::Protocol(
+                "typed command did not commit its item".to_owned(),
             ));
         }
         server.shutdown().await
@@ -1780,6 +1987,111 @@ mod tests {
             )));
         }
         drop(report);
+        server.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn local_view_sends_persisted_initial_rows() -> Result<(), LocalPeerError> {
+        let directory = tempfile::tempdir()?;
+        let socket = directory.path().join("myko.sock");
+        let node = Node::in_memory();
+        let expected = commit_record(&node, ScopeId::new("local-scope"), "persisted")?;
+        let server = LocalNodeServer::spawn_application(
+            &socket,
+            local_record_application(node.clone())?,
+            PrincipalId::new("local:owner"),
+            Arc::new(AllowAllAccessPolicy),
+        )
+        .await?;
+
+        let view = LocalApplicationClient::new(&socket)
+            .watch_view(&LocalRecordsView {
+                source_node: node.node_id(),
+            })
+            .await?;
+        if view.current().value.as_deref() != Some(std::slice::from_ref(&expected)) {
+            return Err(LocalPeerError::Protocol(format!(
+                "local view lost its initial rows: {:?}",
+                view.current()
+            )));
+        }
+        server.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn local_client_waits_until_the_socket_starts_listening() -> Result<(), LocalPeerError> {
+        let directory = tempfile::tempdir()?;
+        let socket = directory.path().join("myko.sock");
+        let node = Node::in_memory();
+        let expected_node = node.node_id();
+        let reconnect_policy =
+            ReconnectPolicy::new(Duration::from_millis(10), Duration::from_millis(20))
+                .map_err(|error| LocalPeerError::Protocol(error.to_owned()))?;
+        let client = LocalNodeClient::new(&socket).with_reconnect_policy(reconnect_policy);
+        let pending = tokio::spawn(async move { client.identify().await });
+
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        if pending.is_finished() {
+            return Err(LocalPeerError::Protocol(
+                "local client stopped retrying before the socket existed".to_owned(),
+            ));
+        }
+
+        let server = LocalNodeServer::spawn(
+            &socket,
+            node,
+            PrincipalId::new("local:owner"),
+            Arc::new(AllowAllAccessPolicy),
+        )
+        .await?;
+        let identified = tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .map_err(|_| LocalPeerError::Protocol("local client did not reconnect".to_owned()))?
+            .map_err(|error| LocalPeerError::Protocol(error.to_string()))??;
+        if identified != expected_node {
+            return Err(LocalPeerError::Protocol(
+                "reconnected local client identified the wrong node".to_owned(),
+            ));
+        }
+        server.shutdown().await
+    }
+
+    #[tokio::test]
+    async fn local_requests_wait_for_the_node_startup_barrier() -> Result<(), LocalPeerError> {
+        let directory = tempfile::tempdir()?;
+        let socket = directory.path().join("myko.sock");
+        let node = Node::in_memory();
+        let startup = node.hold_startup();
+        let server = LocalNodeServer::spawn_application(
+            &socket,
+            local_record_application(node.clone())?,
+            PrincipalId::new("local:owner"),
+            Arc::new(AllowAllAccessPolicy),
+        )
+        .await?;
+        let client = LocalApplicationClient::new(&socket);
+        let source_node = node.node_id();
+        let pending =
+            tokio::spawn(
+                async move { client.watch_report(&LocalRecordCount { source_node }).await },
+            );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        if pending.is_finished() {
+            return Err(LocalPeerError::Protocol(
+                "local handler escaped the node startup barrier".to_owned(),
+            ));
+        }
+
+        startup.ready();
+        let report = tokio::time::timeout(Duration::from_secs(2), pending)
+            .await
+            .map_err(|_| LocalPeerError::Protocol("startup-ready handler timed out".to_owned()))?
+            .map_err(|error| LocalPeerError::Protocol(error.to_string()))??;
+        if report.current().value != Some(0) {
+            return Err(LocalPeerError::Protocol(
+                "startup-ready handler returned the wrong initial state".to_owned(),
+            ));
+        }
         server.shutdown().await
     }
 

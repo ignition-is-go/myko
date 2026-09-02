@@ -2,6 +2,9 @@
 resolver = "2"
 default-members = [
   "libs/myko/app",
+  "libs/myko/app-macros",
+  "libs/myko/discovery",
+  "libs/myko/wire",
   "libs/myko/federation",
   "libs/myko/items",
   "libs/myko/items-macros",
@@ -10,9 +13,13 @@ default-members = [
   "libs/myko/node",
   "libs/myko/ratatui",
   "libs/myko/redb",
+  "libs/myko/session",
 ]
 members = [
+  "apps/docs-site",
   "libs/myko/app",
+  "libs/myko/app-macros",
+  "libs/myko/discovery",
   "libs/myko/core",
   "libs/myko/federation",
   "libs/myko/items",
@@ -23,6 +30,7 @@ members = [
   "libs/myko/node",
   "libs/myko/ratatui",
   "libs/myko/redb",
+  "libs/myko/session",
   "libs/myko/macros",
   "libs/myko/server",
   "libs/myko/leptos",
@@ -97,7 +105,7 @@ tracing = "0.1"
 
 # Time/UUID
 chrono = { version = "0.4", features = ["serde"] }
-uuid = { version = "1.23", features = ["v4", "v5", "serde"] }
+uuid = { version = "1.23", features = ["v4", "v5", "v7", "serde"] }
 
 # WebSocket
 tungstenite = "0.29"
@@ -121,8 +129,8 @@ parking_lot = "0.12"
 
 # The scheduler is required by Myko's batched store propagation. Keep the
 # Leptos adapter on the same Hyphae major so its extension traits share types.
-hyphae = { version = "^3.0", features = ["scheduler"] }
-hyphae-leptos = { version = "^3.0" }
+hyphae = { version = "^3.1", features = ["scheduler"] }
+hyphae-leptos = { version = "^3.1" }
 # Pin the published bridge so Myko and Hyphae share one GPUI type universe.
 hyphae-gpui = "=3.1.2"
 iroh = "1.1"
@@ -138,6 +146,9 @@ myko-leptos = { version = "6.5.9", path = "libs/myko/leptos" }
 myko-macros = { version = "6.5.9", path = "libs/myko/macros" }
 myko = { version = "6.5.9", path = "libs/myko/core" }
 myko-app = { version = "7.0.0-alpha.1", path = "libs/myko/app" }
+myko-app-macros = { version = "7.0.0-alpha.1", path = "libs/myko/app-macros" }
+myko-discovery = { version = "7.0.0-alpha.1", path = "libs/myko/discovery" }
+myko-wire = { version = "7.0.0-alpha.1", path = "libs/myko/wire" }
 myko-federation = { version = "7.0.0-alpha.1", path = "libs/myko/federation" }
 myko-items = { version = "7.0.0-alpha.1", path = "libs/myko/items" }
 myko-items-macros = { version = "7.0.0-alpha.1", path = "libs/myko/items-macros" }
@@ -146,6 +157,7 @@ myko-local = { version = "7.0.0-alpha.1", path = "libs/myko/local" }
 myko-node = { version = "7.0.0-alpha.1", path = "libs/myko/node" }
 myko-ratatui = { version = "7.0.0-alpha.1", path = "libs/myko/ratatui" }
 myko-redb = { version = "7.0.0-alpha.1", path = "libs/myko/redb" }
+myko-session = { version = "7.0.0-alpha.1", path = "libs/myko/session" }
 myko-websocket-gateway = { version = "7.0.0-alpha.1", path = "libs/myko/websocket-gateway" }
 myko-server = { version = "6.5.9", path = "libs/myko/server" }
 

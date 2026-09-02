@@ -11,8 +11,9 @@
 mod reactive;
 
 pub use reactive::{
-    LiveSubscription, LiveSubscriptionState, LiveSubscriptionWriter, SubscriptionLiveness,
-    live_subscription,
+    LiveCollection, LiveCollectionError, LiveCollectionRevision, LiveCollectionState,
+    LiveCollectionWriter, LiveSubscription, LiveSubscriptionState, LiveSubscriptionWriter,
+    SubscriptionLiveness, live_collection, live_subscription,
 };
 
 use std::{
@@ -21,7 +22,11 @@ use std::{
     future::Future,
     num::NonZeroUsize,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
+    task::{Context, Poll, Waker},
     time::{Duration, Instant},
 };
 
@@ -31,7 +36,9 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub use myko_items::{
-    ItemMutation, ItemProjection, ItemQuery, MutationOperation, MykoCommand, MykoItem,
+    ConcreteEndpoint, Directed, EdgeEnds, EndpointSpec, EntityRef, GraphEdge, ItemMutation,
+    ItemProjection, ItemQuery, MutationOperation, MykoCommand, MykoCommandContract, MykoItem,
+    MykoOperation, MykoService, ServiceTypeId, TypedEdgeEnds, Undirected,
 };
 
 /// Exponential reconnect timing shared by long-lived transport adapters.
@@ -162,6 +169,25 @@ string_id!(PrincipalId);
 string_id!(ScopeId);
 string_id!(ServiceId);
 
+impl ScopeId {
+    /// Creates the canonical federation scope rooted at one typed item.
+    ///
+    /// Applications should not duplicate textual scope conventions. The item
+    /// type and its generated typed ID are sufficient to derive the stable
+    /// wire identity.
+    #[must_use]
+    pub fn for_item<T: MykoItem>(id: &T::Id) -> Self {
+        let mut item_type = String::with_capacity(T::ITEM_TYPE.len());
+        for (index, character) in T::ITEM_TYPE.chars().enumerate() {
+            if character.is_uppercase() && index > 0 {
+                item_type.push('_');
+            }
+            item_type.extend(character.to_lowercase());
+        }
+        Self::new(format!("{item_type}:{}", id.as_ref()))
+    }
+}
+
 /// A node-local, monotonically increasing history position.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
@@ -208,7 +234,8 @@ impl EventId {
     }
 }
 
-/// Opaque, application-owned command submitted to one service and scope.
+/// Durable command admission metadata owned by Myko.
+#[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandRequest {
     pub id: CommandId,
@@ -217,6 +244,63 @@ pub struct CommandRequest {
     pub principal_id: PrincipalId,
     pub command_type: String,
     pub payload: Vec<u8>,
+}
+
+/// Authenticated-transport submission before Myko binds its principal.
+#[doc(hidden)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommandSubmission {
+    pub id: CommandId,
+    pub service_id: ServiceId,
+    pub command_type: String,
+    pub payload: Vec<u8>,
+}
+
+impl CommandSubmission {
+    #[doc(hidden)]
+    pub fn for_command<C: MykoCommand>(command: &C) -> Result<Self, NodeError> {
+        Ok(Self {
+            id: CommandId::new(),
+            service_id: ServiceId::new(C::SERVICE_ID),
+            command_type: C::COMMAND_TYPE.to_owned(),
+            payload: serde_json::to_vec(command)
+                .map_err(|error| NodeError::CommandEncoding(error.to_string()))?,
+        })
+    }
+
+    #[doc(hidden)]
+    #[must_use]
+    pub fn authenticate(self, scope_id: ScopeId, principal_id: PrincipalId) -> CommandRequest {
+        CommandRequest {
+            id: self.id,
+            service_id: self.service_id,
+            scope_id,
+            principal_id,
+            command_type: self.command_type,
+            payload: self.payload,
+        }
+    }
+}
+
+impl CommandRequest {
+    fn for_command<C: MykoCommand>(
+        scope_id: ScopeId,
+        principal_id: PrincipalId,
+        command: &C,
+    ) -> Result<Self, NodeError> {
+        CommandSubmission::for_command(command)
+            .map(|submission| submission.authenticate(scope_id, principal_id))
+    }
+
+    /// Decodes this request through one generated application-command contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the service/type identity or payload is invalid.
+    #[doc(hidden)]
+    pub fn command<C: MykoCommand>(&self) -> Result<C, NodeError> {
+        decode_declared_body(self)
+    }
 }
 
 /// Transport-neutral operation presented to a node access policy.
@@ -232,9 +316,123 @@ pub enum AccessOperation {
     SubmitCommand,
     ReadCommand,
     ReadCommands,
-    FollowCommand,
-    FollowCommands,
+    WatchCommand,
+    WatchCommands,
     CancelCommand,
+}
+
+/// One transport-neutral authority over a single federated scope.
+///
+/// These are deliberately narrower than an application's own permissions.
+/// They describe what a remote Myko principal may do with framework data; an
+/// application may layer its domain authorization on top of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FederationPermission {
+    /// Read the current materialized state in the scope.
+    ReadState,
+    /// Read immutable history in the scope.
+    ReadHistory,
+    /// Keep a state or history stream open after its initial snapshot.
+    Subscribe,
+    /// Submit or cancel commands in the scope.
+    Write,
+    /// Permit the grantee to make the scope available to another principal.
+    ///
+    /// Transport adapters do not infer this from a connection; applications
+    /// must explicitly use it when they implement delegation.
+    Reshare,
+    /// Administer the scope's federation grants.
+    Admin,
+}
+
+/// A directional, non-transitive grant from one node to one principal.
+///
+/// Pairing authenticates a peer but never creates this record. A grant only
+/// applies to its exact `grantee` and `scope_id`; it cannot authorize another
+/// node through the grantee unless the issuing application explicitly models a
+/// reshare operation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopeGrant {
+    pub scope_id: ScopeId,
+    pub grantee: PrincipalId,
+    pub permissions: Vec<FederationPermission>,
+}
+
+impl ScopeGrant {
+    /// Returns whether this direct grant permits an authenticated request.
+    #[must_use]
+    pub fn authorizes(&self, request: &AccessRequest) -> bool {
+        self.grantee == request.principal_id
+            && request.scope_id.as_ref() == Some(&self.scope_id)
+            && required_permission(request.operation)
+                .is_some_and(|permission| self.permissions.contains(&permission))
+            && stream_permission(request.operation)
+                .is_none_or(|permission| self.permissions.contains(&permission))
+    }
+}
+
+const fn required_permission(operation: AccessOperation) -> Option<FederationPermission> {
+    match operation {
+        AccessOperation::ReadHistory | AccessOperation::FollowHistory => {
+            Some(FederationPermission::ReadHistory)
+        }
+        AccessOperation::ReadItems
+        | AccessOperation::FollowItems
+        | AccessOperation::FollowHandler
+        | AccessOperation::ReadCommand
+        | AccessOperation::ReadCommands
+        | AccessOperation::WatchCommand
+        | AccessOperation::WatchCommands => Some(FederationPermission::ReadState),
+        AccessOperation::SubmitCommand | AccessOperation::CancelCommand => {
+            Some(FederationPermission::Write)
+        }
+        // Live topics do not carry a scope identifier. A scope grant must not
+        // accidentally disclose them; an application can authorize exact
+        // topics in its own policy once it has mapped them to a scope.
+        AccessOperation::SubscribeLive => None,
+    }
+}
+
+const fn stream_permission(operation: AccessOperation) -> Option<FederationPermission> {
+    match operation {
+        AccessOperation::FollowItems
+        | AccessOperation::FollowHandler
+        | AccessOperation::FollowHistory
+        | AccessOperation::WatchCommand
+        | AccessOperation::WatchCommands => Some(FederationPermission::Subscribe),
+        AccessOperation::ReadHistory
+        | AccessOperation::ReadItems
+        | AccessOperation::SubscribeLive
+        | AccessOperation::SubmitCommand
+        | AccessOperation::ReadCommand
+        | AccessOperation::ReadCommands
+        | AccessOperation::CancelCommand => None,
+    }
+}
+
+/// Immutable transport policy backed by direct [`ScopeGrant`] records.
+///
+/// This is a reusable baseline for applications whose federation authority is
+/// entirely scope-based. Richer applications can compose the same grant check
+/// with domain-specific authorization in their own [`AccessPolicy`].
+#[derive(Debug, Clone, Default)]
+pub struct ScopeGrantPolicy {
+    grants: Vec<ScopeGrant>,
+}
+
+impl ScopeGrantPolicy {
+    /// Creates a policy from the current authoritative direct grants.
+    #[must_use]
+    pub const fn new(grants: Vec<ScopeGrant>) -> Self {
+        Self { grants }
+    }
+
+    /// Returns the direct grants used by this policy.
+    #[must_use]
+    pub fn grants(&self) -> &[ScopeGrant] {
+        &self.grants
+    }
 }
 
 /// Authenticated request metadata used for authorization before node access.
@@ -254,6 +452,25 @@ pub struct AccessRequest {
     pub live_topics: Vec<String>,
 }
 
+impl AccessRequest {
+    /// Returns whether this request targets one typed item service.
+    #[must_use]
+    pub fn service_is<T: MykoItem>(&self) -> bool {
+        self.service_id
+            .as_ref()
+            .is_some_and(|service_id| service_id.as_str() == T::SERVICE_ID.as_str())
+    }
+
+    /// Returns whether this request targets one typed command contract.
+    #[must_use]
+    pub fn command_is<C: MykoCommand>(&self) -> bool {
+        self.service_id
+            .as_ref()
+            .is_some_and(|service_id| service_id.as_str() == C::SERVICE_ID.as_str())
+            && self.command_type.as_deref() == Some(C::COMMAND_TYPE)
+    }
+}
+
 /// Pluggable authorization decision shared by transport adapters.
 pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
     /// Authorizes one authenticated request before history or state is exposed.
@@ -262,6 +479,16 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
     ///
     /// Returns a public-safe denial reason when access is not granted.
     fn authorize(&self, request: &AccessRequest) -> Result<(), String>;
+}
+
+impl AccessPolicy for ScopeGrantPolicy {
+    fn authorize(&self, request: &AccessRequest) -> Result<(), String> {
+        if self.grants.iter().any(|grant| grant.authorizes(request)) {
+            Ok(())
+        } else {
+            Err("scope grant does not permit this operation".to_owned())
+        }
+    }
 }
 
 /// Compatibility policy that grants every authenticated request.
@@ -275,6 +502,21 @@ pub struct AllowAllAccessPolicy;
 impl AccessPolicy for AllowAllAccessPolicy {
     fn authorize(&self, _request: &AccessRequest) -> Result<(), String> {
         Ok(())
+    }
+}
+
+/// Denies every application and federation operation.
+///
+/// Edge nodes use this policy while retaining a normal authenticated transport
+/// identity. Pairing and descriptor verification remain available through
+/// their dedicated Iroh protocol, but an edge node cannot accidentally expose
+/// its local journal or application handlers to a peer.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DenyAllAccessPolicy;
+
+impl AccessPolicy for DenyAllAccessPolicy {
+    fn authorize(&self, _request: &AccessRequest) -> Result<(), String> {
+        Err("this Myko node does not serve application or federation data".to_owned())
     }
 }
 
@@ -380,6 +622,66 @@ pub struct CommandSnapshot {
     pub updated_at: EventId,
 }
 
+impl CommandSnapshot {
+    /// Decodes this command's result using its generated typed contract.
+    ///
+    /// `None` means the command has not produced a result. The command's
+    /// durable lifecycle remains available through [`Self::state`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the snapshot belongs to another contract or its
+    /// result bytes do not match `C::Output`.
+    pub fn typed_result<C: MykoCommand>(&self) -> Result<Option<C::Output>, NodeError> {
+        if self.request.service_id.as_str() != C::SERVICE_ID.as_str()
+            || self.request.command_type != C::COMMAND_TYPE
+        {
+            return Err(NodeError::CommandSchemaMismatch {
+                expected_service: C::SERVICE_ID.as_str(),
+                expected_command: C::COMMAND_TYPE,
+                actual_service: self.request.service_id.as_str().to_owned(),
+                actual_command: self.request.command_type.clone(),
+            });
+        }
+        self.result
+            .as_deref()
+            .map(serde_json::from_slice)
+            .transpose()
+            .map_err(|error| NodeError::ResultDecoding(error.to_string()))
+    }
+
+    /// Decodes a completed typed result or reports a terminal command failure.
+    ///
+    /// `None` means the command is still progressing. A locally terminal
+    /// successful command without an encoded result is rejected as corrupt
+    /// lifecycle state rather than leaving a caller waiting forever.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a schema mismatch, invalid result, rejection,
+    /// cancellation, or missing terminal result.
+    pub fn typed_completion<C: MykoCommand>(&self) -> Result<Option<C::Output>, NodeError> {
+        if let Some(result) = self.typed_result::<C>()? {
+            return Ok(Some(result));
+        }
+        match &self.state {
+            CommandState::Rejected { reason } => Err(NodeError::CommandRejected {
+                command_id: self.request.id,
+                reason: reason.clone(),
+            }),
+            CommandState::Cancelled { reason } => Err(NodeError::CommandCancelled {
+                command_id: self.request.id,
+                reason: reason.clone(),
+            }),
+            state if state.is_terminal_locally() => Err(NodeError::ResultDecoding(format!(
+                "command {} reached {state:?} without a typed result",
+                self.request.id
+            ))),
+            _ => Ok(None),
+        }
+    }
+}
+
 /// Transport-neutral response from a command endpoint.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandResponse {
@@ -476,7 +778,7 @@ pub struct CommandStateSnapshot {
 
 /// Lossless cursor request for one source/service/scope command catalog.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CommandFollowRequest {
+pub struct CommandWatchRequest {
     pub serving_node: NodeId,
     pub source_node: NodeId,
     pub service_id: ServiceId,
@@ -494,35 +796,38 @@ pub struct CommandStateUpdate {
 
 /// Client-side materializer for a snapshot-then-live command catalog.
 pub struct CommandStateStream {
-    request: CommandFollowRequest,
+    request: CommandWatchRequest,
     through: Option<LogPosition>,
     commands: BTreeMap<String, CommandStateEntry>,
 }
 
 /// One decoded application command lifecycle from a typed catalog.
-pub struct DeclaredCommandState<C: MykoCommand> {
+pub struct TypedCommandState<C: MykoCommand> {
     pub admitted_at: LogPosition,
     pub last_changed_at: LogPosition,
-    pub command: DeclaredCommand<C>,
+    pub id: CommandId,
+    pub scope_id: ScopeId,
+    pub principal_id: PrincipalId,
+    pub command: C,
     pub state: CommandState,
     pub result: Option<C::Output>,
     pub updated_at: EventId,
 }
 
 impl CommandStateSnapshot {
-    /// Decodes all current commands using one declared application contract.
+    /// Decodes all current commands using one typed application contract.
     ///
     /// Results retain admission order rather than lexical command-ID order.
     ///
     /// # Errors
     ///
     /// Returns an error if the requested contract or any body/result is invalid.
-    pub fn declared<C: MykoCommand>(&self) -> Result<Vec<DeclaredCommandState<C>>, NodeError> {
-        if self.request.service_id.as_str() != C::SERVICE_ID
+    pub fn typed<C: MykoCommand>(&self) -> Result<Vec<TypedCommandState<C>>, NodeError> {
+        if self.request.service_id.as_str() != C::SERVICE_ID.as_str()
             || self.request.command_type != C::COMMAND_TYPE
         {
             return Err(NodeError::CommandSchemaMismatch {
-                expected_service: C::SERVICE_ID,
+                expected_service: C::SERVICE_ID.as_str(),
                 expected_command: C::COMMAND_TYPE,
                 actual_service: self.request.service_id.as_str().to_owned(),
                 actual_command: self.request.command_type.clone(),
@@ -540,7 +845,7 @@ impl CommandStateSnapshot {
         });
         commands
             .into_iter()
-            .map(decode_declared_command_state::<C>)
+            .map(decode_typed_command_state::<C>)
             .collect()
     }
 
@@ -550,7 +855,7 @@ impl CommandStateSnapshot {
     ///
     /// Returns an error if the snapshot has no resolved source or its request
     /// is not bound to the collected serving-log ceiling.
-    pub fn follow_request(&self) -> Result<CommandFollowRequest, NodeError> {
+    pub fn watch_request(&self) -> Result<CommandWatchRequest, NodeError> {
         let source_node = self.request.source_node.ok_or_else(|| {
             NodeError::InvalidCommandState(
                 "command snapshot did not resolve its authoritative source".to_owned(),
@@ -562,7 +867,7 @@ impl CommandStateSnapshot {
                 "command snapshot is not bound to one complete cursor".to_owned(),
             ));
         }
-        Ok(CommandFollowRequest {
+        Ok(CommandWatchRequest {
             serving_node: self.serving_node,
             source_node,
             service_id: self.request.service_id.clone(),
@@ -611,7 +916,7 @@ impl CommandStateSnapshot {
     }
 }
 
-impl CommandFollowRequest {
+impl CommandWatchRequest {
     /// Filters one durable envelope into this exact command contract.
     #[must_use]
     pub fn update_from_envelope(&self, envelope: &EventEnvelope) -> Option<CommandStateUpdate> {
@@ -637,7 +942,7 @@ impl CommandStateStream {
     /// Returns an error if the snapshot identity, cursor, or entries are
     /// malformed.
     pub fn from_snapshot(snapshot: &CommandStateSnapshot) -> Result<Self, NodeError> {
-        let request = snapshot.follow_request()?;
+        let request = snapshot.watch_request()?;
         let mut commands = BTreeMap::new();
         for entry in &snapshot.commands {
             validate_command_state_entry(&request, snapshot.through, entry)?;
@@ -657,7 +962,7 @@ impl CommandStateStream {
 
     /// Returns the exact remote follow request represented by this stream.
     #[must_use]
-    pub const fn request(&self) -> &CommandFollowRequest {
+    pub const fn request(&self) -> &CommandWatchRequest {
         &self.request
     }
 
@@ -1010,6 +1315,16 @@ pub enum NodeError {
     CommandConflict(CommandId),
     #[error("unknown command ID {0}")]
     UnknownCommand(CommandId),
+    #[error("command ID {command_id} was rejected: {reason}")]
+    CommandRejected {
+        command_id: CommandId,
+        reason: String,
+    },
+    #[error("command ID {command_id} was cancelled: {reason}")]
+    CommandCancelled {
+        command_id: CommandId,
+        reason: String,
+    },
     #[error("command ID {0} is not executing")]
     CommandNotExecuting(CommandId),
     #[error("command ID {command_id} originated on foreign node {origin}")]
@@ -1191,6 +1506,89 @@ impl EventSubscription {
     }
 }
 
+/// Gap-free notification stream for committed application item changes.
+///
+/// Command admission, execution, retry, and cancellation transitions are
+/// intentionally hidden. Application supervisors can use this as an opaque
+/// dependency wakeup without inspecting event envelopes or feeding a
+/// command's own retry lifecycle back into its dispatch loop.
+pub struct ItemChangeSubscription {
+    events: EventSubscription,
+}
+
+impl ItemChangeSubscription {
+    /// Receives the position of the next committed item change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::SubscriptionDisconnected`] if the backend closes.
+    pub fn recv(&mut self) -> Result<LogPosition, NodeError> {
+        loop {
+            let envelope = self.events.recv()?;
+            if event_changes_items(&envelope.event) {
+                return Ok(envelope.position);
+            }
+        }
+    }
+
+    /// Receives the next committed item change until `timeout` elapses.
+    ///
+    /// Unrelated command lifecycle events do not restart the timeout.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::SubscriptionDisconnected`] if the backend closes.
+    pub fn recv_timeout(&mut self, timeout: Duration) -> Result<Option<LogPosition>, NodeError> {
+        let deadline = Instant::now().checked_add(timeout);
+        loop {
+            let remaining = deadline.map_or(timeout, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
+            let Some(envelope) = self.events.recv_timeout(remaining)? else {
+                return Ok(None);
+            };
+            if event_changes_items(&envelope.event) {
+                return Ok(Some(envelope.position));
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(None);
+            }
+        }
+    }
+
+    /// Asynchronously receives the position of the next committed item change.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::SubscriptionDisconnected`] if the backend closes.
+    pub async fn recv_async(&mut self) -> Result<LogPosition, NodeError> {
+        loop {
+            let envelope = self.events.recv_async().await?;
+            if event_changes_items(&envelope.event) {
+                return Ok(envelope.position);
+            }
+        }
+    }
+
+    /// Attempts to receive a committed item change without blocking.
+    #[must_use]
+    pub fn try_recv(&mut self) -> Option<LogPosition> {
+        while let Some(envelope) = self.events.try_recv() {
+            if event_changes_items(&envelope.event) {
+                return Some(envelope.position);
+            }
+        }
+        None
+    }
+}
+
+const fn event_changes_items(event: &NodeEvent) -> bool {
+    matches!(
+        event,
+        NodeEvent::CommandCommitted { batch, .. } if !batch.changes.is_empty()
+    )
+}
+
 /// Gap-free local work feed for one application service or command contract.
 ///
 /// The initial queue is materialized from a bounded history prefix. New local
@@ -1199,17 +1597,18 @@ impl EventSubscription {
 /// this executable feed.
 pub struct PendingCommandSubscription {
     local_node: NodeId,
-    service_id: ServiceId,
+    service_id: Option<ServiceId>,
     command_type: Option<String>,
     pending: VecDeque<CommandSnapshot>,
     events: EventSubscription,
 }
 
 impl PendingCommandSubscription {
-    /// Returns the service whose locally admitted work is observed.
+    /// Returns the exact service filter, or `None` when every local
+    /// application command is observed.
     #[must_use]
-    pub const fn service_id(&self) -> &ServiceId {
-        &self.service_id
+    pub const fn service_id(&self) -> Option<&ServiceId> {
+        self.service_id.as_ref()
     }
 
     /// Returns the exact command filter, or `None` for all service commands.
@@ -1310,7 +1709,10 @@ impl PendingCommandSubscription {
             return None;
         }
         let command = command_from_event(&envelope.event);
-        if command.request.service_id != self.service_id
+        if self
+            .service_id
+            .as_ref()
+            .is_some_and(|expected| command.request.service_id != *expected)
             || self
                 .command_type
                 .as_deref()
@@ -1329,7 +1731,7 @@ impl PendingCommandSubscription {
 fn materialize_pending_local_commands(
     history: &[EventEnvelope],
     local_node: NodeId,
-    service_id: &ServiceId,
+    service_id: Option<&ServiceId>,
     command_type: Option<&str>,
 ) -> VecDeque<CommandSnapshot> {
     let mut current = HashMap::<CommandId, (LogPosition, CommandSnapshot)>::new();
@@ -1338,7 +1740,7 @@ fn materialize_pending_local_commands(
             continue;
         }
         let command = command_from_event(&envelope.event);
-        if command.request.service_id != *service_id
+        if service_id.is_some_and(|expected| command.request.service_id != *expected)
             || command_type.is_some_and(|expected| command.request.command_type != expected)
         {
             continue;
@@ -1486,7 +1888,7 @@ impl ItemStateSnapshot {
     where
         Q: ItemQuery,
     {
-        if self.request.service_id.as_str() != Q::Item::SERVICE_ID
+        if self.request.service_id.as_str() != Q::Item::SERVICE_ID.as_str()
             || self.request.item_type != Q::Item::ITEM_TYPE
             || self.request.schema_version != Q::Item::SCHEMA_VERSION
         {
@@ -1686,7 +2088,7 @@ impl<Q: ItemQuery> ItemQueryStream<Q> {
         snapshot: &ItemStateSnapshot,
         query: Q,
     ) -> Result<(ItemQuerySnapshot<Q::Output>, Self), NodeError> {
-        if snapshot.request.service_id.as_str() != Q::Item::SERVICE_ID
+        if snapshot.request.service_id.as_str() != Q::Item::SERVICE_ID.as_str()
             || snapshot.request.item_type != Q::Item::ITEM_TYPE
             || snapshot.request.schema_version != Q::Item::SCHEMA_VERSION
         {
@@ -1795,7 +2197,7 @@ impl<Q: ItemQuery> ItemQueryStream<Q> {
 }
 
 fn validate_command_state_entry(
-    request: &CommandFollowRequest,
+    request: &CommandWatchRequest,
     through: Option<LogPosition>,
     entry: &CommandStateEntry,
 ) -> Result<(), NodeError> {
@@ -1815,7 +2217,7 @@ fn validate_command_state_entry(
 }
 
 fn validate_command_update(
-    request: &CommandFollowRequest,
+    request: &CommandWatchRequest,
     update: &CommandStateUpdate,
 ) -> Result<(), NodeError> {
     if update.command.updated_at.node_id != request.source_node
@@ -2074,7 +2476,7 @@ pub struct ItemQueryUpdate<T> {
     pub value: T,
 }
 
-/// Replay-then-live typed query materialization for one source/service/scope.
+/// Replay-then-live typed query materialization over a typed projection.
 ///
 /// The application sees generated query results rather than federation
 /// envelopes. Each update is emitted only after its complete atomic batch has
@@ -2082,9 +2484,9 @@ pub struct ItemQueryUpdate<T> {
 pub struct ItemQueryWatch<Q: ItemQuery> {
     query: Q,
     projection: ItemProjection<Q::Item>,
-    source_node: NodeId,
+    source_node: Option<NodeId>,
     service_id: ServiceId,
-    scope_id: ScopeId,
+    scope_id: Option<ScopeId>,
     events: EventSubscription,
 }
 
@@ -2126,6 +2528,38 @@ impl<Q: ItemQuery> ItemQueryWatch<Q> {
         }
     }
 
+    /// Waits up to `timeout` for the next atomic batch that changes this typed
+    /// projection.
+    ///
+    /// Unrelated federation events do not restart the timeout. A timeout is
+    /// reported as `Ok(None)` so synchronous application effects can check
+    /// their shutdown signal without polling the underlying item state.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the subscription closes or matching item history is
+    /// malformed.
+    pub fn recv_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<ItemQueryUpdate<Q::Output>>, NodeError> {
+        let deadline = Instant::now().checked_add(timeout);
+        loop {
+            let remaining = deadline.map_or(timeout, |deadline| {
+                deadline.saturating_duration_since(Instant::now())
+            });
+            let Some(envelope) = self.events.recv_timeout(remaining)? else {
+                return Ok(None);
+            };
+            if let Some(update) = self.apply(&envelope)? {
+                return Ok(Some(update));
+            }
+            if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                return Ok(None);
+            }
+        }
+    }
+
     /// Attempts to receive the next currently buffered relevant update.
     ///
     /// # Errors
@@ -2144,13 +2578,29 @@ impl<Q: ItemQuery> ItemQueryWatch<Q> {
         &mut self,
         envelope: &EventEnvelope,
     ) -> Result<Option<ItemQueryUpdate<Q::Output>>, NodeError> {
-        let changed = apply_item_envelope(
+        let advances_cursor = match &envelope.event {
+            NodeEvent::CommandCommitted { command, .. } => {
+                self.source_node
+                    .is_none_or(|source_node| envelope.origin.node_id == source_node)
+                    && command.request.service_id == self.service_id
+                    && self
+                        .scope_id
+                        .as_ref()
+                        .is_none_or(|scope_id| command.request.scope_id == *scope_id)
+            }
+            NodeEvent::CommandLifecycle(_) => false,
+        };
+        let service_scope = self
+            .scope_id
+            .as_ref()
+            .map(|scope_id| (&self.service_id, scope_id));
+        let _changed = apply_item_envelope(
             &mut self.projection,
             envelope,
-            Some(self.source_node),
-            Some((&self.service_id, &self.scope_id)),
+            self.source_node,
+            service_scope,
         )?;
-        Ok(changed.then(|| ItemQueryUpdate {
+        Ok(advances_cursor.then(|| ItemQueryUpdate {
             position: envelope.position,
             value: self.query.clone().execute(&self.projection),
         }))
@@ -2462,6 +2912,86 @@ pub trait NodeBackend: Send + Sync + 'static {
 #[derive(Clone)]
 pub struct Node {
     backend: Arc<dyn NodeBackend>,
+    readiness: Arc<NodeReadiness>,
+    command_dispatch: Arc<Mutex<()>>,
+}
+
+#[derive(Debug, Default)]
+struct NodeReadiness {
+    startup_gates: AtomicUsize,
+    waiters: Mutex<Vec<Waker>>,
+}
+
+/// RAII ownership of one unfinished node-startup phase.
+///
+/// Every transport waits until all startup gates have been released before it
+/// serves application or federation requests. Dropping the guard releases its
+/// phase, including during error unwinding.
+#[derive(Debug)]
+pub struct NodeStartupGuard {
+    readiness: Arc<NodeReadiness>,
+    released: bool,
+}
+
+impl NodeStartupGuard {
+    /// Completes this startup phase and wakes transports when it was the last.
+    pub fn ready(mut self) {
+        self.release();
+    }
+
+    fn release(&mut self) {
+        if self.released {
+            return;
+        }
+        self.released = true;
+        if self.readiness.startup_gates.fetch_sub(1, Ordering::AcqRel) == 1 {
+            let mut registered = self
+                .readiness
+                .waiters
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let waiters = std::mem::take(&mut *registered);
+            drop(registered);
+            for waiter in waiters {
+                waiter.wake();
+            }
+        }
+    }
+}
+
+impl Drop for NodeStartupGuard {
+    fn drop(&mut self) {
+        self.release();
+    }
+}
+
+struct NodeReadyFuture {
+    readiness: Arc<NodeReadiness>,
+}
+
+impl Future for NodeReadyFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
+        if self.readiness.startup_gates.load(Ordering::Acquire) == 0 {
+            return Poll::Ready(());
+        }
+        let mut waiters = self
+            .readiness
+            .waiters
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.readiness.startup_gates.load(Ordering::Acquire) == 0 {
+            return Poll::Ready(());
+        }
+        if !waiters
+            .iter()
+            .any(|waiter| waiter.will_wake(context.waker()))
+        {
+            waiters.push(context.waker().clone());
+        }
+        Poll::Pending
+    }
 }
 
 impl fmt::Debug for Node {
@@ -2474,14 +3004,16 @@ impl fmt::Debug for Node {
 }
 
 /// A typed application command plus Myko-owned admission metadata.
+#[cfg(test)]
 #[derive(Debug, Clone)]
-pub struct DeclaredCommand<C: MykoCommand> {
-    pub id: CommandId,
-    pub scope_id: ScopeId,
-    pub principal_id: PrincipalId,
-    pub body: C,
+struct DeclaredCommand<C: MykoCommand> {
+    id: CommandId,
+    scope_id: ScopeId,
+    principal_id: PrincipalId,
+    body: C,
 }
 
+#[cfg(test)]
 impl<C: MykoCommand> DeclaredCommand<C> {
     /// Creates a typed command ready for submission through any transport.
     #[must_use]
@@ -2510,26 +3042,22 @@ impl<C: MykoCommand> DeclaredCommand<C> {
                 .map_err(|error| NodeError::CommandEncoding(error.to_string()))?,
         })
     }
-
-    /// Decodes a transport-neutral request using `C`'s declared wire schema.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the service or command identity differs from `C`,
-    /// or if its payload is malformed.
-    pub fn from_request(request: &CommandRequest) -> Result<Self, NodeError> {
-        Ok(Self {
-            id: request.id,
-            scope_id: request.scope_id.clone(),
-            principal_id: request.principal_id.clone(),
-            body: decode_declared_body::<C>(request)?,
-        })
-    }
 }
 
 /// Boxed transport-neutral command operation.
 pub type CommandClientFuture<'a, E> =
     Pin<Box<dyn Future<Output = Result<CommandResponse, E>> + Send + 'a>>;
+
+/// Boxed update from a transport-neutral command lifecycle subscription.
+pub type CommandSubscriptionFuture<'a, E> =
+    Pin<Box<dyn Future<Output = Result<CommandSnapshot, E>> + Send + 'a>>;
+
+/// Boxed setup of one transport-neutral command lifecycle subscription.
+pub type CommandWatchFuture<'a, S, E> = Pin<Box<dyn Future<Output = Result<S, E>> + Send + 'a>>;
+
+/// Boxed typed completion of one submitted application command.
+pub type TypedCommandClientFuture<'a, T, E> =
+    Pin<Box<dyn Future<Output = Result<T, E>> + Send + 'a>>;
 
 /// Common command surface implemented by embedded and remote node clients.
 ///
@@ -2540,8 +3068,10 @@ pub type CommandClientFuture<'a, E> =
 pub trait CommandClient: Send + Sync {
     type Error: From<NodeError> + Send + 'static;
 
-    /// Durably submits without claiming execution.
-    fn submit_command(&self, command: CommandRequest) -> CommandClientFuture<'_, Self::Error>;
+    /// Durably submits one transport-authenticated wire value without claiming execution.
+    #[doc(hidden)]
+    fn submit_submission(&self, command: CommandSubmission)
+    -> CommandClientFuture<'_, Self::Error>;
 
     /// Reads the current durable lifecycle for a stable command ID.
     fn command_state(&self, command_id: CommandId) -> CommandClientFuture<'_, Self::Error>;
@@ -2553,51 +3083,88 @@ pub trait CommandClient: Send + Sync {
         reason: String,
     ) -> CommandClientFuture<'_, Self::Error>;
 
-    /// Encodes and submits a declared application command.
-    fn submit_declared<'a, C>(
-        &'a self,
-        command: &DeclaredCommand<C>,
-    ) -> CommandClientFuture<'a, Self::Error>
+    /// Submits a typed application command without exposing its wire envelope.
+    #[doc(hidden)]
+    fn submit_typed_command<C>(&self, command: C) -> CommandClientFuture<'_, Self::Error>
     where
         Self: Sized,
         C: MykoCommand,
     {
-        let request = command.request().map_err(Self::Error::from);
-        Box::pin(async move { self.submit_command(request?).await })
+        let submission = CommandSubmission::for_command(&command).map_err(Self::Error::from);
+        Box::pin(async move { self.submit_submission(submission?).await })
     }
 }
 
-impl CommandClient for Node {
-    type Error = NodeError;
+/// Current-then-live command lifecycle independent of its transport.
+pub trait CommandSubscription: Send {
+    type Error: From<NodeError> + Send + 'static;
 
-    fn submit_command(&self, command: CommandRequest) -> CommandClientFuture<'_, Self::Error> {
-        let response = self.submit(command).map(|command| CommandResponse {
-            source_node: self.node_id(),
-            command: Some(command),
-        });
-        Box::pin(std::future::ready(response))
-    }
+    /// Returns the latest coherently observed durable state.
+    fn current(&self) -> &CommandSnapshot;
 
-    fn command_state(&self, command_id: CommandId) -> CommandClientFuture<'_, Self::Error> {
-        let response = self.command(command_id).map(|command| CommandResponse {
-            source_node: self.node_id(),
-            command,
-        });
-        Box::pin(std::future::ready(response))
-    }
+    /// Waits for the next durable lifecycle transition.
+    fn recv(&mut self) -> CommandSubscriptionFuture<'_, Self::Error>;
+}
 
-    fn cancel_command(
+/// Command client that can watch one command through its typed result.
+///
+/// The default execution helper owns admission/watch races and typed result
+/// decoding so application clients never inspect command IDs, wire results, or
+/// lifecycle variants.
+pub trait CommandWatchingClient: CommandClient {
+    type Subscription: CommandSubscription<Error = Self::Error>;
+
+    /// Opens a gap-free current-then-live lifecycle subscription.
+    fn watch_command(
         &self,
         command_id: CommandId,
-        reason: String,
-    ) -> CommandClientFuture<'_, Self::Error> {
-        let response = self
-            .cancel(command_id, reason)
-            .map(|command| CommandResponse {
-                source_node: self.node_id(),
-                command: Some(command),
-            });
-        Box::pin(std::future::ready(response))
+    ) -> CommandWatchFuture<'_, Self::Subscription, Self::Error>;
+
+    /// Submits a command and watches it until its typed result is durable.
+    #[doc(hidden)]
+    fn exec_typed_command<C>(
+        &self,
+        command: C,
+    ) -> TypedCommandClientFuture<'_, C::Output, Self::Error>
+    where
+        Self: Sized,
+        C: MykoCommand,
+    {
+        let submission = CommandSubmission::for_command(&command).map_err(Self::Error::from);
+        Box::pin(async move {
+            let submission = submission?;
+            let command_id = submission.id;
+            let response = self.submit_submission(submission).await?;
+            let current = response
+                .command
+                .ok_or_else(|| Self::Error::from(NodeError::UnknownCommand(command_id)))?;
+            if let Some(result) = current.typed_completion::<C>().map_err(Self::Error::from)? {
+                return Ok(result);
+            }
+            let mut subscription = self.watch_command(command_id).await?;
+            loop {
+                if let Some(result) = subscription
+                    .current()
+                    .typed_completion::<C>()
+                    .map_err(Self::Error::from)?
+                {
+                    return Ok(result);
+                }
+                let _updated = subscription.recv().await?;
+            }
+        })
+    }
+}
+
+impl CommandSubscription for CommandWatch {
+    type Error = NodeError;
+
+    fn current(&self) -> &CommandSnapshot {
+        &self.current
+    }
+
+    fn recv(&mut self) -> CommandSubscriptionFuture<'_, Self::Error> {
+        Box::pin(self.recv_async())
     }
 }
 
@@ -2800,6 +3367,20 @@ pub struct CommandDispatchResult {
     pub disposition: CommandDispatchDisposition,
 }
 
+impl CommandDispatchResult {
+    /// Returns the framework-owned stable identity without exposing its wire request.
+    #[must_use]
+    pub const fn command_id(&self) -> CommandId {
+        self.command.request.id
+    }
+
+    /// Returns the current durable lifecycle without exposing its wire request.
+    #[must_use]
+    pub const fn state(&self) -> &CommandState {
+        &self.command.state
+    }
+}
+
 /// Myko-owned execution context paired with a decoded command body.
 #[derive(Debug)]
 pub struct DeclaredCommandContext<C: MykoCommand> {
@@ -2812,6 +3393,13 @@ impl<C: MykoCommand> DeclaredCommandContext<C> {
     #[must_use]
     pub const fn body(&self) -> &C {
         &self.body
+    }
+
+    /// Returns a cloneable atomic command capability substrate.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn command_context(&self) -> &CommandContext {
+        &self.inner
     }
 
     /// Returns the immutable Myko request metadata.
@@ -2876,9 +3464,11 @@ impl<C: MykoCommand> DeclaredCommandContext<C> {
 }
 
 fn decode_declared_body<C: MykoCommand>(request: &CommandRequest) -> Result<C, NodeError> {
-    if request.service_id.as_str() != C::SERVICE_ID || request.command_type != C::COMMAND_TYPE {
+    if request.service_id.as_str() != C::SERVICE_ID.as_str()
+        || request.command_type != C::COMMAND_TYPE
+    {
         return Err(NodeError::CommandSchemaMismatch {
-            expected_service: C::SERVICE_ID,
+            expected_service: C::SERVICE_ID.as_str(),
             expected_command: C::COMMAND_TYPE,
             actual_service: request.service_id.as_str().to_owned(),
             actual_command: request.command_type.clone(),
@@ -2888,10 +3478,10 @@ fn decode_declared_body<C: MykoCommand>(request: &CommandRequest) -> Result<C, N
         .map_err(|error| NodeError::CommandDecoding(error.to_string()))
 }
 
-fn decode_declared_command_state<C: MykoCommand>(
+fn decode_typed_command_state<C: MykoCommand>(
     entry: &CommandStateEntry,
-) -> Result<DeclaredCommandState<C>, NodeError> {
-    let command = DeclaredCommand::<C>::from_request(&entry.command.request)?;
+) -> Result<TypedCommandState<C>, NodeError> {
+    let command = entry.command.request.command::<C>()?;
     let result = entry
         .command
         .result
@@ -2899,9 +3489,12 @@ fn decode_declared_command_state<C: MykoCommand>(
         .map(serde_json::from_slice)
         .transpose()
         .map_err(|error| NodeError::ResultDecoding(error.to_string()))?;
-    Ok(DeclaredCommandState {
+    Ok(TypedCommandState {
         admitted_at: entry.admitted_at,
         last_changed_at: entry.last_changed_at,
+        id: entry.command.request.id,
+        scope_id: entry.command.request.scope_id.clone(),
+        principal_id: entry.command.request.principal_id.clone(),
         command,
         state: entry.command.state.clone(),
         result,
@@ -2923,11 +3516,11 @@ pub enum TypedCommandAdmission {
 /// Handlers emit typed item sets/deletes and a typed result. Myko supplies the
 /// batch identity, service/scope identity, causal parent, serialization,
 /// validation, and durable commit.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CommandContext {
     node: Node,
     command: CommandSnapshot,
-    changes: Vec<ItemMutation>,
+    changes: Arc<Mutex<Vec<ItemMutation>>>,
 }
 
 impl CommandContext {
@@ -2937,10 +3530,23 @@ impl CommandContext {
         &self.command.request
     }
 
-    /// Returns how many typed mutations this command has emitted.
+    /// Returns the node executing this command.
+    #[doc(hidden)]
     #[must_use]
-    pub const fn change_count(&self) -> usize {
-        self.changes.len()
+    pub const fn node(&self) -> &Node {
+        &self.node
+    }
+
+    /// Returns how many typed mutations this command has emitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the shared atomic mutation batch is unavailable.
+    pub fn change_count(&self) -> Result<usize, NodeError> {
+        self.changes
+            .lock()
+            .map(|changes| changes.len())
+            .map_err(|_| NodeError::Poisoned)
     }
 
     /// Adds a typed item replacement to this command's atomic batch.
@@ -2948,9 +3554,9 @@ impl CommandContext {
     /// # Errors
     ///
     /// Returns an error if the item cannot be encoded.
-    pub fn emit_set<T: MykoItem>(&mut self, item: &T) -> Result<(), NodeError> {
+    pub fn emit_set<T: MykoItem>(&self, item: &T) -> Result<(), NodeError> {
         self.require_item_service::<T>()?;
-        self.changes.push(
+        self.changes.lock().map_err(|_| NodeError::Poisoned)?.push(
             ItemMutation::set(item)
                 .map_err(|error| NodeError::InvalidItemMutation(error.to_string()))?,
         );
@@ -2962,9 +3568,12 @@ impl CommandContext {
     /// # Errors
     ///
     /// Returns an error if the item belongs to another service.
-    pub fn emit_delete<T: MykoItem>(&mut self, id: &T::Id) -> Result<(), NodeError> {
+    pub fn emit_delete<T: MykoItem>(&self, id: &T::Id) -> Result<(), NodeError> {
         self.require_item_service::<T>()?;
-        self.changes.push(ItemMutation::delete::<T>(id));
+        self.changes
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .push(ItemMutation::delete::<T>(id));
         Ok(())
     }
 
@@ -2984,10 +3593,10 @@ impl CommandContext {
     }
 
     fn require_item_service<T: MykoItem>(&self) -> Result<(), NodeError> {
-        if self.command.request.service_id.as_str() != T::SERVICE_ID {
+        if self.command.request.service_id.as_str() != T::SERVICE_ID.as_str() {
             return Err(NodeError::ItemServiceMismatch {
                 command_service: self.command.request.service_id.as_str().to_owned(),
-                item_service: T::SERVICE_ID,
+                item_service: T::SERVICE_ID.as_str(),
             });
         }
         Ok(())
@@ -3011,6 +3620,11 @@ impl CommandContext {
     ///
     /// Returns an error if the durable commit fails.
     pub fn commit_bytes(self, result: Vec<u8>) -> Result<CommandSnapshot, NodeError> {
+        let changes = self
+            .changes
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .clone();
         self.node.commit(
             self.command.request.id,
             ChangeBatch {
@@ -3019,7 +3633,7 @@ impl CommandContext {
                 service_id: self.command.request.service_id.clone(),
                 scope_id: self.command.request.scope_id.clone(),
                 causal_parents: vec![self.command.updated_at],
-                changes: self.changes,
+                changes,
             },
             result,
         )
@@ -3071,7 +3685,36 @@ impl Node {
     /// Creates a node around a storage plugin.
     #[must_use]
     pub fn with_backend(backend: Arc<dyn NodeBackend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            readiness: Arc::new(NodeReadiness::default()),
+            command_dispatch: Arc::new(Mutex::new(())),
+        }
+    }
+
+    /// Holds the node below its startup-ready barrier until the guard is
+    /// completed or dropped.
+    #[must_use]
+    pub fn hold_startup(&self) -> NodeStartupGuard {
+        self.readiness.startup_gates.fetch_add(1, Ordering::AcqRel);
+        NodeStartupGuard {
+            readiness: Arc::clone(&self.readiness),
+            released: false,
+        }
+    }
+
+    /// Returns whether every declared startup phase has completed.
+    #[must_use]
+    pub fn is_ready(&self) -> bool {
+        self.readiness.startup_gates.load(Ordering::Acquire) == 0
+    }
+
+    /// Waits without polling until every declared startup phase has completed.
+    pub async fn wait_until_ready(&self) {
+        NodeReadyFuture {
+            readiness: Arc::clone(&self.readiness),
+        }
+        .await;
     }
 
     /// Returns the stable node identity.
@@ -3089,17 +3732,37 @@ impl Node {
         self.backend.submit(request)
     }
 
-    /// Durably submits a declared application command without executing it.
+    /// Durably submits a typed application command without executing it.
     ///
     /// # Errors
     ///
     /// Returns an error if its body cannot be encoded, storage fails, or its
     /// stable identity conflicts with a different request.
-    pub fn submit_declared<C: MykoCommand>(
+    pub fn submit_command<C: MykoCommand>(
         &self,
-        command: &DeclaredCommand<C>,
+        scope_id: ScopeId,
+        command: &C,
     ) -> Result<CommandSnapshot, NodeError> {
-        self.submit(command.request()?)
+        self.submit_authenticated_command(
+            scope_id,
+            PrincipalId::new(format!("node:{}", self.node_id())),
+            command,
+        )
+    }
+
+    /// Submits through a principal already authenticated by a Myko session.
+    #[doc(hidden)]
+    pub fn submit_authenticated_command<C: MykoCommand>(
+        &self,
+        scope_id: ScopeId,
+        principal_id: PrincipalId,
+        command: &C,
+    ) -> Result<CommandSnapshot, NodeError> {
+        self.submit(CommandRequest::for_command(
+            scope_id,
+            principal_id,
+            command,
+        )?)
     }
 
     /// Atomically claims a submitted command for a local handler.
@@ -3132,7 +3795,7 @@ impl Node {
             CommandAdmission::Execute(command) => TypedCommandAdmission::Execute(CommandContext {
                 node: self.clone(),
                 command,
-                changes: Vec::new(),
+                changes: Arc::new(Mutex::new(Vec::new())),
             }),
             CommandAdmission::Resume(command) => TypedCommandAdmission::Resume(command),
         })
@@ -3278,7 +3941,7 @@ impl Node {
         ))
     }
 
-    /// Waits for a command to become visible, then follows its lifecycle
+    /// Waits for a command to become visible, then watches its lifecycle
     /// without a visibility-to-subscribe race.
     ///
     /// This is the local-node path for a command submitted through another
@@ -3370,10 +4033,23 @@ impl Node {
         Ok(materialize_pending_local_commands(
             &history,
             self.node_id(),
-            &ServiceId::new(service_id),
+            Some(&ServiceId::new(service_id)),
             None,
         )
         .into())
+    }
+
+    /// Returns every locally originated submitted application command in its
+    /// original admission order, preserving order across services and command
+    /// types.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when history or current command state cannot be read,
+    /// or when history references a command missing from the projection.
+    pub fn pending_local_application_commands(&self) -> Result<Vec<CommandSnapshot>, NodeError> {
+        let history = self.events_after(None)?;
+        Ok(materialize_pending_local_commands(&history, self.node_id(), None, None).into())
     }
 
     /// Starts a gap-free work feed for every locally originated command in one
@@ -3391,7 +4067,24 @@ impl Node {
         &self,
         service_id: impl Into<String>,
     ) -> Result<PendingCommandSubscription, NodeError> {
-        self.watch_pending_local_commands(ServiceId::new(service_id), None)
+        self.watch_pending_local_commands(Some(ServiceId::new(service_id)), None)
+    }
+
+    /// Starts a gap-free work feed for every locally originated application
+    /// command, regardless of service or concrete operation.
+    ///
+    /// This is the framework-facing feed used by a composed application
+    /// runtime. Applications should consume their generated handler registry
+    /// rather than splitting this feed back into manually named services.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when history cannot be read or a lossless event
+    /// subscription cannot be established.
+    pub fn watch_pending_local_application_commands(
+        &self,
+    ) -> Result<PendingCommandSubscription, NodeError> {
+        self.watch_pending_local_commands(None, None)
     }
 
     /// Starts a gap-free work feed for one declared command contract.
@@ -3404,18 +4097,34 @@ impl Node {
     ///
     /// Returns an error when history cannot be read or a lossless event
     /// subscription cannot be established.
-    pub fn watch_pending_declared<C: MykoCommand>(
+    pub fn watch_pending_typed<C: MykoCommand>(
         &self,
     ) -> Result<PendingCommandSubscription, NodeError> {
         self.watch_pending_local_commands(
-            ServiceId::new(C::SERVICE_ID),
+            Some(ServiceId::new(C::SERVICE_ID)),
             Some(C::COMMAND_TYPE.to_owned()),
         )
     }
 
+    /// Returns every locally executable command body of one typed contract.
+    ///
+    /// Myko owns service/type filtering and typed request decoding; application
+    /// code receives typed values instead of rebuilding wire checks.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when pending history cannot be read or a matching
+    /// command does not satisfy its declared wire contract.
+    pub fn pending_typed<C: MykoCommand>(&self) -> Result<Vec<C>, NodeError> {
+        self.pending_local_commands(C::SERVICE_ID.as_str(), C::COMMAND_TYPE)?
+            .iter()
+            .map(|command| command.request.command::<C>())
+            .collect()
+    }
+
     fn watch_pending_local_commands(
         &self,
-        service_id: ServiceId,
+        service_id: Option<ServiceId>,
         command_type: Option<String>,
     ) -> Result<PendingCommandSubscription, NodeError> {
         let history = self.events_after(None)?;
@@ -3425,7 +4134,7 @@ impl Node {
         let pending = materialize_pending_local_commands(
             &history,
             local_node,
-            &service_id,
+            service_id.as_ref(),
             command_type.as_deref(),
         );
         Ok(PendingCommandSubscription {
@@ -3451,6 +4160,13 @@ impl Node {
         C: MykoCommand,
         F: FnOnce(&mut DeclaredCommandContext<C>) -> Result<C::Output, CommandHandlerError>,
     {
+        // Claim, execute, and commit are one process-local ownership interval.
+        // A competing synchronous caller must observe the terminal result, not
+        // the transient `Executing` snapshot produced by the retained driver.
+        let _dispatch = self
+            .command_dispatch
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?;
         match self.begin_declared_command::<C>(command_id) {
             Ok(DeclaredCommandAdmission::Execute(mut context)) => {
                 let handled = handle(&mut context);
@@ -3520,7 +4236,7 @@ impl Node {
         F: FnMut(&mut DeclaredCommandContext<C>) -> Result<C::Output, CommandHandlerError>,
     {
         let mut results = Vec::new();
-        for pending in self.pending_local_commands(C::SERVICE_ID, C::COMMAND_TYPE)? {
+        for pending in self.pending_local_commands(C::SERVICE_ID.as_str(), C::COMMAND_TYPE)? {
             results.push(
                 self.dispatch_declared_command::<C, _>(pending.request.id, |context| {
                     handle(context)
@@ -3814,6 +4530,60 @@ impl Node {
             .query(query))
     }
 
+    /// Executes a typed query within one application service and federation
+    /// scope across every authoritative source represented in this node.
+    ///
+    /// This preserves source provenance during ingestion while allowing
+    /// naturally federated application state, such as an agent mailbox, to be
+    /// consumed without decoding raw history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when scoped item state cannot be materialized.
+    pub fn query_items_across_sources_in<Q>(
+        &self,
+        scope_id: &ScopeId,
+        query: Q,
+    ) -> Result<Q::Output, NodeError>
+    where
+        Q: ItemQuery,
+    {
+        let service_id = ServiceId::new(Q::Item::SERVICE_ID);
+        Ok(self
+            .project_items_matching::<Q::Item>(None, Some((&service_id, scope_id)))?
+            .query(query))
+    }
+
+    /// Returns authoritative sources that have changed one typed item schema
+    /// in the requested service scope.
+    ///
+    /// Source discovery is derived inside the framework so applications never
+    /// inspect command envelopes or serialized mutation payloads.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when durable history cannot be read.
+    pub fn item_sources_in<T: MykoItem>(
+        &self,
+        scope_id: &ScopeId,
+    ) -> Result<Vec<NodeId>, NodeError> {
+        let mut sources = BTreeMap::new();
+        for envelope in self.events_after(None)? {
+            let NodeEvent::CommandCommitted { command, batch } = envelope.event else {
+                continue;
+            };
+            if command.request.service_id.as_str() == T::SERVICE_ID.as_str()
+                && command.request.scope_id == *scope_id
+                && batch.changes.iter().any(ItemMutation::is::<T>)
+            {
+                sources
+                    .entry(envelope.origin.node_id.to_string())
+                    .or_insert(envelope.origin.node_id);
+            }
+        }
+        Ok(sources.into_values().collect())
+    }
+
     /// Starts a gap-free replay-then-live typed query watch within one source,
     /// application service, and federation scope.
     ///
@@ -3856,9 +4626,100 @@ impl Node {
             ItemQueryWatch {
                 query,
                 projection,
-                source_node,
+                source_node: Some(source_node),
                 service_id,
-                scope_id,
+                scope_id: Some(scope_id),
+                events,
+            },
+        ))
+    }
+
+    /// Opens a gap-free typed query across every scope owned by one source.
+    ///
+    /// The returned snapshot and watch share one event-log boundary. Retaining
+    /// the watch therefore observes every later matching commit without
+    /// polling or a snapshot/subscription race.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if history cannot be projected or its live
+    /// continuation cannot be opened.
+    pub fn watch_items_from<Q>(
+        &self,
+        source_node: NodeId,
+        query: Q,
+    ) -> Result<(ItemQuerySnapshot<Q::Output>, ItemQueryWatch<Q>), NodeError>
+    where
+        Q: ItemQuery,
+    {
+        let service_id = ServiceId::new(Q::Item::SERVICE_ID);
+        let history = self.events_after(None)?;
+        let through = history.last().map(|envelope| envelope.position);
+        let mut projection = ItemProjection::default();
+        for envelope in &history {
+            let _changed = apply_item_envelope(&mut projection, envelope, Some(source_node), None)?;
+        }
+        let snapshot = ItemQuerySnapshot {
+            through,
+            value: query.clone().execute(&projection),
+        };
+        let events = self.subscribe(through)?;
+        Ok((
+            snapshot,
+            ItemQueryWatch {
+                query,
+                projection,
+                source_node: Some(source_node),
+                service_id,
+                scope_id: None,
+                events,
+            },
+        ))
+    }
+
+    /// Starts a gap-free typed query watch within one application service and
+    /// federation scope across every authoritative source represented here.
+    ///
+    /// Newly ingested events from any source enter the same typed projection;
+    /// callers never need to inspect federation envelopes or poll for sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when history cannot be read, a matching item mutation
+    /// is malformed, or the subscription cannot be established.
+    pub fn watch_items_across_sources_in<Q>(
+        &self,
+        scope_id: ScopeId,
+        query: Q,
+    ) -> Result<(ItemQuerySnapshot<Q::Output>, ItemQueryWatch<Q>), NodeError>
+    where
+        Q: ItemQuery,
+    {
+        let service_id = ServiceId::new(Q::Item::SERVICE_ID);
+        let history = self.events_after(None)?;
+        let through = history.last().map(|envelope| envelope.position);
+        let mut projection = ItemProjection::default();
+        for envelope in &history {
+            let _changed = apply_item_envelope(
+                &mut projection,
+                envelope,
+                None,
+                Some((&service_id, &scope_id)),
+            )?;
+        }
+        let snapshot = ItemQuerySnapshot {
+            through,
+            value: query.clone().execute(&projection),
+        };
+        let events = self.subscribe(through)?;
+        Ok((
+            snapshot,
+            ItemQueryWatch {
+                query,
+                projection,
+                source_node: None,
+                service_id,
+                scope_id: Some(scope_id),
                 events,
             },
         ))
@@ -3909,6 +4770,20 @@ impl Node {
             .last()
             .map(|envelope| envelope.position);
         self.subscribe(through)
+    }
+
+    /// Starts a gap-free opaque notification stream for application item changes.
+    ///
+    /// Existing history establishes the durable boundary but is not replayed.
+    /// Command-only lifecycle transitions are filtered inside Myko, so callers
+    /// never need to inspect wire envelopes or command identities.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when history or the backend subscription cannot be read.
+    pub fn subscribe_item_changes_from_now(&self) -> Result<ItemChangeSubscription, NodeError> {
+        self.subscribe_from_now()
+            .map(|events| ItemChangeSubscription { events })
     }
 
     /// Idempotently ingests an immutable event received from another node.
@@ -4607,28 +5482,107 @@ impl NodeBackend for InMemoryBackend {
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use myko_items::{myko_command, myko_item};
+    use myko_items::{myko_item, myko_service};
 
-    #[myko_item(service = "agent", scope_root)]
+    #[test]
+    fn startup_gates_are_shared_by_every_node_clone() {
+        let node = Node::in_memory();
+        let peer_handle = node.clone();
+        assert!(node.is_ready());
+
+        let startup = node.hold_startup();
+        assert!(!node.is_ready());
+        assert!(!peer_handle.is_ready());
+
+        startup.ready();
+        assert!(node.is_ready());
+        assert!(peer_handle.is_ready());
+    }
+
+    #[test]
+    fn scope_grants_are_directional_and_require_subscription_explicitly() {
+        let scope_id = ScopeId::new("project:pine");
+        let principal = PrincipalId::new("iroh:node-b");
+        let policy = ScopeGrantPolicy::new(vec![ScopeGrant {
+            scope_id: scope_id.clone(),
+            grantee: principal.clone(),
+            permissions: vec![FederationPermission::ReadState],
+        }]);
+        let read = AccessRequest {
+            principal_id: principal,
+            operation: AccessOperation::ReadItems,
+            service_id: None,
+            scope_id: Some(scope_id),
+            command_id: None,
+            command_type: None,
+            command_principal_id: None,
+            live_topics: Vec::new(),
+        };
+        assert!(policy.authorize(&read).is_ok());
+
+        let mut follow = read.clone();
+        follow.operation = AccessOperation::FollowItems;
+        assert!(policy.authorize(&follow).is_err());
+        let mut wrong_principal = read;
+        wrong_principal.principal_id = PrincipalId::new("iroh:node-c");
+        assert!(policy.authorize(&wrong_principal).is_err());
+    }
+
+    #[myko_service(TestRecord, TestMarker)]
+    pub struct TestService;
+
+    #[myko_item(service = TestService, scope_root)]
     pub struct TestRecord {
         pub value: String,
     }
 
-    #[myko_command(service = "agent", name = "agent.put_record", result = bool)]
+    #[myko_item(service = TestService, scope_root)]
+    pub struct TestMarker {
+        pub value: String,
+    }
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct PutRecord {
         pub id: String,
         pub value: String,
     }
 
-    #[myko_command(service = "other", name = "other.command")]
+    impl MykoOperation for PutRecord {
+        const OPERATION_ID: &'static str = stringify!(PutRecord);
+    }
+
+    impl MykoCommandContract for PutRecord {
+        type Output = bool;
+        type Service = TestService;
+        type Scope = TestRecord;
+    }
+
+    impl MykoCommand for PutRecord {}
+
+    #[derive(Clone, Debug, Serialize, Deserialize)]
     pub struct OtherCommand {
         pub value: String,
     }
 
-    #[myko_item(service = "other")]
+    #[myko_service(OtherRecord)]
+    pub struct OtherService;
+
+    #[myko_item(service = OtherService)]
     pub struct OtherRecord {
         pub value: String,
     }
+
+    impl MykoOperation for OtherCommand {
+        const OPERATION_ID: &'static str = stringify!(OtherCommand);
+    }
+
+    impl MykoCommandContract for OtherCommand {
+        type Output = ();
+        type Service = OtherService;
+        type Scope = OtherRecord;
+    }
+
+    impl MykoCommand for OtherCommand {}
 
     struct FailingJournal {
         node_id: NodeId,
@@ -4651,7 +5605,7 @@ mod tests {
     fn request(id: CommandId) -> CommandRequest {
         CommandRequest {
             id,
-            service_id: ServiceId::new("agent"),
+            service_id: ServiceId::new(TestService::SERVICE_ID),
             scope_id: ScopeId::new("session:test"),
             principal_id: PrincipalId::new("human:test"),
             command_type: "prompt".to_owned(),
@@ -4678,7 +5632,12 @@ mod tests {
     }
 
     fn commit_test_record(node: &Node, id: &str, value: &str) -> TestRecord {
-        let request = request(CommandId::new());
+        commit_test_record_in(node, ScopeId::new("session:test"), id, value)
+    }
+
+    fn commit_test_record_in(node: &Node, scope_id: ScopeId, id: &str, value: &str) -> TestRecord {
+        let mut request = request(CommandId::new());
+        request.scope_id = scope_id;
         let executing = node.admit(request.clone()).unwrap().snapshot().clone();
         let record = TestRecord {
             id: TestRecordId::from(id),
@@ -4700,6 +5659,28 @@ mod tests {
         record
     }
 
+    fn commit_test_marker(node: &Node, id: &str, value: &str) {
+        let request = request(CommandId::new());
+        let executing = node.admit(request.clone()).unwrap().snapshot().clone();
+        let marker = TestMarker {
+            id: TestMarkerId::from(id),
+            value: value.to_owned(),
+        };
+        node.commit(
+            request.id,
+            ChangeBatch {
+                id: BatchId::new(),
+                command_id: request.id,
+                service_id: request.service_id,
+                scope_id: request.scope_id,
+                causal_parents: vec![executing.updated_at],
+                changes: vec![ItemMutation::set(&marker).unwrap()],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    }
+
     #[test]
     fn stable_command_id_executes_once_and_resumes_after_commit() {
         let node = Node::in_memory();
@@ -4716,7 +5697,7 @@ mod tests {
     }
 
     #[test]
-    fn command_watch_starts_current_then_follows_without_a_gap() {
+    fn command_watch_starts_current_then_updates_without_a_gap() {
         let node = Node::in_memory();
         let request = request(CommandId::new());
         node.submit(request.clone()).unwrap();
@@ -4763,8 +5744,8 @@ mod tests {
                 value: "third".to_owned(),
             },
         );
-        node.submit_declared(&first).unwrap();
-        node.submit_declared(&third).unwrap();
+        node.submit(first.request().unwrap()).unwrap();
+        node.submit(third.request().unwrap()).unwrap();
 
         let first_page = node
             .command_state_page(
@@ -4792,7 +5773,7 @@ mod tests {
                 value: "too late for this snapshot".to_owned(),
             },
         );
-        node.submit_declared(&concurrent).unwrap();
+        node.submit(concurrent.request().unwrap()).unwrap();
         let next = next.unwrap();
         assert_eq!(next.snapshot_through, through);
         let second_page = node.command_state_page(next.clone()).unwrap();
@@ -4800,10 +5781,10 @@ mod tests {
         assert!(snapshot.append_page(&next, second_page).unwrap().is_none());
         assert_eq!(
             snapshot
-                .declared::<PutRecord>()
+                .typed::<PutRecord>()
                 .unwrap()
                 .into_iter()
-                .map(|entry| entry.command.id)
+                .map(|entry| entry.id)
                 .collect::<Vec<_>>(),
             vec![first.id, third.id]
         );
@@ -4832,7 +5813,7 @@ mod tests {
                 value: "first".to_owned(),
             },
         );
-        node.submit_declared(&first).unwrap();
+        node.submit(first.request().unwrap()).unwrap();
         let DeclaredCommandAdmission::Execute(context) =
             node.begin_declared_command::<PutRecord>(first.id).unwrap()
         else {
@@ -4848,29 +5829,26 @@ mod tests {
                 value: "second".to_owned(),
             },
         );
-        node.submit_declared(&second).unwrap();
+        node.submit(second.request().unwrap()).unwrap();
 
         let catalog = node
             .command_states(CommandStateRequest::for_serving_declared::<PutRecord>(
                 scope_id,
             ))
             .unwrap()
-            .declared::<PutRecord>()
+            .typed::<PutRecord>()
             .unwrap();
         assert_eq!(
-            catalog
-                .iter()
-                .map(|entry| entry.command.id)
-                .collect::<Vec<_>>(),
+            catalog.iter().map(|entry| entry.id).collect::<Vec<_>>(),
             vec![first.id, second.id]
         );
         if let [first_state, second_state] = catalog.as_slice() {
-            assert_eq!(first_state.command.body.id, first.body.id);
-            assert_eq!(first_state.command.body.value, first.body.value);
+            assert_eq!(first_state.command.id, first.body.id);
+            assert_eq!(first_state.command.value, first.body.value);
             assert_eq!(first_state.result, Some(true));
             assert!(first_state.state.is_committed());
-            assert_eq!(second_state.command.body.id, second.body.id);
-            assert_eq!(second_state.command.body.value, second.body.value);
+            assert_eq!(second_state.command.id, second.body.id);
+            assert_eq!(second_state.command.value, second.body.value);
             assert_eq!(second_state.result, None);
             assert_eq!(second_state.state, CommandState::Submitted);
         } else {
@@ -4890,7 +5868,7 @@ mod tests {
                 value: "cancel me".to_owned(),
             },
         );
-        source.submit_declared(&command).unwrap();
+        source.submit(command.request().unwrap()).unwrap();
         source.claim(command.id).unwrap();
         source.cancel(command.id, "stopped").unwrap();
 
@@ -4929,7 +5907,7 @@ mod tests {
                 value: "first".to_owned(),
             },
         );
-        node.submit_declared(&first).unwrap();
+        node.submit(first.request().unwrap()).unwrap();
         let snapshot = node
             .command_states(CommandStateRequest::for_serving_declared::<PutRecord>(
                 scope_id.clone(),
@@ -4945,7 +5923,7 @@ mod tests {
                 value: "second".to_owned(),
             },
         );
-        node.submit_declared(&second).unwrap();
+        node.submit(second.request().unwrap()).unwrap();
         node.claim(second.id).unwrap();
 
         let events = node.events_after(snapshot.through).unwrap();
@@ -4956,12 +5934,9 @@ mod tests {
             };
             let _current = stream.apply(&update).unwrap();
         }
-        let current = stream.current().declared::<PutRecord>().unwrap();
+        let current = stream.current().typed::<PutRecord>().unwrap();
         assert_eq!(
-            current
-                .iter()
-                .map(|entry| entry.command.id)
-                .collect::<Vec<_>>(),
+            current.iter().map(|entry| entry.id).collect::<Vec<_>>(),
             vec![first.id, second.id]
         );
         if let [first_state, second_state] = current.as_slice() {
@@ -4986,7 +5961,7 @@ mod tests {
         node.submit(request.clone()).unwrap();
         let admission = node.begin_command(request.id).unwrap();
         assert!(matches!(&admission, TypedCommandAdmission::Execute(_)));
-        let TypedCommandAdmission::Execute(mut context) = admission else {
+        let TypedCommandAdmission::Execute(context) = admission else {
             return;
         };
         assert!(context.query(GetAllTestRecords).unwrap().is_empty());
@@ -4995,7 +5970,7 @@ mod tests {
             value: "owned by Myko".to_owned(),
         };
         context.emit_set(&record).unwrap();
-        assert_eq!(context.change_count(), 1);
+        assert_eq!(context.change_count(), Ok(1));
         let committed = context.commit(&true).unwrap();
         assert_eq!(committed.result.as_deref(), Some(b"true".as_slice()));
         assert_eq!(
@@ -5014,7 +5989,7 @@ mod tests {
         let node = Node::in_memory();
         let request = request(CommandId::new());
         let _submitted = node.submit(request.clone()).unwrap();
-        let mut context = match node.begin_command(request.id).unwrap() {
+        let context = match node.begin_command(request.id).unwrap() {
             TypedCommandAdmission::Execute(context) => context,
             TypedCommandAdmission::Resume(_) => return,
         };
@@ -5025,25 +6000,25 @@ mod tests {
         assert!(matches!(
             context.emit_set(&record),
             Err(NodeError::ItemServiceMismatch {
-                item_service: "other",
+                item_service,
                 ..
-            })
+            }) if item_service == OtherService::SERVICE_ID.as_str()
         ));
         assert!(matches!(
             context.emit_delete::<OtherRecord>(&record.id),
             Err(NodeError::ItemServiceMismatch {
-                item_service: "other",
+                item_service,
                 ..
-            })
+            }) if item_service == OtherService::SERVICE_ID.as_str()
         ));
         assert!(matches!(
             context.query(GetAllOtherRecords),
             Err(NodeError::ItemServiceMismatch {
-                item_service: "other",
+                item_service,
                 ..
-            })
+            }) if item_service == OtherService::SERVICE_ID.as_str()
         ));
-        assert_eq!(context.change_count(), 0);
+        assert_eq!(context.change_count(), Ok(0));
         let _rejected = context.reject("test complete").unwrap();
     }
 
@@ -5100,7 +6075,7 @@ mod tests {
                 value: "declared command".to_owned(),
             },
         );
-        node.submit_declared(&command).unwrap();
+        node.submit(command.request().unwrap()).unwrap();
         let admission = node
             .begin_declared_command::<PutRecord>(command.id)
             .unwrap();
@@ -5128,6 +6103,72 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_declared_dispatch_resumes_only_after_the_owner_commits() {
+        let node = Node::in_memory();
+        let command = DeclaredCommand::new(
+            CommandId::new(),
+            ScopeId::new("session:test"),
+            PrincipalId::new("human:test"),
+            PutRecord {
+                id: "record-1".to_owned(),
+                value: "owned execution".to_owned(),
+            },
+        );
+        node.submit(command.request().unwrap()).unwrap();
+
+        let (owner_started_tx, owner_started_rx) = std::sync::mpsc::channel();
+        let (release_owner_tx, release_owner_rx) = std::sync::mpsc::channel();
+        let owner_node = node.clone();
+        let command_id = command.id;
+        let owner_thread = std::thread::spawn(move || {
+            owner_node.dispatch_declared_command::<PutRecord, _>(command_id, |_| {
+                owner_started_tx.send(()).unwrap();
+                release_owner_rx.recv().unwrap();
+                Ok(true)
+            })
+        });
+        owner_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+
+        let (contender_started_tx, contender_started_rx) = std::sync::mpsc::channel();
+        let (contender_result_tx, contender_result_rx) = std::sync::mpsc::channel();
+        let contender_node = node;
+        let contender = std::thread::spawn(move || {
+            contender_started_tx.send(()).unwrap();
+            let result =
+                contender_node.dispatch_declared_command::<PutRecord, _>(command_id, |_| Ok(false));
+            contender_result_tx.send(result).unwrap();
+        });
+        contender_started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        assert!(
+            contender_result_rx
+                .recv_timeout(Duration::from_millis(25))
+                .is_err()
+        );
+
+        release_owner_tx.send(()).unwrap();
+        let owner_result = owner_thread.join().unwrap().unwrap();
+        let resumed = contender_result_rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        contender.join().unwrap();
+
+        assert_eq!(
+            owner_result.disposition,
+            CommandDispatchDisposition::Committed
+        );
+        assert_eq!(resumed.disposition, CommandDispatchDisposition::Resumed);
+        assert_eq!(
+            resumed.command.typed_completion::<PutRecord>().unwrap(),
+            Some(true)
+        );
+    }
+
+    #[test]
     fn declared_command_schema_mismatch_does_not_claim_execution() {
         let node = Node::in_memory();
         let command = DeclaredCommand::new(
@@ -5139,7 +6180,7 @@ mod tests {
                 value: "not other".to_owned(),
             },
         );
-        node.submit_declared(&command).unwrap();
+        node.submit(command.request().unwrap()).unwrap();
         assert!(matches!(
             node.begin_declared_command::<OtherCommand>(command.id),
             Err(NodeError::CommandSchemaMismatch { .. })
@@ -5160,7 +6201,7 @@ mod tests {
                 value: "first".to_owned(),
             },
         );
-        node.submit_declared(&first).unwrap();
+        node.submit(first.request().unwrap()).unwrap();
         let malformed_id = CommandId::new();
         node.submit(CommandRequest {
             id: malformed_id,
@@ -5180,7 +6221,7 @@ mod tests {
                 value: "second".to_owned(),
             },
         );
-        node.submit_declared(&second).unwrap();
+        node.submit(second.request().unwrap()).unwrap();
 
         let dispatched = node
             .dispatch_declared::<PutRecord, _>(|context| {
@@ -5233,14 +6274,14 @@ mod tests {
                 value: "foreign".to_owned(),
             },
         );
-        source.submit_declared(&command).unwrap();
+        source.submit(command.request().unwrap()).unwrap();
         let replica = Node::in_memory();
         for event in source.events_after(None).unwrap() {
             let _status = replica.ingest(event).unwrap();
         }
         assert!(
             replica
-                .pending_local_commands(PutRecord::SERVICE_ID, PutRecord::COMMAND_TYPE)
+                .pending_local_commands(PutRecord::SERVICE_ID.as_str(), PutRecord::COMMAND_TYPE)
                 .unwrap()
                 .is_empty()
         );
@@ -5258,7 +6299,7 @@ mod tests {
                 value: "old".to_owned(),
             },
         );
-        node.submit_declared(&completed).unwrap();
+        node.submit(completed.request().unwrap()).unwrap();
         node.dispatch_declared_command::<PutRecord, _>(completed.id, |_| Ok(true))
             .unwrap();
         let queued = DeclaredCommand::new(
@@ -5270,10 +6311,13 @@ mod tests {
                 value: "restart catch-up".to_owned(),
             },
         );
-        node.submit_declared(&queued).unwrap();
+        node.submit(queued.request().unwrap()).unwrap();
 
-        let mut pending = node.watch_pending_declared::<PutRecord>().unwrap();
-        assert_eq!(pending.service_id().as_str(), PutRecord::SERVICE_ID);
+        let mut pending = node.watch_pending_typed::<PutRecord>().unwrap();
+        assert_eq!(
+            pending.service_id().map(ServiceId::as_str),
+            Some(PutRecord::SERVICE_ID.as_str())
+        );
         assert_eq!(pending.command_type(), Some(PutRecord::COMMAND_TYPE));
         assert_eq!(pending.recv().unwrap().request.id, queued.id);
 
@@ -5285,7 +6329,7 @@ mod tests {
                 value: "ignore me".to_owned(),
             },
         );
-        node.submit_declared(&unrelated).unwrap();
+        node.submit(unrelated.request().unwrap()).unwrap();
         assert!(
             pending
                 .recv_timeout(Duration::from_millis(5))
@@ -5302,7 +6346,7 @@ mod tests {
                 value: "event driven".to_owned(),
             },
         );
-        node.submit_declared(&live).unwrap();
+        node.submit(live.request().unwrap()).unwrap();
         assert_eq!(
             pending
                 .recv_timeout(Duration::from_secs(1))
@@ -5328,7 +6372,7 @@ mod tests {
                 value: "same service".to_owned(),
             },
         );
-        node.submit_declared(&second).unwrap();
+        node.submit(second.request().unwrap()).unwrap();
 
         let source = Node::in_memory();
         let foreign = DeclaredCommand::new(
@@ -5340,12 +6384,14 @@ mod tests {
                 value: "projection only".to_owned(),
             },
         );
-        source.submit_declared(&foreign).unwrap();
+        source.submit(foreign.request().unwrap()).unwrap();
         for event in source.events_after(None).unwrap() {
             let _status = node.ingest(event).unwrap();
         }
 
-        let mut pending = node.watch_pending_local_service_commands("agent").unwrap();
+        let mut pending = node
+            .watch_pending_local_service_commands(TestService::SERVICE_ID.as_str())
+            .unwrap();
         assert_eq!(pending.command_type(), None);
         assert_eq!(pending.recv().unwrap().request.id, first.id);
         assert_eq!(pending.recv().unwrap().request.id, second.id);
@@ -5355,6 +6401,44 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn application_pending_watch_preserves_order_across_services() {
+        let node = Node::in_memory();
+        let first = DeclaredCommand::new(
+            CommandId::new(),
+            ScopeId::new("session:test"),
+            PrincipalId::new("human:test"),
+            OtherCommand {
+                value: "first service".to_owned(),
+            },
+        );
+        node.submit(first.request().unwrap()).unwrap();
+        let second = DeclaredCommand::new(
+            CommandId::new(),
+            ScopeId::new("session:test"),
+            PrincipalId::new("human:test"),
+            PutRecord {
+                id: "second".to_owned(),
+                value: "second service".to_owned(),
+            },
+        );
+        node.submit(second.request().unwrap()).unwrap();
+
+        assert_eq!(
+            node.pending_local_application_commands()
+                .unwrap()
+                .into_iter()
+                .map(|command| command.request.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
+        let mut pending = node.watch_pending_local_application_commands().unwrap();
+        assert_eq!(pending.service_id(), None);
+        assert_eq!(pending.command_type(), None);
+        assert_eq!(pending.recv().unwrap().request.id, first.id);
+        assert_eq!(pending.recv().unwrap().request.id, second.id);
     }
 
     #[test]
@@ -5369,7 +6453,8 @@ mod tests {
                 value: "retry me".to_owned(),
             },
         );
-        node.submit_declared(&command).unwrap();
+        node.submit(command.request().unwrap()).unwrap();
+        let mut item_changes = node.subscribe_item_changes_from_now().unwrap();
         let retrying = node
             .dispatch_declared_command::<PutRecord, _>(command.id, |_| {
                 Err(CommandHandlerError::retry("workspace registry unavailable"))
@@ -5381,11 +6466,12 @@ mod tests {
             CommandState::Retrying { .. }
         ));
         assert_eq!(
-            node.pending_local_commands(PutRecord::SERVICE_ID, PutRecord::COMMAND_TYPE)
+            node.pending_local_commands(PutRecord::SERVICE_ID.as_str(), PutRecord::COMMAND_TYPE)
                 .unwrap()
                 .len(),
             1
         );
+        assert!(item_changes.try_recv().is_none());
 
         let committed = node
             .dispatch_declared_command::<PutRecord, _>(command.id, |context| {
@@ -5401,6 +6487,7 @@ mod tests {
             .unwrap();
         assert_eq!(committed.disposition, CommandDispatchDisposition::Committed);
         assert!(committed.command.state.is_committed());
+        assert!(item_changes.try_recv().is_some());
     }
 
     #[test]
@@ -5522,7 +6609,7 @@ mod tests {
         let before_invalid = stream.current();
         let mut invalid = update;
         invalid.changes.push(ItemMutation {
-            service_id: TestRecord::SERVICE_ID.to_owned(),
+            service_id: TestRecord::SERVICE_ID.as_str().to_owned(),
             item_type: TestRecord::ITEM_TYPE.to_owned(),
             item_id: "broken".to_owned(),
             schema_version: TestRecord::SCHEMA_VERSION,
@@ -5550,14 +6637,60 @@ mod tests {
             )
             .unwrap();
         assert_eq!(snapshot.value, vec![first.clone()]);
+        assert!(
+            watch
+                .recv_timeout(Duration::from_millis(5))
+                .unwrap()
+                .is_none()
+        );
 
         let second = commit_test_record(&source, "record-2", "live");
         for event in source.events_after(None).unwrap() {
             let _status = replica.ingest(event).unwrap();
         }
-        let update = watch.recv().unwrap();
+        let update = watch.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
         assert_eq!(update.value, vec![first, second]);
         assert!(watch.try_recv().unwrap().is_none());
+    }
+
+    #[test]
+    fn typed_query_watch_from_tracks_every_scope_owned_by_one_source() {
+        let node = Node::in_memory();
+        let first =
+            commit_test_record_in(&node, ScopeId::new("session:first"), "record-1", "first");
+        let (snapshot, mut watch) = node
+            .watch_items_from(node.node_id(), GetAllTestRecords)
+            .unwrap();
+        assert_eq!(snapshot.value, vec![first.clone()]);
+
+        let second =
+            commit_test_record_in(&node, ScopeId::new("session:second"), "record-2", "second");
+        let update = watch.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+        assert_eq!(update.value, vec![first, second]);
+        assert!(watch.try_recv().unwrap().is_none());
+    }
+
+    #[test]
+    fn typed_query_watch_advances_across_other_item_types_in_the_same_scope() {
+        let node = Node::in_memory();
+        let record = commit_test_record(&node, "record-1", "stable");
+        let (snapshot, mut watch) = node
+            .watch_items_in(
+                node.node_id(),
+                ScopeId::new("session:test"),
+                GetAllTestRecords,
+            )
+            .unwrap();
+
+        commit_test_marker(&node, "marker-1", "same atomic cursor stream");
+        let update = watch.recv_timeout(Duration::from_secs(1)).unwrap().unwrap();
+
+        assert_eq!(update.value, vec![record]);
+        assert!(
+            snapshot
+                .through
+                .is_none_or(|through| update.position > through)
+        );
     }
 
     #[test]
@@ -5566,7 +6699,7 @@ mod tests {
         let request = request(CommandId::new());
         let executing = node.admit(request.clone()).unwrap().snapshot().clone();
         let invalid = ItemMutation {
-            service_id: TestRecord::SERVICE_ID.to_owned(),
+            service_id: TestRecord::SERVICE_ID.as_str().to_owned(),
             item_type: TestRecord::ITEM_TYPE.to_owned(),
             item_id: "record-1".to_owned(),
             schema_version: TestRecord::SCHEMA_VERSION,

@@ -1,0 +1,15 @@
+[build]
+target = "index.html"
+dist = "dist"
+public_url = "/"
+filehash = true
+minify = "on_release"
+
+[watch]
+watch = ["src", "style.css", "../../README.md", "../../libs/myko"]
+ignore = ["../../target"]
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8091
+open = false

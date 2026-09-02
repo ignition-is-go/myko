@@ -8,9 +8,14 @@
 
 extern crate self as myko_items;
 
-use std::{collections::BTreeMap, fmt::Debug};
+use std::{
+    collections::BTreeMap,
+    fmt::{self, Debug},
+    marker::PhantomData,
+    sync::Arc,
+};
 
-pub use myko_items_macros::{myko_command, myko_item, myko_subtype};
+pub use myko_items_macros::{myko_command, myko_item, myko_service, myko_subtype};
 pub use serde;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use thiserror::Error;
@@ -30,19 +35,20 @@ mod subtype_tests {
     }
 
     #[test]
-    fn subtype_owns_value_derives_and_wire_casing() -> Result<(), serde_json::Error> {
+    fn subtype_owns_value_derives_and_wire_casing() {
         let value = ExampleSubtype {
             field_name: "value".to_owned(),
         };
-        assert_eq!(
-            serde_json::to_value(&value)?,
-            serde_json::json!({"fieldName": "value"})
-        );
-        assert_eq!(
-            serde_json::to_value(ExampleVariant::NamedValue)?,
-            serde_json::json!("NamedValue")
-        );
-        Ok(())
+        let encoded_struct = serde_json::to_value(&value);
+        assert!(encoded_struct.is_ok());
+        if let Ok(encoded_struct) = encoded_struct {
+            assert_eq!(encoded_struct, serde_json::json!({"fieldName": "value"}));
+        }
+        let encoded_variant = serde_json::to_value(ExampleVariant::NamedValue);
+        assert!(encoded_variant.is_ok());
+        if let Ok(encoded_variant) = encoded_variant {
+            assert_eq!(encoded_variant, serde_json::json!("NamedValue"));
+        }
     }
 }
 
@@ -63,14 +69,86 @@ pub trait ItemId:
 {
 }
 
+/// Generated static identity of a typed service.
+///
+/// Application code carries the service type. This value is exposed only for
+/// persistence and transport adapters that must serialize that type identity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ServiceTypeId(&'static str);
+
+impl ServiceTypeId {
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn new(value: &'static str) -> Self {
+        Self(value)
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.0
+    }
+
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+impl AsRef<str> for ServiceTypeId {
+    fn as_ref(&self) -> &str {
+        self.0
+    }
+}
+
+impl fmt::Display for ServiceTypeId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self.0, formatter)
+    }
+}
+
+impl From<ServiceTypeId> for String {
+    fn from(value: ServiceTypeId) -> Self {
+        value.0.to_owned()
+    }
+}
+
+impl From<ServiceTypeId> for Arc<str> {
+    fn from(value: ServiceTypeId) -> Self {
+        Self::from(value.0)
+    }
+}
+
+/// Typed atomicity and replication boundary selected by an application.
+pub trait MykoService: Send + Sync + 'static {
+    /// Item modules grouped into this service.
+    type Items;
+
+    /// Generated stable identity used only by persistence and wire envelopes.
+    const SERVICE_ID: ServiceTypeId;
+}
+
 /// A typed record in the Myko property graph.
 pub trait MykoItem:
     Clone + Debug + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static
 {
     type Id: ItemId;
+    /// Service that owns this item module's authoritative mutations.
+    type Service: MykoService;
+    /// Entity type defining this item's immediate application-scope family.
+    ///
+    /// Root and unscoped items use themselves. Items declared with
+    /// `scoped_by` use the named parent entity, which may belong to another
+    /// service.
+    type Scope: MykoItem;
+    /// Generated query returning every current item in one scope.
+    type GetAllQuery: ItemQuery<Item = Self, Output = Vec<Self>>;
+    /// Generated query returning one item by its typed ID.
+    type GetByIdQuery: ItemQuery<Item = Self, Output = Option<Self>>;
+    /// Generated query returning selected items by typed ID.
+    type GetByIdsQuery: ItemQuery<Item = Self, Output = Vec<Self>>;
 
-    /// Stable service that owns this item schema and its atomic mutations.
-    const SERVICE_ID: &'static str;
+    /// Generated wire identity of the typed owning service.
+    const SERVICE_ID: ServiceTypeId = <Self::Service as MykoService>::SERVICE_ID;
     /// Stable wire name for this item schema.
     const ITEM_TYPE: &'static str;
     /// Schema version encoded into every mutation.
@@ -82,20 +160,139 @@ pub trait MykoItem:
     fn id(&self) -> &Self::Id;
 }
 
-/// Typed, transport-neutral application command body.
+/// A stable reference to any Myko item in the application property graph.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+pub struct EntityRef {
+    pub service_id: Arc<str>,
+    pub item_type: Arc<str>,
+    pub id: Arc<str>,
+}
+
+impl EntityRef {
+    #[must_use]
+    pub fn new(
+        service_id: impl Into<Arc<str>>,
+        item_type: impl Into<Arc<str>>,
+        id: impl Into<Arc<str>>,
+    ) -> Self {
+        Self {
+            service_id: service_id.into(),
+            item_type: item_type.into(),
+            id: id.into(),
+        }
+    }
+}
+
+impl<T: MykoItem> From<&T> for EntityRef {
+    fn from(item: &T) -> Self {
+        Self::new(T::SERVICE_ID, T::ITEM_TYPE, item.id().as_ref())
+    }
+}
+
+/// One typed endpoint declaration for a graph edge.
+pub trait EndpointSpec: Send + Sync + 'static {
+    type Value: Clone + Debug + Send + Sync + 'static;
+
+    fn erase(value: &Self::Value) -> EntityRef;
+}
+
+/// An endpoint whose value is the generated ID of one concrete item type.
+pub struct ConcreteEndpoint<T>(PhantomData<T>);
+
+impl<T: MykoItem> EndpointSpec for ConcreteEndpoint<T> {
+    type Value = T::Id;
+
+    fn erase(value: &Self::Value) -> EntityRef {
+        EntityRef::new(T::SERVICE_ID, T::ITEM_TYPE, value.as_ref())
+    }
+}
+
+/// Static endpoint metadata for a graph edge.
+pub trait EdgeEnds: Send + Sync + 'static {
+    type Values;
+
+    fn erase(values: &Self::Values) -> (EntityRef, EntityRef);
+}
+
+/// The endpoint specifications exposed by typed graph queries.
+pub trait TypedEdgeEnds: EdgeEnds {
+    type A: EndpointSpec;
+    type B: EndpointSpec;
+}
+
+/// A directed edge from endpoint A to endpoint B.
+pub struct Directed<A, B>(PhantomData<(A, B)>);
+
+impl<A: EndpointSpec, B: EndpointSpec> EdgeEnds for Directed<A, B> {
+    type Values = (A::Value, B::Value);
+
+    fn erase(values: &Self::Values) -> (EntityRef, EntityRef) {
+        (A::erase(&values.0), B::erase(&values.1))
+    }
+}
+
+impl<A: EndpointSpec, B: EndpointSpec> TypedEdgeEnds for Directed<A, B> {
+    type A = A;
+    type B = B;
+}
+
+/// An undirected edge whose canonical storage still retains A/B positions.
+pub struct Undirected<A, B>(PhantomData<(A, B)>);
+
+impl<A: EndpointSpec, B: EndpointSpec> EdgeEnds for Undirected<A, B> {
+    type Values = (A::Value, B::Value);
+
+    fn erase(values: &Self::Values) -> (EntityRef, EntityRef) {
+        (A::erase(&values.0), B::erase(&values.1))
+    }
+}
+
+impl<A: EndpointSpec, B: EndpointSpec> TypedEdgeEnds for Undirected<A, B> {
+    type A = A;
+    type B = B;
+}
+
+/// An ordinary Myko item carrying typed relationship endpoints.
 ///
-/// Myko supplies command identity, principal, service scope, persistence, and
-/// federation around this application-owned payload and result contract.
-pub trait MykoCommand:
-    Clone + Debug + Serialize + DeserializeOwned + Send + Sync + 'static
+/// Edge values use the same command, persistence, federation, and reactive
+/// projection path as every other item; this trait adds only graph metadata.
+pub trait GraphEdge: MykoItem {
+    type Ends: EdgeEnds;
+
+    fn ends(&self) -> <Self::Ends as EdgeEnds>::Values;
+}
+
+/// Generated stable identity and item ownership for one application operation.
+pub trait MykoOperation: Send + Sync + 'static {
+    /// Stable wire identity generated from the Rust operation type.
+    const OPERATION_ID: &'static str;
+}
+
+/// Typed wire contract for an application command.
+pub trait MykoCommandContract:
+    MykoOperation + Clone + Debug + Serialize + DeserializeOwned + Send + Sync + 'static
 {
     type Output: Serialize + DeserializeOwned + Send + Sync + 'static;
+    type Service: MykoService;
+    /// Static application-scope family used to type-check nested commands.
+    ///
+    /// The concrete scope value remains runtime data because commands commonly
+    /// derive its typed entity ID from the command body or serving node.
+    type Scope: MykoItem;
 
-    /// Stable service wire identity.
-    const SERVICE_ID: &'static str;
-    /// Stable command wire identity within the service.
-    const COMMAND_TYPE: &'static str;
+    /// Stable service identity generated by `#[myko_command]`.
+    const SERVICE_ID: ServiceTypeId = <Self::Service as MykoService>::SERVICE_ID;
+    /// Item module directly owned by this command, when mutation is item-limited.
+    const ITEM_TYPE: Option<&'static str> = None;
+    const COMMAND_TYPE: &'static str = Self::OPERATION_ID;
 }
+
+/// A transport-level typed command declaration.
+///
+/// Execution is deliberately not defined in this transport-neutral crate.
+/// `myko_app::CommandHandler` adds the application handler contract and its
+/// sealed, framework-owned capability context.
+pub trait MykoCommand: MykoCommandContract {}
 
 /// How an item changes in an immutable command batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,7 +321,7 @@ impl ItemMutation {
     /// Returns an error if the item cannot be serialized.
     pub fn set<T: MykoItem>(item: &T) -> Result<Self, ItemError> {
         Ok(Self {
-            service_id: T::SERVICE_ID.to_owned(),
+            service_id: T::SERVICE_ID.as_str().to_owned(),
             item_type: T::ITEM_TYPE.to_owned(),
             item_id: item.id().as_ref().to_owned(),
             schema_version: T::SCHEMA_VERSION,
@@ -137,7 +334,7 @@ impl ItemMutation {
     #[must_use]
     pub fn delete<T: MykoItem>(id: &T::Id) -> Self {
         Self {
-            service_id: T::SERVICE_ID.to_owned(),
+            service_id: T::SERVICE_ID.as_str().to_owned(),
             item_type: T::ITEM_TYPE.to_owned(),
             item_id: id.as_ref().to_owned(),
             schema_version: T::SCHEMA_VERSION,
@@ -149,7 +346,7 @@ impl ItemMutation {
     /// Returns whether this mutation belongs to `T`'s exact schema version.
     #[must_use]
     pub fn is<T: MykoItem>(&self) -> bool {
-        self.service_id == T::SERVICE_ID
+        self.service_id == T::SERVICE_ID.as_str()
             && self.item_type == T::ITEM_TYPE
             && self.schema_version == T::SCHEMA_VERSION
     }
@@ -204,7 +401,7 @@ impl ItemMutation {
     }
 
     fn require_schema<T: MykoItem>(&self) -> Result<(), ItemError> {
-        if self.service_id != T::SERVICE_ID
+        if self.service_id != T::SERVICE_ID.as_str()
             || self.item_type != T::ITEM_TYPE
             || self.schema_version != T::SCHEMA_VERSION
         {
@@ -230,7 +427,7 @@ pub enum ItemError {
         "item schema mismatch: expected {expected_service}/{expected_type}@{expected_version}, got {actual_service}/{actual_type}@{actual_version}"
     )]
     SchemaMismatch {
-        expected_service: &'static str,
+        expected_service: ServiceTypeId,
         expected_type: &'static str,
         expected_version: u32,
         actual_service: String,
@@ -265,6 +462,7 @@ pub struct ItemProjection<T: MykoItem> {
 #[derive(Debug, Clone)]
 struct ProjectedItem<T> {
     value: T,
+    first_changed_at: u64,
     last_changed_at: u64,
     change_index: u32,
 }
@@ -314,17 +512,22 @@ impl<T: MykoItem> ItemProjection<T> {
         revision: u64,
         change_index: u32,
     ) -> Result<bool, ItemError> {
-        if mutation.service_id != T::SERVICE_ID || mutation.item_type != T::ITEM_TYPE {
+        if mutation.service_id != T::SERVICE_ID.as_str() || mutation.item_type != T::ITEM_TYPE {
             return Ok(false);
         }
         mutation.require_schema::<T>()?;
         match mutation.operation {
             MutationOperation::Set => {
                 let item = mutation.decode_set::<T>()?;
+                let first_changed_at = self
+                    .items
+                    .get(&mutation.item_id)
+                    .map_or(revision, |existing| existing.first_changed_at);
                 self.items.insert(
                     mutation.item_id.clone(),
                     ProjectedItem {
                         value: item,
+                        first_changed_at,
                         last_changed_at: revision,
                         change_index,
                     },
@@ -378,6 +581,30 @@ impl<T: MykoItem> ItemProjection<T> {
             .map(|item| (&item.value, item.last_changed_at, item.change_index))
     }
 
+    /// Iterates current values with their first and latest authoritative revisions.
+    ///
+    /// The first revision remains stable across replacements, so application
+    /// queues and timelines can retain creation order without copying journal
+    /// positions into domain entities.
+    pub fn values_with_lifecycle_metadata(&self) -> impl Iterator<Item = (&T, u64, u64, u32)> {
+        self.items.values().map(|item| {
+            (
+                &item.value,
+                item.first_changed_at,
+                item.last_changed_at,
+                item.change_index,
+            )
+        })
+    }
+
+    /// Returns the authoritative revision that first created one current item.
+    #[must_use]
+    pub fn first_changed_at(&self, id: &T::Id) -> Option<u64> {
+        self.items
+            .get(id.as_ref())
+            .map(|item| item.first_changed_at)
+    }
+
     /// Returns the authoritative revision that last changed one current item.
     #[must_use]
     pub fn last_changed_at(&self, id: &T::Id) -> Option<u64> {
@@ -399,12 +626,14 @@ impl<T: MykoItem> ItemProjection<T> {
 /// handler once and expose it through any compatible peer transport. The
 /// output bounds also make the result directly usable as a Hyphae cell value
 /// without making this schema crate depend on Hyphae itself.
-pub trait ItemQuery: Clone + Debug + Serialize + DeserializeOwned + Send + Sync + 'static {
+pub trait ItemQuery:
+    MykoOperation + Clone + Debug + Serialize + DeserializeOwned + Send + Sync + 'static
+{
     type Item: MykoItem;
     type Output: Clone + Debug + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static;
 
     /// Stable application wire identity for this query handler.
-    const QUERY_ID: &'static str;
+    const QUERY_ID: &'static str = Self::OPERATION_ID;
 
     fn execute(self, projection: &ItemProjection<Self::Item>) -> Self::Output;
 }
@@ -413,29 +642,39 @@ pub trait ItemQuery: Clone + Debug + Serialize + DeserializeOwned + Send + Sync 
 mod tests {
     use super::*;
 
-    #[myko_item(service = "projects", scope_root)]
+    #[myko_service(Project)]
+    pub struct ProjectService;
+
+    #[myko_item(service = ProjectService, scope_root)]
     pub struct Project {
         pub title: String,
     }
 
-    #[myko_command(service = "projects", name = "projects.rename", result = bool)]
-    pub struct RenameProject {
-        pub id: ProjectId,
+    #[myko_service(Task)]
+    pub struct TaskService;
+
+    #[myko_item(service = TaskService, scoped_by = Project)]
+    pub struct Task {
         pub title: String,
     }
 
     #[test]
     fn macro_mutation_and_generated_queries_are_typed_end_to_end() {
+        fn require_project_scope<I: MykoItem<Scope = Project>>() {}
+        require_project_scope::<Task>();
+        assert_eq!(Task::SERVICE_ID, TaskService::SERVICE_ID);
+        assert_eq!(Task::SCOPE, ItemScope::ScopedBy(Project::ITEM_TYPE));
+
         let project = Project {
             id: ProjectId::from("project-1"),
             title: "Forrest".to_owned(),
         };
         let mutation = ItemMutation::set(&project);
         assert!(mutation.is_ok());
-        assert_eq!(Project::SERVICE_ID, "projects");
+        assert_eq!(Project::SERVICE_ID, ProjectService::SERVICE_ID);
         assert!(matches!(
             mutation.as_ref(),
-            Ok(mutation) if mutation.service_id == "projects"
+            Ok(mutation) if mutation.service_id == ProjectService::SERVICE_ID.as_str()
         ));
         let mut projection = ItemProjection::<Project>::default();
         assert!(matches!(
@@ -482,9 +721,9 @@ mod tests {
         assert!(matches!(
             mutation.decode_set::<Project>(),
             Err(ItemError::SchemaMismatch {
-                expected_service: "projects",
+                expected_service,
                 ..
-            })
+            }) if expected_service == Project::SERVICE_ID
         ));
         mutation.service_id.clear();
         assert!(matches!(
@@ -531,16 +770,15 @@ mod tests {
             ["first in batch", "second in batch", "next revision"]
         );
         assert_eq!(projection.last_changed_at(&later_id), Some(7));
-    }
-
-    #[test]
-    fn command_macro_declares_stable_typed_wire_contract() {
-        let command = RenameProject {
-            id: ProjectId::from("project-1"),
-            title: "Forrest".to_owned(),
+        let replacement = Project {
+            id: later_id.clone(),
+            title: "changed later".to_owned(),
         };
-        assert_eq!(RenameProject::SERVICE_ID, "projects");
-        assert_eq!(RenameProject::COMMAND_TYPE, "projects.rename");
-        assert!(serde_json::to_vec(&command).is_ok());
+        let Ok(replacement) = ItemMutation::set(&replacement) else {
+            return;
+        };
+        assert!(projection.apply_at_order(&replacement, 9, 0).is_ok());
+        assert_eq!(projection.first_changed_at(&later_id), Some(7));
+        assert_eq!(projection.last_changed_at(&later_id), Some(9));
     }
 }

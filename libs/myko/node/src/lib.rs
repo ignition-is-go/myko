@@ -7,35 +7,58 @@
 
 #![forbid(unsafe_code)]
 
+mod discovery;
+mod live_state;
+mod pairing;
+mod peer;
+mod status;
+
+pub use discovery::{
+    ConfigureLanDiscovery, DiscoverySettings, DiscoverySettingsReport, NearbyNodesView,
+};
+use discovery::{DiscoverySupervisor, DiscoveryViewState};
+use pairing::PairingSupervisor;
+pub use pairing::{
+    ConfirmPairing, IssuePairingInvitation, PairingReceiptsView, PairingRedemption,
+    PairingRedemptionId, PairingRedemptionPhase, PairingRedemptionReport, PendingPairingReceipt,
+    PendingPairingReceiptId, RedeemPairingInvitation,
+};
+pub use peer::{
+    AddPeer, FederationService, GetPeers, Peer, PeerId, PeerReport, PeersView, RememberPeer,
+    RemovePeer, SetPeerFollowing, peer_id,
+};
+use peer::{RestorePeer, peer_scope};
+pub use status::{NodeStatus, NodeStatusView};
+use status::{NodeStatusProjectionGuard, NodeStatusViewState, project_node_statuses};
+
 use std::{
     collections::BTreeMap,
-    fs::{self, File, OpenOptions},
-    io::Write,
+    fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use myko_app::{ApplicationNode, ApplicationSchema};
+use myko_app::{ApplicationNode, CommandDispatchGuard, MykoApplication};
 use myko_federation::{
-    AccessPolicy, AllowAllAccessPolicy, ItemQuery, LiveSubscription, LiveSubscriptionState, Node,
-    NodeError, NodeId, ScopeId, SubscriptionLiveness, live_subscription,
+    AccessPolicy, AllowAllAccessPolicy, ItemQuery, ItemQueryWatch, LiveSubscription,
+    LiveSubscriptionState, Node as FederationNode, NodeError as FederationNodeError, NodeId,
+    NodeStartupGuard, ScopeId, SubscriptionLiveness, live_subscription,
 };
 use myko_iroh::{
-    EndpointAddr, EndpointId, IrohReplicationError, IrohReplicator, PeerSupervisor, PeerSyncStatus,
+    EndpointAddr, EndpointId, IrohReplicationError, IrohReplicator, PeerSupervisor,
     load_or_create_secret_key,
 };
-pub use myko_iroh::{
-    NativeNodeDescriptor, NativePeerReference, PairingInvitation, PairingReceipt,
-    PairingReceiptSubscription,
-};
+pub use myko_iroh::{NativeNodeDescriptor, NativePeerReference, PairingInvitation, PairingReceipt};
 use myko_redb::RedbJournal;
+use myko_session::{NodeRequestRouter, NodeRouteFuture};
+use myko_wire::{NodeFrame, NodeRequestEnvelope};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use tokio::sync::Mutex as AsyncMutex;
-use uuid::Uuid;
+use tokio::task::JoinHandle;
 
-const CONFIG_VERSION: u32 = 2;
+const CONFIG_VERSION: u32 = 3;
+const PREVIOUS_CONFIG_VERSION: u32 = 2;
 const LEGACY_CONFIG_VERSION: u32 = 1;
 const JOURNAL_FILE: &str = "node.redb";
 const SECRET_FILE: &str = "iroh-secret.json";
@@ -60,10 +83,16 @@ struct StoredConfigHeader {
 
 /// One durable peer binding, optionally pinned to an expected Myko history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ConfiguredPeer {
+struct ConfiguredPeer {
     pub endpoint: EndpointAddr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_node: Option<NodeId>,
+    /// Whether this node currently follows the peer’s history.
+    ///
+    /// A paired descriptor may be retained with this disabled. That records
+    /// authenticated identity knowledge without copying any application data.
+    #[serde(default = "default_peer_following")]
+    pub following: bool,
 }
 
 impl ConfiguredPeer {
@@ -71,15 +100,23 @@ impl ConfiguredPeer {
         Self {
             endpoint,
             source_node: None,
+            following: true,
         }
     }
+}
 
-    fn pinned(descriptor: NativeNodeDescriptor) -> Self {
+impl From<&Peer> for ConfiguredPeer {
+    fn from(peer: &Peer) -> Self {
         Self {
-            endpoint: descriptor.endpoint,
-            source_node: Some(descriptor.node_id),
+            endpoint: peer.endpoint.clone(),
+            source_node: peer.source_node,
+            following: peer.following,
         }
     }
+}
+
+const fn default_peer_following() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,12 +125,15 @@ enum BindMode {
     Loopback,
 }
 
-/// Failure while opening or operating a durable native Myko node.
+/// Failure while opening or operating a native Myko node.
 #[derive(Debug, Error)]
-pub enum DurableNodeError {
+pub enum NodeError {
+    /// The composed Myko application could not be activated or driven.
+    #[error(transparent)]
+    Application(#[from] myko_app::AppError),
     /// The event journal could not be opened or replayed.
     #[error(transparent)]
-    Node(#[from] NodeError),
+    Federation(#[from] FederationNodeError),
     /// The native Iroh endpoint or one of its followers failed.
     #[error(transparent)]
     Iroh(#[from] IrohReplicationError),
@@ -104,28 +144,326 @@ pub enum DurableNodeError {
     #[error(transparent)]
     Io(#[from] std::io::Error),
     /// Durable peer state violated a node invariant.
-    #[error("invalid durable node configuration: {0}")]
+    #[error("invalid node configuration: {0}")]
     Configuration(String),
     /// Shared runtime state could not be accessed.
-    #[error("durable node state unavailable: {0}")]
+    #[error("node state unavailable: {0}")]
     State(String),
 }
 
-/// A restartable Redb-backed Myko node with a native Iroh endpoint.
+/// A restartable native Myko node.
 ///
 /// The data directory is the node's operational identity boundary. Opening the
-/// same directory restores both the Myko event identity and Iroh transport
-/// identity, then resumes every configured source-aware peer follower.
+/// same directory restores its event identity, transport identity, and every
+/// configured source-aware peer relationship.
 #[derive(Debug)]
-pub struct DurableIrohNode {
+pub struct Node {
     data_dir: PathBuf,
-    node: Node,
+    federation: FederationNode,
+    application: ApplicationNode,
     journal: Arc<RedbJournal>,
     replicator: IrohReplicator,
-    supervisor: PeerSupervisor,
-    peers: Mutex<BTreeMap<EndpointId, ConfiguredPeer>>,
-    peer_updates: AsyncMutex<()>,
+    _request_router: Arc<dyn NodeRequestRouter>,
+    command_dispatch: Option<CommandDispatchGuard>,
+    supervisor: Arc<PeerSupervisor>,
+    peer_reconciler: Option<PeerReconcilerGuard>,
+    pairing: Option<PairingSupervisor>,
+    status_projection: Option<NodeStatusProjectionGuard>,
+    discovery: Option<DiscoverySupervisor>,
+}
+
+#[derive(Debug)]
+struct PeerReconcilerGuard {
+    task: Option<JoinHandle<()>>,
+}
+
+struct PeerReconcilerContext {
+    peers: Arc<Mutex<BTreeMap<EndpointId, ConfiguredPeer>>>,
+    supervisor: Arc<PeerSupervisor>,
+    journal: Arc<RedbJournal>,
     retry_interval: Duration,
+    descriptor: NativeNodeDescriptor,
+    status: NodeStatusViewState,
+}
+
+impl PeerReconcilerGuard {
+    fn start(
+        mut watch: ItemQueryWatch<GetPeers>,
+        current: BTreeMap<EndpointId, ConfiguredPeer>,
+        context: PeerReconcilerContext,
+    ) -> Self {
+        let task = tokio::spawn(async move {
+            let mut current = current;
+            loop {
+                let update = match watch.recv_async().await {
+                    Ok(update) => update,
+                    Err(error) => {
+                        context
+                            .status
+                            .invalidate(format!("peer configuration subscription failed: {error}"));
+                        return;
+                    }
+                };
+                let desired = configured_peer_map(&update.value);
+                if let Err(error) = reconcile_peers(
+                    &current,
+                    &desired,
+                    &context.peers,
+                    &context.supervisor,
+                    &context.journal,
+                    context.retry_interval,
+                )
+                .await
+                {
+                    context
+                        .status
+                        .invalidate(format!("peer reconciliation failed: {error}"));
+                    return;
+                }
+                current = desired;
+                if let Ok(statuses) = context.supervisor.statuses() {
+                    context.status.publish(project_node_statuses(
+                        &context.descriptor,
+                        &current,
+                        &statuses,
+                    ));
+                }
+            }
+        });
+        Self { task: Some(task) }
+    }
+
+    async fn shutdown(mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+            let _stopped = task.await;
+        }
+    }
+}
+
+impl Drop for PeerReconcilerGuard {
+    fn drop(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+fn configured_peer_map(peers: &[Peer]) -> BTreeMap<EndpointId, ConfiguredPeer> {
+    peers
+        .iter()
+        .map(|peer| (peer.endpoint.id, ConfiguredPeer::from(peer)))
+        .collect()
+}
+
+async fn start_configured_follower(
+    supervisor: &PeerSupervisor,
+    peer: &ConfiguredPeer,
+    journal: Arc<RedbJournal>,
+    retry_interval: Duration,
+) -> Result<(), NodeError> {
+    if let Some(source_node) = peer.source_node {
+        supervisor
+            .upsert_persisted_source(peer.endpoint.clone(), source_node, journal, retry_interval)
+            .await?;
+    } else {
+        supervisor
+            .upsert_persisted(peer.endpoint.clone(), journal, retry_interval)
+            .await?;
+    }
+    Ok(())
+}
+
+async fn reconcile_peers(
+    current: &BTreeMap<EndpointId, ConfiguredPeer>,
+    desired: &BTreeMap<EndpointId, ConfiguredPeer>,
+    peers: &Mutex<BTreeMap<EndpointId, ConfiguredPeer>>,
+    supervisor: &PeerSupervisor,
+    journal: &Arc<RedbJournal>,
+    retry_interval: Duration,
+) -> Result<(), NodeError> {
+    {
+        let mut routed = peers
+            .lock()
+            .map_err(|_| NodeError::State("peer configuration lock is poisoned".to_owned()))?;
+        routed.clone_from(desired);
+    }
+
+    for (peer_id, previous) in current {
+        if desired
+            .get(peer_id)
+            .is_none_or(|peer| !peer.following || peer != previous)
+        {
+            supervisor.remove(*peer_id).await?;
+        }
+    }
+    for (peer_id, peer) in desired {
+        if peer.following && current.get(peer_id) != Some(peer) {
+            start_configured_follower(supervisor, peer, Arc::clone(journal), retry_interval)
+                .await?;
+        }
+    }
+    Ok(())
+}
+
+/// Routes canonical request envelopes through a durable node's pinned peers.
+#[derive(Debug, Clone)]
+struct FederationRouter {
+    replicator: IrohReplicator,
+    peers: Arc<Mutex<BTreeMap<EndpointId, ConfiguredPeer>>>,
+}
+
+impl FederationRouter {
+    fn peer(&self, target_node: NodeId) -> Result<EndpointAddr, String> {
+        self.peers
+            .lock()
+            .map_err(|_| "peer configuration lock is poisoned".to_owned())?
+            .values()
+            .find(|peer| peer.source_node == Some(target_node))
+            .map(|peer| peer.endpoint.clone())
+            .ok_or_else(|| format!("node {target_node} is not a configured identity-pinned peer"))
+    }
+}
+
+impl NodeRequestRouter for FederationRouter {
+    fn route<'a>(
+        &'a self,
+        envelope: NodeRequestEnvelope,
+        frames: &'a flume::Sender<NodeFrame>,
+    ) -> NodeRouteFuture<'a> {
+        Box::pin(async move {
+            let destination = envelope
+                .destination
+                .ok_or_else(|| "routed request omitted its destination".to_owned())?;
+            let peer = self.peer(destination)?;
+            self.replicator
+                .forward_request(peer, envelope, frames)
+                .await
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+
+struct FederationRuntimeParts {
+    request_router: Arc<dyn NodeRequestRouter>,
+    supervisor: Arc<PeerSupervisor>,
+    peer_reconciler: PeerReconcilerGuard,
+    peers: Arc<Mutex<BTreeMap<EndpointId, ConfiguredPeer>>>,
+    node_status: NodeStatusViewState,
+    discovery: DiscoveryViewState,
+}
+
+fn restore_legacy_peers(
+    data_dir: &Path,
+    node: &FederationNode,
+    application: &ApplicationNode,
+) -> Result<(), NodeError> {
+    let legacy_peers = load_peers(&data_dir.join(PEERS_FILE))?;
+    let existing_peers =
+        node.query_items_in(node.node_id(), &peer_scope(node.node_id()), GetPeers)?;
+    if !existing_peers.is_empty() {
+        return Ok(());
+    }
+    for peer in legacy_peers.values() {
+        let _restored = application.exec_command(RestorePeer {
+            endpoint: peer.endpoint.clone(),
+            source_node: peer.source_node,
+            following: peer.following,
+        })?;
+    }
+    Ok(())
+}
+
+fn ensure_discovery_settings(
+    node: &FederationNode,
+    application: &ApplicationNode,
+) -> Result<(), NodeError> {
+    let discovery_id = discovery::DiscoverySettingsId::from(node.node_id().to_string());
+    let settings = node.query_items_in(
+        node.node_id(),
+        &peer_scope(node.node_id()),
+        discovery::GetDiscoverySettingsById { id: discovery_id },
+    )?;
+    if settings.is_none() {
+        let _configured = application.exec_command(ConfigureLanDiscovery {
+            display_name: default_node_name(node.node_id()),
+            enabled: true,
+        })?;
+    }
+    Ok(())
+}
+
+async fn initialize_federation_runtime(
+    data_dir: &Path,
+    retry_interval: Duration,
+    node: &FederationNode,
+    journal: &Arc<RedbJournal>,
+    application: &ApplicationNode,
+    replicator: &IrohReplicator,
+) -> Result<FederationRuntimeParts, NodeError> {
+    restore_legacy_peers(data_dir, node, application)?;
+    ensure_discovery_settings(node, application)?;
+
+    let (peer_snapshot, peer_watch) =
+        node.watch_items_in(node.node_id(), peer_scope(node.node_id()), GetPeers)?;
+    let configured = configured_peer_map(&peer_snapshot.value);
+    if configured.contains_key(&replicator.address().id) {
+        return Err(NodeError::Configuration(
+            "peer configuration contains this node's own Iroh identity".to_owned(),
+        ));
+    }
+
+    let peers = Arc::new(Mutex::new(configured.clone()));
+    let request_router: Arc<dyn NodeRequestRouter> = Arc::new(FederationRouter {
+        replicator: replicator.clone(),
+        peers: Arc::clone(&peers),
+    });
+    replicator
+        .sessions()
+        .set_router(&request_router)
+        .map_err(NodeError::State)?;
+
+    let supervisor = Arc::new(PeerSupervisor::new(replicator.clone()));
+    for peer in configured.values().filter(|peer| peer.following) {
+        start_configured_follower(
+            supervisor.as_ref(),
+            peer,
+            Arc::clone(journal),
+            retry_interval,
+        )
+        .await?;
+    }
+
+    let node_status = NodeStatusViewState::new(project_node_statuses(
+        &replicator.descriptor(),
+        &configured,
+        &supervisor.statuses()?,
+    ));
+    let discovery = DiscoveryViewState::new();
+    let _previous_replicator = application.resources().insert(replicator.clone())?;
+    let _previous_status = application.resources().insert(node_status.clone())?;
+    let _previous_discovery = application.resources().insert(discovery.clone())?;
+    let peer_reconciler = PeerReconcilerGuard::start(
+        peer_watch,
+        configured,
+        PeerReconcilerContext {
+            peers: Arc::clone(&peers),
+            supervisor: Arc::clone(&supervisor),
+            journal: Arc::clone(journal),
+            retry_interval,
+            descriptor: replicator.descriptor(),
+            status: node_status.clone(),
+        },
+    );
+
+    Ok(FederationRuntimeParts {
+        request_router,
+        supervisor,
+        peer_reconciler,
+        peers,
+        node_status,
+        discovery,
+    })
 }
 
 /// Runtime-owned driver for one Hyphae-backed typed item subscription.
@@ -162,7 +500,7 @@ where
     }
 }
 
-impl DurableIrohNode {
+impl Node {
     /// Opens a durable node with normal Iroh relay and discovery configuration.
     ///
     /// # Errors
@@ -172,7 +510,7 @@ impl DurableIrohNode {
     pub async fn open(
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
-    ) -> Result<Self, DurableNodeError> {
+    ) -> Result<Self, NodeError> {
         Self::open_with_policy(data_dir, retry_interval, |_| {
             Ok(Arc::new(AllowAllAccessPolicy))
         })
@@ -190,18 +528,20 @@ impl DurableIrohNode {
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
         resolve_policy: F,
-    ) -> Result<Self, DurableNodeError>
+    ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&Node) -> Result<Arc<dyn AccessPolicy>, DurableNodeError>,
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
             retry_interval,
             BindMode::Network,
             None,
+            false,
             resolve_policy,
         )
         .await
+        .map(|(node, _startup)| node)
     }
 
     /// Opens a durable loopback-only node for local development and tests.
@@ -213,7 +553,7 @@ impl DurableIrohNode {
     pub async fn open_loopback(
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
-    ) -> Result<Self, DurableNodeError> {
+    ) -> Result<Self, NodeError> {
         Self::open_loopback_with_policy(data_dir, retry_interval, |_| {
             Ok(Arc::new(AllowAllAccessPolicy))
         })
@@ -230,156 +570,210 @@ impl DurableIrohNode {
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
         resolve_policy: F,
-    ) -> Result<Self, DurableNodeError>
+    ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&Node) -> Result<Arc<dyn AccessPolicy>, DurableNodeError>,
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
             retry_interval,
             BindMode::Loopback,
             None,
+            false,
             resolve_policy,
         )
         .await
+        .map(|(node, _startup)| node)
     }
 
-    /// Opens a durable network node that serves one immutable application
-    /// handler schema over the same authenticated Iroh endpoint.
+    /// Opens a durable network node that serves one immutable Myko application
+    /// over the same authenticated Iroh endpoint.
     ///
     /// # Errors
     ///
-    /// Returns an error if durable state, policy restoration, schema serving,
+    /// Returns an error if durable state, policy restoration, application serving,
     /// endpoint binding, or peer restoration fails.
     pub async fn open_application_with_policy<F>(
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
-        schema: ApplicationSchema,
+        application: MykoApplication,
         resolve_policy: F,
-    ) -> Result<Self, DurableNodeError>
+    ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&Node) -> Result<Arc<dyn AccessPolicy>, DurableNodeError>,
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
             retry_interval,
             BindMode::Network,
-            Some(schema),
+            Some(application),
+            false,
             resolve_policy,
         )
         .await
+        .map(|(node, _startup)| node)
     }
 
-    /// Opens a durable loopback node that serves one immutable application
-    /// handler schema.
+    /// Opens an application node with its transport held below the startup
+    /// barrier until the returned guard is completed.
     ///
     /// # Errors
     ///
-    /// Returns an error if durable state, policy restoration, schema serving,
+    /// Returns an error if durable state, policy restoration, endpoint
+    /// binding, or peer restoration fails.
+    pub async fn open_application_starting_with_policy<F>(
+        data_dir: impl AsRef<Path>,
+        retry_interval: Duration,
+        application: MykoApplication,
+        resolve_policy: F,
+    ) -> Result<(Self, NodeStartupGuard), NodeError>
+    where
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+    {
+        let (node, startup) = Self::open_inner(
+            data_dir.as_ref(),
+            retry_interval,
+            BindMode::Network,
+            Some(application),
+            true,
+            resolve_policy,
+        )
+        .await?;
+        let startup = startup.ok_or_else(|| {
+            NodeError::State("starting node omitted its startup guard".to_owned())
+        })?;
+        Ok((node, startup))
+    }
+
+    /// Opens a durable loopback node that serves one immutable Myko application.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if durable state, policy restoration, application serving,
     /// endpoint binding, or peer restoration fails.
     pub async fn open_loopback_application_with_policy<F>(
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
-        schema: ApplicationSchema,
+        application: MykoApplication,
         resolve_policy: F,
-    ) -> Result<Self, DurableNodeError>
+    ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&Node) -> Result<Arc<dyn AccessPolicy>, DurableNodeError>,
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
             retry_interval,
             BindMode::Loopback,
-            Some(schema),
+            Some(application),
+            false,
             resolve_policy,
         )
         .await
+        .map(|(node, _startup)| node)
     }
 
     async fn open_inner<F>(
         data_dir: &Path,
         retry_interval: Duration,
         bind_mode: BindMode,
-        schema: Option<ApplicationSchema>,
+        application: Option<MykoApplication>,
+        hold_startup: bool,
         resolve_policy: F,
-    ) -> Result<Self, DurableNodeError>
+    ) -> Result<(Self, Option<NodeStartupGuard>), NodeError>
     where
-        F: FnOnce(&Node) -> Result<Arc<dyn AccessPolicy>, DurableNodeError>,
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         fs::create_dir_all(data_dir)?;
         let secret = load_or_create_secret_key(data_dir.join(SECRET_FILE))?;
         let (node, journal) = RedbJournal::open_node_with_journal(data_dir.join(JOURNAL_FILE))?;
-        let initial_policy = resolve_policy(&node)?;
-        let application = schema.map(|schema| ApplicationNode::new(node.clone(), schema));
-        let replicator = match (bind_mode, application) {
-            (BindMode::Network, Some(application)) => {
+        let startup = hold_startup.then(|| node.hold_startup());
+        let application = application
+            .unwrap_or_default()
+            .with_framework_service::<FederationService>()?;
+        let application = ApplicationNode::new(node.clone(), application);
+        let initial_policy = resolve_policy(&application)?;
+        let replicator = match bind_mode {
+            BindMode::Network => {
                 IrohReplicator::bind_application_with_secret_and_policy(
-                    application,
+                    application.clone(),
                     secret,
                     initial_policy,
                 )
                 .await
             }
-            (BindMode::Loopback, Some(application)) => {
+            BindMode::Loopback => {
                 IrohReplicator::bind_loopback_application_with_secret_and_policy(
-                    application,
-                    secret,
-                    initial_policy,
-                )
-                .await
-            }
-            (BindMode::Network, None) => {
-                IrohReplicator::bind_with_secret_and_policy(node.clone(), secret, initial_policy)
-                    .await
-            }
-            (BindMode::Loopback, None) => {
-                IrohReplicator::bind_loopback_with_secret_and_policy(
-                    node.clone(),
+                    application.clone(),
                     secret,
                     initial_policy,
                 )
                 .await
             }
         }?;
-        let configured = load_peers(&data_dir.join(PEERS_FILE))?;
-        if configured.contains_key(&replicator.address().id) {
-            return Err(DurableNodeError::Configuration(
-                "peer configuration contains this node's own Iroh identity".to_owned(),
-            ));
-        }
-        let supervisor = PeerSupervisor::new(replicator.clone());
-        for peer in configured.values() {
-            if let Some(source_node) = peer.source_node {
-                supervisor
-                    .upsert_persisted_source(
-                        peer.endpoint.clone(),
-                        source_node,
-                        journal.clone(),
-                        retry_interval,
-                    )
-                    .await?;
-            } else {
-                supervisor
-                    .upsert_persisted(peer.endpoint.clone(), journal.clone(), retry_interval)
-                    .await?;
-            }
-        }
-        Ok(Self {
-            data_dir: data_dir.to_path_buf(),
-            node,
-            journal,
-            replicator,
+        let FederationRuntimeParts {
+            request_router,
             supervisor,
-            peers: Mutex::new(configured),
-            peer_updates: AsyncMutex::new(()),
+            peer_reconciler,
+            peers,
+            node_status,
+            discovery,
+        } = initialize_federation_runtime(
+            data_dir,
             retry_interval,
-        })
+            &node,
+            &journal,
+            &application,
+            &replicator,
+        )
+        .await?;
+        let command_dispatch = application.drive_commands()?;
+        let pairing = PairingSupervisor::start(application.clone(), replicator.clone())
+            .map_err(NodeError::State)?;
+        let status_projection = NodeStatusProjectionGuard::start(
+            replicator.descriptor(),
+            Arc::clone(&peers),
+            Arc::clone(&supervisor),
+            node_status,
+        );
+        let discovery = DiscoverySupervisor::start(
+            &application,
+            replicator.descriptor(),
+            discovery,
+            matches!(bind_mode, BindMode::Network),
+        )
+        .map_err(NodeError::State)?;
+        Ok((
+            Self {
+                data_dir: data_dir.to_path_buf(),
+                federation: node,
+                application,
+                journal,
+                replicator,
+                _request_router: request_router,
+                command_dispatch: Some(command_dispatch),
+                supervisor,
+                peer_reconciler: Some(peer_reconciler),
+                pairing: Some(pairing),
+                status_projection: Some(status_projection),
+                discovery: Some(discovery),
+            },
+            startup,
+        ))
     }
 
     /// Returns the transport-neutral event-sourced node.
     #[must_use]
-    pub const fn node(&self) -> &Node {
-        &self.node
+    pub const fn node(&self) -> &FederationNode {
+        &self.federation
+    }
+
+    /// Returns the composed application runtime served by this node.
+    ///
+    /// Every durable node activates Myko's framework-owned federation service,
+    /// even when no user application services were supplied.
+    #[must_use]
+    pub const fn application(&self) -> &ApplicationNode {
+        &self.application
     }
 
     /// Materializes a gap-free typed query into a first-class Hyphae cell.
@@ -397,19 +791,21 @@ impl DurableIrohNode {
         source_node: NodeId,
         scope_id: ScopeId,
         query: Q,
-    ) -> Result<ReactiveItemSubscription<Q::Output>, DurableNodeError>
+    ) -> Result<ReactiveItemSubscription<Q::Output>, NodeError>
     where
         Q: ItemQuery + Send + 'static,
         Q::Output: hyphae::CellValue,
     {
-        let (snapshot, mut watch) = self.node.watch_items_in(source_node, scope_id, query)?;
+        let (snapshot, mut watch) = self
+            .federation
+            .watch_items_in(source_node, scope_id, query)?;
         let (writer, live) = live_subscription(LiveSubscriptionState {
             value: Some(snapshot.value),
             through: snapshot.through,
             liveness: SubscriptionLiveness::Current,
         });
         let runtime = tokio::runtime::Handle::try_current().map_err(|error| {
-            DurableNodeError::Configuration(format!(
+            NodeError::Configuration(format!(
                 "reactive subscription requires an active Tokio runtime: {error}"
             ))
         })?;
@@ -452,86 +848,6 @@ impl DurableIrohNode {
         self.replicator.descriptor()
     }
 
-    /// Issues an expiring one-use invitation for this durable node.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an invalid TTL, entropy failure, poisoned pairing
-    /// state, or a full bounded invitation registry.
-    pub fn issue_pairing_invitation(
-        &self,
-        ttl: Duration,
-    ) -> Result<PairingInvitation, DurableNodeError> {
-        Ok(self.replicator.issue_pairing_invitation(ttl)?)
-    }
-
-    /// Redeems another node's invitation without implicitly trusting it.
-    ///
-    /// Call [`Self::confirm_pairing`] only after the operator compares the
-    /// six-digit code shown by both endpoints.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for invalid/replayed/expired invitations, identity
-    /// mismatch, timeout, bounds, or transport failure.
-    pub async fn redeem_pairing(
-        &self,
-        invitation: &PairingInvitation,
-    ) -> Result<PairingReceipt, DurableNodeError> {
-        Ok(self.replicator.redeem_pairing(invitation).await?)
-    }
-
-    /// Drains successfully authenticated inbound pairing receipts.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if shared pairing state is poisoned.
-    pub fn take_pairing_receipts(&self) -> Result<Vec<PairingReceipt>, DurableNodeError> {
-        Ok(self.replicator.take_pairing_receipts()?)
-    }
-
-    /// Starts a wake-up stream over the bounded inbound receipt queue.
-    #[must_use]
-    pub fn subscribe_pairing_receipts(&self) -> PairingReceiptSubscription {
-        self.replicator.subscribe_pairing_receipts()
-    }
-
-    /// Confirms a mutually authenticated receipt and durably installs its
-    /// opposite descriptor as a pinned peer follower.
-    ///
-    /// This is infrastructure trust only; application authorization remains a
-    /// separate policy decision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the receipt/code is invalid, this node is not one of
-    /// its endpoints, or durable peer installation fails.
-    pub async fn confirm_pairing(
-        &self,
-        receipt: &PairingReceipt,
-        comparison_code: &str,
-    ) -> Result<bool, DurableNodeError> {
-        receipt
-            .validate()
-            .map_err(DurableNodeError::Configuration)?;
-        if comparison_code != receipt.comparison_code {
-            return Err(DurableNodeError::Configuration(
-                "pairing comparison code does not match".to_owned(),
-            ));
-        }
-        let local = self.descriptor();
-        let peer = if same_descriptor_identity(&local, &receipt.server) {
-            receipt.client.clone()
-        } else if same_descriptor_identity(&local, &receipt.client) {
-            receipt.server.clone()
-        } else {
-            return Err(DurableNodeError::Configuration(
-                "pairing receipt does not name this node".to_owned(),
-            ));
-        };
-        self.upsert_peer_descriptor(peer).await
-    }
-
     /// Returns the operational identity directory.
     #[must_use]
     pub fn data_dir(&self) -> &Path {
@@ -543,174 +859,9 @@ impl DurableIrohNode {
     /// # Errors
     ///
     /// Returns an error if the transport's shared policy state is poisoned.
-    pub fn set_access_policy(&self, policy: Arc<dyn AccessPolicy>) -> Result<(), DurableNodeError> {
+    pub fn set_access_policy(&self, policy: Arc<dyn AccessPolicy>) -> Result<(), NodeError> {
         self.replicator.set_access_policy(policy)?;
         Ok(())
-    }
-
-    /// Returns configured peers in stable endpoint-identity order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if configuration state is poisoned.
-    pub fn configured_peers(&self) -> Result<Vec<EndpointAddr>, DurableNodeError> {
-        self.peers
-            .lock()
-            .map(|peers| peers.values().map(|peer| peer.endpoint.clone()).collect())
-            .map_err(|_| DurableNodeError::State("peer configuration lock is poisoned".to_owned()))
-    }
-
-    /// Returns durable peer bindings in stable endpoint-identity order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if configuration state is poisoned.
-    pub fn configured_peer_bindings(&self) -> Result<Vec<ConfiguredPeer>, DurableNodeError> {
-        self.peers
-            .lock()
-            .map(|peers| peers.values().cloned().collect())
-            .map_err(|_| DurableNodeError::State("peer configuration lock is poisoned".to_owned()))
-    }
-
-    /// Returns live snapshots for all configured peer followers.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if supervisor state is poisoned.
-    pub fn peer_statuses(&self) -> Result<Vec<PeerSyncStatus>, DurableNodeError> {
-        Ok(self.supervisor.statuses()?)
-    }
-
-    /// Durably adds or updates a peer and starts its source-aware follower.
-    ///
-    /// Configuration is committed before the follower is installed. A process
-    /// failure therefore cannot leave a running-only peer that disappears on
-    /// restart. Returns `true` when an existing address was replaced.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for self-following, failed durable configuration, or a
-    /// follower supervisor failure.
-    pub async fn upsert_peer(&self, peer: EndpointAddr) -> Result<bool, DurableNodeError> {
-        self.upsert_configured_peer(ConfiguredPeer::unpinned(peer))
-            .await
-    }
-
-    /// Durably pairs with a peer and pins its expected Myko source identity.
-    ///
-    /// The follower authenticates the descriptor's Iroh endpoint and verifies
-    /// the source identity in the replication handshake before ingesting any
-    /// history. This is the preferred path for pairing and discovery systems.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for an unsupported descriptor, self-following, failed
-    /// durable configuration, or follower-supervisor failure.
-    pub async fn upsert_peer_descriptor(
-        &self,
-        descriptor: NativeNodeDescriptor,
-    ) -> Result<bool, DurableNodeError> {
-        descriptor
-            .validate()
-            .map_err(DurableNodeError::Configuration)?;
-        if descriptor.node_id == self.node.node_id() {
-            return Err(DurableNodeError::Configuration(
-                "a node cannot follow its own Myko history".to_owned(),
-            ));
-        }
-        self.upsert_configured_peer(ConfiguredPeer::pinned(descriptor))
-            .await
-    }
-
-    /// Durably installs a decoded descriptor or legacy endpoint reference.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same configuration and follower errors as the corresponding
-    /// pinned or unpinned upsert path.
-    pub async fn upsert_peer_reference(
-        &self,
-        reference: NativePeerReference,
-    ) -> Result<bool, DurableNodeError> {
-        match reference {
-            NativePeerReference::Descriptor(descriptor) => {
-                self.upsert_peer_descriptor(descriptor).await
-            }
-            NativePeerReference::LegacyEndpoint(endpoint) => self.upsert_peer(endpoint).await,
-        }
-    }
-
-    async fn upsert_configured_peer(&self, peer: ConfiguredPeer) -> Result<bool, DurableNodeError> {
-        let _update = self.peer_updates.lock().await;
-        if peer.endpoint.id == self.address().id {
-            return Err(DurableNodeError::Configuration(
-                "a node cannot follow its own Iroh identity".to_owned(),
-            ));
-        }
-        let replaced = {
-            let mut peers = self.peers.lock().map_err(|_| {
-                DurableNodeError::State("peer configuration lock is poisoned".to_owned())
-            })?;
-            let previous = peers.insert(peer.endpoint.id, peer.clone());
-            if let Err(error) = save_peers(&self.data_dir.join(PEERS_FILE), &peers) {
-                if let Some(previous) = previous {
-                    peers.insert(peer.endpoint.id, previous);
-                } else {
-                    peers.remove(&peer.endpoint.id);
-                }
-                drop(peers);
-                return Err(error);
-            }
-            let replaced = previous.is_some();
-            drop(peers);
-            replaced
-        };
-        if let Some(source_node) = peer.source_node {
-            self.supervisor
-                .upsert_persisted_source(
-                    peer.endpoint,
-                    source_node,
-                    self.journal.clone(),
-                    self.retry_interval,
-                )
-                .await?;
-        } else {
-            self.supervisor
-                .upsert_persisted(peer.endpoint, self.journal.clone(), self.retry_interval)
-                .await?;
-        }
-        Ok(replaced)
-    }
-
-    /// Durably removes a peer and stops only its follower.
-    ///
-    /// Returns `false` when the peer was not configured.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if configuration cannot be committed or the follower
-    /// cannot be stopped cleanly.
-    pub async fn remove_peer(&self, peer_id: EndpointId) -> Result<bool, DurableNodeError> {
-        let _update = self.peer_updates.lock().await;
-        let removed = {
-            let mut peers = self.peers.lock().map_err(|_| {
-                DurableNodeError::State("peer configuration lock is poisoned".to_owned())
-            })?;
-            let Some(removed_peer) = peers.remove(&peer_id) else {
-                return Ok(false);
-            };
-            if let Err(error) = save_peers(&self.data_dir.join(PEERS_FILE), &peers) {
-                peers.insert(peer_id, removed_peer);
-                drop(peers);
-                return Err(error);
-            }
-            drop(peers);
-            true
-        };
-        if removed {
-            self.supervisor.remove(peer_id).await?;
-        }
-        Ok(removed)
     }
 
     /// Stops every peer follower and then the shared Iroh endpoint.
@@ -720,18 +871,38 @@ impl DurableIrohNode {
     /// # Errors
     ///
     /// Returns an error if a follower or endpoint cannot shut down cleanly.
-    pub async fn shutdown(self) -> Result<(), DurableNodeError> {
-        self.supervisor.shutdown().await?;
+    pub async fn shutdown(mut self) -> Result<(), NodeError> {
+        if let Some(discovery) = self.discovery.take() {
+            discovery.shutdown().await.map_err(NodeError::State)?;
+        }
+        if let Some(pairing) = self.pairing.take() {
+            pairing.shutdown().await.map_err(NodeError::State)?;
+        }
+        if let Some(status_projection) = self.status_projection.take() {
+            status_projection.shutdown().await;
+        }
+        if let Some(reconciler) = self.peer_reconciler.take() {
+            reconciler.shutdown().await;
+        }
+        if let Some(dispatch) = self.command_dispatch.take() {
+            dispatch.shutdown().await;
+        }
+        self.replicator
+            .sessions()
+            .clear_application()
+            .map_err(NodeError::State)?;
+        self.supervisor.shutdown_all().await?;
         self.replicator.shutdown().await?;
         Ok(())
     }
 }
 
-fn same_descriptor_identity(left: &NativeNodeDescriptor, right: &NativeNodeDescriptor) -> bool {
-    left.node_id == right.node_id && left.endpoint.id == right.endpoint.id
+fn default_node_name(node_id: NodeId) -> String {
+    let short_id = node_id.to_string().chars().take(8).collect::<String>();
+    format!("myko-{short_id}")
 }
 
-fn load_peers(path: &Path) -> Result<BTreeMap<EndpointId, ConfiguredPeer>, DurableNodeError> {
+fn load_peers(path: &Path) -> Result<BTreeMap<EndpointId, ConfiguredPeer>, NodeError> {
     let encoded = match fs::read(path) {
         Ok(encoded) => encoded,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -741,14 +912,16 @@ fn load_peers(path: &Path) -> Result<BTreeMap<EndpointId, ConfiguredPeer>, Durab
     };
     let header = serde_json::from_slice::<StoredConfigHeader>(&encoded)?;
     let decoded_peers = match header.version {
-        CONFIG_VERSION => serde_json::from_slice::<StoredPeerConfig>(&encoded)?.peers,
+        CONFIG_VERSION | PREVIOUS_CONFIG_VERSION => {
+            serde_json::from_slice::<StoredPeerConfig>(&encoded)?.peers
+        }
         LEGACY_CONFIG_VERSION => serde_json::from_slice::<LegacyStoredPeerConfig>(&encoded)?
             .peers
             .into_iter()
             .map(ConfiguredPeer::unpinned)
             .collect(),
         version => {
-            return Err(DurableNodeError::Configuration(format!(
+            return Err(NodeError::Configuration(format!(
                 "unsupported peer configuration version {version}"
             )));
         }
@@ -756,43 +929,10 @@ fn load_peers(path: &Path) -> Result<BTreeMap<EndpointId, ConfiguredPeer>, Durab
     let mut peers = BTreeMap::new();
     for peer in decoded_peers {
         if peers.insert(peer.endpoint.id, peer).is_some() {
-            return Err(DurableNodeError::Configuration(
+            return Err(NodeError::Configuration(
                 "peer configuration contains a duplicate Iroh identity".to_owned(),
             ));
         }
     }
     Ok(peers)
-}
-
-fn save_peers(
-    path: &Path,
-    peers: &BTreeMap<EndpointId, ConfiguredPeer>,
-) -> Result<(), DurableNodeError> {
-    let stored = StoredPeerConfig {
-        version: CONFIG_VERSION,
-        peers: peers.values().cloned().collect(),
-    };
-    let encoded = serde_json::to_vec_pretty(&stored)?;
-    let parent = path.parent().ok_or_else(|| {
-        DurableNodeError::Configuration(format!(
-            "peer configuration has no parent: {}",
-            path.display()
-        ))
-    })?;
-    let temporary = parent.join(format!(".peers-{}.tmp", Uuid::new_v4()));
-    let result = (|| {
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temporary)?;
-        file.write_all(&encoded)?;
-        file.sync_all()?;
-        fs::rename(&temporary, path)?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(temporary);
-    }
-    result
 }

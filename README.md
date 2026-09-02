@@ -29,10 +29,11 @@ optional short-lived edge: WebSocket gateway -> the same Myko node
 
 The v7 boundary is deliberately not a socket protocol:
 
-- `#[myko_item(service = "...", ...)]` declares an entity's stable owning
-  service, typed ID, schema version, and scope placement.
-- `#[myko_command(service = "...", name = "...")]` declares a stable command
-  body and typed result.
+- `#[myko_service(...)]` groups typed item modules into one atomicity boundary.
+- `#[myko_item(service = ServiceType, ...)]` declares an entity's typed owning
+  service, generated ID, schema version, and scope placement.
+- `#[myko_command(Result, item = ItemType)]` declares a typed command owned by
+  one item module; its service and wire identity are generated.
 - command contexts enforce service and scope atomicity, encode mutations, and
   durably commit or reject work;
 - current-state queries and follows infer service from the item schema;
@@ -44,7 +45,7 @@ The v7 boundary is deliberately not a socket protocol:
 
 | Crate | Responsibility |
 | --- | --- |
-| `myko-items-macros` | `#[myko_item]` and `#[myko_command]` generation |
+| `myko-items-macros` | `#[myko_service]`, `#[myko_item]`, and `#[myko_command]` generation |
 | `myko-items` | typed item, mutation, projection, and query contracts |
 | `myko-app` | registered reactive query, report, and view handlers over Hyphae |
 | `myko-federation` | transport-neutral nodes, commands, history, scopes, and Hyphae subscription lifecycle |
@@ -58,39 +59,40 @@ The v7 boundary is deliberately not a socket protocol:
 ## Declaring application state
 
 ```rust
-use myko_items::{myko_command, myko_item};
+use myko_items::{myko_command, myko_item, myko_service};
 
-#[myko_item(service = "example.projects", scope_root)]
+#[myko_service(Project, Task)]
+pub struct PlanningService;
+
+#[myko_item(service = PlanningService, scope_root)]
 pub struct Project {
     pub title: String,
 }
 
-#[myko_item(service = "example.projects", scoped_by = Project)]
+#[myko_item(service = PlanningService, scoped_by = Project)]
 pub struct Task {
     pub project_id: ProjectId,
     pub title: String,
     pub complete: bool,
 }
 
-#[myko_command(
-    service = "example.projects",
-    name = "example.create_task",
-    result = Task
-)]
+#[myko_command(Task, item = Task)]
 pub struct CreateTask {
     pub project_id: ProjectId,
     pub title: String,
 }
 ```
 
-The macros generate typed IDs and baseline queries. Item mutations also carry
-the owning service. Myko rejects a handler write or forged raw batch when its
+The macros generate typed IDs and baseline queries. An application activates
+`PlanningService` once; Myko registers both item modules and their linked
+handlers. Item mutations also carry the generated owning-service identity.
+Myko rejects a handler write or forged raw batch when its
 item service differs from the command's service, preventing one Rust entity
 from silently splitting into unrelated service namespaces.
 
 ## Native nodes and clients
 
-`myko-node::DurableIrohNode` restores a stable Myko identity, Iroh key, Redb
+`myko-node::Node` restores a stable Myko identity, Iroh key, Redb
 journal, configured peers, and source-aware follower cursors from one data
 directory. `myko-iroh` exposes authenticated command clients, bounded typed
 current-state reads, cursor-stable snapshot-then-live item and command streams,
