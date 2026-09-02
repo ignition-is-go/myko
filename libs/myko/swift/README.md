@@ -11,7 +11,8 @@ The directory contains both sides of the native boundary:
   cancellable synchronous `current`/`next` calls suitable for UniFFI;
 - the Swift `MykoSwift` package consumes those calls off the main actor,
   delivers revisions on the main actor, rejects stale work after restart, and
-  provides device-only Keychain storage for opaque node identities and secrets.
+  provides structured-concurrency bridging for blocking native calls plus
+  device-only Keychain storage for opaque node identities and secrets.
 
 Concrete applications still own their exported records and projection from
 domain entities into presentation data. They do not own transport routing,
