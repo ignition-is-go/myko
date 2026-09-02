@@ -8,26 +8,37 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket},
     sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, UdpSocket as StdUdpSocket};
+
 use myko_federation::NodeId;
 use myko_iroh::{EndpointId, NativeNodeDescriptor, PairingInvitation};
 use serde::{Deserialize, Serialize};
+use tokio::{sync::watch, task::JoinHandle};
+
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 use tokio::{
     net::UdpSocket,
-    sync::watch,
-    task::JoinHandle,
     time::{MissedTickBehavior, interval},
 };
 
-/// IPv4 multicast group used for nearby Myko node advertisements.
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+mod apple;
+
+/// Bonjour service type used for nearby Myko node advertisements on Apple platforms.
+pub const MYKO_BONJOUR_SERVICE_TYPE: &str = "_myko-node._udp";
+/// IPv4 multicast group used for nearby Myko node advertisements on non-Apple platforms.
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 pub const MYKO_LAN_DISCOVERY_GROUP: Ipv4Addr = Ipv4Addr::new(239, 255, 75, 82);
 /// UDP port used with [`MYKO_LAN_DISCOVERY_GROUP`].
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 pub const MYKO_LAN_DISCOVERY_PORT: u16 = 47_826;
 const LAN_DISCOVERY_PROTOCOL_VERSION: u16 = 1;
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 const MAX_LAN_DISCOVERY_PACKET_BYTES: usize = 16 * 1024;
 const DEFAULT_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(3);
 const DEFAULT_EXPIRY: Duration = Duration::from_secs(12);
@@ -194,6 +205,11 @@ impl LanRoster {
         self.nodes.len() != before
     }
 
+    /// Removes a participant by authenticated transport identity.
+    fn remove_endpoint(&mut self, endpoint: &str) -> bool {
+        self.nodes.remove(endpoint).is_some()
+    }
+
     /// Returns nearby nodes in stable endpoint-identity order.
     #[must_use]
     pub fn snapshot(&self) -> Vec<DiscoveredNode> {
@@ -201,7 +217,7 @@ impl LanRoster {
     }
 }
 
-/// Running multicast advertisement and discovery driver.
+/// Running local-network advertisement and discovery driver.
 #[derive(Debug)]
 pub struct LanDiscovery {
     roster: Arc<Mutex<LanRoster>>,
@@ -211,17 +227,31 @@ pub struct LanDiscovery {
 }
 
 impl LanDiscovery {
-    /// Starts the default IPv4 multicast discovery driver.
+    /// Starts the platform-appropriate local discovery driver.
     ///
     /// # Errors
     ///
-    /// Returns an error when UDP multicast cannot be configured.
+    /// Returns an error when the local discovery transport cannot be configured.
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "the non-Apple multicast task owns the advertisement for its lifetime"
+    )]
     pub fn start(advertisement: LanAdvertisement) -> Result<Self, String> {
-        Self::start_with_timing(advertisement, DEFAULT_ANNOUNCE_INTERVAL, DEFAULT_EXPIRY)
+        Self::start_with_timing(&advertisement, DEFAULT_ANNOUNCE_INTERVAL, DEFAULT_EXPIRY)
     }
 
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
     fn start_with_timing(
-        advertisement: LanAdvertisement,
+        advertisement: &LanAdvertisement,
+        announce_interval: Duration,
+        expiry: Duration,
+    ) -> Result<Self, String> {
+        apple::start(advertisement, announce_interval, expiry)
+    }
+
+    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+    fn start_with_timing(
+        advertisement: &LanAdvertisement,
         announce_interval: Duration,
         expiry: Duration,
     ) -> Result<Self, String> {
@@ -239,6 +269,7 @@ impl LanDiscovery {
         let task_roster = Arc::clone(&roster);
         let task_updates = updates.clone();
         let local_endpoint = advertisement.descriptor.endpoint.id;
+        let advertisement = advertisement.clone();
         let task = tokio::spawn(async move {
             let Ok(packet) = serde_json::to_vec(&LanPacket {
                 version: LAN_DISCOVERY_PROTOCOL_VERSION,
@@ -296,7 +327,7 @@ impl LanDiscovery {
         self.updates.subscribe()
     }
 
-    /// Stops the multicast driver.
+    /// Stops the local discovery driver.
     pub async fn shutdown(&self) {
         self.shutdown.send_replace(true);
         let task = self.task.lock().ok().and_then(|mut task| task.take());
@@ -307,6 +338,7 @@ impl LanDiscovery {
     }
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 fn bind_lan_socket() -> Result<UdpSocket, String> {
     let bind = SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, MYKO_LAN_DISCOVERY_PORT);
     let socket = StdUdpSocket::bind(bind)
@@ -321,6 +353,7 @@ fn bind_lan_socket() -> Result<UdpSocket, String> {
         .map_err(|error| format!("could not start LAN discovery socket: {error}"))
 }
 
+#[cfg(not(any(target_os = "ios", target_os = "macos")))]
 fn publish_expired(
     roster: &Mutex<LanRoster>,
     updates: &watch::Sender<Vec<DiscoveredNode>>,
