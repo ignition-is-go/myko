@@ -377,6 +377,7 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
         .reduce(|left, right| quote!((#left) && (#right)))
         .unwrap_or_else(|| quote!(true));
     let (scope, scope_type, scope_id) = item_scope_tokens(&name, scope_root, parent.as_ref());
+    let decode_payload = decode_payload_tokens(parent.as_ref());
     let (belongs_to, belongs_to_impl) = belongs_to_tokens(&name, parent);
 
     let id_definition = generate_id(&id);
@@ -418,12 +419,52 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
             fn belongs_to(&self) -> ::std::option::Option<::myko_items::EntityRef> {
                 #belongs_to
             }
+
+            #decode_payload
         }
 
         #belongs_to_impl
 
         #queries
     })
+}
+
+fn decode_payload_tokens(parent: Option<&(Path, Ident)>) -> TokenStream2 {
+    parent.map_or_else(
+        || quote!(),
+        |(parent, parent_id)| {
+            let serialized_field = lower_camel_case(&parent_id.to_string());
+            quote! {
+                fn __decode_payload(
+                    payload: &[u8],
+                    containing_scope: ::std::option::Option<&str>,
+                ) -> ::std::result::Result<Self, ::myko_items::ItemError> {
+                    let mut encoded: ::myko_items::serde_json::Value =
+                        ::myko_items::serde_json::from_slice(payload)?;
+                    if let (::std::option::Option::Some(containing_scope),
+                        ::std::option::Option::Some(object)) =
+                        (containing_scope, encoded.as_object_mut())
+                        && !object.contains_key(#serialized_field)
+                    {
+                        let parent_id = ::myko_items::scope_item_id(
+                            containing_scope,
+                            <#parent as ::myko_items::MykoItem>::SERVICE_ID.as_str(),
+                            <#parent as ::myko_items::MykoItem>::ITEM_TYPE,
+                        )
+                        .ok_or_else(|| ::myko_items::ItemError::LegacyParentScopeMismatch {
+                            scope_id: containing_scope.to_owned(),
+                            parent_type: <#parent as ::myko_items::MykoItem>::ITEM_TYPE,
+                        })?;
+                        object.insert(
+                            #serialized_field.to_owned(),
+                            ::myko_items::serde_json::Value::String(parent_id.to_owned()),
+                        );
+                    }
+                    ::myko_items::serde_json::from_value(encoded).map_err(::std::convert::Into::into)
+                }
+            }
+        },
+    )
 }
 
 fn inject_parent_field(
@@ -530,6 +571,22 @@ fn snake_case(value: &str) -> String {
         }
         output.extend(character.to_lowercase());
         previous = Some(character);
+    }
+    output
+}
+
+fn lower_camel_case(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut uppercase_next = false;
+    for character in value.chars() {
+        if character == '_' {
+            uppercase_next = true;
+        } else if uppercase_next {
+            output.extend(character.to_uppercase());
+            uppercase_next = false;
+        } else {
+            output.push(character);
+        }
     }
     output
 }

@@ -45,7 +45,7 @@ use std::{
 
 use myko_app::{
     ApplicationNode, CommandDispatchGuard, CommandHandler, HandlerSubscription, MykoApplication,
-    ReportHandler, ViewHandler, ViewSubscription,
+    QueryHandler, ReportHandler, ViewHandler, ViewSubscription,
 };
 use myko_federation::{
     AccessPolicy, AllowAllAccessPolicy, ItemQuery, ItemQueryWatch, LiveSubscription,
@@ -568,6 +568,35 @@ impl ApplicationClient {
             .map_err(NodeError::from)
     }
 
+    /// Opens one long-lived typed query in a concrete application scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no authenticated route exists or the query cannot
+    /// be built, established, authorized, or decoded.
+    pub async fn watch_query<Q>(
+        &self,
+        scope_id: ScopeId,
+        query: &Q,
+    ) -> Result<ApplicationReportSubscription<Q::Output>, NodeError>
+    where
+        Q: QueryHandler,
+    {
+        let Some(endpoint) = self.remote_endpoint()? else {
+            return self
+                .application
+                .watch_registered_query(self.source_node, scope_id, query)
+                .map(ApplicationReportSubscription::local)
+                .map_err(NodeError::from);
+        };
+        self.replicator
+            .application_client(endpoint)
+            .watch_query_reactive(self.source_node, scope_id, query)
+            .await
+            .map(ApplicationReportSubscription::remote)
+            .map_err(NodeError::from)
+    }
+
     /// Opens one long-lived typed report on the selected source node.
     ///
     /// # Errors
@@ -1087,7 +1116,8 @@ impl Node {
             .services()
             .map(|service| ServiceId::new(service.service_id.as_str()))
             .collect::<Vec<_>>();
-        let application = ApplicationNode::new(node.clone(), application);
+        let application = ApplicationNode::attach(node.clone(), application)
+            .map_err(|error| NodeError::Configuration(error.to_string()))?;
         ensure_advertised_services(&node, &application, advertised_services)?;
         let initial_policy = resolve_policy(&application)?;
         let replicator = match bind_mode {

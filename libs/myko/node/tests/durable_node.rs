@@ -7,7 +7,7 @@ use myko_app::{
 };
 use myko_federation::{
     AccessPolicy, AccessRequest, AllowAllAccessPolicy, BatchId, ChangeBatch, CommandClient as _,
-    CommandId, CommandRequest, CommandState, MykoService, Node as FederationNode, NodeId,
+    CommandId, CommandRequest, CommandState, MykoItem, MykoService, Node as FederationNode, NodeId,
     PrincipalId, ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness,
 };
 use myko_iroh::{IrohReplicator, SecretKey};
@@ -95,6 +95,78 @@ impl ItemQuery for AllReactiveRecords {
 }
 
 impl QueryHandler for AllReactiveRecords {}
+
+#[myko_service(LegacyParent, LegacyChild)]
+pub struct LegacyService;
+
+#[myko_item(service = LegacyService, scope_root)]
+pub struct LegacyParent {
+    label: String,
+}
+
+#[myko_item(service = LegacyService, scope_root, scoped_by = LegacyParent)]
+pub struct LegacyChild {
+    label: String,
+}
+
+#[myko_query(LegacyChild)]
+struct AllLegacyChildren;
+
+impl ItemQuery for AllLegacyChildren {
+    type Item = LegacyChild;
+    type Output = Vec<LegacyChild>;
+
+    fn execute(self, projection: &ItemProjection<Self::Item>) -> Self::Output {
+        projection.values().cloned().collect()
+    }
+}
+
+impl QueryHandler for AllLegacyChildren {}
+
+fn commit_legacy_child(node: &FederationNode) -> Result<(), String> {
+    let request = CommandRequest {
+        id: CommandId::new(),
+        service_id: ServiceId::new(LegacyService::SERVICE_ID),
+        scope_id: ScopeId::new("legacy_parent:parent-1"),
+        principal_id: PrincipalId::new("node:test"),
+        command_type: "legacy.child.set".to_owned(),
+        payload: Vec::new(),
+    };
+    let admission = node
+        .admit(request.clone())
+        .map_err(|error| error.to_string())?;
+    let mutation = ItemMutation {
+        service_id: LegacyChild::SERVICE_ID.as_str().to_owned(),
+        item_type: LegacyChild::ITEM_TYPE.to_owned(),
+        item_id: "child-1".to_owned(),
+        schema_version: LegacyChild::SCHEMA_VERSION,
+        roots_scope: false,
+        belongs_to: None,
+        scope_id: None,
+        operation: myko_federation::MutationOperation::Set,
+        payload: Some(
+            serde_json::to_vec(&serde_json::json!({
+                "id": "child-1",
+                "label": "from the legacy journal",
+            }))
+            .map_err(|error| error.to_string())?,
+        ),
+    };
+    node.commit(
+        request.id,
+        ChangeBatch {
+            id: BatchId::new(),
+            command_id: request.id,
+            service_id: request.service_id,
+            scope_id: request.scope_id,
+            causal_parents: vec![admission.snapshot().updated_at],
+            changes: vec![mutation],
+        },
+        Vec::new(),
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
 
 #[derive(Debug)]
 struct DenyAllPolicy;
@@ -292,6 +364,88 @@ async fn restored_policy_is_installed_before_the_router_serves() -> Result<(), S
     }
     client.shutdown().await.map_err(|error| error.to_string())?;
     reopened.shutdown().await.map_err(|error| error.to_string())
+}
+
+#[tokio::test]
+async fn native_restart_restores_pre_topology_item_history_before_serving() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let retry_interval = Duration::from_millis(20);
+    let initial = Node::open_loopback(directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    commit_legacy_child(initial.node())?;
+    initial
+        .shutdown()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let open_current = || {
+        let application = MykoApplication::builder()
+            .service::<LegacyService>()
+            .map_err(|error| error.to_string())?
+            .build();
+        Ok::<_, String>(Node::open_loopback_application_with_policy(
+            directory.path(),
+            retry_interval,
+            application,
+            |_| Ok(Arc::new(AllowAllAccessPolicy)),
+        ))
+    };
+    let reopened = open_current()?.await.map_err(|error| error.to_string())?;
+    let child_id = LegacyChildId::from("child-1");
+    let child_scope = ScopeId::for_item::<LegacyChild>(&child_id);
+    let children = reopened
+        .application()
+        .watch_query(
+            reopened.node().node_id(),
+            child_scope.clone(),
+            AllLegacyChildren,
+        )
+        .map_err(|error| error.to_string())?;
+    if children
+        .live()
+        .current()
+        .value
+        .as_ref()
+        .is_none_or(|items| {
+            items.len() != 1
+                || items.first().is_none_or(|item| {
+                    item.id != child_id || item.legacy_parent_id != LegacyParentId::from("parent-1")
+                })
+        })
+    {
+        return Err("legacy child was not restored into its current typed scope".to_owned());
+    }
+    let parent_scope = ScopeId::for_item::<LegacyParent>(&LegacyParentId::from("parent-1"));
+    if reopened
+        .node()
+        .scope_topology()
+        .map_err(|error| error.to_string())?
+        .parent(&child_scope)
+        != Some(&parent_scope)
+    {
+        return Err("legacy nested scope topology was not restored before serving".to_owned());
+    }
+    drop(children);
+    reopened
+        .shutdown()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let reopened_again = open_current()?.await.map_err(|error| error.to_string())?;
+    if reopened_again
+        .node()
+        .scope_topology()
+        .map_err(|error| error.to_string())?
+        .parent(&child_scope)
+        != Some(&parent_scope)
+    {
+        return Err("legacy topology restoration was not restart-idempotent".to_owned());
+    }
+    reopened_again
+        .shutdown()
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tokio::test]

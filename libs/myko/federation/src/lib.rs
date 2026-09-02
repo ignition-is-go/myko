@@ -194,6 +194,28 @@ impl ScopeId {
         let item_name = snake_case_type_name(item_type);
         Self::new(format!("{service_id}/{item_name}:{item_id}"))
     }
+
+    /// Compares a current service-qualified scope with an immutable legacy
+    /// scope that predates the service prefix.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn equivalent_to(&self, other: &Self) -> bool {
+        if self == other {
+            return true;
+        }
+        match (
+            qualified_scope_suffix(self.as_str()),
+            qualified_scope_suffix(other.as_str()),
+        ) {
+            (Some(current), None) => current == other.as_str() && current.contains(':'),
+            (None, Some(current)) => self.as_str() == current && current.contains(':'),
+            _ => false,
+        }
+    }
+}
+
+fn qualified_scope_suffix(scope_id: &str) -> Option<&str> {
+    scope_id.split_once('/').map(|(_, suffix)| suffix)
 }
 
 fn snake_case_type_name(value: &str) -> String {
@@ -429,9 +451,10 @@ impl ScopeGrant {
 
     fn covers(&self, selection: &ScopeSelection) -> bool {
         match selection {
-            ScopeSelection::Exact(scope_id) => scope_id == &self.scope_id,
+            ScopeSelection::Exact(scope_id) => scope_id.equivalent_to(&self.scope_id),
             ScopeSelection::Subtree(scope_id) => {
-                scope_id == &self.scope_id && self.coverage == ScopeGrantCoverage::Subtree
+                scope_id.equivalent_to(&self.scope_id)
+                    && self.coverage == ScopeGrantCoverage::Subtree
             }
         }
     }
@@ -1014,7 +1037,7 @@ impl CommandWatchRequest {
         }
         let command = command_from_event(&envelope.event);
         (command.request.service_id == self.service_id
-            && command.request.scope_id == self.scope_id
+            && command.request.scope_id.equivalent_to(&self.scope_id)
             && command.request.command_type == self.command_type)
             .then(|| CommandStateUpdate {
                 through: envelope.position,
@@ -1226,14 +1249,6 @@ pub struct ScopeTopology {
 }
 
 impl ScopeTopology {
-    fn from_events(events: &[EventEnvelope]) -> Result<Self, NodeError> {
-        let mut topology = Self::default();
-        for envelope in events {
-            topology.observe_event(&envelope.event)?;
-        }
-        Ok(topology)
-    }
-
     /// Incorporates nested scope roots established by one immutable event.
     ///
     /// # Errors
@@ -1257,13 +1272,18 @@ impl ScopeTopology {
                 .scope_id
                 .as_deref()
                 .unwrap_or(batch.scope_id.as_str());
-            if placed_scope != child.as_str() {
+            if !ScopeId::new(placed_scope).equivalent_to(&child) {
                 return Err(NodeError::InvalidItemMutation(format!(
                     "nested scope root {child} was placed in scope {placed_scope}"
                 )));
             }
             let parent = ScopeId::for_entity(parent);
-            if !self.parents.contains_key(&child) && !event.affected_scope_ids().contains(&parent) {
+            if self.parent(&child).is_none()
+                && !event
+                    .affected_scope_ids()
+                    .iter()
+                    .any(|affected| affected.equivalent_to(&parent))
+            {
                 return Err(NodeError::InvalidItemMutation(format!(
                     "new nested scope {child} must be created in a batch that also covers parent scope {parent}"
                 )));
@@ -1274,13 +1294,13 @@ impl ScopeTopology {
     }
 
     fn insert(&mut self, child: ScopeId, parent: ScopeId) -> Result<(), NodeError> {
-        if child == parent {
+        if child.equivalent_to(&parent) {
             return Err(NodeError::InvalidItemMutation(format!(
                 "scope {child} cannot belong to itself"
             )));
         }
-        if let Some(existing) = self.parents.get(&child) {
-            if existing != &parent {
+        if let Some(existing) = self.parent(&child) {
+            if !existing.equivalent_to(&parent) {
                 return Err(NodeError::InvalidItemMutation(format!(
                     "scope {child} cannot move from parent {existing} to {parent}"
                 )));
@@ -1299,7 +1319,11 @@ impl ScopeTopology {
     /// Returns the immediate parent of `scope_id`, when it is nested.
     #[must_use]
     pub fn parent(&self, scope_id: &ScopeId) -> Option<&ScopeId> {
-        self.parents.get(scope_id)
+        self.parents.get(scope_id).or_else(|| {
+            self.parents
+                .iter()
+                .find_map(|(candidate, parent)| candidate.equivalent_to(scope_id).then_some(parent))
+        })
     }
 
     /// Returns the nearest-to-farthest ancestors of one scope.
@@ -1308,7 +1332,7 @@ impl ScopeTopology {
         let mut ancestors = Vec::new();
         let mut current = scope_id;
         let mut visited = HashSet::new();
-        while let Some(parent) = self.parents.get(current) {
+        while let Some(parent) = self.parent(current) {
             if !visited.insert(parent.clone()) {
                 break;
             }
@@ -1334,7 +1358,7 @@ impl ScopeTopology {
     fn is_descendant_of(&self, scope_id: &ScopeId, ancestor: &ScopeId) -> bool {
         self.ancestors(scope_id)
             .iter()
-            .any(|value| value == ancestor)
+            .any(|value| value.equivalent_to(ancestor))
     }
 }
 
@@ -1385,12 +1409,12 @@ impl ReplicationSelection {
                     && event
                         .affected_scope_ids()
                         .iter()
-                        .all(|affected| affected == scope_id)
+                        .all(|affected| affected.equivalent_to(scope_id))
             }
             Self::Scopes(selections) => event.affected_scope_ids().iter().all(|scope_id| {
                 selections.iter().any(|selection| match selection {
                     ScopeSelection::Exact(selected) | ScopeSelection::Subtree(selected) => {
-                        selected == scope_id
+                        selected.equivalent_to(scope_id)
                     }
                 })
             }),
@@ -1404,9 +1428,10 @@ impl ReplicationSelection {
         match self {
             Self::Scopes(selections) => event.affected_scope_ids().iter().all(|scope_id| {
                 selections.iter().any(|selection| match selection {
-                    ScopeSelection::Exact(selected) => selected == scope_id,
+                    ScopeSelection::Exact(selected) => selected.equivalent_to(scope_id),
                     ScopeSelection::Subtree(selected) => {
-                        selected == scope_id || topology.is_descendant_of(scope_id, selected)
+                        selected.equivalent_to(scope_id)
+                            || topology.is_descendant_of(scope_id, selected)
                     }
                 })
             }),
@@ -2223,6 +2248,12 @@ pub struct ItemStateEntry {
     pub last_changed_at: LogPosition,
     /// Stable order of the mutation within its atomic command batch.
     pub change_index: u32,
+    /// Scope carried by the immutable command batch that produced this item.
+    ///
+    /// This lets typed consumers reconstruct parent foreign keys for journal
+    /// entries written before item mutations carried their own placement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub containing_scope_id: Option<ScopeId>,
     pub mutation: ItemMutation,
 }
 
@@ -2272,8 +2303,9 @@ impl ItemStateSnapshot {
         let mut projection = ItemProjection::<Q::Item>::default();
         for item in &self.items {
             projection
-                .apply_at_order(
+                .apply_at_order_in_scope(
                     &item.mutation,
+                    item.containing_scope_id.as_ref().map(ScopeId::as_str),
                     item.last_changed_at.get(),
                     item.change_index,
                 )
@@ -2384,14 +2416,14 @@ impl ItemFollowRequest {
         let NodeEvent::CommandCommitted { command, batch } = &envelope.event else {
             return Ok(None);
         };
-        if command.request.service_id != self.service_id
-            || command.request.scope_id != self.scope_id
-        {
+        if command.request.service_id != self.service_id {
             return Ok(None);
         }
         let mut changes = Vec::new();
         for mutation in &batch.changes {
-            if mutation.item_type != self.item_type {
+            if mutation.item_type != self.item_type
+                || !erased_mutation_affects_scope(mutation, &batch.scope_id, &self.scope_id)
+            {
                 continue;
             }
             mutation
@@ -2419,6 +2451,7 @@ impl ItemFollowRequest {
             item_type: self.item_type.clone(),
             schema_version: self.schema_version,
             through: envelope.position,
+            containing_scope_id: Some(batch.scope_id.clone()),
             changes,
         }))
     }
@@ -2434,6 +2467,9 @@ pub struct ItemStateUpdate {
     pub item_type: String,
     pub schema_version: u32,
     pub through: LogPosition,
+    /// Scope carried by the immutable command batch producing `changes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub containing_scope_id: Option<ScopeId>,
     pub changes: Vec<ItemMutation>,
 }
 
@@ -2473,8 +2509,9 @@ impl<Q: ItemQuery> ItemQueryStream<Q> {
         let mut projection = ItemProjection::<Q::Item>::default();
         for item in &snapshot.items {
             projection
-                .apply_at_order(
+                .apply_at_order_in_scope(
                     &item.mutation,
+                    item.containing_scope_id.as_ref().map(ScopeId::as_str),
                     item.last_changed_at.get(),
                     item.change_index,
                 )
@@ -2545,7 +2582,12 @@ impl<Q: ItemQuery> ItemQueryStream<Q> {
                 ))
             })?;
             if !projection
-                .apply_at_order(mutation, update.through.get(), change_index)
+                .apply_at_order_in_scope(
+                    mutation,
+                    update.containing_scope_id.as_ref().map(ScopeId::as_str),
+                    update.through.get(),
+                    change_index,
+                )
                 .map_err(|error| NodeError::InvalidItemState(error.to_string()))?
             {
                 return Err(NodeError::InvalidItemState(
@@ -2570,7 +2612,11 @@ fn validate_command_state_entry(
 ) -> Result<(), NodeError> {
     if entry.command.updated_at.node_id != request.source_node
         || entry.command.request.service_id != request.service_id
-        || entry.command.request.scope_id != request.scope_id
+        || !entry
+            .command
+            .request
+            .scope_id
+            .equivalent_to(&request.scope_id)
         || entry.command.request.command_type != request.command_type
         || entry.admitted_at > entry.command.updated_at.sequence
         || entry.admitted_at > entry.last_changed_at
@@ -2589,7 +2635,11 @@ fn validate_command_update(
 ) -> Result<(), NodeError> {
     if update.command.updated_at.node_id != request.source_node
         || update.command.request.service_id != request.service_id
-        || update.command.request.scope_id != request.scope_id
+        || !update
+            .command
+            .request
+            .scope_id
+            .equivalent_to(&request.scope_id)
         || update.command.request.command_type != request.command_type
     {
         return Err(NodeError::InvalidCommandState(
@@ -2630,7 +2680,7 @@ fn materialize_command_state_entries(
         }
         let command = command_from_event(&envelope.event);
         if command.request.service_id != request.service_id
-            || command.request.scope_id != request.scope_id
+            || !command.request.scope_id.equivalent_to(&request.scope_id)
             || command.request.command_type != request.command_type
         {
             continue;
@@ -2679,7 +2729,11 @@ fn next_command_state_request(
     for entry in &page.commands {
         let command_id = entry.command.request.id.to_string();
         if entry.command.request.service_id != page.request.service_id
-            || entry.command.request.scope_id != page.request.scope_id
+            || !entry
+                .command
+                .request
+                .scope_id
+                .equivalent_to(&page.request.scope_id)
             || entry.command.request.command_type != page.request.command_type
             || entry.admitted_at > entry.last_changed_at
             || page
@@ -2729,13 +2783,14 @@ fn materialize_item_state_entries(
         let NodeEvent::CommandCommitted { command, batch } = envelope.event else {
             continue;
         };
-        if command.request.service_id != request.service_id
-            || command.request.scope_id != request.scope_id
-        {
+        if command.request.service_id != request.service_id {
             continue;
         }
+        let containing_scope = batch.scope_id;
         for (index, mutation) in batch.changes.into_iter().enumerate() {
-            if mutation.item_type != request.item_type {
+            if mutation.item_type != request.item_type
+                || !erased_mutation_affects_scope(&mutation, &containing_scope, &request.scope_id)
+            {
                 continue;
             }
             let change_index = u32::try_from(index).map_err(|error| {
@@ -2762,6 +2817,7 @@ fn materialize_item_state_entries(
                         ItemStateEntry {
                             last_changed_at: envelope.position,
                             change_index,
+                            containing_scope_id: Some(containing_scope.clone()),
                             mutation,
                         },
                     );
@@ -2773,6 +2829,21 @@ fn materialize_item_state_entries(
         }
     }
     Ok(current)
+}
+
+fn erased_mutation_affects_scope(
+    mutation: &ItemMutation,
+    batch_scope: &ScopeId,
+    requested_scope: &ScopeId,
+) -> bool {
+    let placed_scope = mutation
+        .scope_id
+        .as_ref()
+        .map_or_else(|| batch_scope.clone(), |scope| ScopeId::new(scope.clone()));
+    placed_scope.equivalent_to(requested_scope)
+        || (mutation.has_legacy_scope_metadata()
+            && ScopeId::for_parts(&mutation.service_id, &mutation.item_type, &mutation.item_id)
+                .equivalent_to(requested_scope))
 }
 
 fn next_item_state_request(page: &ItemStatePage) -> Result<Option<ItemStateRequest>, NodeError> {
@@ -2946,12 +3017,20 @@ impl<Q: ItemQuery> ItemQueryWatch<Q> {
         envelope: &EventEnvelope,
     ) -> Result<Option<ItemQueryUpdate<Q::Output>>, NodeError> {
         let advances_cursor = match &envelope.event {
-            NodeEvent::CommandCommitted { command, .. } => {
+            NodeEvent::CommandCommitted { command, batch } => {
                 self.source_node
                     .is_none_or(|source_node| envelope.origin.node_id == source_node)
                     && command.request.service_id == self.service_id
                     && self.scope_id.as_ref().is_none_or(|scope_id| {
-                        envelope.event.affected_scope_ids().contains(scope_id)
+                        command.request.scope_id.equivalent_to(scope_id)
+                            || batch.changes.iter().any(|mutation| {
+                                mutation.affects_scope::<Q::Item>(
+                                    batch.scope_id.as_str(),
+                                    scope_id.as_str(),
+                                ) || mutation.scope_id.as_ref().is_some_and(|placed| {
+                                    ScopeId::new(placed.clone()).equivalent_to(scope_id)
+                                })
+                            })
                     })
             }
             NodeEvent::CommandLifecycle(_) => false,
@@ -3264,6 +3343,28 @@ pub trait NodeBackend: Send + Sync + 'static {
     ///
     /// Returns an error when the backend cannot establish the subscription.
     fn subscribe(&self, after: Option<LogPosition>) -> Result<EventSubscription, NodeError>;
+
+    /// Returns the complete scope topology known to this backend, including
+    /// deterministic relationships derived while attaching typed schemas.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when backend state cannot be read.
+    #[doc(hidden)]
+    fn scope_topology(&self) -> Result<ScopeTopology, NodeError>;
+
+    /// Installs deterministic scope relationships recovered from typed item
+    /// history. Implementations must apply the complete set atomically.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a conflicting parent, a cycle, or unavailable
+    /// backend state.
+    #[doc(hidden)]
+    fn install_derived_scope_relations(
+        &self,
+        relations: &[(ScopeId, ScopeId)],
+    ) -> Result<(), NodeError>;
 
     /// Idempotently ingests an immutable event received from another node.
     ///
@@ -4986,11 +5087,7 @@ impl Node {
             if command.request.service_id.as_str() == T::SERVICE_ID.as_str()
                 && batch.changes.iter().any(|mutation| {
                     mutation.is::<T>()
-                        && mutation
-                            .scope_id
-                            .as_deref()
-                            .unwrap_or(batch.scope_id.as_str())
-                            == scope_id.as_str()
+                        && mutation.affects_scope::<T>(batch.scope_id.as_str(), scope_id.as_str())
                 })
             {
                 sources
@@ -5158,6 +5255,16 @@ impl Node {
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
+        let topology = self.scope_topology()?;
+        for scope in topology
+            .parents
+            .iter()
+            .flat_map(|(child, parent)| [child.clone(), parent.clone()])
+        {
+            if !scopes.iter().any(|existing| existing.equivalent_to(&scope)) {
+                scopes.push(scope);
+            }
+        }
         scopes.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
         Ok(scopes)
     }
@@ -5169,7 +5276,17 @@ impl Node {
     /// Returns an error when history contains a cycle or attempts to reparent
     /// an existing scope root.
     pub fn scope_topology(&self) -> Result<ScopeTopology, NodeError> {
-        ScopeTopology::from_events(&self.events_after(None)?)
+        self.backend.scope_topology()
+    }
+
+    /// Installs scope relationships deterministically recovered by registered
+    /// typed item schemas before the node becomes ready.
+    #[doc(hidden)]
+    pub fn install_derived_scope_relations(
+        &self,
+        relations: &[(ScopeId, ScopeId)],
+    ) -> Result<(), NodeError> {
+        self.backend.install_derived_scope_relations(relations)
     }
 
     /// Creates a replay-then-live subscription without a cursor gap.
@@ -5261,7 +5378,7 @@ impl Node {
                     .event
                     .affected_scope_ids()
                     .iter()
-                    .all(|affected| affected == &scope_id)
+                    .all(|affected| affected.equivalent_to(&scope_id))
             })
             .collect();
         Ok(ScopedReplicationBatch {
@@ -5289,10 +5406,9 @@ impl Node {
             .map(|event| event.position)
             .filter(|position| after.is_none_or(|after| *position > after))
             .or(after);
-        let mut topology = ScopeTopology::default();
+        let topology = self.scope_topology()?;
         let mut events = Vec::new();
         for event in history {
-            topology.observe_event(&event.event)?;
             if after.is_none_or(|after| event.position > after)
                 && selection.includes_in(&event.event, &topology)
             {
@@ -5443,7 +5559,7 @@ fn validate_scoped_replication_batch(batch: &ScopedReplicationBatch) -> Result<(
             .event
             .affected_scope_ids()
             .iter()
-            .all(|scope_id| scope_id == &batch.scope_id)
+            .all(|scope_id| scope_id.equivalent_to(&batch.scope_id))
         {
             return Err(NodeError::InvalidReplicationBatch(format!(
                 "event at position {} does not belong to scope {}",
@@ -5549,11 +5665,7 @@ fn apply_item_envelope<T: MykoItem>(
     let mut changed = false;
     for (index, mutation) in batch.changes.iter().enumerate() {
         if service_scope.is_some_and(|(_, scope)| {
-            mutation
-                .scope_id
-                .as_deref()
-                .unwrap_or(batch.scope_id.as_str())
-                != scope.as_str()
+            !mutation.affects_scope::<T>(batch.scope_id.as_str(), scope.as_str())
         }) {
             continue;
         }
@@ -5563,7 +5675,12 @@ fn apply_item_envelope<T: MykoItem>(
             ))
         })?;
         changed |= projection
-            .apply_at_order(mutation, envelope.position.get(), change_index)
+            .apply_at_order_in_scope(
+                mutation,
+                Some(batch.scope_id.as_str()),
+                envelope.position.get(),
+                change_index,
+            )
             .map_err(|error| NodeError::CorruptHistory(error.to_string()))?;
     }
     Ok(changed)
@@ -6022,6 +6139,25 @@ impl NodeBackend for InMemoryBackend {
         Ok(EventSubscription { backlog, live })
     }
 
+    fn scope_topology(&self) -> Result<ScopeTopology, NodeError> {
+        let state = self.state.lock().map_err(|_| NodeError::Poisoned)?;
+        Ok(state.scope_topology.clone())
+    }
+
+    fn install_derived_scope_relations(
+        &self,
+        relations: &[(ScopeId, ScopeId)],
+    ) -> Result<(), NodeError> {
+        let mut state = self.state.lock().map_err(|_| NodeError::Poisoned)?;
+        let mut topology = state.scope_topology.clone();
+        for (child, parent) in relations {
+            topology.insert(child.clone(), parent.clone())?;
+        }
+        state.scope_topology = topology;
+        drop(state);
+        Ok(())
+    }
+
     fn ingest(&self, event: EventEnvelope) -> Result<IngestStatus, NodeError> {
         let mut state = self.state.lock().map_err(|_| NodeError::Poisoned)?;
         if state.seen_origins.contains(&event.origin) {
@@ -6040,6 +6176,7 @@ impl NodeBackend for InMemoryBackend {
         if let Some(journal) = &self.journal {
             journal.append(&imported)?;
         }
+        state.scope_topology.observe_event(&imported.event)?;
         Self::apply_event(&mut state, &imported.event);
         state.next_position = next_position;
         state.seen_origins.insert(imported.origin);
@@ -7319,6 +7456,84 @@ mod tests {
     }
 
     #[test]
+    fn raw_item_snapshot_and_follow_stream_restore_legacy_nested_scope_payloads() {
+        let node = Node::in_memory();
+        let project_id = FederationProjectId::from("project-1");
+        let scene_id = FederationSceneId::from("scene-1");
+        let current_parent_scope = ScopeId::for_item::<FederationProject>(&project_id);
+        let legacy_parent_scope =
+            ScopeId::new(current_parent_scope.as_str().split_once('/').unwrap().1);
+        let current_scene_scope = ScopeId::for_item::<FederationScene>(&scene_id);
+        let commit_legacy_scene = |name: &str| {
+            let mut command = request(CommandId::new());
+            command.scope_id = legacy_parent_scope.clone();
+            let executing = node.admit(command.clone()).unwrap().snapshot().clone();
+            node.commit(
+                command.id,
+                ChangeBatch {
+                    id: BatchId::new(),
+                    command_id: command.id,
+                    service_id: command.service_id,
+                    scope_id: command.scope_id,
+                    causal_parents: vec![executing.updated_at],
+                    changes: vec![ItemMutation {
+                        service_id: TestService::SERVICE_ID.as_str().to_owned(),
+                        item_type: FederationScene::ITEM_TYPE.to_owned(),
+                        item_id: scene_id.as_ref().to_owned(),
+                        schema_version: FederationScene::SCHEMA_VERSION,
+                        roots_scope: false,
+                        belongs_to: None,
+                        scope_id: None,
+                        operation: MutationOperation::Set,
+                        payload: Some(
+                            serde_json::to_vec(&serde_json::json!({
+                                "id": scene_id.as_ref(),
+                                "name": name,
+                            }))
+                            .unwrap(),
+                        ),
+                    }],
+                },
+                Vec::new(),
+            )
+            .unwrap();
+        };
+
+        commit_legacy_scene("legacy snapshot");
+        let snapshot = node
+            .item_state_snapshot(ItemStateRequest::for_serving_item::<FederationScene>(
+                current_scene_scope,
+            ))
+            .unwrap();
+        let (initial, mut stream) =
+            ItemQueryStream::from_snapshot(&snapshot, GetAllFederationScenes).unwrap();
+        assert_eq!(initial.value.len(), 1);
+        let initial_scene = initial.value.first().unwrap();
+        assert_eq!(initial_scene.federation_project_id, project_id);
+        assert_eq!(initial_scene.name, "legacy snapshot");
+
+        commit_legacy_scene("legacy update");
+        let follow = snapshot.follow_request().unwrap();
+        let update = node
+            .events_after(snapshot.through)
+            .unwrap()
+            .iter()
+            .find_map(|envelope| follow.update_from_envelope(envelope).transpose())
+            .transpose()
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            update.containing_scope_id.as_ref(),
+            Some(&legacy_parent_scope)
+        );
+        let changed = stream.apply(&update).unwrap();
+        assert_eq!(changed.value.len(), 1);
+        let changed_scene = changed.value.first().unwrap();
+        assert_eq!(changed_scene.federation_project_id.as_ref(), "project-1");
+        assert_eq!(changed_scene.name, "legacy update");
+    }
+
+    #[test]
     fn item_state_pages_hold_the_first_log_ceiling_during_concurrent_commits() {
         let node = Node::in_memory();
         let first = commit_test_record(&node, "record-1", "first");
@@ -7999,5 +8214,49 @@ mod tests {
         assert_eq!(resumed.delivered, 1);
         assert_eq!(resumed.dropped, 0);
         assert_eq!(selected.recv().unwrap().payload, b"three");
+    }
+
+    #[test]
+    fn command_snapshot_and_follow_stream_match_legacy_scope_spelling() {
+        let node = Node::in_memory();
+        let record_id = TestRecordId::from("record-1");
+        let current_scope = ScopeId::for_item::<TestRecord>(&record_id);
+        let legacy_scope = ScopeId::new(current_scope.as_str().split_once('/').unwrap().1);
+        let command = DeclaredCommand::new(
+            CommandId::new(),
+            legacy_scope.clone(),
+            PrincipalId::new("human:test"),
+            PutRecord {
+                id: record_id.as_ref().to_owned(),
+                value: "legacy scope".to_owned(),
+            },
+        );
+        node.submit(command.request().unwrap()).unwrap();
+
+        let snapshot = node
+            .command_states(CommandStateRequest::for_serving_declared::<PutRecord>(
+                current_scope,
+            ))
+            .unwrap();
+        assert_eq!(snapshot.commands.len(), 1);
+        assert_eq!(
+            snapshot.commands.first().unwrap().command.request.scope_id,
+            legacy_scope
+        );
+        let mut stream = CommandStateStream::from_snapshot(&snapshot).unwrap();
+
+        node.claim(command.id).unwrap();
+        let update = node
+            .events_after(snapshot.through)
+            .unwrap()
+            .iter()
+            .find_map(|envelope| stream.request().update_from_envelope(envelope))
+            .unwrap();
+        let current = stream.apply(&update).unwrap();
+        assert_eq!(current.typed::<PutRecord>().unwrap().len(), 1);
+        assert_eq!(
+            current.commands.first().unwrap().command.state,
+            CommandState::Executing
+        );
     }
 }

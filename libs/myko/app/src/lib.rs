@@ -25,7 +25,7 @@ use myko_federation::{
     CommandId, CommandRequest, CommandResponse, CommandSnapshot, CommandStateRequest,
     CommandStateSnapshot, CommandStateStream, CommandSubmission, CommandWatch, CommandWatchFuture,
     CommandWatchingClient as FederationCommandWatchingClient, EdgeEnds, EndpointSpec, EntityRef,
-    GraphEdge, ItemProjection, ItemQuery, LiveCollection, LiveCollectionRevision,
+    GraphEdge, ItemProjection, ItemQuery, ItemScope, LiveCollection, LiveCollectionRevision,
     LiveCollectionState, LiveSubscription, LiveSubscriptionState, LogPosition, MutationOperation,
     MykoCommand, MykoItem, MykoOperation, MykoService, Node, NodeError, NodeEvent, NodeId,
     PendingCommandSubscription, PrincipalId, ScopeId, ServiceId, ServiceTypeId,
@@ -383,7 +383,14 @@ type ErasedItemReader = dyn Fn(&Node, NodeId, &ScopeId) -> Result<Vec<Arc<dyn Er
     + Send
     + Sync
     + 'static;
-type ItemReaderMap = BTreeMap<(ServiceTypeId, &'static str), Arc<ErasedItemReader>>;
+type ItemTopologyRestorer = dyn Fn(&Node) -> Result<(), AppError> + Send + Sync + 'static;
+
+struct RegisteredItemSchema {
+    reader: Arc<ErasedItemReader>,
+    restore_topology: Arc<ItemTopologyRestorer>,
+}
+
+type ItemReaderMap = BTreeMap<(ServiceTypeId, &'static str), RegisteredItemSchema>;
 
 /// Runtime item-schema registry populated by activated Myko modules.
 ///
@@ -417,11 +424,18 @@ impl ItemRegistry {
                 })
                 .collect())
         };
+        let restore_topology = |node: &Node| restore_item_scope_topology::<T>(node);
         let previous = self
             .readers
             .write()
             .map_err(|_| AppError::State("item registry is poisoned".to_owned()))?
-            .insert((T::SERVICE_ID, T::ITEM_TYPE), Arc::new(reader));
+            .insert(
+                (T::SERVICE_ID, T::ITEM_TYPE),
+                RegisteredItemSchema {
+                    reader: Arc::new(reader),
+                    restore_topology: Arc::new(restore_topology),
+                },
+            );
         if previous.is_some() {
             return Err(AppError::DuplicateItemRegistration {
                 service_id: T::SERVICE_ID,
@@ -449,15 +463,29 @@ impl ItemRegistry {
             .read()
             .map_err(|_| AppError::State("item registry is poisoned".to_owned()))?
             .iter()
-            .find_map(|((registered_service, registered_item), reader)| {
+            .find_map(|((registered_service, registered_item), schema)| {
                 (registered_service.as_str() == service_id && *registered_item == item_type)
-                    .then(|| Arc::clone(reader))
+                    .then(|| Arc::clone(&schema.reader))
             })
             .ok_or_else(|| AppError::UnregisteredItem {
                 service_id: service_id.to_owned(),
                 item_type: item_type.to_owned(),
             })?;
         reader(node, source_node, scope_id)
+    }
+
+    fn restore_topology(&self, node: &Node) -> Result<(), AppError> {
+        let restorers = self
+            .readers
+            .read()
+            .map_err(|_| AppError::State("item registry is poisoned".to_owned()))?
+            .values()
+            .map(|schema| Arc::clone(&schema.restore_topology))
+            .collect::<Vec<_>>();
+        for restore in restorers {
+            restore(node)?;
+        }
+        Ok(())
     }
 }
 
@@ -1815,6 +1843,10 @@ impl MykoApplication {
         self.resources.clone()
     }
 
+    fn restore_item_scope_topology(&self, node: &Node) -> Result<(), AppError> {
+        self.resources.get::<ItemRegistry>()?.restore_topology(node)
+    }
+
     /// Adds one framework-owned service to an already composed application.
     ///
     /// Node compositions use this for Myko's own operational entities. User
@@ -2819,6 +2851,39 @@ impl capability::HistoryReading for ReportContext {}
 impl capability::Replaying for ReportContext {}
 impl capability::HistoryReading for QueryBuildContext {}
 
+fn restore_item_scope_topology<T: MykoItem>(node: &Node) -> Result<(), AppError> {
+    if !matches!(T::SCOPE, ItemScope::RootScopedBy { .. }) {
+        return Ok(());
+    }
+    let mut relations = Vec::new();
+    for envelope in node.events_after(None)? {
+        let NodeEvent::CommandCommitted { batch, .. } = &envelope.event else {
+            continue;
+        };
+        for mutation in &batch.changes {
+            if !mutation.is::<T>() || mutation.operation != MutationOperation::Set {
+                continue;
+            }
+            let item = mutation
+                .decode_set_in_scope::<T>(Some(batch.scope_id.as_str()))
+                .map_err(|error| AppError::Node(NodeError::CorruptHistory(error.to_string())))?;
+            let parent = item.belongs_to().ok_or_else(|| {
+                AppError::Node(NodeError::CorruptHistory(format!(
+                    "nested scope root {}/{} omitted its typed parent",
+                    T::SERVICE_ID,
+                    T::ITEM_TYPE
+                )))
+            })?;
+            relations.push((
+                ScopeId::for_item::<T>(item.id()),
+                ScopeId::for_entity(&parent),
+            ));
+        }
+    }
+    node.install_derived_scope_relations(&relations)?;
+    Ok(())
+}
+
 fn replay_items<T: MykoItem>(
     node: &Node,
     source_node: NodeId,
@@ -2835,19 +2900,25 @@ fn replay_items<T: MykoItem>(
         let NodeEvent::CommandCommitted { command, batch } = &envelope.event else {
             continue;
         };
-        if command.request.service_id != ServiceId::new(T::SERVICE_ID)
-            || command.request.scope_id != *scope_id
-        {
+        if command.request.service_id != ServiceId::new(T::SERVICE_ID) {
             continue;
         }
         for (index, mutation) in batch.changes.iter().enumerate() {
+            if !mutation.affects_scope::<T>(batch.scope_id.as_str(), scope_id.as_str()) {
+                continue;
+            }
             let change_index = u32::try_from(index).map_err(|error| {
                 AppError::Node(NodeError::CorruptHistory(format!(
                     "item batch contains too many ordered changes: {error}"
                 )))
             })?;
             let _changed = projection
-                .apply_at_order(mutation, envelope.position.get(), change_index)
+                .apply_at_order_in_scope(
+                    mutation,
+                    Some(batch.scope_id.as_str()),
+                    envelope.position.get(),
+                    change_index,
+                )
                 .map_err(|error| AppError::Node(NodeError::CorruptHistory(error.to_string())))?;
         }
     }
@@ -2865,13 +2936,14 @@ where
     let NodeEvent::CommandCommitted { command, batch } = &envelope.event else {
         return Ok(false);
     };
-    if command.request.service_id != ServiceId::new(T::SERVICE_ID)
-        || command.request.scope_id != *scope_id
-    {
+    if command.request.service_id != ServiceId::new(T::SERVICE_ID) {
         return Ok(false);
     }
     let mut changed = false;
     for mutation in &batch.changes {
+        if !mutation.affects_scope::<T>(batch.scope_id.as_str(), scope_id.as_str()) {
+            continue;
+        }
         if mutation.item_type != T::ITEM_TYPE {
             continue;
         }
@@ -2895,7 +2967,7 @@ where
         match mutation.operation {
             MutationOperation::Set => {
                 let item = mutation
-                    .decode_set::<T>()
+                    .decode_set_in_scope::<T>(Some(batch.scope_id.as_str()))
                     .map_err(|error| NodeError::InvalidItemMutation(error.to_string()))?;
                 items.insert(
                     key,
@@ -3392,6 +3464,21 @@ impl ApplicationNode {
         }
     }
 
+    /// Attaches an application after restoring typed scope relationships from
+    /// immutable history written by earlier Myko 7 schemas.
+    ///
+    /// Native runtimes use this constructor before opening any transport or
+    /// releasing the startup-ready barrier.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when registered item history is malformed or contains
+    /// conflicting nested-scope parentage.
+    pub fn attach(node: Node, application: MykoApplication) -> Result<Self, AppError> {
+        application.restore_item_scope_topology(&node)?;
+        Ok(Self::new(node, application))
+    }
+
     /// Returns the underlying durable/federated node.
     #[must_use]
     pub const fn node(&self) -> &Node {
@@ -3770,6 +3857,40 @@ impl ApplicationNode {
         Ok(HandlerSubscription {
             live,
             runtime: context.runtime,
+        })
+    }
+
+    /// Builds a registered custom query through its reactive handler.
+    ///
+    /// This is the process-local half of the transport-neutral application
+    /// client; application code normally reaches it through that routed
+    /// client rather than selecting a transport itself.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the query is not registered or its reactive
+    /// dependency graph cannot be built.
+    #[doc(hidden)]
+    pub fn watch_registered_query<Q>(
+        &self,
+        source_node: NodeId,
+        scope_id: ScopeId,
+        query: &Q,
+    ) -> Result<HandlerSubscription<Q::Output>, AppError>
+    where
+        Q: QueryHandler,
+    {
+        require_handler(&self.application.queries, "query", Q::QUERY_ID)?;
+        let context = QueryBuildContext::new(
+            self.node.clone(),
+            self.application.resources(),
+            source_node,
+            scope_id,
+        );
+        let live = query.build(&context)?;
+        Ok(HandlerSubscription {
+            live,
+            runtime: context.core.runtime,
         })
     }
 
@@ -4399,6 +4520,104 @@ mod tests {
                 Vec::new(),
             )?;
         Ok(())
+    }
+
+    fn commit_legacy_scene(node: &Node, project_id: &str, scene_id: &str) -> Result<(), AppError> {
+        let legacy_project_scope = ScopeId::new(format!("project_root:{project_id}"));
+        let command = CommandRequest {
+            id: CommandId::new(),
+            service_id: ServiceId::new(SceneService::SERVICE_ID),
+            scope_id: legacy_project_scope,
+            principal_id: PrincipalId::new("test:owner"),
+            command_type: "legacy.scene.set".to_owned(),
+            payload: Vec::new(),
+        };
+        let _admission = node.admit(command.clone())?;
+        let mutation = ItemMutation {
+            service_id: Scene::SERVICE_ID.as_str().to_owned(),
+            item_type: Scene::ITEM_TYPE.to_owned(),
+            item_id: scene_id.to_owned(),
+            schema_version: Scene::SCHEMA_VERSION,
+            roots_scope: false,
+            belongs_to: None,
+            scope_id: None,
+            operation: MutationOperation::Set,
+            payload: Some(
+                serde_json::to_vec(&serde_json::json!({
+                    "id": scene_id,
+                    "name": "legacy opening",
+                }))
+                .map_err(|error| AppError::Serialization(error.to_string()))?,
+            ),
+        };
+        let _committed = node.commit(
+            command.id,
+            myko_federation::ChangeBatch {
+                id: BatchId::new(),
+                command_id: command.id,
+                service_id: command.service_id,
+                scope_id: command.scope_id,
+                causal_parents: Vec::new(),
+                changes: vec![mutation],
+            },
+            Vec::new(),
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn application_attachment_restores_legacy_nested_items_and_topology() {
+        let node = Node::in_memory();
+        assert!(commit_legacy_scene(&node, "project-1", "scene-1").is_ok());
+        let application = MykoApplication::builder()
+            .service::<ProjectService>()
+            .and_then(MykoApplicationBuilder::service::<SceneService>)
+            .map(MykoApplicationBuilder::build);
+        assert!(application.is_ok());
+        let Ok(application) = application else {
+            return;
+        };
+        let app = ApplicationNode::attach(node.clone(), application);
+        assert!(app.is_ok());
+        let Ok(app) = app else {
+            return;
+        };
+        let scene_id = SceneId::from("scene-1");
+        let scene_scope = ScopeId::for_item::<Scene>(&scene_id);
+        let scenes = app.watch_query(
+            node.node_id(),
+            scene_scope.clone(),
+            GetSceneById {
+                id: scene_id.clone(),
+            },
+        );
+        assert!(matches!(
+            scenes,
+            Ok(ref scenes)
+                if matches!(
+                    scenes.live().current().value.as_ref(),
+                    Some(Some(scene))
+                        if scene.id == scene_id
+                            && scene.project_root_id == ProjectRootId::from("project-1")
+                )
+        ));
+        let project_scope = ScopeId::for_item::<ProjectRoot>(&ProjectRootId::from("project-1"));
+        assert_eq!(
+            node.scope_topology()
+                .ok()
+                .and_then(|topology| topology.parent(&scene_scope).cloned()),
+            Some(project_scope)
+        );
+
+        let reopened_application = MykoApplication::builder()
+            .service::<ProjectService>()
+            .and_then(MykoApplicationBuilder::service::<SceneService>)
+            .map(MykoApplicationBuilder::build);
+        assert!(
+            reopened_application
+                .and_then(|application| ApplicationNode::attach(node, application))
+                .is_ok()
+        );
     }
 
     #[tokio::test]
