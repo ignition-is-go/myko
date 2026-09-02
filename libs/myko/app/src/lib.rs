@@ -2462,7 +2462,7 @@ impl ContextCore {
                 match apply_sourced_item_event::<T>(&mut items, &scope_id, &envelope) {
                     Ok(true) => task_writer
                         .publish(items.values().cloned().collect(), Some(envelope.position)),
-                    Ok(false) => {}
+                    Ok(false) => task_writer.advance_through(Some(envelope.position)),
                     Err(error) => {
                         task_writer.invalidate(error.to_string());
                         return;

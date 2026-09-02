@@ -463,6 +463,18 @@ where
         });
     }
 
+    /// Advances the evaluated cursor without replacing the current value.
+    ///
+    /// Dependencies in a coherent join must report that they evaluated every
+    /// source revision, including revisions which do not change their value.
+    /// Keeping this distinct from [`Self::publish`] lets drivers express that
+    /// progress without rebuilding application state.
+    pub fn advance_through(&self, through: Option<C>) {
+        let mut state = self.state.get();
+        state.through = through;
+        self.state.set(state);
+    }
+
     /// Retains the last value while an adapter reconnects and resynchronizes.
     pub fn resynchronizing(&self, reason: impl Into<String>) {
         let previous = self.state.get();
@@ -619,6 +631,37 @@ mod tests {
             joined.current(),
             LiveSubscriptionState {
                 value: Some(("left-2".to_owned(), "right-2".to_owned())),
+                through: Some(LogPosition::new(2)),
+                liveness: SubscriptionLiveness::Current,
+            }
+        );
+    }
+
+    #[test]
+    fn coherent_join_accepts_a_cursor_only_dependency_advance() {
+        let (left_writer, left) = live_subscription(LiveSubscriptionState {
+            value: Some("left-1".to_owned()),
+            through: Some(LogPosition::new(1)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let (right_writer, right) = live_subscription(LiveSubscriptionState {
+            value: Some("right-1".to_owned()),
+            through: Some(LogPosition::new(1)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let joined = left.join_coherent(&right);
+
+        left_writer.publish("left-2".to_owned(), Some(LogPosition::new(2)));
+        assert!(matches!(
+            joined.current().liveness,
+            SubscriptionLiveness::Resynchronizing { .. }
+        ));
+        right_writer.advance_through(Some(LogPosition::new(2)));
+
+        assert_eq!(
+            joined.current(),
+            LiveSubscriptionState {
+                value: Some(("left-2".to_owned(), "right-1".to_owned())),
                 through: Some(LogPosition::new(2)),
                 liveness: SubscriptionLiveness::Current,
             }
