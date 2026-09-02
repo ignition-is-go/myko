@@ -22,6 +22,9 @@ subscription retention, revision waiting, or cancellation.
 
 An embedded Apple application normally owns one `MykoNodeLifecycle`, registers
 its typed `MykoSubscriptionBinding` values with a `MykoSubscriptionGroup`, and
-maps lifecycle/subscription updates into its presentation model. The generated
-application adapter supplies concrete records and operations; it does not
-reimplement native concurrency or lifecycle mechanics.
+uses a `MykoOperationScope` for node-bound commands. The operation scope moves
+blocking UniFFI work off the main actor and rejects stale completions after a
+node stop or restart. The application maps lifecycle and subscription updates
+into its presentation model; its generated adapter supplies concrete records
+and operations without reimplementing native concurrency or lifecycle
+mechanics.
