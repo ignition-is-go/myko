@@ -12,6 +12,7 @@ default-members = [
   "libs/myko/local",
   "libs/myko/node",
   "libs/myko/ratatui",
+  "libs/myko/swift",
   "libs/myko/redb",
   "libs/myko/session",
 ]
@@ -29,6 +30,7 @@ members = [
   "libs/myko/local",
   "libs/myko/node",
   "libs/myko/ratatui",
+  "libs/myko/swift",
   "libs/myko/redb",
   "libs/myko/session",
   "libs/myko/macros",
@@ -156,6 +158,7 @@ myko-iroh = { version = "7.0.0-alpha.1", path = "libs/myko/iroh" }
 myko-local = { version = "7.0.0-alpha.1", path = "libs/myko/local" }
 myko-node = { version = "7.0.0-alpha.1", path = "libs/myko/node" }
 myko-ratatui = { version = "7.0.0-alpha.1", path = "libs/myko/ratatui" }
+myko-swift = { version = "7.0.0-alpha.1", path = "libs/myko/swift" }
 myko-redb = { version = "7.0.0-alpha.1", path = "libs/myko/redb" }
 myko-session = { version = "7.0.0-alpha.1", path = "libs/myko/session" }
 myko-websocket-gateway = { version = "7.0.0-alpha.1", path = "libs/myko/websocket-gateway" }

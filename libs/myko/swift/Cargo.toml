@@ -1,0 +1,15 @@
+[package]
+name = "myko-swift"
+version = "7.0.0-alpha.1"
+edition.workspace = true
+description = "Reactive lifecycle primitives for Myko Swift and UniFFI integrations"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[dependencies]
+flume.workspace = true
+hyphae.workspace = true
+myko-federation.workspace = true
+thiserror.workspace = true
