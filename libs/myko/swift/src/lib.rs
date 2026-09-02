@@ -13,8 +13,12 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use hyphae::{Signal, SubscriptionGuard, Watchable as _};
-use myko_federation::{LiveCollection, LiveSubscription, LiveSubscriptionState};
+use hyphae::{
+    Cell, CellImmutable, CellValue, Gettable as _, Signal, SubscriptionGuard, Watchable as _,
+};
+use myko_federation::{
+    LiveCollection, LiveCollectionRevision, LiveSubscription, LiveSubscriptionState,
+};
 
 trait SubscriptionOwner: Send {}
 
@@ -25,19 +29,26 @@ impl<T> SubscriptionOwner for T where T: Send {}
 #[error("Myko subscription cancelled")]
 pub struct SubscriptionCancelled;
 
-struct BlockingRevisionWaiter {
+struct BlockingRevisionWaiter<R>
+where
+    R: CellValue,
+{
     owner: Mutex<Option<Box<dyn SubscriptionOwner>>>,
+    revision: Cell<R, CellImmutable>,
+    last_observed: Mutex<R>,
     wake_tx: flume::Sender<()>,
     wake_rx: flume::Receiver<()>,
     changes: Mutex<Option<SubscriptionGuard>>,
     cancelled: AtomicBool,
 }
 
-impl BlockingRevisionWaiter {
-    fn new<O, T>(owner: O, revision: &hyphae::Cell<T, hyphae::CellImmutable>) -> Self
+impl<R> BlockingRevisionWaiter<R>
+where
+    R: CellValue,
+{
+    fn new<O>(owner: O, revision: &Cell<R, CellImmutable>) -> Self
     where
         O: Send + 'static,
-        T: hyphae::CellValue,
     {
         let (wake_tx, wake_rx) = flume::bounded(1);
         let callback_tx = wake_tx.clone();
@@ -51,6 +62,8 @@ impl BlockingRevisionWaiter {
         });
         Self {
             owner: Mutex::new(Some(Box::new(owner))),
+            revision: revision.clone(),
+            last_observed: Mutex::new(revision.get()),
             wake_tx,
             wake_rx,
             changes: Mutex::new(Some(changes)),
@@ -58,14 +71,32 @@ impl BlockingRevisionWaiter {
         }
     }
 
-    fn wait(&self) -> Result<(), SubscriptionCancelled> {
-        if self.cancelled.load(Ordering::Acquire) {
-            return Err(SubscriptionCancelled);
+    fn observe_current(&self, revision: R) {
+        *self.last_observed() = revision;
+    }
+
+    fn wait_for_change(&self) -> Result<(), SubscriptionCancelled> {
+        loop {
+            if self.cancelled.load(Ordering::Acquire) {
+                return Err(SubscriptionCancelled);
+            }
+            let revision = self.revision.get();
+            let changed = {
+                let mut last_observed = self.last_observed();
+                if *last_observed == revision {
+                    false
+                } else {
+                    *last_observed = revision;
+                    true
+                }
+            };
+            if changed {
+                return Ok(());
+            }
+            if self.wake_rx.recv().is_err() {
+                return Err(SubscriptionCancelled);
+            }
         }
-        if self.wake_rx.recv().is_err() || self.cancelled.load(Ordering::Acquire) {
-            return Err(SubscriptionCancelled);
-        }
-        Ok(())
     }
 
     fn cancel(&self) {
@@ -84,9 +115,19 @@ impl BlockingRevisionWaiter {
     fn is_cancelled(&self) -> bool {
         self.cancelled.load(Ordering::Acquire)
     }
+
+    fn last_observed(&self) -> std::sync::MutexGuard<'_, R> {
+        match self.last_observed.lock() {
+            Ok(observed) => observed,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
 }
 
-impl Drop for BlockingRevisionWaiter {
+impl<R> Drop for BlockingRevisionWaiter<R>
+where
+    R: CellValue,
+{
     fn drop(&mut self) {
         self.cancel();
     }
@@ -103,7 +144,7 @@ where
     C: hyphae::CellValue,
 {
     live: LiveSubscription<T, C>,
-    waiter: BlockingRevisionWaiter,
+    waiter: BlockingRevisionWaiter<LiveSubscriptionState<T, C>>,
 }
 
 impl<T, C> BlockingSubscription<T, C>
@@ -126,7 +167,9 @@ where
     /// Reads the newest coherent value, cursor, and liveness without waiting.
     #[must_use]
     pub fn current(&self) -> LiveSubscriptionState<T, C> {
-        self.live.current()
+        let current = self.live.current();
+        self.waiter.observe_current(current.clone());
+        current
     }
 
     /// Blocks until the live value changes, then reads its newest state.
@@ -135,7 +178,7 @@ where
     ///
     /// Returns [`SubscriptionCancelled`] after this subscription is cancelled.
     pub fn next(&self) -> Result<LiveSubscriptionState<T, C>, SubscriptionCancelled> {
-        self.waiter.wait()?;
+        self.waiter.wait_for_change()?;
         Ok(self.current())
     }
 
@@ -161,7 +204,7 @@ where
     C: hyphae::CellValue,
 {
     live: LiveCollection<T, C>,
-    waiter: BlockingRevisionWaiter,
+    waiter: BlockingRevisionWaiter<LiveCollectionRevision<T, C>>,
 }
 
 impl<T, C> BlockingCollectionSubscription<T, C>
@@ -184,8 +227,9 @@ where
     /// Reads the newest coherent collection snapshot without waiting.
     #[must_use]
     pub fn current(&self) -> LiveSubscriptionState<Vec<T>, C> {
+        let revision = self.live.revision().get();
         let state = self.live.current_state();
-        LiveSubscriptionState {
+        let current = LiveSubscriptionState {
             value: Some(
                 self.live
                     .rows()
@@ -196,7 +240,9 @@ where
             ),
             through: state.through,
             liveness: state.liveness,
-        }
+        };
+        self.waiter.observe_current(revision);
+        current
     }
 
     /// Blocks until the collection changes, then reads its newest snapshot.
@@ -205,7 +251,7 @@ where
     ///
     /// Returns [`SubscriptionCancelled`] after this subscription is cancelled.
     pub fn next(&self) -> Result<LiveSubscriptionState<Vec<T>, C>, SubscriptionCancelled> {
-        self.waiter.wait()?;
+        self.waiter.wait_for_change()?;
         Ok(self.current())
     }
 
@@ -229,6 +275,7 @@ mod tests {
             atomic::{AtomicBool, Ordering},
         },
         thread,
+        time::Duration,
     };
 
     use myko_federation::{
@@ -260,6 +307,37 @@ mod tests {
 
         assert_eq!(subscription.next(), Ok(live.current()));
         assert_eq!(subscription.current().value, Some(3));
+    }
+
+    #[test]
+    fn next_waits_for_a_revision_newer_than_current() {
+        let (writer, live) = live_subscription(LiveSubscriptionState {
+            value: Some(1_u32),
+            through: None::<myko_federation::LogPosition>,
+            liveness: SubscriptionLiveness::Current,
+        });
+        let subscription = Arc::new(BlockingSubscription::new((), &live));
+        writer.publish(2, None);
+        assert_eq!(subscription.current().value, Some(2));
+
+        let waiting = Arc::clone(&subscription);
+        let (result_tx, result_rx) = flume::bounded(1);
+        let consumer = thread::spawn(move || {
+            let _ignored = result_tx.send(waiting.next());
+        });
+        assert!(matches!(
+            result_rx.recv_timeout(Duration::from_millis(50)),
+            Err(flume::RecvTimeoutError::Timeout)
+        ));
+
+        writer.publish(3, None);
+        assert_eq!(
+            result_rx
+                .recv_timeout(Duration::from_secs(1))
+                .map(|result| result.map(|state| state.value)),
+            Ok(Ok(Some(3)))
+        );
+        assert!(consumer.join().is_ok());
     }
 
     #[test]
