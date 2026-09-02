@@ -29,6 +29,58 @@ impl<T> SubscriptionOwner for T where T: Send {}
 #[error("Myko subscription cancelled")]
 pub struct SubscriptionCancelled;
 
+/// Exports one concrete application subscription through the uniform
+/// synchronous surface consumed by `MykoSubscriptionBinding`.
+///
+/// `UniFFI` cannot export Rust generics, so applications still name a concrete
+/// object and update record. This macro keeps the `current`/`next`/`cancel`
+/// lifecycle, cancellation error conversion, and method contract in Myko.
+/// The mapper is the application's only responsibility; it receives the typed
+/// Myko state and the concrete owner object and returns the exported update.
+#[macro_export]
+macro_rules! export_blocking_subscription {
+    (
+        $subscription:ident => $update:ty,
+        field = $field:ident,
+        error = $error:ty,
+        transport_error = $transport_error:path,
+        map = $map:expr $(,)?
+    ) => {
+        #[uniffi::export]
+        impl $subscription {
+            /// Returns the latest coherent typed Myko revision without waiting.
+            ///
+            /// # Errors
+            ///
+            /// Returns an application bridge error when the revision cannot be
+            /// projected into its exported update record.
+            pub fn current(&self) -> Result<$update, $error> {
+                let state = self.$field.current();
+                ($map)(state, self)
+            }
+
+            /// Waits for and returns a revision newer than the last one read.
+            ///
+            /// # Errors
+            ///
+            /// Returns an application bridge error when the stream closes or
+            /// its revision cannot be projected into the exported update.
+            pub fn next(&self) -> Result<$update, $error> {
+                let state = self
+                    .$field
+                    .next()
+                    .map_err(|error| $transport_error(&error))?;
+                ($map)(state, self)
+            }
+
+            /// Cancels the subscription and wakes a blocked [`Self::next`] call.
+            pub fn cancel(&self) {
+                self.$field.cancel();
+            }
+        }
+    };
+}
+
 struct BlockingRevisionWaiter<R>
 where
     R: CellValue,

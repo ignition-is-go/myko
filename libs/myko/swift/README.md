@@ -17,8 +17,11 @@ The directory contains both sides of the native boundary:
   secrets.
 
 Concrete applications still own their exported records and projection from
-domain entities into presentation data. They do not own transport routing,
-subscription retention, revision waiting, or cancellation.
+domain entities into presentation data. The Rust-side
+`export_blocking_subscription!` macro generates each concrete UniFFI
+subscription object's uniform `current`/`next`/`cancel` surface. Applications
+do not own transport routing, subscription retention, revision waiting, or
+cancellation.
 
 An embedded Apple application normally owns one `MykoNodeLifecycle`, registers
 its typed `MykoSubscriptionBinding` values with a `MykoSubscriptionGroup`, and
