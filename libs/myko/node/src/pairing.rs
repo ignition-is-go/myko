@@ -1,6 +1,6 @@
 //! Framework-owned pairing commands, redemption entity, report, and receipt view.
 
-use std::{collections::HashSet, sync::Arc, time::Duration};
+use std::{collections::HashSet, hash::Hash, sync::Arc, time::Duration};
 
 use hyphae::{Signal, Watchable as _};
 use myko_app::capability::{
@@ -604,15 +604,7 @@ async fn run(
             }
             completed = effects.join_next(), if !effects.is_empty() => {
                 match completed {
-                    Some(Ok((id, result))) => {
-                        match id {
-                            PairingTaskId::Initiation(id) => {
-                                active_initiations.remove(&id);
-                            }
-                            PairingTaskId::Redemption(id) => {
-                                active_redemptions.remove(&id);
-                            }
-                        }
+                    Some(Ok(result)) => {
                         result?;
                     }
                     Some(Err(error)) => return Err(format!("pairing task panicked: {error}")),
@@ -630,12 +622,6 @@ async fn run(
     Ok(())
 }
 
-#[derive(Debug)]
-enum PairingTaskId {
-    Initiation(PairingInitiationId),
-    Redemption(PairingRedemptionId),
-}
-
 #[allow(
     clippy::too_many_arguments,
     reason = "the pairing supervisor owns two parallel durable lifecycle queues"
@@ -648,7 +634,7 @@ fn refresh_pairing_tasks(
     recover: &mut bool,
     active_initiations: &mut HashSet<PairingInitiationId>,
     active_redemptions: &mut HashSet<PairingRedemptionId>,
-    effects: &mut JoinSet<(PairingTaskId, Result<(), String>)>,
+    effects: &mut JoinSet<Result<(), String>>,
 ) -> Result<(), String> {
     let initiation_state = initiations.live().current();
     let initiation_values = match initiation_state.liveness {
@@ -736,8 +722,14 @@ fn start_redemptions(
     replicator: &IrohReplicator,
     redemptions: Vec<PairingRedemption>,
     active: &mut HashSet<PairingRedemptionId>,
-    effects: &mut JoinSet<(PairingTaskId, Result<(), String>)>,
+    effects: &mut JoinSet<Result<(), String>>,
 ) -> Result<(), String> {
+    retain_observed_unsettled(
+        active,
+        redemptions
+            .iter()
+            .map(|redemption| (&redemption.id, redemption.phase.is_terminal())),
+    );
     for redemption in redemptions {
         if redemption.phase != PairingRedemptionPhase::Queued
             || !active.insert(redemption.id.clone())
@@ -757,7 +749,7 @@ fn start_redemptions(
         let effect_replicator = replicator.clone();
         let id = redemption.id;
         effects.spawn(async move {
-            let result = match effect_replicator
+            match effect_replicator
                 .redeem_pairing(&redemption.invitation)
                 .await
             {
@@ -778,8 +770,7 @@ fn start_redemptions(
                     )
                     .map(|_| ())
                 }
-            };
-            (PairingTaskId::Redemption(id), result)
+            }
         });
     }
     Ok(())
@@ -790,8 +781,14 @@ fn start_initiations(
     replicator: &IrohReplicator,
     initiations: Vec<PairingInitiation>,
     active: &mut HashSet<PairingInitiationId>,
-    effects: &mut JoinSet<(PairingTaskId, Result<(), String>)>,
+    effects: &mut JoinSet<Result<(), String>>,
 ) -> Result<(), String> {
+    retain_observed_unsettled(
+        active,
+        initiations
+            .iter()
+            .map(|initiation| (&initiation.id, initiation.phase.is_terminal())),
+    );
     for initiation in initiations {
         if initiation.phase != PairingInitiationPhase::Queued
             || !active.insert(initiation.id.clone())
@@ -811,7 +808,7 @@ fn start_initiations(
         let effect_replicator = replicator.clone();
         let id = initiation.id;
         effects.spawn(async move {
-            let result = match effect_replicator
+            match effect_replicator
                 .offer_pairing(
                     &initiation.peer,
                     Duration::from_secs(initiation.ttl_seconds),
@@ -834,11 +831,23 @@ fn start_initiations(
                     },
                 )
                 .map(|_| ()),
-            };
-            (PairingTaskId::Initiation(id), result)
+            }
         });
     }
     Ok(())
+}
+
+fn retain_observed_unsettled<'a, Id>(
+    active: &mut HashSet<Id>,
+    visible: impl Iterator<Item = (&'a Id, bool)>,
+) where
+    Id: Clone + Eq + Hash + 'a,
+{
+    let unsettled = visible
+        .filter(|(_id, terminal)| !terminal)
+        .map(|(id, _terminal)| id.clone())
+        .collect::<HashSet<_>>();
+    active.retain(|id| unsettled.contains(id));
 }
 
 fn advance(
@@ -895,4 +904,21 @@ fn confirmed_peer(
 
 fn same_descriptor_identity(left: &NativeNodeDescriptor, right: &NativeNodeDescriptor) -> bool {
     left.node_id == right.node_id && left.endpoint.id == right.endpoint.id
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completed_effect_stays_claimed_until_live_state_observes_its_terminal_phase() {
+        let id = PairingRedemptionId::random();
+        let mut active = HashSet::from([id.clone()]);
+
+        retain_observed_unsettled(&mut active, [(&id, false)].into_iter());
+        assert!(active.contains(&id));
+
+        retain_observed_unsettled(&mut active, [(&id, true)].into_iter());
+        assert!(active.is_empty());
+    }
 }
