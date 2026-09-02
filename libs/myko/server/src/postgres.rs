@@ -31,6 +31,8 @@ use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
+const PG_CATCH_UP_TIMEOUT_SECS_DEFAULT: u64 = 300;
+const PG_CATCH_UP_TIMEOUT_ENV: &str = "MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS";
 const PG_KEEPALIVE_IDLE_SECS: u64 = 30;
 const PG_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 const PG_KEEPALIVE_RETRIES: u32 = 3;
@@ -105,6 +107,25 @@ struct PostgresEnvironment {
     table: String,
     #[config(env = "MYKO_POSTGRES_CHANNEL", default = "myko_events_notify")]
     channel: String,
+}
+
+pub(crate) fn postgres_catch_up_timeout_from_env() -> Result<Option<Duration>, String> {
+    match std::env::var(PG_CATCH_UP_TIMEOUT_ENV) {
+        Ok(value) => parse_postgres_catch_up_timeout(Some(&value)),
+        Err(std::env::VarError::NotPresent) => parse_postgres_catch_up_timeout(None),
+        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
+            "{PG_CATCH_UP_TIMEOUT_ENV} must be a non-negative integer number of seconds"
+        )),
+    }
+}
+
+fn parse_postgres_catch_up_timeout(value: Option<&str>) -> Result<Option<Duration>, String> {
+    let seconds = value.map_or(Ok(PG_CATCH_UP_TIMEOUT_SECS_DEFAULT), |raw| {
+        raw.parse::<u64>().map_err(|_| {
+            format!("{PG_CATCH_UP_TIMEOUT_ENV} must be a non-negative integer number of seconds")
+        })
+    })?;
+    Ok((seconds != 0).then(|| Duration::from_secs(seconds)))
 }
 
 /// Read API for durable event history (windback/replay providers).
@@ -720,6 +741,10 @@ impl CatchUpStatus {
     ///
     /// Returns an error when catch-up fails or the timeout expires.
     pub fn wait_until_caught_up(&self, timeout: Duration) -> Result<(), String> {
+        self.wait_until_caught_up_configured(Some(timeout))
+    }
+
+    fn wait_until_caught_up_configured(&self, timeout: Option<Duration>) -> Result<(), String> {
         let start = std::time::Instant::now();
         while !self.is_caught_up() {
             if self.is_failed() {
@@ -730,7 +755,7 @@ impl CatchUpStatus {
                     .clone()
                     .unwrap_or_else(|| "Postgres catch-up failed".to_string()));
             }
-            if start.elapsed() >= timeout {
+            if let Some(timeout) = timeout.filter(|timeout| start.elapsed() >= *timeout) {
                 return Err(format!(
                     "Postgres catch-up timed out after {}s",
                     timeout.as_secs()
@@ -803,6 +828,10 @@ impl PostgresConsumer {
     /// Returns an error when catch-up fails or the timeout expires.
     pub fn wait_until_caught_up(&self, timeout: Duration) -> Result<(), String> {
         self.catch_up_status.wait_until_caught_up(timeout)
+    }
+
+    pub(crate) fn wait_until_caught_up_without_timeout(&self) -> Result<(), String> {
+        self.catch_up_status.wait_until_caught_up_configured(None)
     }
 }
 
@@ -1221,5 +1250,32 @@ mod tests {
 
         assert!(DateTime::parse_from_rfc3339(&wire_timestamp).is_ok());
         assert_eq!(wire_timestamp, "2026-05-03T03:09:37.123456+00:00");
+    }
+
+    #[test]
+    fn postgres_catch_up_timeout_defaults_to_five_minutes() {
+        assert_eq!(
+            parse_postgres_catch_up_timeout(None),
+            Ok(Some(Duration::from_mins(5)))
+        );
+    }
+
+    #[test]
+    fn postgres_catch_up_timeout_accepts_positive_seconds() {
+        assert_eq!(
+            parse_postgres_catch_up_timeout(Some("900")),
+            Ok(Some(Duration::from_mins(15)))
+        );
+    }
+
+    #[test]
+    fn postgres_catch_up_timeout_accepts_zero_as_no_limit() {
+        assert_eq!(parse_postgres_catch_up_timeout(Some("0")), Ok(None));
+    }
+
+    #[test]
+    fn postgres_catch_up_timeout_rejects_negative_and_invalid_values() {
+        assert!(parse_postgres_catch_up_timeout(Some("-1")).is_err());
+        assert!(parse_postgres_catch_up_timeout(Some("forever")).is_err());
     }
 }

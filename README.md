@@ -145,6 +145,10 @@ Starting or linking a durable/native node does not bind a WebSocket listener.
 An application may supervise `myko-websocket-gateway` over the same node when a
 browser or other short-lived compatibility client needs one.
 
+The retained v6 Postgres server bounds startup catch-up with
+`MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` (300 seconds by default; `0` disables the
+timeout).
+
 ## Development
 
 The default commands exercise the v7 native foundation:

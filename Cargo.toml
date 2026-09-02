@@ -140,11 +140,11 @@ gpui = { package = "gpui-unofficial", version = "=1.16.1" }
 gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.16.1" }
 
 # Internal crates
-autosocket = { version = "6.5.9", path = "libs/autosocket" }
-myko-gpui = { version = "6.5.9", path = "libs/myko/gpui" }
-myko-leptos = { version = "6.5.9", path = "libs/myko/leptos" }
-myko-macros = { version = "6.5.9", path = "libs/myko/macros" }
-myko = { version = "6.5.9", path = "libs/myko/core" }
+autosocket = { version = "6.5.10", path = "libs/autosocket" }
+myko-gpui = { version = "6.5.10", path = "libs/myko/gpui" }
+myko-leptos = { version = "6.5.10", path = "libs/myko/leptos" }
+myko-macros = { version = "6.5.10", path = "libs/myko/macros" }
+myko = { version = "6.5.10", path = "libs/myko/core" }
 myko-app = { version = "7.0.0-alpha.1", path = "libs/myko/app" }
 myko-app-macros = { version = "7.0.0-alpha.1", path = "libs/myko/app-macros" }
 myko-discovery = { version = "7.0.0-alpha.1", path = "libs/myko/discovery" }
@@ -159,7 +159,7 @@ myko-ratatui = { version = "7.0.0-alpha.1", path = "libs/myko/ratatui" }
 myko-redb = { version = "7.0.0-alpha.1", path = "libs/myko/redb" }
 myko-session = { version = "7.0.0-alpha.1", path = "libs/myko/session" }
 myko-websocket-gateway = { version = "7.0.0-alpha.1", path = "libs/myko/websocket-gateway" }
-myko-server = { version = "6.5.9", path = "libs/myko/server" }
+myko-server = { version = "6.5.10", path = "libs/myko/server" }
 
 [patch.crates-io]
 # Test the Git-distributed GPUI bridge against this workspace's Myko core.
