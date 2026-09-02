@@ -665,6 +665,11 @@ pub mod capability {
         #[doc(hidden)]
         fn __request(&self) -> &Arc<CommandRequest>;
 
+        #[doc(hidden)]
+        fn __scope_id(&self) -> &myko_federation::ScopeId {
+            &self.__request().scope_id
+        }
+
         fn command_id(&self) -> myko_federation::CommandId {
             self.__request().id
         }
@@ -674,7 +679,7 @@ pub mod capability {
         }
 
         fn scope_id(&self) -> &myko_federation::ScopeId {
-            &self.__request().scope_id
+            self.__scope_id()
         }
     }
 
@@ -806,18 +811,34 @@ pub mod capability {
         #[doc(hidden)]
         fn __federation_command_context(&self) -> &FederationCommandContext;
 
+        #[doc(hidden)]
+        fn __mutation_scope_id(&self) -> &myko_federation::ScopeId;
+
         /// Adds a typed replacement to the command's atomic batch.
         ///
         /// # Errors
         ///
-        /// Service and scope-family mismatches are rejected by the type system;
-        /// encoding and defensive runtime validation may still fail.
+        /// Service mismatches are rejected by the type system. Scoped foreign
+        /// keys are checked against the active nested-command scope.
         fn emit_set<T>(&self, item: &T) -> Result<(), CommandError>
         where
             T: MykoItem<Service = Self::Service, Scope = Self::Scope>,
         {
+            if matches!(
+                T::SCOPE,
+                myko_federation::ItemScope::ScopedBy { .. }
+                    | myko_federation::ItemScope::RootScopedBy { .. }
+            ) {
+                let declared_scope = myko_federation::ScopeId::for_entity(&item.scope_ref());
+                if &declared_scope != self.__mutation_scope_id() {
+                    return Err(CommandError::reject(format!(
+                        "item belongs to scope {declared_scope}; active command scope is {}",
+                        self.__mutation_scope_id()
+                    )));
+                }
+            }
             self.__federation_command_context()
-                .emit_set(item)
+                .emit_set_in(self.__mutation_scope_id(), item)
                 .map_err(|error| CommandError::retry(error.to_string()))
         }
 
@@ -825,24 +846,67 @@ pub mod capability {
         ///
         /// # Errors
         ///
-        /// Service and scope-family mismatches are rejected by the type system;
-        /// defensive runtime validation may still fail.
+        /// Service mismatches are rejected by the type system; defensive
+        /// runtime validation may still fail.
         fn emit_delete<T>(&self, id: &T::Id) -> Result<(), CommandError>
         where
             T: MykoItem<Service = Self::Service, Scope = Self::Scope>,
         {
             self.__federation_command_context()
-                .emit_delete::<T>(id)
+                .emit_delete_in::<T>(self.__mutation_scope_id(), id)
                 .map_err(|error| CommandError::retry(error.to_string()))
         }
     }
 
     /// Bounded in-process command composition within one atomic command.
     ///
-    /// Nested commands inherit the admitted command's stable identity, scope,
-    /// principal, resources, and atomic mutation batch. Work that needs its own
-    /// durable lifecycle must instead be admitted as a separate command and
-    /// represented by an application entity while it runs.
+    /// A nested command owned by another service is a compile error:
+    ///
+    /// ```compile_fail
+    /// use myko_app::{CommandContext, CommandError, CommandHandler};
+    /// use myko_app::capability::CommandExecuting as _;
+    /// use myko_federation::NodeId;
+    /// use myko_items::{myko_command, myko_item, myko_service};
+    ///
+    /// #[myko_service(Alpha)]
+    /// pub struct AlphaService;
+    /// #[myko_item(service = AlphaService, scope_root)]
+    /// pub struct Alpha {}
+    ///
+    /// #[myko_service(Beta)]
+    /// pub struct BetaService;
+    /// #[myko_item(service = BetaService, scope_root)]
+    /// pub struct Beta {}
+    ///
+    /// #[myko_command(bool, item = Beta)]
+    /// struct ChangeBeta { id: BetaId }
+    /// impl CommandHandler for ChangeBeta {
+    ///     fn scope(&self, _node_id: NodeId) -> BetaId { self.id.clone() }
+    ///     fn execute(
+    ///         self,
+    ///         _context: CommandContext<BetaService, Beta>,
+    ///     ) -> Result<bool, CommandError> { Ok(true) }
+    /// }
+    ///
+    /// #[myko_command(bool, item = Alpha)]
+    /// struct ChangeAlpha { id: AlphaId, beta_id: BetaId }
+    /// impl CommandHandler for ChangeAlpha {
+    ///     fn scope(&self, _node_id: NodeId) -> AlphaId { self.id.clone() }
+    ///     fn execute(
+    ///         self,
+    ///         context: CommandContext<AlphaService, Alpha>,
+    ///     ) -> Result<bool, CommandError> {
+    ///         context.exec_command(ChangeBeta { id: self.beta_id })
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// Nested commands inherit the admitted command's stable identity,
+    /// principal, resources, and atomic service batch. Each nested command
+    /// selects its own concrete scope inside that batch. They are trusted
+    /// in-process service implementation and do not perform another transport
+    /// authorization check. Work that needs its own durable lifecycle must
+    /// instead be admitted as a separate command.
     pub trait CommandExecuting: sealed::Sealed {
         type Service: myko_federation::MykoService;
         type Scope: MykoItem;
@@ -852,69 +916,20 @@ pub mod capability {
 
         /// Executes another typed handler in this command's atomic context.
         ///
-        /// Commands from another service or scope family do not type-check:
-        ///
-        /// ```compile_fail
-        /// use myko_app::capability::CommandExecuting as _;
-        /// use myko_app::{CommandContext, CommandError, CommandHandler};
-        /// use myko_federation::NodeId;
-        /// use myko_items::{myko_command, myko_item, myko_service};
-        ///
-        /// #[myko_service(Alpha, Beta)]
-        /// pub struct ExampleService;
-        ///
-        /// #[myko_item(service = ExampleService, scope_root)]
-        /// pub struct Alpha {}
-        ///
-        /// #[myko_item(service = ExampleService, scope_root)]
-        /// pub struct Beta {}
-        ///
-        /// #[myko_command(item = Alpha)]
-        /// struct AlphaCommand;
-        ///
-        /// #[myko_command(item = Beta)]
-        /// struct BetaCommand;
-        ///
-        /// impl CommandHandler for AlphaCommand {
-        ///     fn scope(&self, _: NodeId) -> AlphaId { AlphaId::from("alpha") }
-        ///
-        ///     fn execute(
-        ///         self,
-        ///         context: CommandContext<ExampleService, Alpha>,
-        ///     ) -> Result<(), CommandError> {
-        ///         context.exec_command(BetaCommand)
-        ///     }
-        /// }
-        ///
-        /// impl CommandHandler for BetaCommand {
-        ///     fn scope(&self, _: NodeId) -> BetaId { BetaId::from("beta") }
-        ///
-        ///     fn execute(
-        ///         self,
-        ///         _: CommandContext<ExampleService, Beta>,
-        ///     ) -> Result<(), CommandError> {
-        ///         Ok(())
-        ///     }
-        /// }
-        /// ```
+        /// Commands from another service do not type-check. Different scopes
+        /// in this service share the outer command's atomic change batch.
         ///
         /// # Errors
         ///
         /// Returns the nested handler's explicit rejection or retry.
         fn exec_command<C>(&self, command: C) -> Result<C::Output, CommandError>
         where
-            C: CommandHandler<Service = Self::Service, Scope = Self::Scope>,
+            C: CommandHandler<Service = Self::Service>,
         {
             let context = self.__typed_command_context();
             let nested_scope = command.scope(context.node_id());
-            let nested_scope_id = myko_federation::ScopeId::for_item::<Self::Scope>(&nested_scope);
-            if &nested_scope_id != context.scope_id() {
-                return Err(CommandError::reject(format!(
-                    "nested command targets another application scope: {nested_scope_id}; atomic batch scope is {}",
-                    context.scope_id()
-                )));
-            }
-            command.execute(context.clone())
+            let nested_scope_id = myko_federation::ScopeId::for_item::<C::Scope>(&nested_scope);
+            command.execute(context.retarget::<C::Scope>(nested_scope_id))
         }
     }
 
@@ -1210,6 +1225,7 @@ pub mod capability {
 /// commands. Report and view contexts do not implement the write traits.
 pub struct CommandContext<S: MykoService, R: MykoItem> {
     request: Arc<myko_federation::CommandRequest>,
+    scope_id: ScopeId,
     inner: FederationCommandContext,
     resources: ApplicationResources,
     boundary: PhantomData<fn() -> (S, R)>,
@@ -1224,8 +1240,19 @@ impl<S: MykoService, R: MykoItem> CommandContext<S, R> {
     ) -> Self {
         Self {
             request: Arc::new(inner.request().clone()),
+            scope_id: inner.request().scope_id.clone(),
             inner,
             resources,
+            boundary: PhantomData,
+        }
+    }
+
+    fn retarget<R2: MykoItem>(&self, scope_id: ScopeId) -> CommandContext<S, R2> {
+        CommandContext {
+            request: self.request.clone(),
+            scope_id,
+            inner: self.inner.clone(),
+            resources: self.resources.clone(),
             boundary: PhantomData,
         }
     }
@@ -1235,6 +1262,7 @@ impl<S: MykoService, R: MykoItem> Clone for CommandContext<S, R> {
     fn clone(&self) -> Self {
         Self {
             request: self.request.clone(),
+            scope_id: self.scope_id.clone(),
             inner: self.inner.clone(),
             resources: self.resources.clone(),
             boundary: PhantomData,
@@ -1259,6 +1287,10 @@ impl<S: MykoService, R: MykoItem> capability::RequestScoped for CommandContext<S
     fn __request(&self) -> &Arc<myko_federation::CommandRequest> {
         &self.request
     }
+
+    fn __scope_id(&self) -> &ScopeId {
+        &self.scope_id
+    }
 }
 
 impl<S: MykoService, R: MykoItem> capability::NodeScoped for CommandContext<S, R> {
@@ -1281,6 +1313,10 @@ impl<S: MykoService, R: MykoItem> capability::EventPublishing for CommandContext
 
     fn __federation_command_context(&self) -> &FederationCommandContext {
         &self.inner
+    }
+
+    fn __mutation_scope_id(&self) -> &ScopeId {
+        &self.scope_id
     }
 }
 impl<S: MykoService, R: MykoItem> capability::CommandExecuting for CommandContext<S, R> {
@@ -4035,6 +4071,19 @@ mod tests {
         pub title: String,
     }
 
+    #[myko_service(Scene, SceneElement)]
+    pub struct SceneService;
+
+    #[myko_item(service = SceneService, scope_root, scoped_by = ProjectRoot)]
+    pub struct Scene {
+        pub name: String,
+    }
+
+    #[myko_item(service = SceneService, scoped_by = Scene)]
+    pub struct SceneElement {
+        pub name: String,
+    }
+
     impl GraphEdge for CounterLink {
         type Ends = myko_federation::Directed<
             myko_federation::ConcreteEndpoint<CounterItem>,
@@ -4130,10 +4179,86 @@ mod tests {
             self,
             context: CommandContext<TestService, CounterItem>,
         ) -> Result<bool, CommandError> {
+            let inner_scope = self.inner_scope;
             context.exec_command(SetCounterInScope {
-                scope: self.inner_scope,
-                id: CounterItemId::from("should-not-commit"),
+                scope: inner_scope.clone(),
+                id: inner_scope,
                 value: 99,
+            })
+        }
+    }
+
+    #[myko_command(bool, item = Scene)]
+    struct CreateSceneInScope {
+        project_id: ProjectRootId,
+        scene_id: SceneId,
+    }
+
+    impl CommandHandler for CreateSceneInScope {
+        fn scope(&self, _node_id: NodeId) -> SceneId {
+            self.scene_id.clone()
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<SceneService, Scene>,
+        ) -> Result<bool, CommandError> {
+            context.emit_set(&Scene {
+                id: self.scene_id,
+                project_root_id: self.project_id,
+                name: "opening".to_owned(),
+            })?;
+            Ok(true)
+        }
+    }
+
+    #[myko_command(bool, item = SceneElement)]
+    struct AddSceneElement {
+        scene_id: SceneId,
+        element_id: SceneElementId,
+    }
+
+    impl CommandHandler for AddSceneElement {
+        fn scope(&self, _node_id: NodeId) -> SceneId {
+            self.scene_id.clone()
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<SceneService, Scene>,
+        ) -> Result<bool, CommandError> {
+            context.emit_set(&SceneElement {
+                id: self.element_id,
+                scene_id: self.scene_id,
+                name: "camera".to_owned(),
+            })?;
+            Ok(true)
+        }
+    }
+
+    #[myko_command(bool, service = SceneService, scope = ProjectRoot)]
+    struct CreateProjectScene {
+        project: ProjectRootId,
+        scene: SceneId,
+        element: SceneElementId,
+    }
+
+    impl CommandHandler for CreateProjectScene {
+        fn scope(&self, _node_id: NodeId) -> ProjectRootId {
+            self.project.clone()
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<SceneService, ProjectRoot>,
+        ) -> Result<bool, CommandError> {
+            context.exec_command(CreateSceneInScope {
+                project_id: self.project,
+                scene_id: self.scene.clone(),
+            })?;
+            context.exec_command(AddSceneElement {
+                scene_id: self.scene,
+                element_id: self.element,
             })
         }
     }
@@ -4155,6 +4280,7 @@ mod tests {
         ) -> Result<bool, CommandError> {
             context.emit_set(&ProjectTask {
                 id: self.task_id,
+                project_root_id: self.project_id,
                 title: "cross-service scope".to_owned(),
             })?;
             Ok(true)
@@ -4637,7 +4763,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_commands_reject_another_concrete_scope_in_the_same_family() {
+    fn nested_commands_commit_multiple_scopes_atomically() {
         let node = Node::in_memory();
         let application = MykoApplication::builder()
             .service::<TestService>()
@@ -4654,17 +4780,85 @@ mod tests {
                 inner_scope: CounterItemId::from("two"),
             },
         );
-        assert!(matches!(
-            executed,
-            Err(AppError::Node(NodeError::CommandRejected { reason, .. }))
-                if reason.contains("nested command targets another application scope")
-        ));
-        let values = node.query_items_in(
+        assert_eq!(executed.ok(), Some(true));
+        let outer_values = node.query_items_in(
             node.node_id(),
             &ScopeId::for_item::<CounterItem>(&CounterItemId::from("one")),
             GetAllCounterItems,
         );
-        assert!(matches!(values, Ok(items) if items.is_empty()));
+        assert!(matches!(outer_values, Ok(items) if items.is_empty()));
+        let inner_values = node.query_items_in(
+            node.node_id(),
+            &ScopeId::for_item::<CounterItem>(&CounterItemId::from("two")),
+            GetAllCounterItems,
+        );
+        assert!(matches!(
+            inner_values,
+            Ok(items)
+                if items.len() == 1
+                    && items.first().is_some_and(|item| item.value == 99)
+        ));
+    }
+
+    #[test]
+    fn parent_scoped_command_creates_a_nested_scope_atomically() {
+        let node = Node::in_memory();
+        let application = MykoApplication::builder()
+            .service::<SceneService>()
+            .map(MykoApplicationBuilder::build);
+        assert!(application.is_ok());
+        let Ok(application) = application else {
+            return;
+        };
+        let app = ApplicationNode::new(node.clone(), application);
+        let project_id = ProjectRootId::from("project-1");
+        let scene_id = SceneId::from("scene-1");
+        let element_id = SceneElementId::from("element-1");
+        let project_scope = ScopeId::for_item::<ProjectRoot>(&project_id);
+        let scene_scope = ScopeId::for_item::<Scene>(&scene_id);
+        let watched = node.watch_items_in(node.node_id(), scene_scope.clone(), GetAllSceneElements);
+        assert!(watched.is_ok());
+        let Ok((_snapshot, mut watch)) = watched else {
+            return;
+        };
+        let executed = app.exec_authenticated_command(
+            PrincipalId::new("test:owner"),
+            CreateProjectScene {
+                project: project_id.clone(),
+                scene: scene_id.clone(),
+                element: element_id.clone(),
+            },
+        );
+        assert_eq!(executed.ok(), Some(true));
+
+        let update = watch.recv_timeout(std::time::Duration::from_secs(1));
+        assert!(matches!(
+            update,
+            Ok(Some(update)) if update.value.len() == 1
+        ));
+        let topology = node.scope_topology();
+        assert!(matches!(
+            topology,
+            Ok(topology) if topology.parent(&scene_scope) == Some(&project_scope)
+        ));
+        let scenes = node.query_items_in(node.node_id(), &scene_scope, GetAllScenes);
+        assert!(matches!(
+            scenes,
+            Ok(items)
+                if items.len() == 1
+                    && items.first().is_some_and(|scene| {
+                        scene.id == scene_id && scene.project_root_id == project_id
+                    })
+        ));
+        let elements = node.query_items_in(node.node_id(), &scene_scope, GetAllSceneElements);
+        assert!(matches!(
+            elements,
+            Ok(items)
+                if items.len() == 1
+                    && items.first().is_some_and(|element| {
+                        element.id == element_id && element.scene_id == scene_id
+                    })
+        ));
     }
 
     #[tokio::test]

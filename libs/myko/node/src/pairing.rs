@@ -133,6 +133,7 @@ impl CommandHandler for InitiatePairing {
         }
         let initiation = PairingInitiation {
             id: PairingInitiationId::random(),
+            peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
             requested_by: context.principal_id().as_str().to_owned(),
             peer: self.peer,
             ttl_seconds: self.ttl_seconds,
@@ -188,6 +189,7 @@ impl CommandHandler for RedeemPairingInvitation {
     ) -> Result<Self::Output, CommandError> {
         let redemption = PairingRedemption {
             id: PairingRedemptionId::random(),
+            peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
             requested_by: context.principal_id().as_str().to_owned(),
             invitation: self.invitation,
             phase: PairingRedemptionPhase::Queued,
@@ -253,6 +255,7 @@ impl CommandHandler for RecordPairingReceipt {
         self.receipt.validate().map_err(CommandError::reject)?;
         let receipt = PendingPairingReceipt {
             id: PendingPairingReceiptId::from(self.receipt.invitation_id.to_string()),
+            peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
             receipt: self.receipt,
         };
         context.emit_set(&receipt)?;

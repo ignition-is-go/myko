@@ -36,9 +36,10 @@ use thiserror::Error;
 use uuid::Uuid;
 
 pub use myko_items::{
-    ConcreteEndpoint, Directed, EdgeEnds, EndpointSpec, EntityRef, GraphEdge, ItemMutation,
-    ItemProjection, ItemQuery, MutationOperation, MykoCommand, MykoCommandContract, MykoItem,
-    MykoOperation, MykoService, ServiceTypeId, TypedEdgeEnds, Undirected,
+    BelongsTo, ConcreteEndpoint, Directed, EdgeEnds, EndpointSpec, EntityRef, GraphEdge,
+    ItemMutation, ItemProjection, ItemQuery, ItemScope, MutationOperation, MykoCommand,
+    MykoCommandContract, MykoItem, MykoOperation, MykoService, ServiceTypeId, TypedEdgeEnds,
+    Undirected,
 };
 
 /// Exponential reconnect timing shared by long-lived transport adapters.
@@ -173,19 +174,47 @@ impl ScopeId {
     /// Creates the canonical federation scope rooted at one typed item.
     ///
     /// Applications should not duplicate textual scope conventions. The item
-    /// type and its generated typed ID are sufficient to derive the stable
-    /// wire identity.
+    /// owning service, item type, and generated typed ID together form the
+    /// stable wire identity. Including the root service prevents identically
+    /// named item types from colliding across application services.
     #[must_use]
     pub fn for_item<T: MykoItem>(id: &T::Id) -> Self {
-        let mut item_type = String::with_capacity(T::ITEM_TYPE.len());
-        for (index, character) in T::ITEM_TYPE.chars().enumerate() {
-            if character.is_uppercase() && index > 0 {
-                item_type.push('_');
-            }
-            item_type.extend(character.to_lowercase());
-        }
-        Self::new(format!("{item_type}:{}", id.as_ref()))
+        Self::for_parts(T::SERVICE_ID.as_str(), T::ITEM_TYPE, id.as_ref())
     }
+
+    /// Creates a canonical scope identity from an erased root entity.
+    #[must_use]
+    pub fn for_entity(entity: &EntityRef) -> Self {
+        Self::for_parts(&entity.service_id, &entity.item_type, &entity.id)
+    }
+
+    /// Creates a canonical scope identity from stable schema components.
+    #[must_use]
+    pub fn for_parts(service_id: &str, item_type: &str, item_id: &str) -> Self {
+        let item_name = snake_case_type_name(item_type);
+        Self::new(format!("{service_id}/{item_name}:{item_id}"))
+    }
+}
+
+fn snake_case_type_name(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut characters = value.chars().peekable();
+    let mut previous = None;
+    while let Some(character) = characters.next() {
+        let previous_is_lower_or_digit = previous.is_some_and(|previous: char| {
+            previous.is_ascii_lowercase() || previous.is_ascii_digit()
+        });
+        let next_is_lower = characters.peek().is_some_and(char::is_ascii_lowercase);
+        let starts_word = previous.is_some_and(|_| {
+            character.is_ascii_uppercase() && (previous_is_lower_or_digit || next_is_lower)
+        });
+        if starts_word {
+            output.push('_');
+        }
+        output.extend(character.to_lowercase());
+        previous = Some(character);
+    }
+    output
 }
 
 /// A node-local, monotonically increasing history position.
@@ -346,15 +375,28 @@ pub enum FederationPermission {
     Admin,
 }
 
+/// The portion of the nested scope tree covered by one grant.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScopeGrantCoverage {
+    /// Authorizes only the named scope.
+    #[default]
+    Exact,
+    /// Authorizes the named scope and allows requesting its complete subtree.
+    Subtree,
+}
+
 /// A directional, non-transitive grant from one node to one principal.
 ///
 /// Pairing authenticates a peer but never creates this record. A grant only
-/// applies to its exact `grantee` and `scope_id`; it cannot authorize another
-/// node through the grantee unless the issuing application explicitly models a
-/// reshare operation.
+/// applies only to its `grantee` and selected scope coverage; it cannot
+/// authorize another node through the grantee unless the issuing application
+/// explicitly models a reshare operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopeGrant {
     pub scope_id: ScopeId,
+    #[serde(default)]
+    pub coverage: ScopeGrantCoverage,
     pub grantee: PrincipalId,
     pub permissions: Vec<FederationPermission>,
 }
@@ -363,12 +405,35 @@ impl ScopeGrant {
     /// Returns whether this direct grant permits an authenticated request.
     #[must_use]
     pub fn authorizes(&self, request: &AccessRequest) -> bool {
+        self.authorizes_request(request)
+            && if request.scope_selections.is_empty() {
+                request
+                    .scope_id
+                    .as_ref()
+                    .is_some_and(|scope_id| self.covers(&ScopeSelection::Exact(scope_id.clone())))
+            } else {
+                request
+                    .scope_selections
+                    .iter()
+                    .all(|selection| self.covers(selection))
+            }
+    }
+
+    fn authorizes_request(&self, request: &AccessRequest) -> bool {
         self.grantee == request.principal_id
-            && request.scope_id.as_ref() == Some(&self.scope_id)
             && required_permission(request.operation)
                 .is_some_and(|permission| self.permissions.contains(&permission))
             && stream_permission(request.operation)
                 .is_none_or(|permission| self.permissions.contains(&permission))
+    }
+
+    fn covers(&self, selection: &ScopeSelection) -> bool {
+        match selection {
+            ScopeSelection::Exact(scope_id) => scope_id == &self.scope_id,
+            ScopeSelection::Subtree(scope_id) => {
+                scope_id == &self.scope_id && self.coverage == ScopeGrantCoverage::Subtree
+            }
+        }
     }
 }
 
@@ -449,6 +514,9 @@ pub struct AccessRequest {
     pub command_id: Option<CommandId>,
     pub command_type: Option<String>,
     pub command_principal_id: Option<PrincipalId>,
+    /// Composite scope coverage requested by selective replication.
+    #[serde(default)]
+    pub scope_selections: Vec<ScopeSelection>,
     pub live_topics: Vec<String>,
 }
 
@@ -483,7 +551,23 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
 
 impl AccessPolicy for ScopeGrantPolicy {
     fn authorize(&self, request: &AccessRequest) -> Result<(), String> {
-        if self.grants.iter().any(|grant| grant.authorizes(request)) {
+        let selections = if request.scope_selections.is_empty() {
+            request
+                .scope_id
+                .iter()
+                .cloned()
+                .map(ScopeSelection::Exact)
+                .collect::<Vec<_>>()
+        } else {
+            request.scope_selections.clone()
+        };
+        if !selections.is_empty()
+            && selections.iter().all(|selection| {
+                self.grants
+                    .iter()
+                    .any(|grant| grant.authorizes_request(request) && grant.covers(selection))
+            })
+        {
             Ok(())
         } else {
             Err("scope grant does not permit this operation".to_owned())
@@ -525,7 +609,12 @@ impl AccessPolicy for DenyAllAccessPolicy {
 pub struct ChangeBatch {
     pub id: BatchId,
     pub command_id: CommandId,
+    /// Service that owns every mutation and commits the batch atomically.
     pub service_id: ServiceId,
+    /// Scope in which the externally admitted command was authorized.
+    ///
+    /// Nested commands may attach a different concrete `scope_id` to each
+    /// mutation while retaining this one service-level atomic batch.
     pub scope_id: ScopeId,
     pub causal_parents: Vec<EventId>,
     pub changes: Vec<ItemMutation>,
@@ -1130,6 +1219,125 @@ pub struct ReplicationBatch {
     pub events: Vec<EventEnvelope>,
 }
 
+/// Parent relationships between concrete, service-qualified scope roots.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ScopeTopology {
+    parents: HashMap<ScopeId, ScopeId>,
+}
+
+impl ScopeTopology {
+    fn from_events(events: &[EventEnvelope]) -> Result<Self, NodeError> {
+        let mut topology = Self::default();
+        for envelope in events {
+            topology.observe_event(&envelope.event)?;
+        }
+        Ok(topology)
+    }
+
+    /// Incorporates nested scope roots established by one immutable event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the event reparents a scope, creates a cycle, or
+    /// places a nested root outside the scope identified by that root.
+    pub fn observe_event(&mut self, event: &NodeEvent) -> Result<(), NodeError> {
+        let NodeEvent::CommandCommitted { batch, .. } = event else {
+            return Ok(());
+        };
+        for mutation in &batch.changes {
+            if mutation.operation != MutationOperation::Set || !mutation.roots_scope {
+                continue;
+            }
+            let Some(parent) = mutation.belongs_to.as_ref() else {
+                continue;
+            };
+            let child =
+                ScopeId::for_parts(&mutation.service_id, &mutation.item_type, &mutation.item_id);
+            let placed_scope = mutation
+                .scope_id
+                .as_deref()
+                .unwrap_or(batch.scope_id.as_str());
+            if placed_scope != child.as_str() {
+                return Err(NodeError::InvalidItemMutation(format!(
+                    "nested scope root {child} was placed in scope {placed_scope}"
+                )));
+            }
+            let parent = ScopeId::for_entity(parent);
+            if !self.parents.contains_key(&child) && !event.affected_scope_ids().contains(&parent) {
+                return Err(NodeError::InvalidItemMutation(format!(
+                    "new nested scope {child} must be created in a batch that also covers parent scope {parent}"
+                )));
+            }
+            self.insert(child, parent)?;
+        }
+        Ok(())
+    }
+
+    fn insert(&mut self, child: ScopeId, parent: ScopeId) -> Result<(), NodeError> {
+        if child == parent {
+            return Err(NodeError::InvalidItemMutation(format!(
+                "scope {child} cannot belong to itself"
+            )));
+        }
+        if let Some(existing) = self.parents.get(&child) {
+            if existing != &parent {
+                return Err(NodeError::InvalidItemMutation(format!(
+                    "scope {child} cannot move from parent {existing} to {parent}"
+                )));
+            }
+            return Ok(());
+        }
+        if self.is_descendant_of(&parent, &child) {
+            return Err(NodeError::InvalidItemMutation(format!(
+                "scope parent {parent} would create a cycle beneath {child}"
+            )));
+        }
+        self.parents.insert(child, parent);
+        Ok(())
+    }
+
+    /// Returns the immediate parent of `scope_id`, when it is nested.
+    #[must_use]
+    pub fn parent(&self, scope_id: &ScopeId) -> Option<&ScopeId> {
+        self.parents.get(scope_id)
+    }
+
+    /// Returns the nearest-to-farthest ancestors of one scope.
+    #[must_use]
+    pub fn ancestors(&self, scope_id: &ScopeId) -> Vec<ScopeId> {
+        let mut ancestors = Vec::new();
+        let mut current = scope_id;
+        let mut visited = HashSet::new();
+        while let Some(parent) = self.parents.get(current) {
+            if !visited.insert(parent.clone()) {
+                break;
+            }
+            ancestors.push(parent.clone());
+            current = parent;
+        }
+        ancestors
+    }
+
+    /// Returns every recursively nested scope in stable textual order.
+    #[must_use]
+    pub fn descendants(&self, scope_id: &ScopeId) -> Vec<ScopeId> {
+        let mut descendants = self
+            .parents
+            .keys()
+            .filter(|candidate| self.is_descendant_of(candidate, scope_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        descendants.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+        descendants
+    }
+
+    fn is_descendant_of(&self, scope_id: &ScopeId, ancestor: &ScopeId) -> bool {
+        self.ancestors(scope_id)
+            .iter()
+            .any(|value| value == ancestor)
+    }
+}
+
 /// Durable selection of authoritative history copied from one peer.
 ///
 /// The selector is evaluated against each command event. Cursor watermarks
@@ -1148,6 +1356,18 @@ pub enum ReplicationSelection {
         service_id: ServiceId,
         scope_id: ScopeId,
     },
+    /// Copies the union of exact scopes and complete nested subtrees.
+    Scopes(Vec<ScopeSelection>),
+}
+
+/// One scope component in a composable replication selection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "scope_id", rename_all = "snake_case")]
+pub enum ScopeSelection {
+    /// Selects only the named scope.
+    Exact(ScopeId),
+    /// Selects the named scope and every recursively nested scope.
+    Subtree(ScopeId),
 }
 
 impl ReplicationSelection {
@@ -1160,7 +1380,37 @@ impl ReplicationSelection {
             Self::ServiceScope {
                 service_id,
                 scope_id,
-            } => event.service_id() == service_id && event.scope_id() == scope_id,
+            } => {
+                event.service_id() == service_id
+                    && event
+                        .affected_scope_ids()
+                        .iter()
+                        .all(|affected| affected == scope_id)
+            }
+            Self::Scopes(selections) => event.affected_scope_ids().iter().all(|scope_id| {
+                selections.iter().any(|selection| match selection {
+                    ScopeSelection::Exact(selected) | ScopeSelection::Subtree(selected) => {
+                        selected == scope_id
+                    }
+                })
+            }),
+        }
+    }
+
+    /// Returns whether this selector includes an event under the supplied
+    /// nested-scope topology.
+    #[must_use]
+    pub fn includes_in(&self, event: &NodeEvent, topology: &ScopeTopology) -> bool {
+        match self {
+            Self::Scopes(selections) => event.affected_scope_ids().iter().all(|scope_id| {
+                selections.iter().any(|selection| match selection {
+                    ScopeSelection::Exact(selected) => selected == scope_id,
+                    ScopeSelection::Subtree(selected) => {
+                        selected == scope_id || topology.is_descendant_of(scope_id, selected)
+                    }
+                })
+            }),
+            Self::All | Self::Service(_) | Self::ServiceScope { .. } => self.includes(event),
         }
     }
 }
@@ -1388,6 +1638,23 @@ impl NodeEvent {
                 &command.request.scope_id
             }
         }
+    }
+
+    /// Returns every concrete scope touched by this atomic service event.
+    #[must_use]
+    pub fn affected_scope_ids(&self) -> Vec<ScopeId> {
+        let mut scopes = HashSet::from([self.scope_id().clone()]);
+        if let Self::CommandCommitted { batch, .. } = self {
+            scopes.extend(batch.changes.iter().filter_map(|mutation| {
+                mutation
+                    .scope_id
+                    .as_ref()
+                    .map(|scope_id| ScopeId::new(scope_id.clone()))
+            }));
+        }
+        let mut scopes = scopes.into_iter().collect::<Vec<_>>();
+        scopes.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+        scopes
     }
 }
 
@@ -2683,10 +2950,9 @@ impl<Q: ItemQuery> ItemQueryWatch<Q> {
                 self.source_node
                     .is_none_or(|source_node| envelope.origin.node_id == source_node)
                     && command.request.service_id == self.service_id
-                    && self
-                        .scope_id
-                        .as_ref()
-                        .is_none_or(|scope_id| command.request.scope_id == *scope_id)
+                    && self.scope_id.as_ref().is_none_or(|scope_id| {
+                        envelope.event.affected_scope_ids().contains(scope_id)
+                    })
             }
             NodeEvent::CommandLifecycle(_) => false,
         };
@@ -3673,11 +3939,23 @@ impl CommandContext {
     ///
     /// Returns an error if the item cannot be encoded.
     pub fn emit_set<T: MykoItem>(&self, item: &T) -> Result<(), NodeError> {
+        self.emit_set_in(&self.command.request.scope_id, item)
+    }
+
+    /// Adds a typed replacement placed in an explicit scope of this service batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the item cannot be encoded or belongs to another service.
+    pub fn emit_set_in<T: MykoItem>(&self, scope_id: &ScopeId, item: &T) -> Result<(), NodeError> {
         self.require_item_service::<T>()?;
-        self.changes.lock().map_err(|_| NodeError::Poisoned)?.push(
-            ItemMutation::set(item)
-                .map_err(|error| NodeError::InvalidItemMutation(error.to_string()))?,
-        );
+        let mut mutation = ItemMutation::set(item)
+            .map_err(|error| NodeError::InvalidItemMutation(error.to_string()))?;
+        mutation.scope_id = Some(scope_id.as_str().to_owned());
+        self.changes
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .push(mutation);
         Ok(())
     }
 
@@ -3687,11 +3965,26 @@ impl CommandContext {
     ///
     /// Returns an error if the item belongs to another service.
     pub fn emit_delete<T: MykoItem>(&self, id: &T::Id) -> Result<(), NodeError> {
+        self.emit_delete_in::<T>(&self.command.request.scope_id, id)
+    }
+
+    /// Adds a typed deletion placed in an explicit scope of this service batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the item belongs to another service.
+    pub fn emit_delete_in<T: MykoItem>(
+        &self,
+        scope_id: &ScopeId,
+        id: &T::Id,
+    ) -> Result<(), NodeError> {
         self.require_item_service::<T>()?;
+        let mut mutation = ItemMutation::delete::<T>(id);
+        mutation.scope_id = Some(scope_id.as_str().to_owned());
         self.changes
             .lock()
             .map_err(|_| NodeError::Poisoned)?
-            .push(ItemMutation::delete::<T>(id));
+            .push(mutation);
         Ok(())
     }
 
@@ -4691,8 +4984,14 @@ impl Node {
                 continue;
             };
             if command.request.service_id.as_str() == T::SERVICE_ID.as_str()
-                && command.request.scope_id == *scope_id
-                && batch.changes.iter().any(ItemMutation::is::<T>)
+                && batch.changes.iter().any(|mutation| {
+                    mutation.is::<T>()
+                        && mutation
+                            .scope_id
+                            .as_deref()
+                            .unwrap_or(batch.scope_id.as_str())
+                            == scope_id.as_str()
+                })
             {
                 sources
                     .entry(envelope.origin.node_id.to_string())
@@ -4855,12 +5154,22 @@ impl Node {
         let mut scopes: Vec<_> = self
             .events_after(None)?
             .into_iter()
-            .map(|envelope| envelope.event.scope_id().clone())
+            .flat_map(|envelope| envelope.event.affected_scope_ids())
             .collect::<HashSet<_>>()
             .into_iter()
             .collect();
         scopes.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
         Ok(scopes)
+    }
+
+    /// Reconstructs immutable nested-scope parentage from authoritative items.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when history contains a cycle or attempts to reparent
+    /// an existing scope root.
+    pub fn scope_topology(&self) -> Result<ScopeTopology, NodeError> {
+        ScopeTopology::from_events(&self.events_after(None)?)
     }
 
     /// Creates a replay-then-live subscription without a cursor gap.
@@ -4947,7 +5256,13 @@ impl Node {
         let through = suffix.last().map(|event| event.position).or(after);
         let events = suffix
             .into_iter()
-            .filter(|event| event.event.scope_id() == &scope_id)
+            .filter(|event| {
+                event
+                    .event
+                    .affected_scope_ids()
+                    .iter()
+                    .all(|affected| affected == &scope_id)
+            })
             .collect();
         Ok(ScopedReplicationBatch {
             source_node: self.node_id(),
@@ -4968,12 +5283,22 @@ impl Node {
         selection: ReplicationSelection,
         after: Option<LogPosition>,
     ) -> Result<SelectedReplicationBatch, NodeError> {
-        let suffix = self.events_after(after)?;
-        let through = suffix.last().map(|event| event.position).or(after);
-        let events = suffix
-            .into_iter()
-            .filter(|event| selection.includes(&event.event))
-            .collect();
+        let history = self.events_after(None)?;
+        let through = history
+            .last()
+            .map(|event| event.position)
+            .filter(|position| after.is_none_or(|after| *position > after))
+            .or(after);
+        let mut topology = ScopeTopology::default();
+        let mut events = Vec::new();
+        for event in history {
+            topology.observe_event(&event.event)?;
+            if after.is_none_or(|after| event.position > after)
+                && selection.includes_in(&event.event, &topology)
+            {
+                events.push(event);
+            }
+        }
         Ok(SelectedReplicationBatch {
             source_node: self.node_id(),
             selection,
@@ -5048,7 +5373,8 @@ impl Node {
         &self,
         batch: SelectedReplicationBatch,
     ) -> Result<SelectedReplicationReport, NodeError> {
-        validate_selected_replication_batch(&batch)?;
+        let mut topology = self.scope_topology()?;
+        validate_selected_replication_batch(&batch, &mut topology)?;
         let mut applied = 0usize;
         let mut duplicates = 0usize;
         for event in batch.events {
@@ -5113,7 +5439,12 @@ fn validate_scoped_replication_batch(batch: &ScopedReplicationBatch) -> Result<(
                 event.position.get()
             )));
         }
-        if event.event.scope_id() != &batch.scope_id {
+        if !event
+            .event
+            .affected_scope_ids()
+            .iter()
+            .all(|scope_id| scope_id == &batch.scope_id)
+        {
             return Err(NodeError::InvalidReplicationBatch(format!(
                 "event at position {} does not belong to scope {}",
                 event.position.get(),
@@ -5125,7 +5456,10 @@ fn validate_scoped_replication_batch(batch: &ScopedReplicationBatch) -> Result<(
     Ok(())
 }
 
-fn validate_selected_replication_batch(batch: &SelectedReplicationBatch) -> Result<(), NodeError> {
+fn validate_selected_replication_batch(
+    batch: &SelectedReplicationBatch,
+    topology: &mut ScopeTopology,
+) -> Result<(), NodeError> {
     if matches!((batch.after, batch.through), (Some(_), None))
         || matches!((batch.after, batch.through), (Some(after), Some(through)) if through < after)
     {
@@ -5143,7 +5477,8 @@ fn validate_selected_replication_batch(batch: &SelectedReplicationBatch) -> Resu
                 event.position.get()
             )));
         }
-        if !batch.selection.includes(&event.event) {
+        topology.observe_event(&event.event)?;
+        if !batch.selection.includes_in(&event.event, topology) {
             return Err(NodeError::InvalidReplicationBatch(format!(
                 "event at position {} falls outside its replication selection",
                 event.position.get()
@@ -5165,6 +5500,33 @@ fn validate_change_batch(batch: &ChangeBatch) -> Result<(), NodeError> {
                 mutation.service_id, batch.service_id
             )));
         }
+        if mutation.scope_id.as_deref() == Some("") {
+            return Err(NodeError::InvalidItemMutation(
+                "item mutation has an empty scope ID".to_owned(),
+            ));
+        }
+        if mutation.operation == MutationOperation::Set
+            && mutation.roots_scope
+            && let Some(parent) = mutation.belongs_to.as_ref()
+        {
+            let child =
+                ScopeId::for_parts(&mutation.service_id, &mutation.item_type, &mutation.item_id);
+            let placed_scope = mutation
+                .scope_id
+                .as_deref()
+                .unwrap_or(batch.scope_id.as_str());
+            if placed_scope != child.as_str() {
+                return Err(NodeError::InvalidItemMutation(format!(
+                    "nested scope root {child} was placed in scope {placed_scope}"
+                )));
+            }
+            let parent = ScopeId::for_entity(parent);
+            if parent == child {
+                return Err(NodeError::InvalidItemMutation(format!(
+                    "scope {child} cannot belong to itself"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -5181,13 +5543,20 @@ fn apply_item_envelope<T: MykoItem>(
     let NodeEvent::CommandCommitted { command, batch } = &envelope.event else {
         return Ok(false);
     };
-    if service_scope.is_some_and(|(service, scope)| {
-        &command.request.service_id != service || &command.request.scope_id != scope
-    }) {
+    if service_scope.is_some_and(|(service, _)| &command.request.service_id != service) {
         return Ok(false);
     }
     let mut changed = false;
     for (index, mutation) in batch.changes.iter().enumerate() {
+        if service_scope.is_some_and(|(_, scope)| {
+            mutation
+                .scope_id
+                .as_deref()
+                .unwrap_or(batch.scope_id.as_str())
+                != scope.as_str()
+        }) {
+            continue;
+        }
         let change_index = u32::try_from(index).map_err(|error| {
             NodeError::CorruptHistory(format!(
                 "item batch contains too many ordered changes: {error}"
@@ -5211,6 +5580,7 @@ pub struct InMemoryBackend {
 struct MemoryState {
     next_position: LogPosition,
     commands: HashMap<CommandId, CommandSnapshot>,
+    scope_topology: ScopeTopology,
     events: Vec<EventEnvelope>,
     seen_origins: HashSet<EventId>,
     subscribers: Vec<flume::Sender<EventEnvelope>>,
@@ -5256,6 +5626,7 @@ impl InMemoryBackend {
                 )));
             }
             Self::validate_event(&state, &envelope.event)?;
+            state.scope_topology.observe_event(&envelope.event)?;
             Self::apply_event(&mut state, &envelope.event);
             state.next_position = state.next_position.next()?;
             state.events.push(envelope);
@@ -5312,6 +5683,7 @@ impl InMemoryBackend {
         if let Some(journal) = &self.journal {
             journal.append(&envelope)?;
         }
+        state.scope_topology.observe_event(&envelope.event)?;
         Self::apply_event(state, &envelope.event);
         state.next_position = next_position;
         state.seen_origins.insert(envelope.origin);
@@ -5320,6 +5692,8 @@ impl InMemoryBackend {
     }
 
     fn validate_event(state: &MemoryState, event: &NodeEvent) -> Result<(), NodeError> {
+        let mut scope_topology = state.scope_topology.clone();
+        scope_topology.observe_event(event)?;
         match event {
             NodeEvent::CommandLifecycle(snapshot) => {
                 if let Some(existing) = state.commands.get(&snapshot.request.id)
@@ -5705,6 +6079,7 @@ mod tests {
         let principal = PrincipalId::new("iroh:node-b");
         let policy = ScopeGrantPolicy::new(vec![ScopeGrant {
             scope_id: scope_id.clone(),
+            coverage: ScopeGrantCoverage::Exact,
             grantee: principal.clone(),
             permissions: vec![FederationPermission::ReadState],
         }]);
@@ -5716,6 +6091,7 @@ mod tests {
             command_id: None,
             command_type: None,
             command_principal_id: None,
+            scope_selections: Vec::new(),
             live_topics: Vec::new(),
         };
         assert!(policy.authorize(&read).is_ok());
@@ -5728,7 +6104,141 @@ mod tests {
         assert!(policy.authorize(&wrong_principal).is_err());
     }
 
-    #[myko_service(TestRecord, TestMarker)]
+    #[test]
+    fn composite_scope_access_requires_coverage_for_every_selection() {
+        let principal = PrincipalId::new("iroh:node-b");
+        let project = ScopeId::new("project:pine");
+        let first_scene = ScopeId::new("scene:first");
+        let second_scene = ScopeId::new("scene:second");
+        let request = AccessRequest {
+            principal_id: principal.clone(),
+            operation: AccessOperation::FollowHistory,
+            service_id: None,
+            scope_id: None,
+            command_id: None,
+            command_type: None,
+            command_principal_id: None,
+            scope_selections: vec![
+                ScopeSelection::Exact(project.clone()),
+                ScopeSelection::Subtree(first_scene.clone()),
+                ScopeSelection::Subtree(second_scene.clone()),
+            ],
+            live_topics: Vec::new(),
+        };
+        let permissions = vec![
+            FederationPermission::ReadHistory,
+            FederationPermission::Subscribe,
+        ];
+        let mut grants = vec![
+            ScopeGrant {
+                scope_id: project,
+                coverage: ScopeGrantCoverage::Exact,
+                grantee: principal.clone(),
+                permissions: permissions.clone(),
+            },
+            ScopeGrant {
+                scope_id: first_scene,
+                coverage: ScopeGrantCoverage::Subtree,
+                grantee: principal.clone(),
+                permissions: permissions.clone(),
+            },
+        ];
+        assert!(
+            ScopeGrantPolicy::new(grants.clone())
+                .authorize(&request)
+                .is_err()
+        );
+
+        grants.push(ScopeGrant {
+            scope_id: second_scene,
+            coverage: ScopeGrantCoverage::Subtree,
+            grantee: principal,
+            permissions,
+        });
+        assert!(ScopeGrantPolicy::new(grants).authorize(&request).is_ok());
+    }
+
+    #[test]
+    fn new_nested_scope_must_be_created_from_its_parent_scope() {
+        let node = Node::in_memory();
+        let project_id = FederationProjectId::from("project-1");
+        let scene_id = FederationSceneId::from("scene-1");
+        let scene_scope = ScopeId::for_item::<FederationScene>(&scene_id);
+        let mut command = request(CommandId::new());
+        command.scope_id = ScopeId::new("unrelated:scope");
+        let executing = node.admit(command.clone()).unwrap().snapshot().clone();
+        let scene = FederationScene {
+            id: scene_id,
+            federation_project_id: project_id,
+            name: "scene".to_owned(),
+        };
+        let result = node.commit(
+            command.id,
+            ChangeBatch {
+                id: BatchId::new(),
+                command_id: command.id,
+                service_id: command.service_id,
+                scope_id: command.scope_id,
+                causal_parents: vec![executing.updated_at],
+                changes: vec![mutation_in(&scene_scope, &scene)],
+            },
+            Vec::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(NodeError::InvalidItemMutation(reason))
+                if reason.contains("must be created in a batch that also covers parent scope")
+        ));
+    }
+
+    #[test]
+    fn nested_scope_parent_is_immutable() {
+        let node = Node::in_memory();
+        let first_project_id = FederationProjectId::from("project-1");
+        let second_project_id = FederationProjectId::from("project-2");
+        let scene_id = FederationSceneId::from("scene-1");
+        commit_nested_scene(
+            &node,
+            &first_project_id,
+            &scene_id,
+            &FederationSceneElementId::from("element-1"),
+        );
+
+        let scene_scope = ScopeId::for_item::<FederationScene>(&scene_id);
+        let mut command = request(CommandId::new());
+        command.scope_id = ScopeId::for_item::<FederationProject>(&second_project_id);
+        let executing = node.admit(command.clone()).unwrap().snapshot().clone();
+        let moved = FederationScene {
+            id: scene_id,
+            federation_project_id: second_project_id,
+            name: "moved".to_owned(),
+        };
+        let result = node.commit(
+            command.id,
+            ChangeBatch {
+                id: BatchId::new(),
+                command_id: command.id,
+                service_id: command.service_id,
+                scope_id: command.scope_id,
+                causal_parents: vec![executing.updated_at],
+                changes: vec![mutation_in(&scene_scope, &moved)],
+            },
+            Vec::new(),
+        );
+        assert!(matches!(
+            result,
+            Err(NodeError::InvalidItemMutation(reason))
+                if reason.contains("cannot move from parent")
+        ));
+    }
+
+    #[myko_service(
+        TestRecord,
+        TestMarker,
+        FederationProject,
+        FederationScene,
+        FederationSceneElement
+    )]
     pub struct TestService;
 
     #[myko_item(service = TestService, scope_root)]
@@ -5739,6 +6249,25 @@ mod tests {
     #[myko_item(service = TestService, scope_root)]
     pub struct TestMarker {
         pub value: String,
+    }
+
+    #[myko_item(service = TestService, scope_root)]
+    pub struct FederationProject {
+        pub name: String,
+    }
+
+    #[myko_item(
+        service = TestService,
+        scope_root,
+        scoped_by = FederationProject
+    )]
+    pub struct FederationScene {
+        pub name: String,
+    }
+
+    #[myko_item(service = TestService, scoped_by = FederationScene)]
+    pub struct FederationSceneElement {
+        pub name: String,
     }
 
     #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -5825,6 +6354,9 @@ mod tests {
                 item_type: "message".to_owned(),
                 item_id: "message:1".to_owned(),
                 schema_version: 1,
+                roots_scope: false,
+                belongs_to: None,
+                scope_id: None,
                 operation: MutationOperation::Set,
                 payload: Some(b"hello".to_vec()),
             }],
@@ -5875,6 +6407,51 @@ mod tests {
                 scope_id: request.scope_id,
                 causal_parents: vec![executing.updated_at],
                 changes: vec![ItemMutation::set(&marker).unwrap()],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    }
+
+    fn mutation_in<T: MykoItem>(scope_id: &ScopeId, item: &T) -> ItemMutation {
+        let mut mutation = ItemMutation::set(item).unwrap();
+        mutation.scope_id = Some(scope_id.as_str().to_owned());
+        mutation
+    }
+
+    fn commit_nested_scene(
+        node: &Node,
+        project_id: &FederationProjectId,
+        scene_id: &FederationSceneId,
+        element_id: &FederationSceneElementId,
+    ) {
+        let project_scope = ScopeId::for_item::<FederationProject>(project_id);
+        let scene_scope = ScopeId::for_item::<FederationScene>(scene_id);
+        let mut request = request(CommandId::new());
+        request.scope_id = project_scope;
+        let executing = node.admit(request.clone()).unwrap().snapshot().clone();
+        let scene = FederationScene {
+            id: scene_id.clone(),
+            federation_project_id: project_id.clone(),
+            name: "scene".to_owned(),
+        };
+        let element = FederationSceneElement {
+            id: element_id.clone(),
+            federation_scene_id: scene_id.clone(),
+            name: "element".to_owned(),
+        };
+        node.commit(
+            request.id,
+            ChangeBatch {
+                id: BatchId::new(),
+                command_id: request.id,
+                service_id: request.service_id,
+                scope_id: request.scope_id,
+                causal_parents: vec![executing.updated_at],
+                changes: vec![
+                    mutation_in(&scene_scope, &scene),
+                    mutation_in(&scene_scope, &element),
+                ],
             },
             Vec::new(),
         )
@@ -6813,6 +7390,9 @@ mod tests {
             item_type: TestRecord::ITEM_TYPE.to_owned(),
             item_id: "broken".to_owned(),
             schema_version: TestRecord::SCHEMA_VERSION,
+            roots_scope: false,
+            belongs_to: None,
+            scope_id: None,
             operation: MutationOperation::Set,
             payload: Some(b"not-json".to_vec()),
         });
@@ -6903,6 +7483,9 @@ mod tests {
             item_type: TestRecord::ITEM_TYPE.to_owned(),
             item_id: "record-1".to_owned(),
             schema_version: TestRecord::SCHEMA_VERSION,
+            roots_scope: false,
+            belongs_to: None,
+            scope_id: None,
             operation: MutationOperation::Delete,
             payload: Some(Vec::new()),
         };
@@ -7031,6 +7614,107 @@ mod tests {
             Some(LogPosition::new(1))
         );
         assert_eq!(service_scope.through, Some(LogPosition::new(3)));
+    }
+
+    #[test]
+    fn selected_replication_composes_exact_scopes_and_nested_subtrees() {
+        let source = Node::in_memory();
+        let target = Node::in_memory();
+        let project_id = FederationProjectId::from("project-1");
+        let project_scope = ScopeId::for_item::<FederationProject>(&project_id);
+        let project = FederationProject {
+            id: project_id.clone(),
+            name: "project".to_owned(),
+        };
+        let mut project_request = request(CommandId::new());
+        project_request.scope_id = project_scope.clone();
+        let executing = source
+            .admit(project_request.clone())
+            .unwrap()
+            .snapshot()
+            .clone();
+        source
+            .commit(
+                project_request.id,
+                ChangeBatch {
+                    id: BatchId::new(),
+                    command_id: project_request.id,
+                    service_id: project_request.service_id,
+                    scope_id: project_request.scope_id,
+                    causal_parents: vec![executing.updated_at],
+                    changes: vec![mutation_in(&project_scope, &project)],
+                },
+                Vec::new(),
+            )
+            .unwrap();
+
+        let first_scene_id = FederationSceneId::from("scene-1");
+        let second_scene_id = FederationSceneId::from("scene-2");
+        let hidden_scene_id = FederationSceneId::from("scene-3");
+        commit_nested_scene(
+            &source,
+            &project_id,
+            &first_scene_id,
+            &FederationSceneElementId::from("element-1"),
+        );
+        commit_nested_scene(
+            &source,
+            &project_id,
+            &second_scene_id,
+            &FederationSceneElementId::from("element-2"),
+        );
+        commit_nested_scene(
+            &source,
+            &project_id,
+            &hidden_scene_id,
+            &FederationSceneElementId::from("element-3"),
+        );
+
+        let first_scene_scope = ScopeId::for_item::<FederationScene>(&first_scene_id);
+        let second_scene_scope = ScopeId::for_item::<FederationScene>(&second_scene_id);
+        let hidden_scene_scope = ScopeId::for_item::<FederationScene>(&hidden_scene_id);
+        let selection = ReplicationSelection::Scopes(vec![
+            ScopeSelection::Exact(project_scope.clone()),
+            ScopeSelection::Subtree(first_scene_scope.clone()),
+            ScopeSelection::Subtree(second_scene_scope.clone()),
+        ]);
+        let batch = source.export_selected(selection, None).unwrap();
+        assert!(batch.events.iter().all(|envelope| {
+            !envelope
+                .event
+                .affected_scope_ids()
+                .contains(&hidden_scene_scope)
+        }));
+        target.ingest_selected_batch(batch).unwrap();
+
+        let topology = target.scope_topology().unwrap();
+        assert_eq!(topology.parent(&first_scene_scope), Some(&project_scope));
+        assert_eq!(topology.parent(&second_scene_scope), Some(&project_scope));
+        assert_eq!(topology.parent(&hidden_scene_scope), None);
+        assert!(matches!(
+            target.query_items_in(
+                source.node_id(),
+                &first_scene_scope,
+                GetAllFederationSceneElements,
+            ),
+            Ok(items) if items.len() == 1
+        ));
+        assert!(matches!(
+            target.query_items_in(
+                source.node_id(),
+                &second_scene_scope,
+                GetAllFederationSceneElements,
+            ),
+            Ok(items) if items.len() == 1
+        ));
+        assert!(matches!(
+            target.query_items_in(
+                source.node_id(),
+                &hidden_scene_scope,
+                GetAllFederationSceneElements,
+            ),
+            Ok(items) if items.is_empty()
+        ));
     }
 
     #[test]

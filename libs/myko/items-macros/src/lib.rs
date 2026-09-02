@@ -115,21 +115,17 @@ impl Parse for CommandArguments {
     }
 }
 
-enum ScopeArgument {
-    Unscoped,
-    Root,
-    ScopedBy(Path),
-}
-
 struct ItemArguments {
     service: Path,
-    scope: ScopeArgument,
+    scope_root: bool,
+    scoped_by: Option<Path>,
 }
 
 impl Parse for ItemArguments {
     fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
         let mut service: Option<Path> = None;
-        let mut scope = None;
+        let mut scope_root = false;
+        let mut scoped_by = None;
         while !input.is_empty() {
             let argument: Ident = input.parse()?;
             if argument == "service" {
@@ -139,22 +135,16 @@ impl Parse for ItemArguments {
                 input.parse::<Token![=]>()?;
                 service = Some(input.parse()?);
             } else if argument == "scope_root" {
-                if scope.is_some() {
-                    return Err(syn::Error::new(
-                        argument.span(),
-                        "only one item scope declaration is supported",
-                    ));
+                if scope_root {
+                    return Err(syn::Error::new(argument.span(), "duplicate `scope_root`"));
                 }
-                scope = Some(ScopeArgument::Root);
+                scope_root = true;
             } else if argument == "scoped_by" {
-                if scope.is_some() {
-                    return Err(syn::Error::new(
-                        argument.span(),
-                        "only one item scope declaration is supported",
-                    ));
+                if scoped_by.is_some() {
+                    return Err(syn::Error::new(argument.span(), "duplicate `scoped_by`"));
                 }
                 input.parse::<Token![=]>()?;
-                scope = Some(ScopeArgument::ScopedBy(input.parse()?));
+                scoped_by = Some(input.parse()?);
             } else {
                 return Err(syn::Error::new(
                     argument.span(),
@@ -168,7 +158,8 @@ impl Parse for ItemArguments {
         let service = service.ok_or_else(|| input.error("missing `service = ServiceType`"))?;
         Ok(Self {
             service,
-            scope: scope.unwrap_or(ScopeArgument::Unscoped),
+            scope_root,
+            scoped_by,
         })
     }
 }
@@ -370,9 +361,14 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
     }
 
     let name = item.ident.clone();
-    let service = arguments.service;
+    let ItemArguments {
+        service,
+        scope_root,
+        scoped_by,
+    } = arguments;
     let id = format_ident!("{name}Id");
     fields.named.push(syn::parse_quote!(pub id: #id));
+    let parent = inject_parent_field(fields, scoped_by)?;
     let equal_fields = fields.named.iter().filter_map(|field| {
         let field = field.ident.as_ref()?;
         Some(quote!(self.#field == other.#field))
@@ -380,14 +376,8 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
     let equality = equal_fields
         .reduce(|left, right| quote!((#left) && (#right)))
         .unwrap_or_else(|| quote!(true));
-    let (scope, scope_type) = match arguments.scope {
-        ScopeArgument::Unscoped => (quote!(::myko_items::ItemScope::Unscoped), quote!(#name)),
-        ScopeArgument::Root => (quote!(::myko_items::ItemScope::Root), quote!(#name)),
-        ScopeArgument::ScopedBy(parent) => (
-            quote!(::myko_items::ItemScope::ScopedBy(<#parent as ::myko_items::MykoItem>::ITEM_TYPE)),
-            quote!(#parent),
-        ),
-    };
+    let (scope, scope_type, scope_id) = item_scope_tokens(&name, scope_root, parent.as_ref());
+    let (belongs_to, belongs_to_impl) = belongs_to_tokens(&name, parent);
 
     let id_definition = generate_id(&id);
     let get_all = format_ident!("GetAll{name}s");
@@ -420,10 +410,128 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
             fn id(&self) -> &Self::Id {
                 &self.id
             }
+
+            fn scope_id(&self) -> &<Self::Scope as ::myko_items::MykoItem>::Id {
+                #scope_id
+            }
+
+            fn belongs_to(&self) -> ::std::option::Option<::myko_items::EntityRef> {
+                #belongs_to
+            }
         }
+
+        #belongs_to_impl
 
         #queries
     })
+}
+
+fn inject_parent_field(
+    fields: &mut syn::FieldsNamed,
+    scoped_by: Option<Path>,
+) -> syn::Result<Option<(Path, Ident)>> {
+    scoped_by
+        .map(|parent| {
+            let parent_name = parent
+                .segments
+                .last()
+                .map(|segment| segment.ident.clone())
+                .ok_or_else(|| syn::Error::new_spanned(&parent, "scoped parent type is empty"))?;
+            let parent_id = format_ident!("{}_id", snake_case(&parent_name.to_string()));
+            if fields
+                .named
+                .iter()
+                .any(|field| field.ident.as_ref() == Some(&parent_id))
+            {
+                return Err(syn::Error::new_spanned(
+                    &parent_id,
+                    format!("`{parent_id}` is generated by `scoped_by = {parent_name}`"),
+                ));
+            }
+            fields
+                .named
+                .push(syn::parse_quote!(pub #parent_id: <#parent as ::myko_items::MykoItem>::Id));
+            Ok((parent, parent_id))
+        })
+        .transpose()
+}
+
+fn item_scope_tokens(
+    name: &Ident,
+    scope_root: bool,
+    parent: Option<&(Path, Ident)>,
+) -> (TokenStream2, TokenStream2, TokenStream2) {
+    match (scope_root, parent) {
+        (false, None) => (
+            quote!(::myko_items::ItemScope::Unscoped),
+            quote!(#name),
+            quote!(&self.id),
+        ),
+        (true, None) => (
+            quote!(::myko_items::ItemScope::Root),
+            quote!(#name),
+            quote!(&self.id),
+        ),
+        (false, Some((parent, parent_id))) => (
+            quote!(::myko_items::ItemScope::ScopedBy {
+                service_id: <#parent as ::myko_items::MykoItem>::SERVICE_ID,
+                item_type: <#parent as ::myko_items::MykoItem>::ITEM_TYPE,
+            }),
+            quote!(#parent),
+            quote!(&self.#parent_id),
+        ),
+        (true, Some((parent, _))) => (
+            quote!(::myko_items::ItemScope::RootScopedBy {
+                service_id: <#parent as ::myko_items::MykoItem>::SERVICE_ID,
+                item_type: <#parent as ::myko_items::MykoItem>::ITEM_TYPE,
+            }),
+            quote!(#name),
+            quote!(&self.id),
+        ),
+    }
+}
+
+fn belongs_to_tokens(name: &Ident, parent: Option<(Path, Ident)>) -> (TokenStream2, TokenStream2) {
+    parent.map_or_else(
+        || (quote!(::std::option::Option::None), quote!()),
+        |(parent, parent_id)| {
+            (
+                quote!(::std::option::Option::Some(
+                    <Self as ::myko_items::BelongsTo>::parent_ref(self)
+                )),
+                quote! {
+                    impl ::myko_items::BelongsTo for #name {
+                        type Parent = #parent;
+
+                        fn parent_id(&self) -> &<#parent as ::myko_items::MykoItem>::Id {
+                            &self.#parent_id
+                        }
+                    }
+                },
+            )
+        },
+    )
+}
+
+fn snake_case(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut characters = value.chars().peekable();
+    let mut previous = None;
+    while let Some(character) = characters.next() {
+        let previous_is_lower_or_digit = previous.is_some_and(|previous: char| {
+            previous.is_ascii_lowercase() || previous.is_ascii_digit()
+        });
+        let next_is_lower = characters.peek().is_some_and(char::is_ascii_lowercase);
+        let starts_word = previous.is_some_and(|_| {
+            character.is_ascii_uppercase() && (previous_is_lower_or_digit || next_is_lower)
+        });
+        if starts_word {
+            output.push('_');
+        }
+        output.extend(character.to_lowercase());
+        previous = Some(character);
+    }
+    output
 }
 
 fn generate_id(id: &Ident) -> TokenStream2 {

@@ -56,6 +56,7 @@ impl CommandHandler for ConfigureLanDiscovery {
         }
         let settings = DiscoverySettings {
             id: DiscoverySettingsId::from(context.node_id().to_string()),
+            peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
             display_name,
             enabled: self.enabled,
         };

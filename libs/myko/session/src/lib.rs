@@ -38,6 +38,7 @@ type AccessMetadata = (
     Option<CommandId>,
     Option<String>,
     Option<PrincipalId>,
+    Vec<myko_federation::ScopeSelection>,
     Vec<String>,
 );
 
@@ -671,6 +672,7 @@ impl NodeSessionService {
                 command_id: None,
                 command_type: None,
                 command_principal_id: None,
+                scope_selections: Vec::new(),
                 live_topics: Vec::new(),
             };
             if policy.authorize(&access).is_ok() {
@@ -764,7 +766,16 @@ impl NodeSessionService {
                     let event = event.map_err(|error| error.to_string())?;
                     self.authorize(&principal, &request)?;
                     let through = event.position;
-                    let selected = if event.event.scope_id() == &scope_id { vec![event] } else { Vec::new() };
+                    let selected = if event
+                        .event
+                        .affected_scope_ids()
+                        .iter()
+                        .all(|affected| affected == &scope_id)
+                    {
+                        vec![event]
+                    } else {
+                        Vec::new()
+                    };
                     emit(send, NodeFrame::ScopedBatch { batch: Box::new(ScopedReplicationBatch {
                         source_node: self.node.node_id(), scope_id: scope_id.clone(), after: cursor,
                         through: Some(through), events: selected,
@@ -798,6 +809,10 @@ impl NodeSessionService {
             },
         )
         .await?;
+        let mut topology = self
+            .node
+            .scope_topology()
+            .map_err(|error| error.to_string())?;
         let mut cursor = after;
         let mut policy_changes = self.policy_revision.subscribe();
         loop {
@@ -806,7 +821,14 @@ impl NodeSessionService {
                     let event = event.map_err(|error| error.to_string())?;
                     self.authorize(&principal, &request)?;
                     let through = event.position;
-                    let selected = if selection.includes(&event.event) { vec![event] } else { Vec::new() };
+                    topology
+                        .observe_event(&event.event)
+                        .map_err(|error| error.to_string())?;
+                    let selected = if selection.includes_in(&event.event, &topology) {
+                        vec![event]
+                    } else {
+                        Vec::new()
+                    };
                     emit(send, NodeFrame::SelectedBatch { batch: Box::new(SelectedReplicationBatch {
                         source_node: self.node.node_id(), selection: selection.clone(), after: cursor,
                         through: Some(through), events: selected,
@@ -935,6 +957,7 @@ impl NodeSessionService {
             command_id,
             command_type,
             command_principal_id,
+            scope_selections,
             live_topics,
         ) = self.access_metadata(request)?;
         self.access_policy
@@ -948,6 +971,7 @@ impl NodeSessionService {
                 command_id,
                 command_type,
                 command_principal_id,
+                scope_selections,
                 live_topics,
             })
             .map_err(|message| format!("access denied: {message}"))
@@ -965,6 +989,7 @@ impl NodeSessionService {
             command_id,
             command_type,
             command_principal_id,
+            scope_selections,
             live_topics,
         ) = submitted_command_access(command);
         self.access_policy
@@ -978,6 +1003,7 @@ impl NodeSessionService {
                 command_id,
                 command_type,
                 command_principal_id,
+                scope_selections,
                 live_topics,
             })
             .map_err(|message| format!("access denied: {message}"))
@@ -1060,6 +1086,7 @@ impl NodeSessionService {
                         None,
                         None,
                         Vec::new(),
+                        Vec::new(),
                     )
                 },
                 |command| {
@@ -1070,6 +1097,7 @@ impl NodeSessionService {
                         Some(command_id),
                         Some(command.request.command_type),
                         Some(command.request.principal_id),
+                        Vec::new(),
                         Vec::new(),
                     )
                 },
@@ -1103,7 +1131,16 @@ async fn emit(send: &flume::Sender<NodeFrame>, frame: NodeFrame) -> Result<(), S
 }
 
 const fn metadata(operation: AccessOperation) -> AccessMetadata {
-    (operation, None, None, None, None, None, Vec::new())
+    (
+        operation,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 fn scoped(operation: AccessOperation, scope_id: &ScopeId) -> AccessMetadata {
@@ -1114,6 +1151,7 @@ fn scoped(operation: AccessOperation, scope_id: &ScopeId) -> AccessMetadata {
         None,
         None,
         None,
+        Vec::new(),
         Vec::new(),
     )
 }
@@ -1129,6 +1167,7 @@ fn selected(operation: AccessOperation, selection: &ReplicationSelection) -> Acc
             None,
             None,
             Vec::new(),
+            Vec::new(),
         ),
         ReplicationSelection::ServiceScope {
             service_id,
@@ -1140,6 +1179,17 @@ fn selected(operation: AccessOperation, selection: &ReplicationSelection) -> Acc
             None,
             None,
             None,
+            Vec::new(),
+            Vec::new(),
+        ),
+        ReplicationSelection::Scopes(selections) => (
+            operation,
+            None,
+            None,
+            None,
+            None,
+            None,
+            selections.clone(),
             Vec::new(),
         ),
     }
@@ -1153,6 +1203,7 @@ fn live_access(topics: &[String]) -> AccessMetadata {
         None,
         None,
         None,
+        Vec::new(),
         topics.to_vec(),
     )
 }
@@ -1165,6 +1216,7 @@ fn submitted_command_access(command: &myko_federation::CommandRequest) -> Access
         Some(command.id),
         Some(command.command_type.clone()),
         Some(command.principal_id.clone()),
+        Vec::new(),
         Vec::new(),
     )
 }
@@ -1182,6 +1234,7 @@ fn item_access(
         None,
         None,
         Vec::new(),
+        Vec::new(),
     )
 }
 
@@ -1193,6 +1246,7 @@ fn handler_access(request: &HandlerRequest) -> AccessMetadata {
         None,
         None,
         None,
+        Vec::new(),
         vec![format!(
             "handler:{}:{}",
             request.kind.as_str(),
@@ -1214,6 +1268,7 @@ fn catalog(
         None,
         Some(command_type.to_owned()),
         None,
+        Vec::new(),
         Vec::new(),
     )
 }

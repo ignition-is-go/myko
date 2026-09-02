@@ -26,6 +26,7 @@ pub use pairing::{
 
 use std::{
     collections::HashMap,
+    fmt::Write as _,
     fs::{self, OpenOptions},
     io::Write,
     num::NonZeroUsize,
@@ -1928,6 +1929,26 @@ fn replication_cursor_key(
             scope_id.as_str().len(),
             scope_id
         ),
+        ReplicationSelection::Scopes(selections) => {
+            let mut key = format!("{peer_id}|scopes");
+            let mut components = selections
+                .iter()
+                .map(|selection| match selection {
+                    myko_federation::ScopeSelection::Exact(scope_id) => {
+                        ("exact", scope_id.as_str())
+                    }
+                    myko_federation::ScopeSelection::Subtree(scope_id) => {
+                        ("subtree", scope_id.as_str())
+                    }
+                })
+                .collect::<Vec<_>>();
+            components.sort_unstable();
+            components.dedup();
+            for (kind, scope_id) in components {
+                let _ = write!(key, "|{kind}|{}:{scope_id}", scope_id.len());
+            }
+            key
+        }
     };
     ReplicationCursorKey::new("iroh", peer)
 }

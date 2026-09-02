@@ -133,7 +133,12 @@ impl CommandHandler for AddPeer {
         self,
         context: CommandContext<FederationService, PeerRoster>,
     ) -> Result<Peer, CommandError> {
-        let peer = peer_from_reference(self.reference, true).map_err(CommandError::reject)?;
+        let peer = peer_from_reference(
+            self.reference,
+            true,
+            PeerRosterId::from(context.node_id().to_string()),
+        )
+        .map_err(CommandError::reject)?;
         reject_self_history(&context, &peer)?;
         emit_peer(&context, &peer)?;
         Ok(peer)
@@ -154,6 +159,7 @@ impl CommandHandler for RememberPeer {
         let existing = context.exec_query(GetPeerById { id: id.clone() })?;
         let peer = Peer {
             id,
+            peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
             endpoint: self.descriptor.endpoint,
             source_node: Some(self.descriptor.node_id),
             replication_enabled: existing
@@ -235,6 +241,7 @@ impl CommandHandler for RestorePeer {
     ) -> Result<Peer, CommandError> {
         let peer = Peer {
             id: peer_id(self.endpoint.id),
+            peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
             endpoint: self.endpoint,
             source_node: self.source_node,
             replication_enabled: self.replication_enabled,
@@ -271,13 +278,15 @@ impl CommandHandler for AdvertiseServices {
                 context.emit_delete::<AdvertisedService>(&service.id)?;
             }
         }
+        let peer_roster_id = PeerRosterId::from(context.node_id().to_string());
         context.emit_set(&PeerRoster {
-            id: PeerRosterId::from(context.node_id().to_string()),
+            id: peer_roster_id.clone(),
         })?;
         let advertised = services
             .into_iter()
             .map(|service_id| AdvertisedService {
                 id: AdvertisedServiceId::from(service_id.as_str()),
+                peer_roster_id: peer_roster_id.clone(),
                 service_id: myko_federation::ServiceId::new(service_id),
             })
             .collect::<Vec<_>>();
@@ -313,6 +322,7 @@ fn emit_peer(
 fn peer_from_reference(
     reference: NativePeerReference,
     replication_enabled: bool,
+    peer_roster_id: PeerRosterId,
 ) -> Result<Peer, String> {
     let (endpoint, source_node) = match reference {
         NativePeerReference::Descriptor(descriptor) => {
@@ -323,6 +333,7 @@ fn peer_from_reference(
     };
     Ok(Peer {
         id: peer_id(endpoint.id),
+        peer_roster_id,
         endpoint,
         source_node,
         replication_enabled,
