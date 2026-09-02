@@ -20,7 +20,8 @@
 mod pairing;
 
 pub use pairing::{
-    MYKO_PAIRING_ALPN, PairingInvitation, PairingReceipt, PairingReceiptSubscription,
+    MYKO_PAIRING_ALPN, MYKO_PAIRING_OFFER_ALPN, PairingInvitation, PairingReceipt,
+    PairingReceiptSubscription,
 };
 
 use std::{
@@ -2449,6 +2450,8 @@ impl IrohReplicator {
             None => NodeSessionService::new(node.clone(), initial_policy),
         };
         let pairing = pairing::PairingRegistry::new();
+        let descriptor = NativeNodeDescriptor::new(node.node_id(), endpoint.addr());
+        let pairing_endpoint = endpoint.clone();
         let protocol = ReplicationProtocol {
             sessions: sessions.clone(),
         };
@@ -2457,6 +2460,10 @@ impl IrohReplicator {
             .accept(
                 MYKO_PAIRING_ALPN,
                 pairing::PairingProtocol::new(pairing.clone()),
+            )
+            .accept(
+                MYKO_PAIRING_OFFER_ALPN,
+                pairing::PairingOfferProtocol::new(pairing_endpoint, descriptor, pairing.clone()),
             )
             .spawn();
         Self {
@@ -2520,6 +2527,25 @@ impl IrohReplicator {
         invitation: &PairingInvitation,
     ) -> Result<PairingReceipt, IrohReplicationError> {
         pairing::redeem_pairing(self.router.endpoint(), self.descriptor(), invitation).await
+    }
+
+    /// Offers a fresh one-use invitation to one identity-pinned node.
+    ///
+    /// The recipient redeems the invitation back to this endpoint. Both nodes
+    /// receive the same pending receipt and must confirm its comparison code
+    /// before either relationship is persisted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid identities, invitation limits, timeout, or
+    /// a rejected/tampered offer.
+    pub async fn offer_pairing(
+        &self,
+        peer: &NativeNodeDescriptor,
+        ttl: Duration,
+    ) -> Result<PairingReceipt, IrohReplicationError> {
+        let invitation = self.issue_pairing_invitation(ttl)?;
+        pairing::offer_pairing(self.router.endpoint(), &invitation, peer).await
     }
 
     /// Drains authenticated receipts awaiting local operator/application
@@ -4634,6 +4660,50 @@ mod tests {
 
         client.shutdown().await.map_err(|error| error.to_string())?;
         server.shutdown().await.map_err(|error| error.to_string())
+    }
+
+    #[tokio::test]
+    async fn pairing_offer_delivers_one_receipt_to_both_nodes() -> Result<(), String> {
+        let initiator = IrohReplicator::bind_loopback(Node::in_memory())
+            .await
+            .map_err(|error| error.to_string())?;
+        let recipient = IrohReplicator::bind_loopback(Node::in_memory())
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut initiator_receipts = initiator.subscribe_pairing_receipts();
+        let mut recipient_receipts = recipient.subscribe_pairing_receipts();
+
+        let receipt = initiator
+            .offer_pairing(&recipient.descriptor(), Duration::from_mins(1))
+            .await
+            .map_err(|error| error.to_string())?;
+        if receipt.server != initiator.descriptor() || receipt.client != recipient.descriptor() {
+            return Err(format!(
+                "pairing offer lost its pinned identities: {receipt:?}"
+            ));
+        }
+        let observed_by_initiator =
+            tokio::time::timeout(Duration::from_secs(5), initiator_receipts.recv())
+                .await
+                .map_err(|_| "initiator did not observe its pairing offer".to_owned())?
+                .map_err(|error| error.to_string())?;
+        let observed_by_recipient =
+            tokio::time::timeout(Duration::from_secs(5), recipient_receipts.recv())
+                .await
+                .map_err(|_| "recipient did not observe its pairing offer".to_owned())?
+                .map_err(|error| error.to_string())?;
+        if observed_by_initiator != [receipt.clone()] || observed_by_recipient != [receipt] {
+            return Err("pairing offer produced different operator receipts".to_owned());
+        }
+
+        recipient
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())?;
+        initiator
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())
     }
 
     #[test]

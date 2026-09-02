@@ -20,9 +20,10 @@ use discovery::{DiscoverySupervisor, DiscoveryViewState};
 pub use live_state::RuntimeFeed;
 use pairing::PairingSupervisor;
 pub use pairing::{
-    ConfirmPairing, IssuePairingInvitation, PairingReceiptsView, PairingRedemption,
-    PairingRedemptionId, PairingRedemptionPhase, PairingRedemptionReport, PendingPairingReceipt,
-    PendingPairingReceiptId, RedeemPairingInvitation,
+    ConfirmPairing, InitiatePairing, IssuePairingInvitation, PairingInitiation,
+    PairingInitiationId, PairingInitiationPhase, PairingInitiationReport, PairingReceiptsView,
+    PairingRedemption, PairingRedemptionId, PairingRedemptionPhase, PairingRedemptionReport,
+    PendingPairingReceipt, PendingPairingReceiptId, RedeemPairingInvitation,
 };
 pub use peer::{
     AddPeer, AdvertiseServices, AdvertisedService, AdvertisedServiceId, AdvertisedServicesView,

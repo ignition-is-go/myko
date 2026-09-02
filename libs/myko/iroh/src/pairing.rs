@@ -20,6 +20,8 @@ use crate::{IrohReplicationError, NativeNodeDescriptor};
 
 /// Separate ALPN for bounded, one-use native pairing control.
 pub const MYKO_PAIRING_ALPN: &[u8] = b"myko/pairing/1";
+/// Separate ALPN for offering a one-use invitation to one discovered node.
+pub const MYKO_PAIRING_OFFER_ALPN: &[u8] = b"myko/pairing-offer/1";
 
 const PAIRING_VERSION: u32 = 1;
 const PAIRING_SECRET_BYTES: usize = 32;
@@ -31,6 +33,7 @@ const MAX_PENDING_RECEIPTS: usize = 256;
 const MIN_INVITATION_TTL: Duration = Duration::from_millis(1);
 const MAX_INVITATION_TTL: Duration = Duration::from_hours(24);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const OFFER_TIMEOUT: Duration = Duration::from_secs(20);
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -134,6 +137,19 @@ struct PairingRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum PairingResponse {
+    Accepted { receipt: PairingReceipt },
+    Rejected { message: String },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PairingOfferRequest {
+    version: u32,
+    invitation: PairingInvitation,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum PairingOfferResponse {
     Accepted { receipt: PairingReceipt },
     Rejected { message: String },
 }
@@ -247,6 +263,31 @@ impl PairingRegistry {
             registry: self.clone(),
             revision: self.revision.subscribe(),
         }
+    }
+
+    fn record_receipt(&self, receipt: PairingReceipt) -> Result<(), String> {
+        receipt.validate()?;
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "pairing state is poisoned".to_owned())?;
+        if state
+            .receipts
+            .iter()
+            .any(|pending| pending.invitation_id == receipt.invitation_id)
+        {
+            return Ok(());
+        }
+        if state.receipts.len() >= MAX_PENDING_RECEIPTS {
+            return Err(format!(
+                "pending pairing receipt limit {MAX_PENDING_RECEIPTS} reached"
+            ));
+        }
+        state.receipts.push_back(receipt);
+        drop(state);
+        let next = self.revision.borrow().wrapping_add(1);
+        self.revision.send_replace(next);
+        Ok(())
     }
 
     fn redeem(
@@ -379,6 +420,134 @@ impl ProtocolHandler for PairingProtocol {
             .await
             .map_err(|_| AcceptError::from_err(std::io::Error::other("pairing timed out")))?
     }
+}
+
+/// Receiver for an invitation offered directly by its authenticated issuer.
+#[derive(Debug, Clone)]
+pub struct PairingOfferProtocol {
+    endpoint: Endpoint,
+    descriptor: NativeNodeDescriptor,
+    registry: PairingRegistry,
+}
+
+impl PairingOfferProtocol {
+    pub(crate) const fn new(
+        endpoint: Endpoint,
+        descriptor: NativeNodeDescriptor,
+        registry: PairingRegistry,
+    ) -> Self {
+        Self {
+            endpoint,
+            descriptor,
+            registry,
+        }
+    }
+
+    async fn handle(&self, connection: Connection) -> Result<(), AcceptError> {
+        let remote_id = connection.remote_id();
+        let (mut send, mut receive) = connection.accept_bi().await?;
+        let request = read_bounded_json::<PairingOfferRequest>(&mut receive)
+            .await
+            .map_err(AcceptError::from_err)?;
+        let response = match self.accept_offer(remote_id, request).await {
+            Ok(receipt) => PairingOfferResponse::Accepted { receipt },
+            Err(message) => PairingOfferResponse::Rejected { message },
+        };
+        write_bounded_json(&mut send, &response)
+            .await
+            .map_err(AcceptError::from_err)?;
+        send.finish().map_err(AcceptError::from_err)?;
+        connection.closed().await;
+        Ok(())
+    }
+
+    async fn accept_offer(
+        &self,
+        remote_id: EndpointId,
+        request: PairingOfferRequest,
+    ) -> Result<PairingReceipt, String> {
+        if request.version != PAIRING_VERSION {
+            return Err(format!(
+                "unsupported pairing offer version {}",
+                request.version
+            ));
+        }
+        request.invitation.validate()?;
+        if request.invitation.server.endpoint.id != remote_id {
+            return Err(
+                "pairing invitation issuer does not match authenticated endpoint".to_owned(),
+            );
+        }
+        let receipt = redeem_pairing(&self.endpoint, self.descriptor.clone(), &request.invitation)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.registry.record_receipt(receipt.clone())?;
+        Ok(receipt)
+    }
+}
+
+impl ProtocolHandler for PairingOfferProtocol {
+    async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+        timeout(OFFER_TIMEOUT, self.handle(connection))
+            .await
+            .map_err(|_| AcceptError::from_err(std::io::Error::other("pairing offer timed out")))?
+    }
+}
+
+/// Offers an invitation to one identity-pinned node and waits for its redemption.
+pub async fn offer_pairing(
+    endpoint: &Endpoint,
+    invitation: &PairingInvitation,
+    expected_client: &NativeNodeDescriptor,
+) -> Result<PairingReceipt, IrohReplicationError> {
+    invitation
+        .validate()
+        .map_err(IrohReplicationError::Identity)?;
+    expected_client
+        .validate()
+        .map_err(IrohReplicationError::Identity)?;
+    if invitation.server.endpoint.id == expected_client.endpoint.id {
+        return Err(IrohReplicationError::Identity(
+            "cannot offer pairing to the issuing endpoint".to_owned(),
+        ));
+    }
+    let request = PairingOfferRequest {
+        version: PAIRING_VERSION,
+        invitation: invitation.clone(),
+    };
+    let receipt = timeout(OFFER_TIMEOUT, async {
+        let connection = endpoint
+            .connect(expected_client.endpoint.clone(), MYKO_PAIRING_OFFER_ALPN)
+            .await
+            .map_err(|error| IrohReplicationError::Endpoint(error.to_string()))?;
+        let (mut send, mut receive) = connection
+            .open_bi()
+            .await
+            .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
+        write_bounded_json(&mut send, &request).await?;
+        send.finish()
+            .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
+        let response = read_bounded_json::<PairingOfferResponse>(&mut receive).await?;
+        connection.close(0u32.into(), b"pairing offer complete");
+        match response {
+            PairingOfferResponse::Accepted { receipt } => Ok(receipt),
+            PairingOfferResponse::Rejected { message } => {
+                Err(IrohReplicationError::Identity(message))
+            }
+        }
+    })
+    .await
+    .map_err(|_| IrohReplicationError::Identity("pairing offer timed out".to_owned()))??;
+    receipt.validate().map_err(IrohReplicationError::Identity)?;
+    if receipt.invitation_id != invitation.invitation_id
+        || receipt.server != invitation.server
+        || receipt.client != *expected_client
+    {
+        return Err(IrohReplicationError::Identity(
+            "pairing offer receipt did not match the offered identities".to_owned(),
+        ));
+    }
+    Ok(receipt)
 }
 
 pub async fn redeem_pairing(

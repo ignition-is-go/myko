@@ -152,6 +152,14 @@ Successful redemption neither grants application authority nor persists a
 follower; those remain explicit application/operator decisions. The outer
 ticket, QR, file, and discovery encoding remain pluggable.
 
+A discovered descriptor can start that same exchange without copying a ticket.
+The initiating node creates the one-use invitation for itself and offers it only
+to the selected, identity-pinned endpoint. The recipient redeems it back to the
+issuer, so both nodes receive the same authenticated receipt and comparison
+code. This is a durable Myko pairing-initiation lifecycle exposed through a live
+report; it does not make discovery authoritative, bypass mutual confirmation,
+or implicitly install trust, access grants, or replication.
+
 This crate split is an implementation boundary, not the intended application
 experience. Myko remains an application framework: its public facade should
 compose schema registration, command execution, typed reactive queries,

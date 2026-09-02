@@ -18,13 +18,14 @@ use myko_iroh::{EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerRefere
 use myko_items::MykoService;
 use myko_items::{myko_command, myko_item, myko_service};
 
-use crate::{DiscoverySettings, PairingRedemption, PendingPairingReceipt};
+use crate::{DiscoverySettings, PairingInitiation, PairingRedemption, PendingPairingReceipt};
 
 /// Myko's built-in node-federation service.
 #[myko_service(
     PeerRoster,
     Peer,
     AdvertisedService,
+    PairingInitiation,
     PairingRedemption,
     PendingPairingReceipt,
     DiscoverySettings

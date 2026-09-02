@@ -40,6 +40,23 @@ pub enum PairingRedemptionPhase {
     Failed { reason: String },
 }
 
+/// Durable lifecycle of offering this node's invitation to one peer.
+#[myko_subtype(derive(Eq))]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum PairingInitiationPhase {
+    Queued,
+    Running { node_id: NodeId },
+    Completed { receipt: PairingReceipt },
+    Failed { reason: String },
+}
+
+impl PairingInitiationPhase {
+    #[must_use]
+    pub const fn is_terminal(&self) -> bool {
+        matches!(self, Self::Completed { .. } | Self::Failed { .. })
+    }
+}
+
 impl PairingRedemptionPhase {
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
@@ -57,6 +74,17 @@ pub struct PairingRedemption {
 
 impl Eq for PairingRedemption {}
 
+/// One durable, asynchronous pairing offer to an identity-pinned peer.
+#[myko_item(service = FederationService, scoped_by = PeerRoster)]
+pub struct PairingInitiation {
+    pub requested_by: String,
+    pub peer: NativeNodeDescriptor,
+    pub ttl_seconds: u64,
+    pub phase: PairingInitiationPhase,
+}
+
+impl Eq for PairingInitiation {}
+
 /// One authenticated inbound receipt awaiting local operator confirmation.
 #[myko_item(service = FederationService, scoped_by = PeerRoster)]
 pub struct PendingPairingReceipt {
@@ -69,6 +97,49 @@ impl PairingRedemptionId {
     #[must_use]
     pub fn random() -> Self {
         Self::from(Uuid::now_v7().to_string())
+    }
+}
+
+impl PairingInitiationId {
+    #[must_use]
+    pub fn random() -> Self {
+        Self::from(Uuid::now_v7().to_string())
+    }
+}
+
+/// Starts an asynchronous pairing offer to one identity-pinned peer.
+#[myko_command(PairingInitiation, item = PairingInitiation)]
+pub struct InitiatePairing {
+    pub peer: NativeNodeDescriptor,
+    pub ttl_seconds: u64,
+}
+
+impl CommandHandler for InitiatePairing {
+    fn scope(&self, node_id: NodeId) -> PeerRosterId {
+        PeerRosterId::from(node_id.to_string())
+    }
+
+    fn execute(
+        self,
+        context: CommandContext<FederationService, PeerRoster>,
+    ) -> Result<Self::Output, CommandError> {
+        self.peer.validate().map_err(CommandError::reject)?;
+        let local = context
+            .resource::<IrohReplicator>()
+            .map_err(|error| CommandError::reject(error.to_string()))?
+            .descriptor();
+        if same_descriptor_identity(&local, &self.peer) {
+            return Err(CommandError::reject("cannot pair a node with itself"));
+        }
+        let initiation = PairingInitiation {
+            id: PairingInitiationId::random(),
+            requested_by: context.principal_id().as_str().to_owned(),
+            peer: self.peer,
+            ttl_seconds: self.ttl_seconds,
+            phase: PairingInitiationPhase::Queued,
+        };
+        context.emit_set(&initiation)?;
+        Ok(initiation)
     }
 }
 
@@ -196,6 +267,47 @@ struct AdvancePairingRedemption {
     next: PairingRedemptionPhase,
 }
 
+#[myko_command(PairingInitiation, item = PairingInitiation)]
+struct AdvancePairingInitiation {
+    initiation_id: PairingInitiationId,
+    expected: PairingInitiationPhase,
+    next: PairingInitiationPhase,
+}
+
+impl CommandHandler for AdvancePairingInitiation {
+    fn scope(&self, node_id: NodeId) -> PeerRosterId {
+        PeerRosterId::from(node_id.to_string())
+    }
+
+    fn execute(
+        self,
+        context: CommandContext<FederationService, PeerRoster>,
+    ) -> Result<Self::Output, CommandError> {
+        if context.principal_id().as_str() != format!("node:{}", context.node_id()) {
+            return Err(CommandError::reject(
+                "pairing-initiation transition requires the executing node principal",
+            ));
+        }
+        let mut initiation = context
+            .exec_query(GetPairingInitiationById {
+                id: self.initiation_id,
+            })?
+            .ok_or_else(|| CommandError::reject("pairing initiation does not exist"))?;
+        if initiation.phase == self.next {
+            return Ok(initiation);
+        }
+        if initiation.phase != self.expected {
+            return Err(CommandError::reject(
+                "pairing initiation changed before this transition executed",
+            ));
+        }
+        validate_initiation_transition(context.node_id(), &initiation.phase, &self.next)?;
+        initiation.phase = self.next;
+        context.emit_set(&initiation)?;
+        Ok(initiation)
+    }
+}
+
 impl CommandHandler for AdvancePairingRedemption {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
@@ -252,6 +364,28 @@ fn validate_transition(
     }
 }
 
+fn validate_initiation_transition(
+    node_id: NodeId,
+    current: &PairingInitiationPhase,
+    next: &PairingInitiationPhase,
+) -> Result<(), CommandError> {
+    match (current, next) {
+        (PairingInitiationPhase::Queued, PairingInitiationPhase::Running { node_id: owner })
+            if *owner == node_id =>
+        {
+            Ok(())
+        }
+        (PairingInitiationPhase::Queued, PairingInitiationPhase::Failed { .. }) => Ok(()),
+        (
+            PairingInitiationPhase::Running { node_id: owner },
+            PairingInitiationPhase::Completed { .. } | PairingInitiationPhase::Failed { .. },
+        ) if *owner == node_id => Ok(()),
+        _ => Err(CommandError::reject(
+            "invalid pairing-initiation lifecycle transition",
+        )),
+    }
+}
+
 /// Live state of one invitation redemption.
 #[myko_report(Option<PairingRedemption>, item = PairingRedemption)]
 #[derive(PartialEq, Eq)]
@@ -275,6 +409,35 @@ impl ReportHandler for PairingRedemptionReport {
                 peer_scope(self.source_node),
                 GetPairingRedemptionById {
                     id: self.redemption_id.clone(),
+                },
+            )?
+            .map_value(Clone::clone))
+    }
+}
+
+/// Live state of one outgoing pairing offer.
+#[myko_report(Option<PairingInitiation>, item = PairingInitiation)]
+#[derive(PartialEq, Eq)]
+pub struct PairingInitiationReport {
+    pub source_node: NodeId,
+    pub initiation_id: PairingInitiationId,
+}
+
+impl ReportHandler for PairingInitiationReport {
+    type Output = Option<PairingInitiation>;
+    type Cursor = LogPosition;
+
+    fn access_scope(&self) -> Option<ScopeId> {
+        Some(peer_scope(self.source_node))
+    }
+
+    fn build(&self, context: &ReportContext) -> Result<LiveSubscription<Self::Output>, AppError> {
+        Ok(context
+            .query(
+                self.source_node,
+                peer_scope(self.source_node),
+                GetPairingInitiationById {
+                    id: self.initiation_id.clone(),
                 },
             )?
             .map_value(Clone::clone))
@@ -333,6 +496,13 @@ pub struct PairingSupervisor {
 
 impl PairingSupervisor {
     pub fn start(application: ApplicationNode, replicator: IrohReplicator) -> Result<Self, String> {
+        let initiations = application
+            .watch_query(
+                application.node().node_id(),
+                peer_scope(application.node().node_id()),
+                GetAllPairingInitiations,
+            )
+            .map_err(|error| error.to_string())?;
         let redemptions = application
             .watch_query(
                 application.node().node_id(),
@@ -342,7 +512,14 @@ impl PairingSupervisor {
             .map_err(|error| error.to_string())?;
         let receipts = replicator.subscribe_pairing_receipts();
         let (stopping, stop) = watch::channel(false);
-        let task = tokio::spawn(run(application, replicator, redemptions, receipts, stop));
+        let task = tokio::spawn(run(
+            application,
+            replicator,
+            initiations,
+            redemptions,
+            receipts,
+            stop,
+        ));
         Ok(Self {
             stopping,
             task: Some(task),
@@ -370,14 +547,21 @@ impl Drop for PairingSupervisor {
 async fn run(
     application: ApplicationNode,
     replicator: IrohReplicator,
+    initiations: HandlerSubscription<Vec<PairingInitiation>>,
     redemptions: HandlerSubscription<Vec<PairingRedemption>>,
     mut receipts: PairingReceiptSubscription,
     mut stopping: watch::Receiver<bool>,
 ) -> Result<(), String> {
     let (change_sender, mut change_receiver) = mpsc::unbounded_channel();
-    change_sender.send(()).map_err(|_| {
-        "pairing-redemption subscription could not publish initial state".to_owned()
-    })?;
+    change_sender
+        .send(())
+        .map_err(|_| "pairing subscriptions could not publish initial state".to_owned())?;
+    let updates = change_sender.clone();
+    let initiation_changes_guard = initiations.live().state().subscribe(move |signal| {
+        if let Signal::Value(_) = signal {
+            let _sent = updates.send(());
+        }
+    });
     let updates = change_sender.clone();
     let changes_guard = redemptions.live().state().subscribe(move |signal| {
         if let Signal::Value(_) = signal {
@@ -385,7 +569,8 @@ async fn run(
         }
     });
     let mut recover = true;
-    let mut active = HashSet::new();
+    let mut active_initiations = HashSet::new();
+    let mut active_redemptions = HashSet::new();
     let mut effects = JoinSet::new();
     loop {
         tokio::select! {
@@ -396,30 +581,16 @@ async fn run(
             }
             update = change_receiver.recv() => {
                 update.ok_or_else(|| "pairing-redemption subscription closed".to_owned())?;
-                let state = redemptions.live().current();
-                match state.liveness {
-                    myko_federation::SubscriptionLiveness::Current => {
-                        let values = state.value.ok_or_else(|| {
-                            "current pairing-redemption query omitted its value".to_owned()
-                        })?;
-                        if recover {
-                            recover_redemptions(&application, &values)?;
-                            recover = false;
-                        }
-                        start_redemptions(
-                            &application,
-                            &replicator,
-                            values,
-                            &mut active,
-                            &mut effects,
-                        )?;
-                    }
-                    myko_federation::SubscriptionLiveness::Connecting
-                    | myko_federation::SubscriptionLiveness::Resynchronizing { .. } => {}
-                    myko_federation::SubscriptionLiveness::Invalid { reason } => {
-                        return Err(format!("pairing-redemption query became invalid: {reason}"));
-                    }
-                }
+                refresh_pairing_tasks(
+                    &application,
+                    &replicator,
+                    &initiations,
+                    &redemptions,
+                    &mut recover,
+                    &mut active_initiations,
+                    &mut active_redemptions,
+                    &mut effects,
+                )?;
             }
             incoming = receipts.recv() => {
                 for receipt in incoming.map_err(|error| error.to_string())? {
@@ -431,10 +602,17 @@ async fn run(
             completed = effects.join_next(), if !effects.is_empty() => {
                 match completed {
                     Some(Ok((id, result))) => {
-                        active.remove(&id);
+                        match id {
+                            PairingTaskId::Initiation(id) => {
+                                active_initiations.remove(&id);
+                            }
+                            PairingTaskId::Redemption(id) => {
+                                active_redemptions.remove(&id);
+                            }
+                        }
                         result?;
                     }
-                    Some(Err(error)) => return Err(format!("pairing redemption panicked: {error}")),
+                    Some(Err(error)) => return Err(format!("pairing task panicked: {error}")),
                     None => {}
                 }
             }
@@ -442,8 +620,92 @@ async fn run(
     }
     effects.abort_all();
     while effects.join_next().await.is_some() {}
+    drop(initiation_changes_guard);
     drop(changes_guard);
+    initiations.shutdown().await;
     redemptions.shutdown().await;
+    Ok(())
+}
+
+#[derive(Debug)]
+enum PairingTaskId {
+    Initiation(PairingInitiationId),
+    Redemption(PairingRedemptionId),
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the pairing supervisor owns two parallel durable lifecycle queues"
+)]
+fn refresh_pairing_tasks(
+    application: &ApplicationNode,
+    replicator: &IrohReplicator,
+    initiations: &HandlerSubscription<Vec<PairingInitiation>>,
+    redemptions: &HandlerSubscription<Vec<PairingRedemption>>,
+    recover: &mut bool,
+    active_initiations: &mut HashSet<PairingInitiationId>,
+    active_redemptions: &mut HashSet<PairingRedemptionId>,
+    effects: &mut JoinSet<(PairingTaskId, Result<(), String>)>,
+) -> Result<(), String> {
+    let initiation_state = initiations.live().current();
+    let initiation_values = match initiation_state.liveness {
+        myko_federation::SubscriptionLiveness::Current => initiation_state
+            .value
+            .ok_or_else(|| "current pairing-initiation query omitted its value".to_owned())?,
+        myko_federation::SubscriptionLiveness::Connecting
+        | myko_federation::SubscriptionLiveness::Resynchronizing { .. } => return Ok(()),
+        myko_federation::SubscriptionLiveness::Invalid { reason } => {
+            return Err(format!("pairing-initiation query became invalid: {reason}"));
+        }
+    };
+    let redemption_state = redemptions.live().current();
+    let redemption_values = match redemption_state.liveness {
+        myko_federation::SubscriptionLiveness::Current => redemption_state
+            .value
+            .ok_or_else(|| "current pairing-redemption query omitted its value".to_owned())?,
+        myko_federation::SubscriptionLiveness::Connecting
+        | myko_federation::SubscriptionLiveness::Resynchronizing { .. } => return Ok(()),
+        myko_federation::SubscriptionLiveness::Invalid { reason } => {
+            return Err(format!("pairing-redemption query became invalid: {reason}"));
+        }
+    };
+    if *recover {
+        recover_initiations(application, &initiation_values)?;
+        recover_redemptions(application, &redemption_values)?;
+        *recover = false;
+    }
+    start_initiations(
+        application,
+        replicator,
+        initiation_values,
+        active_initiations,
+        effects,
+    )?;
+    start_redemptions(
+        application,
+        replicator,
+        redemption_values,
+        active_redemptions,
+        effects,
+    )
+}
+
+fn recover_initiations(
+    application: &ApplicationNode,
+    initiations: &[PairingInitiation],
+) -> Result<(), String> {
+    for initiation in initiations {
+        if matches!(initiation.phase, PairingInitiationPhase::Running { .. }) {
+            advance_initiation(
+                application,
+                initiation.id.clone(),
+                initiation.phase.clone(),
+                PairingInitiationPhase::Failed {
+                    reason: "node restarted while pairing initiation was active".to_owned(),
+                },
+            )?;
+        }
+    }
     Ok(())
 }
 
@@ -471,7 +733,7 @@ fn start_redemptions(
     replicator: &IrohReplicator,
     redemptions: Vec<PairingRedemption>,
     active: &mut HashSet<PairingRedemptionId>,
-    effects: &mut JoinSet<(PairingRedemptionId, Result<(), String>)>,
+    effects: &mut JoinSet<(PairingTaskId, Result<(), String>)>,
 ) -> Result<(), String> {
     for redemption in redemptions {
         if redemption.phase != PairingRedemptionPhase::Queued
@@ -514,7 +776,63 @@ fn start_redemptions(
                     .map(|_| ())
                 }
             };
-            (id, result)
+            (PairingTaskId::Redemption(id), result)
+        });
+    }
+    Ok(())
+}
+
+fn start_initiations(
+    application: &ApplicationNode,
+    replicator: &IrohReplicator,
+    initiations: Vec<PairingInitiation>,
+    active: &mut HashSet<PairingInitiationId>,
+    effects: &mut JoinSet<(PairingTaskId, Result<(), String>)>,
+) -> Result<(), String> {
+    for initiation in initiations {
+        if initiation.phase != PairingInitiationPhase::Queued
+            || !active.insert(initiation.id.clone())
+        {
+            continue;
+        }
+        let running = PairingInitiationPhase::Running {
+            node_id: application.node().node_id(),
+        };
+        advance_initiation(
+            application,
+            initiation.id.clone(),
+            PairingInitiationPhase::Queued,
+            running.clone(),
+        )?;
+        let effect_application = application.clone();
+        let effect_replicator = replicator.clone();
+        let id = initiation.id;
+        effects.spawn(async move {
+            let result = match effect_replicator
+                .offer_pairing(
+                    &initiation.peer,
+                    Duration::from_secs(initiation.ttl_seconds),
+                )
+                .await
+            {
+                Ok(receipt) => advance_initiation(
+                    &effect_application,
+                    id.clone(),
+                    running,
+                    PairingInitiationPhase::Completed { receipt },
+                )
+                .map(|_| ()),
+                Err(error) => advance_initiation(
+                    &effect_application,
+                    id.clone(),
+                    running,
+                    PairingInitiationPhase::Failed {
+                        reason: error.to_string(),
+                    },
+                )
+                .map(|_| ()),
+            };
+            (PairingTaskId::Initiation(id), result)
         });
     }
     Ok(())
@@ -529,6 +847,21 @@ fn advance(
     application
         .exec_command(AdvancePairingRedemption {
             redemption_id,
+            expected,
+            next,
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn advance_initiation(
+    application: &ApplicationNode,
+    initiation_id: PairingInitiationId,
+    expected: PairingInitiationPhase,
+    next: PairingInitiationPhase,
+) -> Result<PairingInitiation, String> {
+    application
+        .exec_command(AdvancePairingInitiation {
+            initiation_id,
             expected,
             next,
         })

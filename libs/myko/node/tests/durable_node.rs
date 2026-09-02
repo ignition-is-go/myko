@@ -15,8 +15,9 @@ use myko_items::{ItemMutation, ItemProjection, ItemQuery, myko_command, myko_ite
 use myko_local::{LocalCommandClient, LocalNodeClient, LocalNodeServer};
 use myko_node::{
     AddPeer, AdvertisedServicesView, ConfigureLanDiscovery, ConfirmPairing,
-    DiscoverySettingsReport, FederationService, IssuePairingInvitation, NativeNodeDescriptor,
-    NativePeerReference, Node, NodeStatus, NodeStatusView, PairingInvitation, PairingReceipt,
+    DiscoverySettingsReport, FederationService, InitiatePairing, IssuePairingInvitation,
+    NativeNodeDescriptor, NativePeerReference, Node, NodeStatus, NodeStatusView,
+    PairingInitiationPhase, PairingInitiationReport, PairingInvitation, PairingReceipt,
     PairingReceiptsView, PairingRedemptionPhase, PairingRedemptionReport, Peer, PeerReport,
     PeersView, RedeemPairingInvitation, RemovePeer, ServiceCapabilityReport, SetPeerReplication,
     SetPeerReplicationSelection, peer_id,
@@ -800,6 +801,51 @@ async fn confirm_pairing(node: &Node, receipt: PairingReceipt) -> Result<Peer, S
     .map_err(|error| error.to_string())
 }
 
+async fn complete_pairing_initiation(
+    source: &Node,
+    peer: NativeNodeDescriptor,
+) -> Result<PairingReceipt, String> {
+    let initiation = myko_app::CommandClient::exec_command(
+        source.application(),
+        InitiatePairing {
+            peer,
+            ttl_seconds: 60,
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let report = source
+        .application()
+        .watch_report(&PairingInitiationReport {
+            source_node: source.node().node_id(),
+            initiation_id: initiation.id,
+        })
+        .map_err(|error| error.to_string())?;
+    wait_for("pairing initiation report did not become terminal", || {
+        report
+            .live()
+            .current()
+            .value
+            .as_ref()
+            .and_then(Option::as_ref)
+            .is_some_and(|initiation| initiation.phase.is_terminal())
+    })
+    .await?;
+    let result = match report
+        .live()
+        .current()
+        .value
+        .and_then(|initiation| initiation)
+        .map(|initiation| initiation.phase)
+    {
+        Some(PairingInitiationPhase::Completed { receipt }) => Ok(receipt),
+        Some(PairingInitiationPhase::Failed { reason }) => Err(reason),
+        phase => Err(format!("unexpected pairing initiation phase: {phase:?}")),
+    };
+    report.shutdown().await;
+    result
+}
+
 fn require_peer_state(
     peers: &myko_app::ViewSubscription<Peer>,
     source_node: NodeId,
@@ -896,6 +942,60 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
         .shutdown()
         .await
         .map_err(|error| format!("shutdown pairing source: {error}"))
+}
+
+#[tokio::test]
+async fn typed_pairing_initiation_is_live_and_requires_mutual_confirmation() -> Result<(), String> {
+    let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let retry_interval = Duration::from_millis(20);
+    let source = Node::open_loopback(source_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let target = Node::open_loopback(target_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let source_receipts = source
+        .application()
+        .watch_view(&PairingReceiptsView)
+        .map_err(|error| error.to_string())?;
+    let target_receipts = target
+        .application()
+        .watch_view(&PairingReceiptsView)
+        .map_err(|error| error.to_string())?;
+
+    let receipt = complete_pairing_initiation(&source, target.descriptor()).await?;
+    let source_receipt = receive_pairing_receipt(&source_receipts, &receipt).await?;
+    let target_receipt = receive_pairing_receipt(&target_receipts, &receipt).await?;
+    if !watch_peers(&source)?.live().rows().snapshot().is_empty()
+        || !watch_peers(&target)?.live().rows().snapshot().is_empty()
+    {
+        return Err("pairing initiation implicitly trusted a peer".to_owned());
+    }
+
+    let _source_peer = confirm_pairing(&source, source_receipt).await?;
+    let _target_peer = confirm_pairing(&target, target_receipt).await?;
+    let source_peers = watch_peers(&source)?;
+    let target_peers = watch_peers(&target)?;
+    require_peer_state(
+        &source_peers,
+        target.node().node_id(),
+        false,
+        "source did not remember the confirmed target",
+    )?;
+    require_peer_state(
+        &target_peers,
+        source.node().node_id(),
+        false,
+        "target did not remember the confirmed source",
+    )?;
+
+    source_peers.shutdown().await;
+    target_peers.shutdown().await;
+    source_receipts.shutdown().await;
+    target_receipts.shutdown().await;
+    target.shutdown().await.map_err(|error| error.to_string())?;
+    source.shutdown().await.map_err(|error| error.to_string())
 }
 
 #[tokio::test]

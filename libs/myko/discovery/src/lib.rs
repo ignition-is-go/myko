@@ -13,7 +13,7 @@ use std::{
 };
 
 use myko_federation::NodeId;
-use myko_iroh::{EndpointId, NativeNodeDescriptor, PairingInvitation};
+use myko_iroh::{EndpointId, NativeNodeDescriptor};
 use serde::{Deserialize, Serialize};
 use tokio::{sync::watch, task::JoinHandle};
 
@@ -78,14 +78,6 @@ impl ParticipantCapabilities {
     pub fn supports(&self, capability: ParticipantCapability) -> bool {
         self.0.contains(&capability)
     }
-}
-
-/// Persistable non-secret pairing bootstrap state.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PendingPairing {
-    pub invitation: PairingInvitation,
-    pub expected_inviter: NativeNodeDescriptor,
-    pub comparison_code: Option<String>,
 }
 
 /// One nearby node exposed to application roster surfaces.
