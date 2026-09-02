@@ -1130,6 +1130,54 @@ pub struct ReplicationBatch {
     pub events: Vec<EventEnvelope>,
 }
 
+/// Durable selection of authoritative history copied from one peer.
+///
+/// The selector is evaluated against each command event. Cursor watermarks
+/// still advance across omitted events, so a follower can resume without
+/// learning history outside its selection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum ReplicationSelection {
+    /// Copies every service and scope in the peer's history.
+    #[default]
+    All,
+    /// Copies every scope owned by one service.
+    Service(ServiceId),
+    /// Copies one exact scope owned by one service.
+    ServiceScope {
+        service_id: ServiceId,
+        scope_id: ScopeId,
+    },
+}
+
+impl ReplicationSelection {
+    /// Returns whether this selector includes an event.
+    #[must_use]
+    pub fn includes(&self, event: &NodeEvent) -> bool {
+        match self {
+            Self::All => true,
+            Self::Service(service_id) => event.service_id() == service_id,
+            Self::ServiceScope {
+                service_id,
+                scope_id,
+            } => event.service_id() == service_id && event.scope_id() == scope_id,
+        }
+    }
+}
+
+/// Immutable events matching one replication selection plus its source cursor.
+///
+/// Event positions may contain gaps because unrelated entries are omitted.
+/// `through` advances over those gaps and is therefore selection-specific.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedReplicationBatch {
+    pub source_node: NodeId,
+    pub selection: ReplicationSelection,
+    pub after: Option<LogPosition>,
+    pub through: Option<LogPosition>,
+    pub events: Vec<EventEnvelope>,
+}
+
 /// Immutable events for one exact scope plus a source-log cursor watermark.
 ///
 /// Unlike a full [`ReplicationBatch`], event positions may contain gaps because
@@ -1155,6 +1203,30 @@ pub struct ScopedReplicationCheckpoint {
     pub source_node: NodeId,
     pub scope_id: ScopeId,
     pub position: Option<LogPosition>,
+}
+
+/// Resume position bound to one source history and one exact selection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedReplicationCheckpoint {
+    pub source_node: NodeId,
+    pub selection: ReplicationSelection,
+    pub position: Option<LogPosition>,
+}
+
+impl SelectedReplicationCheckpoint {
+    /// Creates a source- and selection-bound resume checkpoint.
+    #[must_use]
+    pub const fn new(
+        source_node: NodeId,
+        selection: ReplicationSelection,
+        position: Option<LogPosition>,
+    ) -> Self {
+        Self {
+            source_node,
+            selection,
+            position,
+        }
+    }
 }
 
 impl ScopedReplicationCheckpoint {
@@ -1192,6 +1264,16 @@ pub struct ScopedReplicationReport {
     pub duplicates: usize,
 }
 
+/// Result of applying one selection-filtered replication batch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelectedReplicationReport {
+    pub source_node: NodeId,
+    pub selection: ReplicationSelection,
+    pub through: Option<LogPosition>,
+    pub applied: usize,
+    pub duplicates: usize,
+}
+
 /// One bounded, lexically ordered page of application scope identifiers.
 ///
 /// Transport adapters filter scopes through their access policy before
@@ -1209,6 +1291,14 @@ impl ScopedReplicationReport {
     #[must_use]
     pub fn checkpoint(&self) -> ScopedReplicationCheckpoint {
         ScopedReplicationCheckpoint::new(self.source_node, self.scope_id.clone(), self.through)
+    }
+}
+
+impl SelectedReplicationReport {
+    /// Returns the checked cursor for the next pull of this selection.
+    #[must_use]
+    pub fn checkpoint(&self) -> SelectedReplicationCheckpoint {
+        SelectedReplicationCheckpoint::new(self.source_node, self.selection.clone(), self.through)
     }
 }
 
@@ -1280,6 +1370,16 @@ pub enum NodeEvent {
 }
 
 impl NodeEvent {
+    /// Returns the application service that owns this event.
+    #[must_use]
+    pub const fn service_id(&self) -> &ServiceId {
+        match self {
+            Self::CommandLifecycle(command) | Self::CommandCommitted { command, .. } => {
+                &command.request.service_id
+            }
+        }
+    }
+
     /// Returns the application-owned scope affected by this event.
     #[must_use]
     pub const fn scope_id(&self) -> &ScopeId {
@@ -4858,6 +4958,31 @@ impl Node {
         })
     }
 
+    /// Exports the selected application history while retaining the source cursor.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when backend history cannot be read.
+    pub fn export_selected(
+        &self,
+        selection: ReplicationSelection,
+        after: Option<LogPosition>,
+    ) -> Result<SelectedReplicationBatch, NodeError> {
+        let suffix = self.events_after(after)?;
+        let through = suffix.last().map(|event| event.position).or(after);
+        let events = suffix
+            .into_iter()
+            .filter(|event| selection.includes(&event.event))
+            .collect();
+        Ok(SelectedReplicationBatch {
+            source_node: self.node_id(),
+            selection,
+            after,
+            through,
+            events,
+        })
+    }
+
     /// Applies a transport-delivered replication batch idempotently.
     ///
     /// # Errors
@@ -4907,6 +5032,34 @@ impl Node {
         Ok(ScopedReplicationReport {
             source_node: batch.source_node,
             scope_id: batch.scope_id,
+            through: batch.through,
+            applied,
+            duplicates,
+        })
+    }
+
+    /// Applies a selection-filtered transport batch idempotently.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the batch cursor is invalid, an event falls
+    /// outside the declared selection, or replicated command identity conflicts.
+    pub fn ingest_selected_batch(
+        &self,
+        batch: SelectedReplicationBatch,
+    ) -> Result<SelectedReplicationReport, NodeError> {
+        validate_selected_replication_batch(&batch)?;
+        let mut applied = 0usize;
+        let mut duplicates = 0usize;
+        for event in batch.events {
+            match self.ingest(event)? {
+                IngestStatus::Applied { .. } => applied = applied.saturating_add(1),
+                IngestStatus::Duplicate => duplicates = duplicates.saturating_add(1),
+            }
+        }
+        Ok(SelectedReplicationReport {
+            source_node: batch.source_node,
+            selection: batch.selection,
             through: batch.through,
             applied,
             duplicates,
@@ -4965,6 +5118,35 @@ fn validate_scoped_replication_batch(batch: &ScopedReplicationBatch) -> Result<(
                 "event at position {} does not belong to scope {}",
                 event.position.get(),
                 batch.scope_id
+            )));
+        }
+        previous = Some(event.position);
+    }
+    Ok(())
+}
+
+fn validate_selected_replication_batch(batch: &SelectedReplicationBatch) -> Result<(), NodeError> {
+    if matches!((batch.after, batch.through), (Some(_), None))
+        || matches!((batch.after, batch.through), (Some(after), Some(through)) if through < after)
+    {
+        return Err(NodeError::InvalidReplicationBatch(
+            "selected replication cursor moved backwards".to_owned(),
+        ));
+    }
+    let mut previous = batch.after;
+    for event in &batch.events {
+        if previous.is_some_and(|position| event.position <= position)
+            || batch.through.is_none_or(|through| event.position > through)
+        {
+            return Err(NodeError::InvalidReplicationBatch(format!(
+                "selected event position {} is outside its cursor interval",
+                event.position.get()
+            )));
+        }
+        if !batch.selection.includes(&event.event) {
+            return Err(NodeError::InvalidReplicationBatch(format!(
+                "event at position {} falls outside its replication selection",
+                event.position.get()
             )));
         }
         previous = Some(event.position);
@@ -6797,6 +6979,75 @@ mod tests {
         let advanced_report = target.ingest_scoped_batch(advanced).unwrap();
         assert_eq!(advanced_report.applied, 0);
         assert_eq!(advanced_report.through, Some(LogPosition::new(5)));
+    }
+
+    #[test]
+    fn selected_replication_filters_by_service_and_service_scope() {
+        let source = Node::in_memory();
+        let target = Node::in_memory();
+        let first = request(CommandId::new());
+        let mut other_service = request(CommandId::new());
+        other_service.service_id = ServiceId::new(OtherService::SERVICE_ID);
+        let mut second_scope = request(CommandId::new());
+        second_scope.scope_id = ScopeId::new("session:second");
+
+        source.submit(first.clone()).unwrap();
+        source.submit(other_service.clone()).unwrap();
+        source.submit(second_scope.clone()).unwrap();
+
+        let service = source
+            .export_selected(
+                ReplicationSelection::Service(ServiceId::new(TestService::SERVICE_ID)),
+                None,
+            )
+            .unwrap();
+        assert_eq!(
+            service
+                .events
+                .iter()
+                .map(|event| event.position)
+                .collect::<Vec<_>>(),
+            vec![LogPosition::new(1), LogPosition::new(3)]
+        );
+        assert_eq!(service.through, Some(LogPosition::new(3)));
+        let report = target.ingest_selected_batch(service).unwrap();
+        assert_eq!(report.applied, 2);
+        assert!(target.command(first.id).unwrap().is_some());
+        assert!(target.command(second_scope.id).unwrap().is_some());
+        assert!(target.command(other_service.id).unwrap().is_none());
+
+        let service_scope = source
+            .export_selected(
+                ReplicationSelection::ServiceScope {
+                    service_id: ServiceId::new(TestService::SERVICE_ID),
+                    scope_id: first.scope_id,
+                },
+                None,
+            )
+            .unwrap();
+        assert_eq!(service_scope.events.len(), 1);
+        assert_eq!(
+            service_scope.events.first().map(|event| event.position),
+            Some(LogPosition::new(1))
+        );
+        assert_eq!(service_scope.through, Some(LogPosition::new(3)));
+    }
+
+    #[test]
+    fn selected_replication_rejects_an_event_outside_its_selection() {
+        let source = Node::in_memory();
+        let command = request(CommandId::new());
+        source.submit(command).unwrap();
+        let mut selected = source
+            .export_selected(ReplicationSelection::All, None)
+            .unwrap();
+        selected.selection =
+            ReplicationSelection::Service(ServiceId::new(OtherService::SERVICE_ID));
+
+        assert!(matches!(
+            Node::in_memory().ingest_selected_batch(selected),
+            Err(NodeError::InvalidReplicationBatch(_))
+        ));
     }
 
     #[test]

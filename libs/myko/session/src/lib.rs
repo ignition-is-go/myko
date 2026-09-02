@@ -17,8 +17,8 @@ use std::{
 use myko_app::{ApplicationNode, ErasedHandlerFrame, HandlerRequest};
 use myko_federation::{
     AccessOperation, AccessPolicy, AccessRequest, CommandId, CommandResponse, CommandSubmission,
-    LiveEventHub, LogPosition, Node, NodeId, PrincipalId, ReplicationBatch, ScopeCatalogPage,
-    ScopeId, ScopedReplicationBatch, ServiceId,
+    LiveEventHub, LogPosition, Node, NodeId, PrincipalId, ReplicationBatch, ReplicationSelection,
+    ScopeCatalogPage, ScopeId, ScopedReplicationBatch, SelectedReplicationBatch, ServiceId,
 };
 use myko_wire::{NodeFrame, NodeRequest, NodeRequestEnvelope};
 use tokio::{sync::watch, task::JoinHandle};
@@ -332,9 +332,16 @@ impl NodeSessionService {
             NodeRequest::PullScope { scope_id, after } => {
                 self.pull_scope(scope_id, after, send).await
             }
+            NodeRequest::PullSelected { selection, after } => {
+                self.pull_selected(selection, after, send).await
+            }
             NodeRequest::Follow { after } => self.follow(principal, request, after, send).await,
             NodeRequest::FollowScope { scope_id, after } => {
                 self.follow_scope(principal, request, scope_id, after, send)
+                    .await
+            }
+            NodeRequest::FollowSelected { selection, after } => {
+                self.follow_selected(principal, request, selection, after, send)
                     .await
             }
             NodeRequest::FollowLive { topics } => {
@@ -403,6 +410,26 @@ impl NodeSessionService {
         emit(
             send,
             NodeFrame::ScopedBatch {
+                batch: Box::new(batch),
+            },
+        )
+        .await
+    }
+
+    async fn pull_selected(
+        &self,
+        selection: ReplicationSelection,
+        after: Option<LogPosition>,
+        send: &flume::Sender<NodeFrame>,
+    ) -> Result<(), String> {
+        self.identify(send).await?;
+        let batch = self
+            .node
+            .export_selected(selection, after)
+            .map_err(|error| error.to_string())?;
+        emit(
+            send,
+            NodeFrame::SelectedBatch {
                 batch: Box::new(batch),
             },
         )
@@ -752,6 +779,48 @@ impl NodeSessionService {
         }
     }
 
+    async fn follow_selected(
+        &self,
+        principal: PrincipalId,
+        request: NodeRequest,
+        selection: ReplicationSelection,
+        after: Option<LogPosition>,
+        send: &flume::Sender<NodeFrame>,
+    ) -> Result<(), String> {
+        let mut events = self
+            .node
+            .subscribe(after)
+            .map_err(|error| error.to_string())?;
+        emit(
+            send,
+            NodeFrame::Hello {
+                source_node: self.node.node_id(),
+            },
+        )
+        .await?;
+        let mut cursor = after;
+        let mut policy_changes = self.policy_revision.subscribe();
+        loop {
+            tokio::select! {
+                event = events.recv_async() => {
+                    let event = event.map_err(|error| error.to_string())?;
+                    self.authorize(&principal, &request)?;
+                    let through = event.position;
+                    let selected = if selection.includes(&event.event) { vec![event] } else { Vec::new() };
+                    emit(send, NodeFrame::SelectedBatch { batch: Box::new(SelectedReplicationBatch {
+                        source_node: self.node.node_id(), selection: selection.clone(), after: cursor,
+                        through: Some(through), events: selected,
+                    }) }).await?;
+                    cursor = Some(through);
+                }
+                changed = policy_changes.changed() => {
+                    if changed.is_err() { return Ok(()); }
+                    self.authorize(&principal, &request)?;
+                }
+            }
+        }
+    }
+
     async fn follow_live(
         &self,
         principal: PrincipalId,
@@ -923,9 +992,15 @@ impl NodeSessionService {
             NodeRequest::PullScope { scope_id, .. } => {
                 scoped(AccessOperation::ReadHistory, scope_id)
             }
+            NodeRequest::PullSelected { selection, .. } => {
+                selected(AccessOperation::ReadHistory, selection)
+            }
             NodeRequest::Follow { .. } => metadata(AccessOperation::FollowHistory),
             NodeRequest::FollowScope { scope_id, .. } => {
                 scoped(AccessOperation::FollowHistory, scope_id)
+            }
+            NodeRequest::FollowSelected { selection, .. } => {
+                selected(AccessOperation::FollowHistory, selection)
             }
             NodeRequest::FollowLive { topics } => live_access(topics),
             NodeRequest::Submit { .. } => {
@@ -1041,6 +1116,33 @@ fn scoped(operation: AccessOperation, scope_id: &ScopeId) -> AccessMetadata {
         None,
         Vec::new(),
     )
+}
+
+fn selected(operation: AccessOperation, selection: &ReplicationSelection) -> AccessMetadata {
+    match selection {
+        ReplicationSelection::All => metadata(operation),
+        ReplicationSelection::Service(service_id) => (
+            operation,
+            Some(service_id.clone()),
+            None,
+            None,
+            None,
+            None,
+            Vec::new(),
+        ),
+        ReplicationSelection::ServiceScope {
+            service_id,
+            scope_id,
+        } => (
+            operation,
+            Some(service_id.clone()),
+            Some(scope_id.clone()),
+            None,
+            None,
+            None,
+            Vec::new(),
+        ),
+    }
 }
 
 fn live_access(topics: &[String]) -> AccessMetadata {

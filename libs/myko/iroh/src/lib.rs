@@ -56,9 +56,10 @@ use myko_federation::{
     LiveCollection, LiveCollectionState, LiveCollectionWriter, LiveEvent, LivePublishReport,
     LiveSubscription, LiveSubscriptionState, LogPosition, Node, NodeId, PrincipalId,
     ReconnectPolicy, ReplicationCheckpoint, ReplicationCursorKey, ReplicationCursorStore,
-    ReplicationReport, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
-    ScopedReplicationCheckpoint, ScopedReplicationReport, SubscriptionLiveness, live_collection,
-    live_subscription,
+    ReplicationReport, ReplicationSelection, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
+    ScopedReplicationCheckpoint, ScopedReplicationReport, SelectedReplicationBatch,
+    SelectedReplicationCheckpoint, SelectedReplicationReport, SubscriptionLiveness,
+    live_collection, live_subscription,
 };
 use myko_session::NodeSessionService;
 use myko_wire::{
@@ -299,6 +300,7 @@ impl IrohLiveEventSubscription {
             ReplicationFrame::Hello { .. }
             | ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
@@ -416,6 +418,26 @@ impl PeerSupervisor {
         self.replace(peer_id, follower).await
     }
 
+    /// Starts or replaces a durable follower with one replication selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint cannot be loaded, supervisor state
+    /// is poisoned, or a replaced follower cannot shut down cleanly.
+    pub async fn upsert_persisted_selected(
+        &self,
+        peer: EndpointAddr,
+        selection: ReplicationSelection,
+        store: Arc<dyn ReplicationCursorStore>,
+        retry_interval: Duration,
+    ) -> Result<bool, IrohReplicationError> {
+        let peer_id = peer.id;
+        let follower =
+            self.replicator
+                .follow_persisted_selected(peer, selection, store, retry_interval)?;
+        self.replace(peer_id, follower).await
+    }
+
     /// Starts or replaces a durable follower pinned to one Myko source.
     ///
     /// Returns `true` when an existing follower with the same authenticated
@@ -436,6 +458,31 @@ impl PeerSupervisor {
         let follower = self.replicator.follow_persisted_source(
             peer,
             expected_source_node,
+            store,
+            retry_interval,
+        )?;
+        self.replace(peer_id, follower).await
+    }
+
+    /// Starts or replaces a selected durable follower pinned to one Myko source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint cannot be loaded, supervisor state
+    /// is poisoned, or a replaced follower cannot shut down cleanly.
+    pub async fn upsert_persisted_source_selected(
+        &self,
+        peer: EndpointAddr,
+        expected_source_node: NodeId,
+        selection: ReplicationSelection,
+        store: Arc<dyn ReplicationCursorStore>,
+        retry_interval: Duration,
+    ) -> Result<bool, IrohReplicationError> {
+        let peer_id = peer.id;
+        let follower = self.replicator.follow_persisted_source_selected(
+            peer,
+            expected_source_node,
+            selection,
             store,
             retry_interval,
         )?;
@@ -1844,6 +1891,44 @@ struct CursorPersistence {
 enum FollowSelection {
     All,
     Scope(ScopeId),
+    Selected(ReplicationSelection),
+}
+
+impl FollowSelection {
+    fn replication(selection: ReplicationSelection) -> Self {
+        match selection {
+            ReplicationSelection::All => Self::All,
+            selection => Self::Selected(selection),
+        }
+    }
+}
+
+fn replication_cursor_key(
+    peer_id: EndpointId,
+    selection: &ReplicationSelection,
+) -> ReplicationCursorKey {
+    let peer_id = peer_id.to_string();
+    let peer = match selection {
+        ReplicationSelection::All => peer_id,
+        ReplicationSelection::Service(service_id) => {
+            format!(
+                "{peer_id}|service|{}:{}",
+                service_id.as_str().len(),
+                service_id
+            )
+        }
+        ReplicationSelection::ServiceScope {
+            service_id,
+            scope_id,
+        } => format!(
+            "{peer_id}|service_scope|{}:{}|{}:{}",
+            service_id.as_str().len(),
+            service_id,
+            scope_id.as_str().len(),
+            scope_id
+        ),
+    };
+    ReplicationCursorKey::new("iroh", peer)
 }
 
 struct FollowCursorState {
@@ -2624,6 +2709,7 @@ impl IrohReplicator {
             }
             ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
@@ -2699,6 +2785,7 @@ impl IrohReplicator {
             ReplicationFrame::Hello { .. }
             | ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
             | ReplicationFrame::CommandWatchReady { .. }
@@ -2765,6 +2852,7 @@ impl IrohReplicator {
             }
             ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
@@ -2785,6 +2873,7 @@ impl IrohReplicator {
             ReplicationFrame::Batch { batch } => *batch,
             ReplicationFrame::Hello { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
@@ -2810,6 +2899,96 @@ impl IrohReplicator {
         let report = self.node.ingest_batch(batch)?;
         connection.close(0u32.into(), b"sync complete");
         Ok(report)
+    }
+
+    /// Pulls one selected history from a source- and selection-checked checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the checkpoint belongs to another selection, the
+    /// peer cannot be reached, or replicated history conflicts locally.
+    pub async fn pull_selected(
+        &self,
+        peer: EndpointAddr,
+        selection: ReplicationSelection,
+        checkpoint: Option<SelectedReplicationCheckpoint>,
+    ) -> Result<SelectedReplicationReport, IrohReplicationError> {
+        if checkpoint
+            .as_ref()
+            .is_some_and(|checkpoint| checkpoint.selection != selection)
+        {
+            return Err(IrohReplicationError::Cursor(
+                "selected checkpoint belongs to another replication selection".to_owned(),
+            ));
+        }
+        let after = checkpoint.as_ref().and_then(|value| value.position);
+        let mut batch = self
+            .fetch_selected_batch(peer.clone(), selection.clone(), after)
+            .await?;
+        if checkpoint
+            .as_ref()
+            .is_some_and(|value| value.source_node != batch.source_node)
+        {
+            batch = self.fetch_selected_batch(peer, selection, None).await?;
+        }
+        self.node
+            .ingest_selected_batch(batch)
+            .map_err(IrohReplicationError::Ingest)
+    }
+
+    async fn fetch_selected_batch(
+        &self,
+        peer: EndpointAddr,
+        selection: ReplicationSelection,
+        after: Option<LogPosition>,
+    ) -> Result<SelectedReplicationBatch, IrohReplicationError> {
+        let connection = self
+            .router
+            .endpoint()
+            .connect(peer, MYKO_REPLICATION_ALPN)
+            .await
+            .map_err(|error| IrohReplicationError::Endpoint(error.to_string()))?;
+        let (mut send, mut receive) = connection
+            .open_bi()
+            .await
+            .map_err(|error| IrohReplicationError::Stream(error.to_string()))?;
+        write_request(
+            &mut send,
+            &ReplicationRequest::PullSelected {
+                selection: selection.clone(),
+                after,
+            },
+        )
+        .await?;
+        let source_node = match read_frame(&mut receive).await? {
+            ReplicationFrame::Hello { source_node } => source_node,
+            ReplicationFrame::Error { message } => {
+                return Err(IrohReplicationError::Stream(format!(
+                    "remote selected pull failed: {message}"
+                )));
+            }
+            _ => {
+                return Err(IrohReplicationError::Stream(
+                    "peer sent a selected batch before its source identity".to_owned(),
+                ));
+            }
+        };
+        let batch = match read_frame(&mut receive).await? {
+            ReplicationFrame::SelectedBatch { batch } => *batch,
+            _ => {
+                return Err(IrohReplicationError::Stream(
+                    "peer sent an unexpected frame for a selected pull".to_owned(),
+                ));
+            }
+        };
+        if batch.source_node != source_node || batch.selection != selection {
+            return Err(IrohReplicationError::Stream(
+                "selected batch does not match the advertised source or requested selection"
+                    .to_owned(),
+            ));
+        }
+        connection.close(0u32.into(), b"selected sync complete");
+        Ok(batch)
     }
 
     /// Pulls one exact scope from a source- and scope-checked checkpoint.
@@ -2884,6 +3063,7 @@ impl IrohReplicator {
             }
             ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
@@ -2904,6 +3084,7 @@ impl IrohReplicator {
             ReplicationFrame::ScopedBatch { batch } => *batch,
             ReplicationFrame::Hello { .. }
             | ReplicationFrame::Batch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
@@ -2956,6 +3137,7 @@ impl IrohReplicator {
             ReplicationFrame::Hello { .. }
             | ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::CommandState { .. }
             | ReplicationFrame::CommandWatchReady { .. }
@@ -3046,6 +3228,7 @@ impl IrohReplicator {
             ReplicationFrame::Hello { .. }
             | ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
@@ -3195,7 +3378,25 @@ impl IrohReplicator {
         store: Arc<dyn ReplicationCursorStore>,
         retry_interval: Duration,
     ) -> Result<PeerSync, IrohReplicationError> {
-        let key = ReplicationCursorKey::new("iroh", peer.id.to_string());
+        self.follow_persisted_selected(peer, ReplicationSelection::All, store, retry_interval)
+    }
+
+    /// Continuously follows selected peer history from its durable checkpoint.
+    ///
+    /// Each selection has an independent cursor. Selecting all retains the
+    /// legacy cursor key so existing followers resume without replaying.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the initial durable checkpoint cannot be loaded.
+    pub fn follow_persisted_selected(
+        &self,
+        peer: EndpointAddr,
+        selection: ReplicationSelection,
+        store: Arc<dyn ReplicationCursorStore>,
+        retry_interval: Duration,
+    ) -> Result<PeerSync, IrohReplicationError> {
+        let key = replication_cursor_key(peer.id, &selection);
         let checkpoint = store
             .load_checkpoint(&key)
             .map_err(|error| IrohReplicationError::Cursor(error.to_string()))?;
@@ -3207,7 +3408,7 @@ impl IrohReplicator {
                 checkpoint.and_then(|checkpoint| checkpoint.position),
                 retry_interval,
                 Some(CursorPersistence { key, store }),
-                FollowSelection::All,
+                FollowSelection::replication(selection),
             ),
         ))
     }
@@ -3231,7 +3432,30 @@ impl IrohReplicator {
         store: Arc<dyn ReplicationCursorStore>,
         retry_interval: Duration,
     ) -> Result<PeerSync, IrohReplicationError> {
-        let key = ReplicationCursorKey::new("iroh", peer.id.to_string());
+        self.follow_persisted_source_selected(
+            peer,
+            expected_source_node,
+            ReplicationSelection::All,
+            store,
+            retry_interval,
+        )
+    }
+
+    /// Continuously follows selected history from one pinned Myko source.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selection-specific checkpoint cannot be
+    /// loaded or reset to the pinned source identity.
+    pub fn follow_persisted_source_selected(
+        &self,
+        peer: EndpointAddr,
+        expected_source_node: NodeId,
+        selection: ReplicationSelection,
+        store: Arc<dyn ReplicationCursorStore>,
+        retry_interval: Duration,
+    ) -> Result<PeerSync, IrohReplicationError> {
+        let key = replication_cursor_key(peer.id, &selection);
         let checkpoint = store
             .load_checkpoint(&key)
             .map_err(|error| IrohReplicationError::Cursor(error.to_string()))?;
@@ -3255,7 +3479,7 @@ impl IrohReplicator {
                 cursor,
                 retry_interval,
                 Some(CursorPersistence { key, store }),
-                FollowSelection::All,
+                FollowSelection::replication(selection),
             ),
         ))
     }
@@ -3351,6 +3575,10 @@ impl IrohReplicator {
                 scope_id: scope_id.clone(),
                 after: cursor.cursor,
             },
+            FollowSelection::Selected(selection) => ReplicationRequest::FollowSelected {
+                selection: selection.clone(),
+                after: cursor.cursor,
+            },
         };
         write_request(&mut send, &request).await?;
         let advertised_source = match read_frame(&mut receive).await? {
@@ -3362,6 +3590,7 @@ impl IrohReplicator {
             }
             ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
+            | ReplicationFrame::SelectedBatch { .. }
             | ReplicationFrame::ScopeCatalog { .. }
             | ReplicationFrame::Command { .. }
             | ReplicationFrame::CommandState { .. }
@@ -3457,6 +3686,21 @@ impl IrohReplicator {
                 }
                 self.node
                     .ingest_scoped_batch(*batch)
+                    .map_err(IrohReplicationError::Ingest)
+                    .map(|report| report.through)
+            }
+            (FollowSelection::Selected(selection), ReplicationFrame::SelectedBatch { batch }) => {
+                if batch.after != cursor
+                    || batch.source_node != source_node
+                    || &batch.selection != selection
+                {
+                    return Err(IrohReplicationError::Stream(
+                        "selected follower received a mismatched source, selection, or cursor"
+                            .to_owned(),
+                    ));
+                }
+                self.node
+                    .ingest_selected_batch(*batch)
                     .map_err(IrohReplicationError::Ingest)
                     .map(|report| report.through)
             }
@@ -3702,9 +3946,18 @@ mod tests {
         command_type: &str,
         scope_id: ScopeId,
     ) -> Result<CommandRequest, String> {
+        commit_test_command_for_service(node, command_type, ServiceId::new("test"), scope_id)
+    }
+
+    fn commit_test_command_for_service(
+        node: &Node,
+        command_type: &str,
+        service_id: ServiceId,
+        scope_id: ScopeId,
+    ) -> Result<CommandRequest, String> {
         let request = CommandRequest {
             id: CommandId::new(),
-            service_id: ServiceId::new("test"),
+            service_id,
             scope_id,
             principal_id: PrincipalId::new("node:test"),
             command_type: command_type.to_owned(),
@@ -4576,6 +4829,160 @@ mod tests {
             ));
         }
 
+        target_transport
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())?;
+        source_transport
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    #[tokio::test]
+    async fn native_selected_pull_filters_service_and_service_scope() -> Result<(), String> {
+        let source = Node::in_memory();
+        let service_target = Node::in_memory();
+        let scope_target = Node::in_memory();
+        let wanted_scope = ScopeId::new("session:wanted");
+        let wanted = commit_test_command_in_scope(&source, "wanted", wanted_scope.clone())?;
+        let other_scope =
+            commit_test_command_in_scope(&source, "other-scope", ScopeId::new("session:other"))?;
+        let other_service = commit_test_command_for_service(
+            &source,
+            "other-service",
+            ServiceId::new("other"),
+            wanted_scope.clone(),
+        )?;
+        let source_transport = IrohReplicator::bind_loopback(source)
+            .await
+            .map_err(|error| error.to_string())?;
+        let service_transport = IrohReplicator::bind_loopback(service_target.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        let scope_transport = IrohReplicator::bind_loopback(scope_target.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+
+        let service_report = service_transport
+            .pull_selected(
+                source_transport.address(),
+                ReplicationSelection::Service(ServiceId::new("test")),
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if service_report.applied != 4
+            || service_target
+                .command(wanted.id)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            || service_target
+                .command(other_scope.id)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            || service_target
+                .command(other_service.id)
+                .map_err(|error| error.to_string())?
+                .is_some()
+        {
+            return Err(format!(
+                "service selection leaked or lost history: {service_report:?}"
+            ));
+        }
+
+        let scope_report = scope_transport
+            .pull_selected(
+                source_transport.address(),
+                ReplicationSelection::ServiceScope {
+                    service_id: ServiceId::new("test"),
+                    scope_id: wanted_scope,
+                },
+                None,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if scope_report.applied != 2
+            || scope_target
+                .command(wanted.id)
+                .map_err(|error| error.to_string())?
+                .is_none()
+            || scope_target
+                .command(other_scope.id)
+                .map_err(|error| error.to_string())?
+                .is_some()
+            || scope_target
+                .command(other_service.id)
+                .map_err(|error| error.to_string())?
+                .is_some()
+        {
+            return Err(format!(
+                "service-scope selection leaked or lost history: {scope_report:?}"
+            ));
+        }
+
+        scope_transport
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())?;
+        service_transport
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())?;
+        source_transport
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())
+    }
+
+    #[tokio::test]
+    async fn persisted_selected_follower_skips_other_services() -> Result<(), String> {
+        let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let source = Node::in_memory();
+        let hidden = commit_test_command_for_service(
+            &source,
+            "hidden",
+            ServiceId::new("other"),
+            ScopeId::new("session:hidden"),
+        )?;
+        let wanted = commit_test_command(&source, "wanted")?;
+        let source_node = source.node_id();
+        let source_transport = IrohReplicator::bind_loopback(source)
+            .await
+            .map_err(|error| error.to_string())?;
+        let (target, journal) =
+            RedbJournal::open_node_with_journal(directory.path().join("selected-target.redb"))
+                .map_err(|error| error.to_string())?;
+        let target_transport = IrohReplicator::bind_loopback(target.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        let follower = target_transport
+            .follow_persisted_source_selected(
+                source_transport.address(),
+                source_node,
+                ReplicationSelection::Service(ServiceId::new("test")),
+                journal,
+                Duration::from_millis(20),
+            )
+            .map_err(|error| error.to_string())?;
+
+        wait_for_committed(&target, wanted.id).await?;
+        if target
+            .command(hidden.id)
+            .map_err(|error| error.to_string())?
+            .is_some()
+            || follower.status().map_err(|error| error.to_string())?.cursor
+                != Some(LogPosition::new(4))
+        {
+            return Err(
+                "selected follower leaked history or failed to advance its cursor".to_owned(),
+            );
+        }
+
+        follower
+            .shutdown()
+            .await
+            .map_err(|error| error.to_string())?;
         target_transport
             .shutdown()
             .await

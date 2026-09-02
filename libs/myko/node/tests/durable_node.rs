@@ -8,7 +8,7 @@ use myko_app::{
 use myko_federation::{
     AccessPolicy, AccessRequest, AllowAllAccessPolicy, BatchId, ChangeBatch, CommandClient as _,
     CommandId, CommandRequest, CommandState, MykoService, Node as FederationNode, NodeId,
-    PrincipalId, ScopeId, ServiceId, SubscriptionLiveness,
+    PrincipalId, ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness,
 };
 use myko_iroh::{IrohReplicator, SecretKey};
 use myko_items::{ItemMutation, ItemProjection, ItemQuery, myko_command, myko_item, myko_service};
@@ -19,7 +19,7 @@ use myko_node::{
     NativePeerReference, Node, NodeStatus, NodeStatusView, PairingInvitation, PairingReceipt,
     PairingReceiptsView, PairingRedemptionPhase, PairingRedemptionReport, Peer, PeerReport,
     PeersView, RedeemPairingInvitation, RemovePeer, ServiceCapabilityReport, SetPeerReplication,
-    peer_id,
+    SetPeerReplicationSelection, peer_id,
 };
 
 fn watch_peers(node: &Node) -> Result<myko_app::ViewSubscription<Peer>, String> {
@@ -604,6 +604,57 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
     view.shutdown().await;
     report.shutdown().await;
     target.shutdown().await.map_err(|error| error.to_string())?;
+    source.shutdown().await.map_err(|error| error.to_string())
+}
+
+#[tokio::test]
+async fn peer_replication_selection_survives_restart() -> Result<(), String> {
+    let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let retry_interval = Duration::from_millis(20);
+    let source = Node::open_loopback(source_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let target = Node::open_loopback(target_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let peer = add_pinned_peer(&target, source.descriptor()).await?;
+    if peer.replication_selection != ReplicationSelection::All {
+        return Err("new peer did not default to full replication".to_owned());
+    }
+    let selection = ReplicationSelection::Service(ServiceId::new(ReactiveService::SERVICE_ID));
+    let selected = myko_app::CommandClient::exec_command(
+        target.application(),
+        SetPeerReplicationSelection {
+            peer_id: peer.id.clone(),
+            selection: selection.clone(),
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if selected.replication_selection != selection {
+        return Err("typed selection command did not update the peer".to_owned());
+    }
+    target.shutdown().await.map_err(|error| error.to_string())?;
+
+    let reopened = Node::open_loopback(target_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let peers = watch_peers(&reopened)?;
+    if !peers
+        .live()
+        .rows()
+        .snapshot()
+        .iter()
+        .any(|(_, peer)| peer.replication_selection == selection)
+    {
+        return Err("replication selection did not survive restart".to_owned());
+    }
+    peers.shutdown().await;
+    reopened
+        .shutdown()
+        .await
+        .map_err(|error| error.to_string())?;
     source.shutdown().await.map_err(|error| error.to_string())
 }
 

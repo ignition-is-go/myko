@@ -27,7 +27,8 @@ pub use pairing::{
 pub use peer::{
     AddPeer, AdvertiseServices, AdvertisedService, AdvertisedServiceId, AdvertisedServicesView,
     FederationService, GetAdvertisedServices, GetPeers, Peer, PeerId, PeerReport, PeersView,
-    RememberPeer, RemovePeer, ServiceCapabilityReport, SetPeerReplication, peer_id,
+    RememberPeer, RemovePeer, ServiceCapabilityReport, SetPeerReplication,
+    SetPeerReplicationSelection, peer_id,
 };
 use peer::{RestorePeer, peer_scope};
 pub use status::{NodeStatus, NodeStatusView};
@@ -45,7 +46,8 @@ use myko_app::{ApplicationNode, CommandDispatchGuard, MykoApplication};
 use myko_federation::{
     AccessPolicy, AllowAllAccessPolicy, ItemQuery, ItemQueryWatch, LiveSubscription,
     LiveSubscriptionState, Node as FederationNode, NodeError as FederationNodeError, NodeId,
-    NodeStartupGuard, ScopeId, ServiceId, SubscriptionLiveness, live_subscription,
+    NodeStartupGuard, ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness,
+    live_subscription,
 };
 pub use myko_iroh::{
     EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference, PairingInvitation,
@@ -95,6 +97,8 @@ struct ConfiguredPeer {
     /// authenticated identity knowledge without copying any application data.
     #[serde(default = "default_peer_replication", alias = "following")]
     pub replication_enabled: bool,
+    #[serde(default)]
+    pub replication_selection: ReplicationSelection,
 }
 
 impl ConfiguredPeer {
@@ -103,6 +107,7 @@ impl ConfiguredPeer {
             endpoint,
             source_node: None,
             replication_enabled: true,
+            replication_selection: ReplicationSelection::All,
         }
     }
 }
@@ -113,6 +118,7 @@ impl From<&Peer> for ConfiguredPeer {
             endpoint: peer.endpoint.clone(),
             source_node: peer.source_node,
             replication_enabled: peer.replication_enabled,
+            replication_selection: peer.replication_selection.clone(),
         }
     }
 }
@@ -266,11 +272,22 @@ async fn start_configured_follower(
 ) -> Result<(), NodeError> {
     if let Some(source_node) = peer.source_node {
         supervisor
-            .upsert_persisted_source(peer.endpoint.clone(), source_node, journal, retry_interval)
+            .upsert_persisted_source_selected(
+                peer.endpoint.clone(),
+                source_node,
+                peer.replication_selection.clone(),
+                journal,
+                retry_interval,
+            )
             .await?;
     } else {
         supervisor
-            .upsert_persisted(peer.endpoint.clone(), journal, retry_interval)
+            .upsert_persisted_selected(
+                peer.endpoint.clone(),
+                peer.replication_selection.clone(),
+                journal,
+                retry_interval,
+            )
             .await?;
     }
     Ok(())
@@ -402,6 +419,7 @@ fn restore_legacy_peers(
             endpoint: peer.endpoint.clone(),
             source_node: peer.source_node,
             replication_enabled: peer.replication_enabled,
+            replication_selection: peer.replication_selection.clone(),
         })?;
     }
     Ok(())

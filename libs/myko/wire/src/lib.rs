@@ -12,8 +12,8 @@ use myko_app::{ErasedHandlerState, ErasedViewDelta, HandlerRequest};
 use myko_federation::{
     CommandId, CommandResponse, CommandStatePage, CommandStateRequest, CommandStateUpdate,
     CommandSubmission, CommandWatchRequest, ItemFollowRequest, ItemStatePage, ItemStateRequest,
-    ItemStateUpdate, LiveEvent, LogPosition, NodeId, ReplicationBatch, ScopeCatalogPage, ScopeId,
-    ScopedReplicationBatch,
+    ItemStateUpdate, LiveEvent, LogPosition, NodeId, ReplicationBatch, ReplicationSelection,
+    ScopeCatalogPage, ScopeId, ScopedReplicationBatch, SelectedReplicationBatch,
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Transport adapters may version their framing independently, but a peer must
 /// not decode an envelope whose message schema it does not understand.
-pub const WIRE_PROTOCOL_VERSION: u32 = 2;
+pub const WIRE_PROTOCOL_VERSION: u32 = 3;
 
 /// A versioned message envelope for framed transports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +136,13 @@ pub enum NodeRequest {
         /// Exclusive log cursor.
         after: Option<LogPosition>,
     },
+    /// Pulls authoritative history matching one durable selection.
+    PullSelected {
+        /// Services and scopes to include.
+        selection: ReplicationSelection,
+        /// Exclusive log cursor for this exact selection.
+        after: Option<LogPosition>,
+    },
     /// Follows authoritative history from the serving node.
     Follow {
         /// Exclusive log cursor.
@@ -146,6 +153,13 @@ pub enum NodeRequest {
         /// Scope to follow.
         scope_id: ScopeId,
         /// Exclusive log cursor.
+        after: Option<LogPosition>,
+    },
+    /// Follows authoritative history matching one durable selection.
+    FollowSelected {
+        /// Services and scopes to include.
+        selection: ReplicationSelection,
+        /// Exclusive log cursor for this exact selection.
         after: Option<LogPosition>,
     },
     /// Follows best-effort live events for explicit topics.
@@ -212,6 +226,10 @@ pub enum NodeFrame {
     Batch { batch: Box<ReplicationBatch> },
     /// Authoritative scope-filtered history batch.
     ScopedBatch { batch: Box<ScopedReplicationBatch> },
+    /// Authoritative selection-filtered history batch.
+    SelectedBatch {
+        batch: Box<SelectedReplicationBatch>,
+    },
     /// Scope catalog page.
     ScopeCatalog { page: Box<ScopeCatalogPage> },
     /// Command operation result.

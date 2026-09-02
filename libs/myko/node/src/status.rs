@@ -7,7 +7,7 @@ use std::{
 
 use myko_app::capability::{CollectionBuilding as _, ResourceScoped as _};
 use myko_app::{AppError, ViewContext, ViewHandler, myko_view};
-use myko_federation::NodeId;
+use myko_federation::{NodeId, ReplicationSelection};
 use myko_iroh::{EndpointId, NativeNodeDescriptor, PeerSupervisor, PeerSyncStatus};
 use myko_items::myko_subtype;
 use tokio::sync::watch;
@@ -23,6 +23,7 @@ pub struct NodeStatus {
     pub local: bool,
     pub pinned: bool,
     pub replication_enabled: bool,
+    pub replication_selection: ReplicationSelection,
     pub connected: bool,
     pub last_error: Option<String>,
 }
@@ -93,6 +94,7 @@ pub fn project_node_statuses(
         local: true,
         pinned: true,
         replication_enabled: false,
+        replication_selection: ReplicationSelection::All,
         connected: true,
         last_error: None,
     }];
@@ -104,6 +106,7 @@ pub fn project_node_statuses(
             local: false,
             pinned: peer.source_node.is_some(),
             replication_enabled: peer.replication_enabled,
+            replication_selection: peer.replication_selection.clone(),
             connected: status.is_some_and(|current| current.connected),
             last_error: status.and_then(|current| current.last_error.clone()),
         }

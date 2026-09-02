@@ -11,7 +11,8 @@ use myko_app::{
     ReportHandler, ViewContext, ViewHandler, myko_query, myko_report, myko_view,
 };
 use myko_federation::{
-    ItemProjection, ItemQuery, LiveCollection, LiveSubscription, LogPosition, NodeId, ScopeId,
+    ItemProjection, ItemQuery, LiveCollection, LiveSubscription, LogPosition, NodeId,
+    ReplicationSelection, ScopeId,
 };
 use myko_iroh::{EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference};
 use myko_items::MykoService;
@@ -45,6 +46,8 @@ pub struct Peer {
     pub source_node: Option<NodeId>,
     #[serde(alias = "following")]
     pub replication_enabled: bool,
+    #[serde(default)]
+    pub replication_selection: ReplicationSelection,
 }
 
 impl Eq for Peer {}
@@ -88,6 +91,13 @@ pub struct SetPeerReplication {
     pub enabled: bool,
 }
 
+/// Changes which service history this node copies from one remembered peer.
+#[myko_command(Peer, item = Peer)]
+pub struct SetPeerReplicationSelection {
+    pub peer_id: PeerId,
+    pub selection: ReplicationSelection,
+}
+
 /// Removes one remembered peer relationship from this node.
 #[myko_command(item = Peer)]
 pub struct RemovePeer {
@@ -99,6 +109,8 @@ pub struct RestorePeer {
     pub endpoint: EndpointAddr,
     pub source_node: Option<NodeId>,
     pub replication_enabled: bool,
+    #[serde(default)]
+    pub replication_selection: ReplicationSelection,
 }
 
 /// Reconciles the typed services executable by this node.
@@ -143,7 +155,12 @@ impl CommandHandler for RememberPeer {
             id,
             endpoint: self.descriptor.endpoint,
             source_node: Some(self.descriptor.node_id),
-            replication_enabled: existing.is_some_and(|peer| peer.replication_enabled),
+            replication_enabled: existing
+                .as_ref()
+                .is_some_and(|peer| peer.replication_enabled),
+            replication_selection: existing
+                .map(|peer| peer.replication_selection)
+                .unwrap_or_default(),
         };
         reject_self_history(&context, &peer)?;
         emit_peer(&context, &peer)?;
@@ -167,6 +184,27 @@ impl CommandHandler for SetPeerReplication {
             return Err(CommandError::reject("peer is not remembered"));
         };
         peer.replication_enabled = self.enabled;
+        emit_peer(&context, &peer)?;
+        Ok(peer)
+    }
+}
+
+impl CommandHandler for SetPeerReplicationSelection {
+    fn scope(&self, node_id: NodeId) -> PeerRosterId {
+        PeerRosterId::from(node_id.to_string())
+    }
+
+    fn execute(
+        self,
+        context: CommandContext<FederationService, PeerRoster>,
+    ) -> Result<Peer, CommandError> {
+        let Some(mut peer) = context.exec_query(GetPeerById {
+            id: self.peer_id.clone(),
+        })?
+        else {
+            return Err(CommandError::reject("peer is not remembered"));
+        };
+        peer.replication_selection = self.selection;
         emit_peer(&context, &peer)?;
         Ok(peer)
     }
@@ -199,6 +237,7 @@ impl CommandHandler for RestorePeer {
             endpoint: self.endpoint,
             source_node: self.source_node,
             replication_enabled: self.replication_enabled,
+            replication_selection: self.replication_selection,
         };
         reject_self_history(&context, &peer)?;
         emit_peer(&context, &peer)?;
@@ -286,6 +325,7 @@ fn peer_from_reference(
         endpoint,
         source_node,
         replication_enabled,
+        replication_selection: ReplicationSelection::All,
     })
 }
 
