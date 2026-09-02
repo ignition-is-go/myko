@@ -9,6 +9,9 @@
 #![forbid(unsafe_code)]
 
 mod reactive;
+mod authority;
+
+pub use authority::*;
 
 pub use reactive::{
     CompositeFrontier, LiveCollection, LiveCollectionError, LiveCollectionRevision,
@@ -355,7 +358,7 @@ impl CommandRequest {
 }
 
 /// Transport-neutral operation presented to a node access policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessOperation {
     ReadHistory,
@@ -530,7 +533,12 @@ impl ScopeGrantPolicy {
 /// live subscriptions instead carry their exact topics.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccessRequest {
+    /// Cryptographically authenticated transport identity. This is never
+    /// replaced by a principal asserted inside the wire presentation.
     pub principal_id: PrincipalId,
+    /// Original principal, final executor, immutable provenance, and approvals.
+    #[serde(default = "default_authority_presentation")]
+    pub presentation: AuthorityPresentation,
     pub operation: AccessOperation,
     pub service_id: Option<ServiceId>,
     pub scope_id: Option<ScopeId>,
@@ -540,10 +548,62 @@ pub struct AccessRequest {
     /// Composite scope coverage requested by selective replication.
     #[serde(default)]
     pub scope_selections: Vec<ScopeSelection>,
+    /// Complete preflight or actual command resource set.
+    #[serde(default)]
+    pub resource_claims: Vec<ResourceClaim>,
+    /// Registered opaque application capabilities required by this operation.
+    #[serde(default)]
+    pub application_capabilities: Vec<CapabilityId>,
+    /// Stable digests bind approvals without exposing arguments or effects.
+    pub arguments_digest: Option<String>,
+    pub effect_digest: Option<String>,
+    pub lease: Option<AuthorityLeaseRequest>,
+    #[serde(default)]
+    pub authorization_phase: AuthorizationPhase,
+    /// Authoritative topology is supplied locally to the evaluator and never
+    /// accepted from an untrusted transport.
+    #[serde(skip)]
+    pub topology: Option<ScopeTopology>,
     pub live_topics: Vec<String>,
 }
 
+fn default_authority_presentation() -> AuthorityPresentation {
+    AuthorityPresentation::direct_node(PrincipalId::new("unauthenticated"))
+}
+
 impl AccessRequest {
+    /// Creates a request bound to one exact scope and authenticated executor.
+    #[must_use]
+    pub fn scoped(
+        principal_id: PrincipalId,
+        presentation: AuthorityPresentation,
+        operation: AccessOperation,
+        scope_id: ScopeId,
+    ) -> Self {
+        Self {
+            principal_id,
+            presentation,
+            operation,
+            service_id: None,
+            scope_id: Some(scope_id.clone()),
+            command_id: None,
+            command_type: None,
+            command_principal_id: None,
+            scope_selections: vec![ScopeSelection::Exact(scope_id.clone())],
+            resource_claims: vec![ResourceClaim::scope(
+                scope_id,
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
+            effect_digest: None,
+            lease: None,
+            authorization_phase: AuthorizationPhase::Admission,
+            topology: None,
+            live_topics: Vec::new(),
+        }
+    }
+
     /// Returns whether this request targets one typed item service.
     #[must_use]
     pub fn service_is<T: MykoItem>(&self) -> bool {
@@ -570,6 +630,72 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
     ///
     /// Returns a public-safe denial reason when access is not granted.
     fn authorize(&self, request: &AccessRequest) -> Result<(), String>;
+
+    /// Returns a first-class permit, deny, or durable challenge decision.
+    ///
+    /// Compatibility policies still implement `authorize`; their result is
+    /// wrapped explicitly and never treats an error or missing decision as a
+    /// permit.
+    fn decide(&self, request: &AccessRequest) -> AuthorizationDecision {
+        match self.authorize(request) {
+            Ok(()) => AuthorizationDecision::Permit(PermitDecision {
+                report: AuthorizationReport {
+                    evaluated_at: Utc::now(),
+                    principal: request.presentation.principal.clone(),
+                    executor: request.presentation.executor.clone(),
+                    operation: request.operation,
+                    explanations: vec![AuthorizationExplanation {
+                        code: "compatibility_policy_permit".to_owned(),
+                        message: "authorized by compatibility access policy".to_owned(),
+                        grant_id: None,
+                        delegation_id: None,
+                        obligation_id: None,
+                        constraint: None,
+                    }],
+                },
+                lease: None,
+            }),
+            Err(message) => AuthorizationDecision::Deny(DenyDecision {
+                report: AuthorizationReport {
+                    evaluated_at: Utc::now(),
+                    principal: request.presentation.principal.clone(),
+                    executor: request.presentation.executor.clone(),
+                    operation: request.operation,
+                    explanations: vec![AuthorizationExplanation {
+                        code: "compatibility_policy_deny".to_owned(),
+                        message,
+                        grant_id: None,
+                        delegation_id: None,
+                        obligation_id: None,
+                        constraint: None,
+                    }],
+                },
+                visibility: ResourceVisibility::Unauthorized,
+            }),
+        }
+    }
+
+    /// Monotonic revision used to promptly recheck open streams after durable
+    /// grants, delegations, or approvals change.
+    fn revision(&self) -> u64 {
+        0
+    }
+
+    /// Intersects selective replication with current grants. Policies without
+    /// a richer model must authorize the complete request or deny it.
+    fn constrain_replication(
+        &self,
+        request: &AccessRequest,
+        selection: &ReplicationSelection,
+        _topology: &ScopeTopology,
+    ) -> Result<ReplicationSelection, AuthorizationDecision> {
+        let decision = self.decide(request);
+        if decision.is_permit() {
+            Ok(selection.clone())
+        } else {
+            Err(decision)
+        }
+    }
 }
 
 impl AccessPolicy for ScopeGrantPolicy {
@@ -1246,6 +1372,7 @@ pub struct ReplicationBatch {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ScopeTopology {
     parents: HashMap<ScopeId, ScopeId>,
+    known: HashSet<ScopeId>,
 }
 
 impl ScopeTopology {
@@ -1256,6 +1383,7 @@ impl ScopeTopology {
     /// Returns an error when the event reparents a scope, creates a cycle, or
     /// places a nested root outside the scope identified by that root.
     pub fn observe_event(&mut self, event: &NodeEvent) -> Result<(), NodeError> {
+        self.known.extend(event.affected_scope_ids());
         let NodeEvent::CommandCommitted { batch, .. } = event else {
             return Ok(());
         };
@@ -1355,7 +1483,15 @@ impl ScopeTopology {
         descendants
     }
 
-    fn is_descendant_of(&self, scope_id: &ScopeId, ancestor: &ScopeId) -> bool {
+    /// Returns whether this complete topology has observed a concrete scope.
+    #[must_use]
+    pub fn knows(&self, scope_id: &ScopeId) -> bool {
+        self.known.contains(scope_id)
+    }
+
+    /// Returns whether `scope_id` is transitively nested under `ancestor`.
+    #[must_use]
+    pub fn is_descendant_of(&self, scope_id: &ScopeId, ancestor: &ScopeId) -> bool {
         self.ancestors(scope_id)
             .iter()
             .any(|value| value.equivalent_to(ancestor))
@@ -6220,17 +6356,12 @@ mod tests {
             grantee: principal.clone(),
             permissions: vec![FederationPermission::ReadState],
         }]);
-        let read = AccessRequest {
-            principal_id: principal,
-            operation: AccessOperation::ReadItems,
-            service_id: None,
-            scope_id: Some(scope_id),
-            command_id: None,
-            command_type: None,
-            command_principal_id: None,
-            scope_selections: Vec::new(),
-            live_topics: Vec::new(),
-        };
+        let read = AccessRequest::scoped(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal),
+            AccessOperation::ReadItems,
+            scope_id,
+        );
         assert!(policy.authorize(&read).is_ok());
 
         let mut follow = read.clone();
@@ -6247,21 +6378,19 @@ mod tests {
         let project = ScopeId::new("project:pine");
         let first_scene = ScopeId::new("scene:first");
         let second_scene = ScopeId::new("scene:second");
-        let request = AccessRequest {
-            principal_id: principal.clone(),
-            operation: AccessOperation::FollowHistory,
-            service_id: None,
-            scope_id: None,
-            command_id: None,
-            command_type: None,
-            command_principal_id: None,
-            scope_selections: vec![
+        let mut request = AccessRequest::scoped(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal.clone()),
+            AccessOperation::FollowHistory,
+            project.clone(),
+        );
+        request.scope_id = None;
+        request.resource_claims.clear();
+        request.scope_selections = vec![
                 ScopeSelection::Exact(project.clone()),
                 ScopeSelection::Subtree(first_scene.clone()),
                 ScopeSelection::Subtree(second_scene.clone()),
-            ],
-            live_topics: Vec::new(),
-        };
+            ];
         let permissions = vec![
             FederationPermission::ReadHistory,
             FederationPermission::Subscribe,
