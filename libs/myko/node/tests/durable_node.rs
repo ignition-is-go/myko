@@ -999,6 +999,50 @@ async fn typed_pairing_initiation_is_live_and_requires_mutual_confirmation() -> 
 }
 
 #[tokio::test]
+async fn pending_pairing_receipt_survives_recipient_restart() -> Result<(), String> {
+    let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let retry_interval = Duration::from_millis(20);
+    let source = Node::open_loopback(source_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let target = Node::open_loopback(target_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let target_receipts = target
+        .application()
+        .watch_view(&PairingReceiptsView)
+        .map_err(|error| error.to_string())?;
+
+    let receipt = complete_pairing_initiation(&source, target.descriptor()).await?;
+    let _received = receive_pairing_receipt(&target_receipts, &receipt).await?;
+    target_receipts.shutdown().await;
+    target.shutdown().await.map_err(|error| error.to_string())?;
+
+    let reopened = Node::open_loopback(target_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let reopened_receipts = reopened
+        .application()
+        .watch_view(&PairingReceiptsView)
+        .map_err(|error| error.to_string())?;
+    let restored = receive_pairing_receipt(&reopened_receipts, &receipt).await?;
+    if restored != receipt {
+        return Err("recipient restart restored the wrong pairing receipt".to_owned());
+    }
+    if !watch_peers(&reopened)?.live().rows().snapshot().is_empty() {
+        return Err("recipient restart implicitly trusted the pending peer".to_owned());
+    }
+
+    reopened_receipts.shutdown().await;
+    reopened
+        .shutdown()
+        .await
+        .map_err(|error| error.to_string())?;
+    source.shutdown().await.map_err(|error| error.to_string())
+}
+
+#[tokio::test]
 async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), String> {
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
