@@ -2,7 +2,7 @@
 //!
 //! This crate combines the transport-neutral federation node, a durable Redb
 //! journal, and the native Iroh transport. It owns operational identity and
-//! peer-following state, but deliberately knows nothing about an application's
+//! peer-replication state, but deliberately knows nothing about an application's
 //! commands, projections, workspace paths, or authorization model.
 
 #![forbid(unsafe_code)]
@@ -17,6 +17,7 @@ pub use discovery::{
     ConfigureLanDiscovery, DiscoverySettings, DiscoverySettingsReport, NearbyNodesView,
 };
 use discovery::{DiscoverySupervisor, DiscoveryViewState};
+pub use live_state::RuntimeFeed;
 use pairing::PairingSupervisor;
 pub use pairing::{
     ConfirmPairing, IssuePairingInvitation, PairingReceiptsView, PairingRedemption,
@@ -24,15 +25,16 @@ pub use pairing::{
     PendingPairingReceiptId, RedeemPairingInvitation,
 };
 pub use peer::{
-    AddPeer, FederationService, GetPeers, Peer, PeerId, PeerReport, PeersView, RememberPeer,
-    RemovePeer, SetPeerFollowing, peer_id,
+    AddPeer, AdvertiseServices, AdvertisedService, AdvertisedServiceId, AdvertisedServicesView,
+    FederationService, GetAdvertisedServices, GetPeers, Peer, PeerId, PeerReport, PeersView,
+    RememberPeer, RemovePeer, ServiceCapabilityReport, SetPeerReplication, peer_id,
 };
 use peer::{RestorePeer, peer_scope};
 pub use status::{NodeStatus, NodeStatusView};
 use status::{NodeStatusProjectionGuard, NodeStatusViewState, project_node_statuses};
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -43,15 +45,15 @@ use myko_app::{ApplicationNode, CommandDispatchGuard, MykoApplication};
 use myko_federation::{
     AccessPolicy, AllowAllAccessPolicy, ItemQuery, ItemQueryWatch, LiveSubscription,
     LiveSubscriptionState, Node as FederationNode, NodeError as FederationNodeError, NodeId,
-    NodeStartupGuard, ScopeId, SubscriptionLiveness, live_subscription,
+    NodeStartupGuard, ScopeId, ServiceId, SubscriptionLiveness, live_subscription,
 };
-use myko_iroh::{
-    EndpointAddr, EndpointId, IrohReplicationError, IrohReplicator, PeerSupervisor,
-    load_or_create_secret_key,
+pub use myko_iroh::{
+    EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference, PairingInvitation,
+    PairingReceipt, SecretKey, endpoint_principal_id,
 };
-pub use myko_iroh::{NativeNodeDescriptor, NativePeerReference, PairingInvitation, PairingReceipt};
+use myko_iroh::{IrohReplicationError, IrohReplicator, PeerSupervisor, load_or_create_secret_key};
 use myko_redb::RedbJournal;
-use myko_session::{NodeRequestRouter, NodeRouteFuture};
+use myko_session::{NodeRequestRouter, NodeRouteFuture, NodeSessionService};
 use myko_wire::{NodeFrame, NodeRequestEnvelope};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -87,12 +89,12 @@ struct ConfiguredPeer {
     pub endpoint: EndpointAddr,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_node: Option<NodeId>,
-    /// Whether this node currently follows the peer’s history.
+    /// Whether this node currently replicates the peer's history.
     ///
     /// A paired descriptor may be retained with this disabled. That records
     /// authenticated identity knowledge without copying any application data.
-    #[serde(default = "default_peer_following")]
-    pub following: bool,
+    #[serde(default = "default_peer_replication", alias = "following")]
+    pub replication_enabled: bool,
 }
 
 impl ConfiguredPeer {
@@ -100,7 +102,7 @@ impl ConfiguredPeer {
         Self {
             endpoint,
             source_node: None,
-            following: true,
+            replication_enabled: true,
         }
     }
 }
@@ -110,12 +112,12 @@ impl From<&Peer> for ConfiguredPeer {
         Self {
             endpoint: peer.endpoint.clone(),
             source_node: peer.source_node,
-            following: peer.following,
+            replication_enabled: peer.replication_enabled,
         }
     }
 }
 
-const fn default_peer_following() -> bool {
+const fn default_peer_replication() -> bool {
     true
 }
 
@@ -134,7 +136,7 @@ pub enum NodeError {
     /// The event journal could not be opened or replayed.
     #[error(transparent)]
     Federation(#[from] FederationNodeError),
-    /// The native Iroh endpoint or one of its followers failed.
+    /// The native Iroh endpoint or one of its peer-replication tasks failed.
     #[error(transparent)]
     Iroh(#[from] IrohReplicationError),
     /// Durable JSON state was malformed.
@@ -292,13 +294,13 @@ async fn reconcile_peers(
     for (peer_id, previous) in current {
         if desired
             .get(peer_id)
-            .is_none_or(|peer| !peer.following || peer != previous)
+            .is_none_or(|peer| !peer.replication_enabled || peer != previous)
         {
             supervisor.remove(*peer_id).await?;
         }
     }
     for (peer_id, peer) in desired {
-        if peer.following && current.get(peer_id) != Some(peer) {
+        if peer.replication_enabled && current.get(peer_id) != Some(peer) {
             start_configured_follower(supervisor, peer, Arc::clone(journal), retry_interval)
                 .await?;
         }
@@ -310,6 +312,7 @@ async fn reconcile_peers(
 #[derive(Debug, Clone)]
 struct FederationRouter {
     replicator: IrohReplicator,
+    node: FederationNode,
     peers: Arc<Mutex<BTreeMap<EndpointId, ConfiguredPeer>>>,
 }
 
@@ -323,9 +326,39 @@ impl FederationRouter {
             .map(|peer| peer.endpoint.clone())
             .ok_or_else(|| format!("node {target_node} is not a configured identity-pinned peer"))
     }
+
+    fn peer_for_service(&self, service_id: &ServiceId) -> Result<Option<NodeId>, String> {
+        let peers = self
+            .peers
+            .lock()
+            .map_err(|_| "peer configuration lock is poisoned".to_owned())?;
+        let candidates = peers
+            .values()
+            .filter(|peer| peer.replication_enabled)
+            .filter_map(|peer| peer.source_node)
+            .collect::<Vec<_>>();
+        drop(peers);
+        for source_node in candidates {
+            let services = self
+                .node
+                .query_items_in(source_node, &peer_scope(source_node), GetAdvertisedServices)
+                .map_err(|error| error.to_string())?;
+            if services
+                .iter()
+                .any(|service| service.service_id == *service_id)
+            {
+                return Ok(Some(source_node));
+            }
+        }
+        Ok(None)
+    }
 }
 
 impl NodeRequestRouter for FederationRouter {
+    fn service_destination(&self, service_id: &ServiceId) -> Result<Option<NodeId>, String> {
+        self.peer_for_service(service_id)
+    }
+
     fn route<'a>(
         &'a self,
         envelope: NodeRequestEnvelope,
@@ -368,7 +401,7 @@ fn restore_legacy_peers(
         let _restored = application.exec_command(RestorePeer {
             endpoint: peer.endpoint.clone(),
             source_node: peer.source_node,
-            following: peer.following,
+            replication_enabled: peer.replication_enabled,
         })?;
     }
     Ok(())
@@ -389,6 +422,30 @@ fn ensure_discovery_settings(
             display_name: default_node_name(node.node_id()),
             enabled: true,
         })?;
+    }
+    Ok(())
+}
+
+fn ensure_advertised_services(
+    node: &FederationNode,
+    application: &ApplicationNode,
+    desired: Vec<ServiceId>,
+) -> Result<(), NodeError> {
+    let current = node.query_items_in(
+        node.node_id(),
+        &peer_scope(node.node_id()),
+        GetAdvertisedServices,
+    )?;
+    let current = current
+        .iter()
+        .map(|service| service.service_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let desired_ids = desired
+        .iter()
+        .map(ServiceId::as_str)
+        .collect::<BTreeSet<_>>();
+    if current != desired_ids {
+        let _advertised = application.exec_command(AdvertiseServices { services: desired })?;
     }
     Ok(())
 }
@@ -416,6 +473,7 @@ async fn initialize_federation_runtime(
     let peers = Arc::new(Mutex::new(configured.clone()));
     let request_router: Arc<dyn NodeRequestRouter> = Arc::new(FederationRouter {
         replicator: replicator.clone(),
+        node: node.clone(),
         peers: Arc::clone(&peers),
     });
     replicator
@@ -424,7 +482,7 @@ async fn initialize_federation_runtime(
         .map_err(NodeError::State)?;
 
     let supervisor = Arc::new(PeerSupervisor::new(replicator.clone()));
-    for peer in configured.values().filter(|peer| peer.following) {
+    for peer in configured.values().filter(|peer| peer.replication_enabled) {
         start_configured_follower(
             supervisor.as_ref(),
             peer,
@@ -501,12 +559,28 @@ where
 }
 
 impl Node {
+    /// Loads or creates the durable Myko history identity for a node directory.
+    ///
+    /// This does not bind a transport or start federation effects. It is
+    /// intended for lifecycle-managed clients that need to display their node
+    /// identity while the full node is stopped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the directory or durable journal cannot be opened.
+    pub fn load_or_create_node_id(data_dir: impl AsRef<Path>) -> Result<NodeId, NodeError> {
+        let data_dir = data_dir.as_ref();
+        fs::create_dir_all(data_dir)?;
+        let (node, _journal) = RedbJournal::open_node_with_journal(data_dir.join(JOURNAL_FILE))?;
+        Ok(node.node_id())
+    }
+
     /// Opens a durable node with normal Iroh relay and discovery configuration.
     ///
     /// # Errors
     ///
     /// Returns an error if durable state cannot be restored, the endpoint
-    /// cannot bind, or a configured follower cannot start.
+    /// cannot bind, or configured peer replication cannot start.
     pub async fn open(
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
@@ -523,7 +597,7 @@ impl Node {
     /// # Errors
     ///
     /// Returns an error if durable state or policy cannot be restored, the
-    /// endpoint cannot bind, or a configured follower cannot start.
+    /// endpoint cannot bind, or configured peer replication cannot start.
     pub async fn open_with_policy<F>(
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
@@ -537,6 +611,7 @@ impl Node {
             retry_interval,
             BindMode::Network,
             None,
+            None,
             false,
             resolve_policy,
         )
@@ -549,7 +624,7 @@ impl Node {
     /// # Errors
     ///
     /// Returns an error if durable state cannot be restored, the endpoint
-    /// cannot bind, or a configured follower cannot start.
+    /// cannot bind, or configured peer replication cannot start.
     pub async fn open_loopback(
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
@@ -565,7 +640,7 @@ impl Node {
     /// # Errors
     ///
     /// Returns an error if durable state or policy cannot be restored, the
-    /// endpoint cannot bind, or a configured follower cannot start.
+    /// endpoint cannot bind, or configured peer replication cannot start.
     pub async fn open_loopback_with_policy<F>(
         data_dir: impl AsRef<Path>,
         retry_interval: Duration,
@@ -578,6 +653,7 @@ impl Node {
             data_dir.as_ref(),
             retry_interval,
             BindMode::Loopback,
+            None,
             None,
             false,
             resolve_policy,
@@ -606,6 +682,7 @@ impl Node {
             data_dir.as_ref(),
             retry_interval,
             BindMode::Network,
+            None,
             Some(application),
             false,
             resolve_policy,
@@ -634,6 +711,7 @@ impl Node {
             data_dir.as_ref(),
             retry_interval,
             BindMode::Network,
+            None,
             Some(application),
             true,
             resolve_policy,
@@ -664,6 +742,68 @@ impl Node {
             data_dir.as_ref(),
             retry_interval,
             BindMode::Loopback,
+            None,
+            Some(application),
+            false,
+            resolve_policy,
+        )
+        .await
+        .map(|(node, _startup)| node)
+    }
+
+    /// Opens a durable application node with a caller-owned native identity.
+    ///
+    /// Platforms with a secure key store can supply the endpoint identity
+    /// directly. Myko uses it without copying it into the node data directory.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if durable state, policy restoration, endpoint
+    /// binding, application serving, or peer restoration fails.
+    pub async fn open_application_with_identity_and_policy<F>(
+        data_dir: impl AsRef<Path>,
+        retry_interval: Duration,
+        identity: SecretKey,
+        application: MykoApplication,
+        resolve_policy: F,
+    ) -> Result<Self, NodeError>
+    where
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+    {
+        Self::open_inner(
+            data_dir.as_ref(),
+            retry_interval,
+            BindMode::Network,
+            Some(identity),
+            Some(application),
+            false,
+            resolve_policy,
+        )
+        .await
+        .map(|(node, _startup)| node)
+    }
+
+    /// Opens a loopback application node with a caller-owned native identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if durable state, policy restoration, endpoint
+    /// binding, application serving, or peer restoration fails.
+    pub async fn open_loopback_application_with_identity_and_policy<F>(
+        data_dir: impl AsRef<Path>,
+        retry_interval: Duration,
+        identity: SecretKey,
+        application: MykoApplication,
+        resolve_policy: F,
+    ) -> Result<Self, NodeError>
+    where
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+    {
+        Self::open_inner(
+            data_dir.as_ref(),
+            retry_interval,
+            BindMode::Loopback,
+            Some(identity),
             Some(application),
             false,
             resolve_policy,
@@ -676,6 +816,7 @@ impl Node {
         data_dir: &Path,
         retry_interval: Duration,
         bind_mode: BindMode,
+        identity: Option<SecretKey>,
         application: Option<MykoApplication>,
         hold_startup: bool,
         resolve_policy: F,
@@ -684,13 +825,21 @@ impl Node {
         F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         fs::create_dir_all(data_dir)?;
-        let secret = load_or_create_secret_key(data_dir.join(SECRET_FILE))?;
+        let secret = match identity {
+            Some(identity) => identity,
+            None => load_or_create_secret_key(data_dir.join(SECRET_FILE))?,
+        };
         let (node, journal) = RedbJournal::open_node_with_journal(data_dir.join(JOURNAL_FILE))?;
         let startup = hold_startup.then(|| node.hold_startup());
         let application = application
             .unwrap_or_default()
             .with_framework_service::<FederationService>()?;
+        let advertised_services = application
+            .services()
+            .map(|service| ServiceId::new(service.service_id.as_str()))
+            .collect::<Vec<_>>();
         let application = ApplicationNode::new(node.clone(), application);
+        ensure_advertised_services(&node, &application, advertised_services)?;
         let initial_policy = resolve_policy(&application)?;
         let replicator = match bind_mode {
             BindMode::Network => {
@@ -784,7 +933,7 @@ impl Node {
     ///
     /// # Errors
     ///
-    /// Returns an error if the initial snapshot/follow boundary cannot be
+    /// Returns an error if the initial snapshot/live boundary cannot be
     /// established or no Tokio runtime is active to own the live driver.
     pub fn watch_items_reactive_in<Q>(
         &self,
@@ -836,6 +985,16 @@ impl Node {
         &self.replicator
     }
 
+    /// Returns the canonical transport-neutral request service for this node.
+    ///
+    /// Local sockets, Iroh connections, and WebSocket gateways all serve this
+    /// same endpoint so applications never implement transport-specific
+    /// routing or federation semantics.
+    #[must_use]
+    pub const fn sessions(&self) -> &NodeSessionService {
+        self.replicator.sessions()
+    }
+
     /// Returns this node's authenticated Iroh address.
     #[must_use]
     pub fn address(&self) -> EndpointAddr {
@@ -864,13 +1023,13 @@ impl Node {
         Ok(())
     }
 
-    /// Stops every peer follower and then the shared Iroh endpoint.
+    /// Stops all peer replication and then the shared Iroh endpoint.
     ///
     /// Durable configuration remains intact for the next open.
     ///
     /// # Errors
     ///
-    /// Returns an error if a follower or endpoint cannot shut down cleanly.
+    /// Returns an error if peer replication or the endpoint cannot shut down cleanly.
     pub async fn shutdown(mut self) -> Result<(), NodeError> {
         if let Some(discovery) = self.discovery.take() {
             discovery.shutdown().await.map_err(NodeError::State)?;

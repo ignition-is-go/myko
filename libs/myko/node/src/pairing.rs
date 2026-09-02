@@ -12,7 +12,7 @@ use myko_app::{
     ReportContext, ReportHandler, ViewContext, ViewHandler, myko_query, myko_report, myko_view,
 };
 use myko_federation::{
-    ItemProjection, ItemQuery, LiveCollection, LiveSubscription, LogPosition, NodeId,
+    ItemProjection, ItemQuery, LiveCollection, LiveSubscription, LogPosition, NodeId, ScopeId,
 };
 use myko_iroh::{
     IrohReplicator, NativeNodeDescriptor, PairingInvitation, PairingReceipt,
@@ -263,6 +263,10 @@ pub struct PairingRedemptionReport {
 impl ReportHandler for PairingRedemptionReport {
     type Output = Option<PairingRedemption>;
     type Cursor = LogPosition;
+
+    fn access_scope(&self) -> Option<ScopeId> {
+        Some(peer_scope(self.source_node))
+    }
 
     fn build(&self, context: &ReportContext) -> Result<LiveSubscription<Self::Output>, AppError> {
         Ok(context

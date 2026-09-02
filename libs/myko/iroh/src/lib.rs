@@ -855,7 +855,7 @@ impl IrohApplicationClient {
             kind: HandlerKind::Report,
             handler_id: R::REPORT_ID.to_owned(),
             source_node: None,
-            scope_id: None,
+            scope_id: report.access_scope(),
             params: serde_json::to_value(report)?,
         })
         .await
@@ -878,7 +878,7 @@ impl IrohApplicationClient {
             kind: HandlerKind::Report,
             handler_id: R::REPORT_ID.to_owned(),
             source_node: None,
-            scope_id: None,
+            scope_id: report.access_scope(),
             params: serde_json::to_value(report)?,
         })
         .await
@@ -901,7 +901,7 @@ impl IrohApplicationClient {
                 kind: HandlerKind::View,
                 handler_id: V::VIEW_ID.to_owned(),
                 source_node: None,
-                scope_id: None,
+                scope_id: view.access_scope(),
                 params: serde_json::to_value(view)?,
             },
             Some(apply_view_delta::<V>),
@@ -926,7 +926,7 @@ impl IrohApplicationClient {
             kind: HandlerKind::View,
             handler_id: V::VIEW_ID.to_owned(),
             source_node: None,
-            scope_id: None,
+            scope_id: view.access_scope(),
             params: serde_json::to_value(view)?,
         };
         let subscription = self

@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use myko_app::capability::NodeScoped as _;
 use myko_app::{
     CommandClient as _, CommandContext, CommandError, CommandHandler, MykoApplication,
     QueryHandler, myko_query,
@@ -9,15 +10,16 @@ use myko_federation::{
     CommandId, CommandRequest, CommandState, MykoService, Node as FederationNode, NodeId,
     PrincipalId, ScopeId, ServiceId, SubscriptionLiveness,
 };
-use myko_iroh::IrohReplicator;
+use myko_iroh::{IrohReplicator, SecretKey};
 use myko_items::{ItemMutation, ItemProjection, ItemQuery, myko_command, myko_item, myko_service};
 use myko_local::{LocalCommandClient, LocalNodeClient, LocalNodeServer};
 use myko_node::{
-    AddPeer, ConfigureLanDiscovery, ConfirmPairing, DiscoverySettingsReport,
-    IssuePairingInvitation, NativeNodeDescriptor, NativePeerReference, Node, NodeStatus,
-    NodeStatusView, PairingInvitation, PairingReceipt, PairingReceiptsView, PairingRedemptionPhase,
-    PairingRedemptionReport, Peer, PeerReport, PeersView, RedeemPairingInvitation, RemovePeer,
-    SetPeerFollowing, peer_id,
+    AddPeer, AdvertisedServicesView, ConfigureLanDiscovery, ConfirmPairing,
+    DiscoverySettingsReport, FederationService, IssuePairingInvitation, NativeNodeDescriptor,
+    NativePeerReference, Node, NodeStatus, NodeStatusView, PairingInvitation, PairingReceipt,
+    PairingReceiptsView, PairingRedemptionPhase, PairingRedemptionReport, Peer, PeerReport,
+    PeersView, RedeemPairingInvitation, RemovePeer, ServiceCapabilityReport, SetPeerReplication,
+    peer_id,
 };
 
 fn watch_peers(node: &Node) -> Result<myko_app::ViewSubscription<Peer>, String> {
@@ -64,7 +66,7 @@ pub struct ReactiveRecord {
     value: String,
 }
 
-#[myko_command((), item = ReactiveRecord)]
+#[myko_command(NodeId, item = ReactiveRecord)]
 struct RemoteLifecycleCommand;
 
 impl CommandHandler for RemoteLifecycleCommand {
@@ -74,9 +76,9 @@ impl CommandHandler for RemoteLifecycleCommand {
 
     fn execute(
         self,
-        _context: CommandContext<ReactiveService, ReactiveRecord>,
-    ) -> Result<(), CommandError> {
-        Ok(())
+        context: CommandContext<ReactiveService, ReactiveRecord>,
+    ) -> Result<NodeId, CommandError> {
+        Ok(context.node_id())
     }
 }
 
@@ -227,6 +229,39 @@ async fn typed_item_watch_drives_a_hyphae_cell_without_polling() -> Result<(), S
 }
 
 #[tokio::test]
+async fn caller_owned_identity_remains_outside_node_storage() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let identity = SecretKey::generate();
+    let endpoint_id = identity.public();
+    let open = |identity| {
+        Node::open_loopback_application_with_identity_and_policy(
+            directory.path(),
+            Duration::from_millis(20),
+            identity,
+            MykoApplication::new(),
+            |_| Ok(Arc::new(AllowAllAccessPolicy)),
+        )
+    };
+
+    let node = open(identity.clone())
+        .await
+        .map_err(|error| error.to_string())?;
+    if node.address().id != endpoint_id {
+        return Err("node ignored the caller-owned native identity".to_owned());
+    }
+    node.shutdown().await.map_err(|error| error.to_string())?;
+    if directory.path().join("iroh-secret.json").exists() {
+        return Err("caller-owned native identity leaked into node storage".to_owned());
+    }
+
+    let reopened = open(identity).await.map_err(|error| error.to_string())?;
+    if reopened.address().id != endpoint_id {
+        return Err("caller-owned native identity changed across restart".to_owned());
+    }
+    reopened.shutdown().await.map_err(|error| error.to_string())
+}
+
+#[tokio::test]
 async fn restored_policy_is_installed_before_the_router_serves() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
@@ -340,6 +375,81 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
 }
 
 #[tokio::test]
+async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), String> {
+    let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let retry_interval = Duration::from_millis(20);
+    let local = Node::open_loopback(local_directory.path(), retry_interval)
+        .await
+        .map_err(|error| error.to_string())?;
+    let remote_application = MykoApplication::builder()
+        .service::<ReactiveService>()
+        .map_err(|error| error.to_string())?
+        .build();
+    let remote = Node::open_loopback_application_with_policy(
+        remote_directory.path(),
+        retry_interval,
+        remote_application,
+        |_| Ok(Arc::new(AllowAllAccessPolicy)),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let remote_node = remote.node().node_id();
+    let services = remote
+        .application()
+        .watch_view(&AdvertisedServicesView {
+            source_node: remote_node,
+        })
+        .map_err(|error| error.to_string())?;
+    let advertised = services.live().rows().snapshot();
+    if !advertised
+        .iter()
+        .any(|(_, service)| service.is::<ReactiveService>())
+        || !advertised
+            .iter()
+            .any(|(_, service)| service.is::<FederationService>())
+    {
+        return Err("node did not advertise its compiled services".to_owned());
+    }
+
+    let _peer = add_pinned_peer(&local, remote.descriptor()).await?;
+    let capability = local
+        .application()
+        .watch_report(&ServiceCapabilityReport::for_service::<ReactiveService>(
+            remote_node,
+        ))
+        .map_err(|error| error.to_string())?;
+    wait_for("peer service catalog was not replicated", || {
+        capability.live().current().value == Some(true)
+    })
+    .await?;
+
+    let socket = local_directory.path().join("myko.sock");
+    let server = LocalNodeServer::spawn_sessions(
+        &socket,
+        local.replicator().sessions().clone(),
+        PrincipalId::new("owner:local"),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let executed_by = LocalCommandClient::new(&socket)
+        .exec_command(RemoteLifecycleCommand)
+        .await
+        .map_err(|error| error.to_string())?;
+    if executed_by != remote_node {
+        return Err(format!(
+            "capability-routed command executed on {executed_by}, expected {remote_node}"
+        ));
+    }
+
+    server.shutdown().await.map_err(|error| error.to_string())?;
+    capability.shutdown().await;
+    services.shutdown().await;
+    local.shutdown().await.map_err(|error| error.to_string())?;
+    remote.shutdown().await.map_err(|error| error.to_string())
+}
+
+#[tokio::test]
 async fn local_node_routes_remote_live_events_without_an_application_protocol() -> Result<(), String>
 {
     let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
@@ -424,7 +534,7 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
     )
     .await
     .map_err(|error| format!("issue pairing invitation: {error}"))?;
-    if added.id != configured_peer_id || !added.following {
+    if added.id != configured_peer_id || !added.replication_enabled {
         return Err(format!("typed add returned an unexpected peer: {added:?}"));
     }
     wait_for(
@@ -434,29 +544,29 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
                 .rows()
                 .snapshot()
                 .iter()
-                .any(|(_, peer)| peer.id == configured_peer_id && peer.following)
+                .any(|(_, peer)| peer.id == configured_peer_id && peer.replication_enabled)
                 && report
                     .live()
                     .current()
                     .value
                     .as_ref()
                     .and_then(Option::as_ref)
-                    .is_some_and(|peer| peer.id == configured_peer_id && peer.following)
+                    .is_some_and(|peer| peer.id == configured_peer_id && peer.replication_enabled)
         },
     )
     .await?;
 
     let paused = myko_app::CommandClient::exec_command(
         application,
-        SetPeerFollowing {
+        SetPeerReplication {
             peer_id: configured_peer_id.clone(),
-            following: false,
+            enabled: false,
         },
     )
     .await
     .map_err(|error| format!("admit pairing redemption: {error}"))?;
-    if paused.following {
-        return Err("typed following command did not pause the peer".to_owned());
+    if paused.replication_enabled {
+        return Err("typed replication command did not pause the peer".to_owned());
     }
     wait_for(
         "peer report did not observe the paused relationship",
@@ -467,7 +577,7 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
                 .value
                 .as_ref()
                 .and_then(Option::as_ref)
-                .is_some_and(|peer| !peer.following)
+                .is_some_and(|peer| !peer.replication_enabled)
         },
     )
     .await?;
@@ -642,18 +752,18 @@ async fn confirm_pairing(node: &Node, receipt: PairingReceipt) -> Result<Peer, S
 fn require_peer_state(
     peers: &myko_app::ViewSubscription<Peer>,
     source_node: NodeId,
-    following: bool,
+    replication_enabled: bool,
     error: &str,
 ) -> Result<(), String> {
     let snapshot = peers.live().rows().snapshot();
     let valid = snapshot.first().is_some_and(|(_, peer)| {
-        peer.source_node == Some(source_node) && peer.following == following
+        peer.source_node == Some(source_node) && peer.replication_enabled == replication_enabled
     });
     if valid { Ok(()) } else { Err(error.to_owned()) }
 }
 
 #[tokio::test]
-async fn confirmed_pairing_remembers_pinned_peers_before_following() -> Result<(), String> {
+async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result<(), String> {
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
@@ -699,15 +809,15 @@ async fn confirmed_pairing_remembers_pinned_peers_before_following() -> Result<(
     )?;
     let enabled = myko_app::CommandClient::exec_command(
         target.application(),
-        SetPeerFollowing {
+        SetPeerReplication {
             peer_id: peer_id(source_descriptor.endpoint.id),
-            following: true,
+            enabled: true,
         },
     )
     .await
     .map_err(|error| error.to_string())?;
-    if !enabled.following {
-        return Err("remembered pairing did not enable its follower".to_owned());
+    if !enabled.replication_enabled {
+        return Err("remembered pairing did not enable replication".to_owned());
     }
 
     target_peers.shutdown().await;
@@ -784,7 +894,7 @@ async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), St
         .count()
         != 1
     {
-        return Err("configured follower was not restored".to_owned());
+        return Err("configured peer replication was not restored".to_owned());
     }
     wait_for_committed(reopened.node(), second_command).await?;
 
@@ -872,14 +982,14 @@ async fn pinned_peer_rejects_an_endpoint_serving_another_myko_history() -> Resul
         }
     })
     .await
-    .map_err(|_| "pinned follower did not reject the unexpected source".to_owned())??;
+    .map_err(|_| "pinned peer did not reject the unexpected source".to_owned())??;
     if target
         .node()
         .command(command_id)
         .map_err(|error| error.to_string())?
         .is_some()
     {
-        return Err("pinned follower ingested history from the wrong Myko node".to_owned());
+        return Err("pinned peer ingested history from the wrong Myko node".to_owned());
     }
 
     remove_peer(&target, source_address.id).await?;

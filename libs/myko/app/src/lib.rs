@@ -20,7 +20,7 @@ use std::{
 
 use hyphae::{Gettable as _, MapDiff, Signal, SubscriptionGuard, Watchable as _};
 use myko_federation::{
-    CommandClient as FederationCommandClient, CommandClientFuture,
+    AccessOperation, AccessRequest, CommandClient as FederationCommandClient, CommandClientFuture,
     CommandContext as FederationCommandContext, CommandDispatchResult, CommandHandlerError,
     CommandId, CommandRequest, CommandResponse, CommandSnapshot, CommandStateRequest,
     CommandStateSnapshot, CommandStateStream, CommandSubmission, CommandWatch, CommandWatchFuture,
@@ -1409,6 +1409,16 @@ pub trait ReportHandler:
     /// Stable application wire identity for this report.
     const REPORT_ID: &'static str = Self::OPERATION_ID;
 
+    /// Returns the federation scope whose authority protects this report.
+    ///
+    /// Reports spanning public or multiple scopes may leave this unset. A
+    /// scoped report should derive the value from its typed parameters so
+    /// transports can authorize it without application-defined wire metadata.
+    #[must_use]
+    fn access_scope(&self) -> Option<ScopeId> {
+        None
+    }
+
     /// Builds the report once from long-lived reactive dependencies.
     ///
     /// The returned cell must be derived from the supplied context rather than
@@ -1442,6 +1452,16 @@ pub trait ViewHandler:
     /// Stable application wire identity for this view.
     const VIEW_ID: &'static str = Self::OPERATION_ID;
 
+    /// Returns the federation scope whose authority protects this view.
+    ///
+    /// Views spanning public or multiple scopes may leave this unset. A
+    /// scoped view should derive the value from its typed parameters so
+    /// transports can authorize it without application-defined wire metadata.
+    #[must_use]
+    fn access_scope(&self) -> Option<ScopeId> {
+        None
+    }
+
     /// Returns the stable identity of one row across view revisions.
     fn item_key(item: &Self::Item) -> Arc<str>;
 
@@ -1455,6 +1475,47 @@ pub trait ViewHandler:
         &self,
         context: &ViewContext,
     ) -> Result<LiveCollection<Self::Item, Self::Cursor>, AppError>;
+}
+
+/// Typed authorization helpers for application handler subscriptions.
+///
+/// Handler topic encoding is an internal transport concern. Access policies
+/// use these helpers so application code never constructs or compares those
+/// wire topic strings itself.
+pub trait HandlerAccessRequest {
+    /// Returns whether this request follows exactly the given item query.
+    #[must_use]
+    fn query_is<Q: ItemQuery>(&self) -> bool;
+
+    /// Returns whether this request follows exactly the given report.
+    #[must_use]
+    fn report_is<R: ReportHandler>(&self) -> bool;
+
+    /// Returns whether this request follows exactly the given view.
+    #[must_use]
+    fn view_is<V: ViewHandler>(&self) -> bool;
+}
+
+impl HandlerAccessRequest for AccessRequest {
+    fn query_is<Q: ItemQuery>(&self) -> bool {
+        follows_handler(self, HandlerKind::Query, Q::QUERY_ID)
+    }
+
+    fn report_is<R: ReportHandler>(&self) -> bool {
+        follows_handler(self, HandlerKind::Report, R::REPORT_ID)
+    }
+
+    fn view_is<V: ViewHandler>(&self) -> bool {
+        follows_handler(self, HandlerKind::View, V::VIEW_ID)
+    }
+}
+
+fn follows_handler(request: &AccessRequest, kind: HandlerKind, handler_id: &str) -> bool {
+    let [topic] = request.live_topics.as_slice() else {
+        return false;
+    };
+    request.operation == AccessOperation::FollowHandler
+        && topic == &format!("handler:{}:{handler_id}", kind.as_str())
 }
 
 /// Stable generated identity of one application service.
@@ -2108,6 +2169,11 @@ impl<R: ReportHandler> ErasedHandlerFactory for ReportFactory<R> {
     ) -> Result<ErasedHandlerSubscription, AppError> {
         let report = serde_json::from_value::<R>(request.params.clone())
             .map_err(|error| AppError::Serialization(error.to_string()))?;
+        if request.scope_id != report.access_scope() {
+            return Err(AppError::State(
+                "report access scope does not match its typed parameters".to_owned(),
+            ));
+        }
         let context = ReportContext::new(node, resources);
         let live = report.build(&context)?;
         Ok(erase_handler(HandlerSubscription {
@@ -2137,6 +2203,11 @@ impl<V: ViewHandler> ErasedHandlerFactory for ViewFactory<V> {
     ) -> Result<ErasedHandlerSubscription, AppError> {
         let view = serde_json::from_value::<V>(request.params.clone())
             .map_err(|error| AppError::Serialization(error.to_string()))?;
+        if request.scope_id != view.access_scope() {
+            return Err(AppError::State(
+                "view access scope does not match its typed parameters".to_owned(),
+            ));
+        }
         let context = ViewContext::new(node, resources);
         let live = view.build(&context)?;
         Ok(erase_view_handler::<V>(ViewSubscription {
@@ -3291,6 +3362,12 @@ impl ApplicationNode {
         &self.node
     }
 
+    /// Returns the stable identity of this application node.
+    #[must_use]
+    pub fn node_id(&self) -> NodeId {
+        self.node.node_id()
+    }
+
     /// Returns the shared typed process-local resources used by handler contexts.
     ///
     /// The registry remains process-local; exposing it here lets a node runtime
@@ -3365,6 +3442,15 @@ impl ApplicationNode {
             }
         })?;
         factory.watch(self.node.clone(), self.application.resources(), request)
+    }
+
+    /// Returns whether this composed application can authenticate and execute
+    /// a transport submission's generated command contract.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn handles_submission(&self, submission: &CommandSubmission) -> bool {
+        self.find_command_factory(submission.service_id.as_str(), &submission.command_type)
+            .is_some()
     }
 
     /// Dispatches one registered command through its concrete handler and
@@ -4098,6 +4184,11 @@ mod tests {
     impl ReportHandler for CounterReport {
         type Output = String;
         type Cursor = LogPosition;
+
+        fn access_scope(&self) -> Option<ScopeId> {
+            Some(ScopeId::new("counter"))
+        }
+
         fn build(
             &self,
             context: &ReportContext,
@@ -4117,6 +4208,10 @@ mod tests {
     impl ViewHandler for CounterView {
         type Item = CounterItem;
         type Cursor = LogPosition;
+
+        fn access_scope(&self) -> Option<ScopeId> {
+            Some(ScopeId::new("counter"))
+        }
 
         fn item_key(item: &Self::Item) -> Arc<str> {
             Arc::from(item.id.to_string())
@@ -4360,6 +4455,39 @@ mod tests {
             rows.iter()
                 .any(|(_, counter)| counter.id == CounterItemId::from("view-counter"))
         );
+    }
+
+    #[test]
+    fn erased_handlers_verify_access_scope_from_typed_parameters() {
+        let node = Node::in_memory();
+        let application = MykoApplication::builder()
+            .service::<TestService>()
+            .map(MykoApplicationBuilder::build);
+        assert!(application.is_ok());
+        let Ok(application) = application else {
+            return;
+        };
+        let app = ApplicationNode::new(node.clone(), application);
+        let params = serde_json::to_value(CounterView {
+            source_node: node.node_id(),
+        });
+        assert!(params.is_ok());
+        let Ok(params) = params else {
+            return;
+        };
+        let mut request = HandlerRequest {
+            kind: HandlerKind::View,
+            handler_id: CounterView::VIEW_ID.to_owned(),
+            source_node: None,
+            scope_id: None,
+            params,
+        };
+        assert!(matches!(
+            app.watch_handler(&request),
+            Err(AppError::State(message)) if message.contains("access scope")
+        ));
+        request.scope_id = Some(ScopeId::new("counter"));
+        assert!(app.watch_handler(&request).is_ok());
     }
 
     #[test]

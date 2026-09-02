@@ -294,7 +294,7 @@ const CRATES: &[CrateInfo] = &[
     CrateInfo {
         name: "myko-iroh",
         layer: "native network",
-        summary: "Authenticated commands, typed streams, pairing, replication, and peer following over Iroh.",
+        summary: "Authenticated commands, typed streams, pairing, and directional peer replication over Iroh.",
         path: "libs/myko/iroh",
     },
     CrateInfo {

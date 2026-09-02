@@ -17,8 +17,8 @@ use std::{
 use myko_app::{ApplicationNode, ErasedHandlerFrame, HandlerRequest};
 use myko_federation::{
     AccessOperation, AccessPolicy, AccessRequest, CommandId, CommandResponse, CommandSubmission,
-    LiveEventHub, LogPosition, Node, PrincipalId, ReplicationBatch, ScopeCatalogPage, ScopeId,
-    ScopedReplicationBatch, ServiceId,
+    LiveEventHub, LogPosition, Node, NodeId, PrincipalId, ReplicationBatch, ScopeCatalogPage,
+    ScopeId, ScopedReplicationBatch, ServiceId,
 };
 use myko_wire::{NodeFrame, NodeRequest, NodeRequestEnvelope};
 use tokio::{sync::watch, task::JoinHandle};
@@ -51,6 +51,16 @@ pub type NodeRouteFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> +
 /// this router is the one federation seam used regardless of whether that
 /// envelope arrived over a Unix socket, Iroh, or WebSocket.
 pub trait NodeRequestRouter: std::fmt::Debug + Send + Sync + 'static {
+    /// Resolves a typed service to one directly reachable capable peer.
+    ///
+    /// `None` means no route is currently known. The session layer asks only
+    /// when the connected node does not compile the submitted command.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the peer capability projection is unavailable.
+    fn service_destination(&self, service_id: &ServiceId) -> Result<Option<NodeId>, String>;
+
     /// Forwards an envelope and emits the destination node's frames unchanged.
     fn route<'a>(
         &'a self,
@@ -216,12 +226,62 @@ impl NodeSessionService {
         let (send, receive) = flume::unbounded();
         let service = self.clone();
         let task = tokio::spawn(async move {
+            let mut envelope = envelope;
             let request = envelope.request.clone();
             if !matches!(request, NodeRequest::Submit { .. })
                 && let Err(message) = service.authorize(&principal, &request)
             {
                 let _ignored = send.send_async(NodeFrame::Error { message }).await;
                 return;
+            }
+            if envelope.destination.is_none()
+                && let NodeRequest::Submit { command } = &request
+            {
+                let handles_locally = service
+                    .application
+                    .read()
+                    .map_err(|_| "application lock is poisoned".to_owned())
+                    .map(|application| {
+                        application
+                            .as_ref()
+                            .is_some_and(|application| application.handles_submission(command))
+                    });
+                match handles_locally {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let route = service
+                            .router
+                            .read()
+                            .map_err(|_| "node-router lock is poisoned".to_owned())
+                            .and_then(|router| {
+                                router.as_ref().and_then(Weak::upgrade).ok_or_else(|| {
+                                    format!(
+                                        "node {} does not execute service {} and has no federation router",
+                                        service.node.node_id(), command.service_id
+                                    )
+                                })
+                            })
+                            .and_then(|router| {
+                                router.service_destination(&command.service_id)?.ok_or_else(|| {
+                                    format!(
+                                        "no connected Myko peer advertises service {}",
+                                        command.service_id
+                                    )
+                                })
+                            });
+                        match route {
+                            Ok(destination) => envelope.destination = Some(destination),
+                            Err(message) => {
+                                let _ignored = send.send_async(NodeFrame::Error { message }).await;
+                                return;
+                            }
+                        }
+                    }
+                    Err(message) => {
+                        let _ignored = send.send_async(NodeFrame::Error { message }).await;
+                        return;
+                    }
+                }
             }
             let destination = envelope.destination;
             let local = destination.is_none_or(|node_id| node_id == service.node.node_id());

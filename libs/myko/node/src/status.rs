@@ -56,7 +56,7 @@ impl NodeStatusViewState {
     }
 }
 
-/// Live identity and follower state for the local node and configured peers.
+/// Live identity and replication state for the local node and configured peers.
 #[myko_view(NodeStatus, item = Peer)]
 #[derive(Copy, PartialEq, Eq)]
 pub struct NodeStatusView;
@@ -103,7 +103,7 @@ pub fn project_node_statuses(
             endpoint_id: peer.endpoint.id,
             local: false,
             pinned: peer.source_node.is_some(),
-            replication_enabled: peer.following,
+            replication_enabled: peer.replication_enabled,
             connected: status.is_some_and(|current| current.connected),
             last_error: status.and_then(|current| current.last_error.clone()),
         }

@@ -3120,6 +3120,22 @@ pub trait CommandWatchingClient: CommandClient {
         command_id: CommandId,
     ) -> CommandWatchFuture<'_, Self::Subscription, Self::Error>;
 
+    /// Opens a command lifecycle at the authoritative node returned by
+    /// admission.
+    ///
+    /// Direct clients already terminate at that node and may use the default
+    /// implementation. Routed edge clients override this method so an
+    /// automatically placed command remains on the same node for its complete
+    /// lifecycle.
+    #[doc(hidden)]
+    fn watch_command_at(
+        &self,
+        _source_node: NodeId,
+        command_id: CommandId,
+    ) -> CommandWatchFuture<'_, Self::Subscription, Self::Error> {
+        self.watch_command(command_id)
+    }
+
     /// Submits a command and watches it until its typed result is durable.
     #[doc(hidden)]
     fn exec_typed_command<C>(
@@ -3141,7 +3157,9 @@ pub trait CommandWatchingClient: CommandClient {
             if let Some(result) = current.typed_completion::<C>().map_err(Self::Error::from)? {
                 return Ok(result);
             }
-            let mut subscription = self.watch_command(command_id).await?;
+            let mut subscription = self
+                .watch_command_at(response.source_node, command_id)
+                .await?;
             loop {
                 if let Some(result) = subscription
                     .current()

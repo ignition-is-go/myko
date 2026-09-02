@@ -615,6 +615,20 @@ impl CommandWatchingClient for LocalCommandClient {
                 .map(|(_initial, subscription)| subscription)
         })
     }
+
+    fn watch_command_at(
+        &self,
+        source_node: NodeId,
+        command_id: CommandId,
+    ) -> CommandWatchFuture<'_, Self::Subscription, Self::Error> {
+        Box::pin(async move {
+            self.clone()
+                .at(source_node)
+                .watch_command(command_id)
+                .await
+                .map(|(_initial, subscription)| subscription)
+        })
+    }
 }
 
 /// Typed client for application-registered query, report, and view handlers.
@@ -723,7 +737,7 @@ impl LocalApplicationClient {
             kind: HandlerKind::Report,
             handler_id: R::REPORT_ID.to_owned(),
             source_node: None,
-            scope_id: None,
+            scope_id: report.access_scope(),
             params: serde_json::to_value(report)?,
         })
         .await
@@ -745,7 +759,7 @@ impl LocalApplicationClient {
             kind: HandlerKind::Report,
             handler_id: R::REPORT_ID.to_owned(),
             source_node: None,
-            scope_id: None,
+            scope_id: report.access_scope(),
             params: serde_json::to_value(report)?,
         };
         let subscription = self.watch(request.clone()).await?;
@@ -770,7 +784,7 @@ impl LocalApplicationClient {
                 kind: HandlerKind::View,
                 handler_id: V::VIEW_ID.to_owned(),
                 source_node: None,
-                scope_id: None,
+                scope_id: view.access_scope(),
                 params: serde_json::to_value(view)?,
             },
             Some(apply_view_delta::<V>),
@@ -794,7 +808,7 @@ impl LocalApplicationClient {
             kind: HandlerKind::View,
             handler_id: V::VIEW_ID.to_owned(),
             source_node: None,
-            scope_id: None,
+            scope_id: view.access_scope(),
             params: serde_json::to_value(view)?,
         };
         let subscription = self

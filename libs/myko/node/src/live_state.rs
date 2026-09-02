@@ -23,6 +23,7 @@ impl<T> RuntimeFeed<T>
 where
     T: hyphae::CellValue,
 {
+    #[must_use]
     pub fn new(initial: Vec<T>) -> Self {
         let (writer, live) = myko_federation::live_subscription(LiveSubscriptionState {
             value: Some(initial),

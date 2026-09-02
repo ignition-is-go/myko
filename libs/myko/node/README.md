@@ -27,21 +27,33 @@ node.shutdown().await?;
 `NativeNodeDescriptor` binds the authenticated Iroh endpoint to the stable
 Myko `NodeId` expected behind it. Peer relationships are ordinary durable Myko
 state in the built-in `FederationService`: `AddPeer`, `RememberPeer`,
-`SetPeerFollowing`, and `RemovePeer` are typed commands, while `PeersView` and
+`SetPeerReplication`, and `RemovePeer` are typed commands, while `PeersView` and
 `PeerReport` are retained live projections. The runtime subscribes to those
-items and reconciles Iroh followers; it does not maintain a second peer-state
-authority. The older imperative methods are compatibility entry points that
-execute the same commands. Existing `peers.json` files are imported once into
-the event log, and no new peer configuration is written there.
+items and reconciles Iroh replication tasks; it does not maintain a second
+peer-state authority. Existing `peers.json` files are imported once into the
+event log, and no new peer configuration is written there.
+
+The rest of the federation control plane uses the same application surface:
+
+- `ConfigureLanDiscovery` changes durable discovery configuration;
+  `DiscoverySettingsReport` and `NearbyNodesView` expose it reactively.
+- `IssuePairingInvitation`, `RedeemPairingInvitation`, and `ConfirmPairing`
+  drive pairing; `PairingRedemptionReport` and `PairingReceiptsView` expose its
+  long-lived state.
+- `AdvertisedServicesView` and `ServiceCapabilityReport` expose which typed
+  services each node can execute so command routing does not depend on
+  application-owned transport tables.
+- `NodeStatusView` combines local identity with configured peer replication
+  status for operator surfaces.
 
 Pinned peers refuse to ingest if an endpoint later advertises another Myko
 history. Legacy endpoint-only peers remain supported as explicitly unpinned
-bindings. The descriptor is versioned JSON. `issue_pairing_invitation` and
-`redeem_pairing` provide an expiring one-use exchange on a separate bounded
-Iroh ALPN, with a mutually identity-bound receipt and six-digit comparison
-code. `confirm_pairing` remembers the opposite descriptor only after that code
-is confirmed, with following paused. `set_peer_following` is the independent,
-directional decision to ingest that peer's history. Pairing establishes
+bindings. The descriptor is versioned JSON. `IssuePairingInvitation` and
+`RedeemPairingInvitation` provide an expiring one-use exchange on a separate
+bounded Iroh ALPN, with a mutually identity-bound receipt and six-digit
+comparison code. `ConfirmPairing` remembers the opposite descriptor only after
+that code is confirmed, with replication paused. `SetPeerReplication` is the
+independent, directional decision to ingest that peer's history. Pairing establishes
 infrastructure identity knowledge; it never installs an application's
 authorization grant. UX may wrap the invitation in a file, ticket, QR, or
 discovery encoding without changing the protocol's bound identities.

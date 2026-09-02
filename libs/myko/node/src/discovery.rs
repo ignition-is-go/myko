@@ -13,7 +13,7 @@ use myko_app::{
 };
 use myko_discovery::{DiscoveredNode, LanAdvertisement, LanDiscovery};
 use myko_federation::{
-    LiveCollection, LiveSubscription, LogPosition, NodeId, SubscriptionLiveness,
+    LiveCollection, LiveSubscription, LogPosition, NodeId, ScopeId, SubscriptionLiveness,
 };
 use myko_iroh::NativeNodeDescriptor;
 use myko_items::{myko_command, myko_item};
@@ -74,6 +74,10 @@ pub struct DiscoverySettingsReport {
 impl ReportHandler for DiscoverySettingsReport {
     type Output = Option<DiscoverySettings>;
     type Cursor = LogPosition;
+
+    fn access_scope(&self) -> Option<ScopeId> {
+        Some(peer_scope(self.source_node))
+    }
 
     fn build(&self, context: &ReportContext) -> Result<LiveSubscription<Self::Output>, AppError> {
         let id = DiscoverySettingsId::from(self.source_node.to_string());
