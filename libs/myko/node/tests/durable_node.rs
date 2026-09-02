@@ -376,6 +376,97 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
 }
 
 #[tokio::test]
+async fn source_addressed_application_client_is_transport_independent() -> Result<(), String> {
+    let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let retry_interval = Duration::from_millis(20);
+    let application = || {
+        MykoApplication::builder()
+            .service::<ReactiveService>()
+            .map(myko_app::MykoApplicationBuilder::build)
+            .map_err(|error| error.to_string())
+    };
+    let local = Node::open_loopback_application_with_policy(
+        local_directory.path(),
+        retry_interval,
+        application()?,
+        |_| Ok(Arc::new(AllowAllAccessPolicy)),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let remote = Node::open_loopback_application_with_policy(
+        remote_directory.path(),
+        retry_interval,
+        application()?,
+        |_| Ok(Arc::new(AllowAllAccessPolicy)),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let local_node = local.node().node_id();
+    let remote_node = remote.node().node_id();
+    let _peer = add_pinned_peer(&local, remote.descriptor()).await?;
+    let local_client = local.application_at(local_node);
+    let remote_client = local.application_at(remote_node);
+
+    let local_execution = local_client
+        .exec_command(RemoteLifecycleCommand)
+        .await
+        .map_err(|error| error.to_string())?;
+    let remote_execution = remote_client
+        .exec_command(RemoteLifecycleCommand)
+        .await
+        .map_err(|error| error.to_string())?;
+    if local_execution != local_node || remote_execution != remote_node {
+        return Err(format!(
+            "typed command routed to unexpected nodes: local={local_execution}, remote={remote_execution}"
+        ));
+    }
+
+    let local_report = local_client
+        .watch_report(&ServiceCapabilityReport::for_service::<ReactiveService>(
+            local_node,
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+    let remote_report = remote_client
+        .watch_report(&ServiceCapabilityReport::for_service::<ReactiveService>(
+            remote_node,
+        ))
+        .await
+        .map_err(|error| error.to_string())?;
+    if local_report.live().current().value != Some(true)
+        || remote_report.live().current().value != Some(true)
+    {
+        return Err("typed reports diverged between local and remote sources".to_owned());
+    }
+
+    let local_view = local_client
+        .watch_view(&PeersView {
+            source_node: local_node,
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    let remote_view = remote_client
+        .watch_view(&PeersView {
+            source_node: remote_node,
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+    if local_view.live().rows().snapshot().len() != 1
+        || !remote_view.live().rows().snapshot().is_empty()
+    {
+        return Err("typed views diverged between local and remote sources".to_owned());
+    }
+
+    local_view.shutdown().await;
+    remote_view.shutdown().await;
+    local_report.shutdown().await;
+    remote_report.shutdown().await;
+    local.shutdown().await.map_err(|error| error.to_string())?;
+    remote.shutdown().await.map_err(|error| error.to_string())
+}
+
+#[tokio::test]
 async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), String> {
     let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;

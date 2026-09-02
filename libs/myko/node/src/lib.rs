@@ -43,7 +43,10 @@ use std::{
     time::Duration,
 };
 
-use myko_app::{ApplicationNode, CommandDispatchGuard, MykoApplication};
+use myko_app::{
+    ApplicationNode, CommandDispatchGuard, CommandHandler, HandlerSubscription, MykoApplication,
+    ReportHandler, ViewHandler, ViewSubscription,
+};
 use myko_federation::{
     AccessPolicy, AllowAllAccessPolicy, ItemQuery, ItemQueryWatch, LiveSubscription,
     LiveSubscriptionState, Node as FederationNode, NodeError as FederationNodeError, NodeId,
@@ -54,6 +57,7 @@ pub use myko_iroh::{
     EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference, PairingInvitation,
     PairingReceipt, SecretKey, endpoint_principal_id,
 };
+use myko_iroh::{IrohReactiveHandlerSubscription, IrohReactiveViewSubscription};
 use myko_iroh::{IrohReplicationError, IrohReplicator, PeerSupervisor, load_or_create_secret_key};
 use myko_redb::RedbJournal;
 use myko_session::{NodeRequestRouter, NodeRouteFuture, NodeSessionService};
@@ -158,6 +162,129 @@ pub enum NodeError {
     /// Shared runtime state could not be accessed.
     #[error("node state unavailable: {0}")]
     State(String),
+    /// No authenticated route exists to a requested source node.
+    #[error("application route unavailable: {0}")]
+    Route(String),
+}
+
+/// Typed application client bound to one source node.
+///
+/// The client resolves the source through the node's authoritative peer
+/// projection. Callers use the same command, report, and view methods for the
+/// local node and for an authenticated Iroh peer; transport selection never
+/// enters application code.
+#[derive(Debug, Clone)]
+pub struct ApplicationClient {
+    application: ApplicationNode,
+    replicator: IrohReplicator,
+    router: Arc<FederationRouter>,
+    source_node: NodeId,
+}
+
+/// A live typed report whose transport-specific owner is retained privately.
+pub struct ApplicationReportSubscription<T, C = myko_federation::LogPosition>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    live: LiveSubscription<T, C>,
+    owner: ApplicationReportOwner<T, C>,
+}
+
+enum ApplicationReportOwner<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    Local(HandlerSubscription<T, C>),
+    Remote(IrohReactiveHandlerSubscription<T, C>),
+}
+
+impl<T, C> ApplicationReportSubscription<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    fn local(subscription: HandlerSubscription<T, C>) -> Self {
+        Self {
+            live: subscription.live().clone(),
+            owner: ApplicationReportOwner::Local(subscription),
+        }
+    }
+
+    fn remote(subscription: IrohReactiveHandlerSubscription<T, C>) -> Self {
+        Self {
+            live: subscription.live().clone(),
+            owner: ApplicationReportOwner::Remote(subscription),
+        }
+    }
+
+    /// Returns the transport-independent reactive report cell.
+    #[must_use]
+    pub const fn live(&self) -> &LiveSubscription<T, C> {
+        &self.live
+    }
+
+    /// Stops the report and releases its local or remote driver.
+    pub async fn shutdown(self) {
+        match self.owner {
+            ApplicationReportOwner::Local(subscription) => subscription.shutdown().await,
+            ApplicationReportOwner::Remote(subscription) => drop(subscription),
+        }
+    }
+}
+
+/// A live typed view whose transport-specific owner is retained privately.
+pub struct ApplicationViewSubscription<T, C = myko_federation::LogPosition>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    live: myko_federation::LiveCollection<T, C>,
+    owner: ApplicationViewOwner<T, C>,
+}
+
+enum ApplicationViewOwner<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    Local(ViewSubscription<T, C>),
+    Remote(IrohReactiveViewSubscription<T, C>),
+}
+
+impl<T, C> ApplicationViewSubscription<T, C>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    fn local(subscription: ViewSubscription<T, C>) -> Self {
+        Self {
+            live: subscription.live().clone(),
+            owner: ApplicationViewOwner::Local(subscription),
+        }
+    }
+
+    fn remote(subscription: IrohReactiveViewSubscription<T, C>) -> Self {
+        Self {
+            live: subscription.live().clone(),
+            owner: ApplicationViewOwner::Remote(subscription),
+        }
+    }
+
+    /// Returns the transport-independent identity-preserving view.
+    #[must_use]
+    pub const fn live(&self) -> &myko_federation::LiveCollection<T, C> {
+        &self.live
+    }
+
+    /// Stops the view and releases its local or remote driver.
+    pub async fn shutdown(self) {
+        match self.owner {
+            ApplicationViewOwner::Local(subscription) => subscription.shutdown().await,
+            ApplicationViewOwner::Remote(subscription) => drop(subscription),
+        }
+    }
 }
 
 /// A restartable native Myko node.
@@ -172,7 +299,7 @@ pub struct Node {
     application: ApplicationNode,
     journal: Arc<RedbJournal>,
     replicator: IrohReplicator,
-    _request_router: Arc<dyn NodeRequestRouter>,
+    request_router: Arc<FederationRouter>,
     command_dispatch: Option<CommandDispatchGuard>,
     supervisor: Arc<PeerSupervisor>,
     peer_reconciler: Option<PeerReconcilerGuard>,
@@ -331,31 +458,36 @@ async fn reconcile_peers(
 struct FederationRouter {
     replicator: IrohReplicator,
     node: FederationNode,
-    peers: Arc<Mutex<BTreeMap<EndpointId, ConfiguredPeer>>>,
 }
 
 impl FederationRouter {
     fn peer(&self, target_node: NodeId) -> Result<EndpointAddr, String> {
-        self.peers
-            .lock()
-            .map_err(|_| "peer configuration lock is poisoned".to_owned())?
-            .values()
+        self.node
+            .query_items_in(
+                self.node.node_id(),
+                &peer_scope(self.node.node_id()),
+                GetPeers,
+            )
+            .map_err(|error| error.to_string())?
+            .into_iter()
             .find(|peer| peer.source_node == Some(target_node))
-            .map(|peer| peer.endpoint.clone())
+            .map(|peer| peer.endpoint)
             .ok_or_else(|| format!("node {target_node} is not a configured identity-pinned peer"))
     }
 
     fn peer_for_service(&self, service_id: &ServiceId) -> Result<Option<NodeId>, String> {
-        let peers = self
-            .peers
-            .lock()
-            .map_err(|_| "peer configuration lock is poisoned".to_owned())?;
-        let candidates = peers
-            .values()
+        let candidates = self
+            .node
+            .query_items_in(
+                self.node.node_id(),
+                &peer_scope(self.node.node_id()),
+                GetPeers,
+            )
+            .map_err(|error| error.to_string())?
+            .into_iter()
             .filter(|peer| peer.replication_enabled)
             .filter_map(|peer| peer.source_node)
             .collect::<Vec<_>>();
-        drop(peers);
         for source_node in candidates {
             let services = self
                 .node
@@ -395,8 +527,106 @@ impl NodeRequestRouter for FederationRouter {
     }
 }
 
+impl ApplicationClient {
+    fn remote_endpoint(&self) -> Result<Option<EndpointAddr>, NodeError> {
+        if self.source_node == self.application.node_id() {
+            return Ok(None);
+        }
+        self.router
+            .peer(self.source_node)
+            .map(Some)
+            .map_err(NodeError::Route)
+    }
+
+    /// Returns the source node selected for every operation on this client.
+    #[must_use]
+    pub const fn source_node(&self) -> NodeId {
+        self.source_node
+    }
+
+    /// Executes one bounded typed command on the selected source node.
+    ///
+    /// Myko owns admission, lifecycle observation, result decoding, peer
+    /// resolution, and transport selection. The command is identical whether
+    /// the selected source is local or remote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no authenticated route exists or the command cannot
+    /// be admitted, executed, or decoded.
+    pub async fn exec_command<C>(&self, command: C) -> Result<C::Output, NodeError>
+    where
+        C: CommandHandler,
+    {
+        let Some(endpoint) = self.remote_endpoint()? else {
+            return myko_app::CommandClient::exec_command(&self.application, command)
+                .await
+                .map_err(NodeError::from);
+        };
+        myko_app::CommandClient::exec_command(&self.replicator.command_client(endpoint), command)
+            .await
+            .map_err(NodeError::from)
+    }
+
+    /// Opens one long-lived typed report on the selected source node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no authenticated route exists or the report cannot
+    /// be built, established, authorized, or decoded.
+    pub async fn watch_report<R>(
+        &self,
+        report: &R,
+    ) -> Result<ApplicationReportSubscription<R::Output, R::Cursor>, NodeError>
+    where
+        R: ReportHandler,
+    {
+        let Some(endpoint) = self.remote_endpoint()? else {
+            return self
+                .application
+                .watch_report(report)
+                .map(ApplicationReportSubscription::local)
+                .map_err(NodeError::from);
+        };
+        self.replicator
+            .application_client(endpoint)
+            .watch_report_reactive(report)
+            .await
+            .map(ApplicationReportSubscription::remote)
+            .map_err(NodeError::from)
+    }
+
+    /// Opens one long-lived typed view on the selected source node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if no authenticated route exists or the view cannot be
+    /// built, established, authorized, or decoded.
+    pub async fn watch_view<V>(
+        &self,
+        view: &V,
+    ) -> Result<ApplicationViewSubscription<V::Item, V::Cursor>, NodeError>
+    where
+        V: ViewHandler,
+    {
+        let Some(endpoint) = self.remote_endpoint()? else {
+            return self
+                .application
+                .watch_view(view)
+                .map(ApplicationViewSubscription::local)
+                .map_err(NodeError::from);
+        };
+        self.replicator
+            .application_client(endpoint)
+            .watch_view_reactive(view)
+            .await
+            .map(ApplicationViewSubscription::remote)
+            .map_err(NodeError::from)
+    }
+}
+
 struct FederationRuntimeParts {
-    request_router: Arc<dyn NodeRequestRouter>,
+    request_router: Arc<FederationRouter>,
     supervisor: Arc<PeerSupervisor>,
     peer_reconciler: PeerReconcilerGuard,
     peers: Arc<Mutex<BTreeMap<EndpointId, ConfiguredPeer>>>,
@@ -490,14 +720,14 @@ async fn initialize_federation_runtime(
     }
 
     let peers = Arc::new(Mutex::new(configured.clone()));
-    let request_router: Arc<dyn NodeRequestRouter> = Arc::new(FederationRouter {
+    let request_router = Arc::new(FederationRouter {
         replicator: replicator.clone(),
         node: node.clone(),
-        peers: Arc::clone(&peers),
     });
+    let session_router: Arc<dyn NodeRequestRouter> = request_router.clone();
     replicator
         .sessions()
-        .set_router(&request_router)
+        .set_router(&session_router)
         .map_err(NodeError::State)?;
 
     let supervisor = Arc::new(PeerSupervisor::new(replicator.clone()));
@@ -917,7 +1147,7 @@ impl Node {
                 application,
                 journal,
                 replicator,
-                _request_router: request_router,
+                request_router,
                 command_dispatch: Some(command_dispatch),
                 supervisor,
                 peer_reconciler: Some(peer_reconciler),
@@ -942,6 +1172,21 @@ impl Node {
     #[must_use]
     pub const fn application(&self) -> &ApplicationNode {
         &self.application
+    }
+
+    /// Returns the typed application surface for one local or paired source.
+    ///
+    /// The returned client resolves the current authenticated route for every
+    /// operation, so applications never cache endpoint descriptors or branch
+    /// on transport type.
+    #[must_use]
+    pub fn application_at(&self, source_node: NodeId) -> ApplicationClient {
+        ApplicationClient {
+            application: self.application.clone(),
+            replicator: self.replicator.clone(),
+            router: Arc::clone(&self.request_router),
+            source_node,
+        }
     }
 
     /// Materializes a gap-free typed query into a first-class Hyphae cell.
