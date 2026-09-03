@@ -87,6 +87,16 @@ pub enum MykoRevocationKind {
     Capability,
 }
 
+/// Optional attenuation applied while evaluating one authority grant.
+#[derive(Debug, Clone, Default, PartialEq, Eq, uniffi::Record)]
+pub struct MykoAuthorityConstraints {
+    pub service_ids: Vec<String>,
+    pub commands: Vec<String>,
+    pub item_types: Vec<String>,
+    pub max_lease_seconds: Option<u64>,
+    pub allow_offline: bool,
+}
+
 /// Complete immutable grant returned by a live native authority view.
 #[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
 pub struct MykoAuthorityGrant {
@@ -98,6 +108,7 @@ pub struct MykoAuthorityGrant {
     pub permissions: Vec<MykoFederationPermission>,
     pub operations: Vec<MykoAccessOperation>,
     pub capability_ids: Vec<String>,
+    pub constraints: MykoAuthorityConstraints,
     pub obligation_ids: Vec<String>,
     pub valid_from_unix_millis: i64,
     pub expires_at_unix_millis: Option<i64>,
@@ -122,6 +133,7 @@ pub struct MykoAuthorityGrantInput {
     pub permissions: Vec<MykoFederationPermission>,
     pub operations: Vec<MykoAccessOperation>,
     pub capability_ids: Vec<String>,
+    pub constraints: MykoAuthorityConstraints,
     pub obligation_ids: Vec<String>,
     pub expires_at_unix_millis: Option<i64>,
     pub max_uses: Option<u64>,
@@ -246,7 +258,7 @@ impl MykoAuthority {
                 .into_iter()
                 .map(CapabilityId::new)
                 .collect(),
-            constraints: AuthorityConstraints::default(),
+            constraints: input.constraints.into(),
             obligations: input
                 .obligation_ids
                 .into_iter()
@@ -513,6 +525,38 @@ impl From<MykoRevocationKind> for RevocationKind {
     }
 }
 
+impl From<MykoAuthorityConstraints> for AuthorityConstraints {
+    fn from(value: MykoAuthorityConstraints) -> Self {
+        Self {
+            services: value
+                .service_ids
+                .into_iter()
+                .map(myko_federation::ServiceId::new)
+                .collect(),
+            commands: value.commands,
+            item_types: value.item_types,
+            max_lease_seconds: value.max_lease_seconds,
+            allow_offline: value.allow_offline,
+        }
+    }
+}
+
+impl From<AuthorityConstraints> for MykoAuthorityConstraints {
+    fn from(value: AuthorityConstraints) -> Self {
+        Self {
+            service_ids: value
+                .services
+                .into_iter()
+                .map(|service| service.to_string())
+                .collect(),
+            commands: value.commands,
+            item_types: value.item_types,
+            max_lease_seconds: value.max_lease_seconds,
+            allow_offline: value.allow_offline,
+        }
+    }
+}
+
 impl From<AuthorityGrant> for MykoAuthorityGrant {
     fn from(value: AuthorityGrant) -> Self {
         Self {
@@ -528,6 +572,7 @@ impl From<AuthorityGrant> for MykoAuthorityGrant {
                 .into_iter()
                 .map(|capability| capability.to_string())
                 .collect(),
+            constraints: value.constraints.into(),
             obligation_ids: value
                 .obligations
                 .into_iter()
@@ -559,7 +604,13 @@ mod tests {
             permissions: vec![FederationPermission::ReadState],
             operations: vec![AccessOperation::FollowHandler],
             capabilities: vec![CapabilityId::new("forrest.agent.observe")],
-            constraints: AuthorityConstraints::default(),
+            constraints: AuthorityConstraints {
+                services: vec![myko_federation::ServiceId::new("forrest.agents")],
+                commands: vec!["forrest.agent.send-message".to_owned()],
+                item_types: vec!["forrest.agent-message".to_owned()],
+                max_lease_seconds: Some(30),
+                allow_offline: true,
+            },
             obligations: vec![ObligationId::new("approval:a")],
             valid_from,
             expires_at: Some(expires_at),
@@ -585,5 +636,15 @@ mod tests {
             Some(expires_at_unix_millis)
         );
         assert_eq!(projected.max_uses, Some(3));
+        assert_eq!(
+            projected.constraints,
+            MykoAuthorityConstraints {
+                service_ids: vec!["forrest.agents".to_owned()],
+                commands: vec!["forrest.agent.send-message".to_owned()],
+                item_types: vec!["forrest.agent-message".to_owned()],
+                max_lease_seconds: Some(30),
+                allow_offline: true,
+            }
+        );
     }
 }
