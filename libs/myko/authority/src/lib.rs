@@ -692,6 +692,7 @@ impl CommandHandler for RevokeAuthorityFact {
 struct EvaluateAuthority {
     realm_id: AuthorityRealmKey,
     request: AccessRequest,
+    topology_proof: ScopeTopology,
     now: DateTime<Utc>,
 }
 
@@ -708,6 +709,14 @@ impl CommandHandler for EvaluateAuthority {
         self,
         context: CommandContext<AuthorityService, AuthorityRealm>,
     ) -> Result<AuthorizationDecision, CommandError> {
+        let mut topology = context.__node().scope_topology().map_err(|error| {
+            CommandError::retry(format!("authority topology unavailable: {error}"))
+        })?;
+        topology
+            .merge_proof(&self.topology_proof)
+            .map_err(|error| CommandError::reject(error.to_string()))?;
+        let mut request = self.request;
+        request.topology = Some(topology.clone());
         let state = EvaluationState {
             realm: context.exec_query(GetAuthorityRealmById {
                 id: realm_item_id(&self.realm_id),
@@ -722,21 +731,19 @@ impl CommandHandler for EvaluateAuthority {
             delegation_uses: context.exec_query(GetAllDelegationUses)?,
             approval_uses: context.exec_query(GetAllApprovalUses)?,
             leases: context.exec_query(GetAllLeaseRecords)?,
-            topology: context.__node().scope_topology().map_err(|error| {
-                CommandError::retry(format!("authority topology unavailable: {error}"))
-            })?,
+            topology,
         };
-        let outcome = evaluate(&state, &self.request, self.now);
+        let outcome = evaluate(&state, &request, self.now);
         let decision_id = record_id("decision");
         let realm_id = realm_item_id(&self.realm_id);
 
         let consume = matches!(
-            self.request.authorization_phase,
+            request.authorization_phase,
             myko_federation::AuthorizationPhase::Effect
         ) || (matches!(
-            self.request.authorization_phase,
+            request.authorization_phase,
             myko_federation::AuthorizationPhase::Admission
-        ) && self.request.operation != AccessOperation::SubmitCommand);
+        ) && request.operation != AccessOperation::SubmitCommand);
         for grant_id in outcome.grants.iter().filter(|_| consume) {
             context.emit_set(&GrantUse {
                 id: GrantUseId::from(record_id("grant-use")),
@@ -787,13 +794,13 @@ impl CommandHandler for EvaluateAuthority {
                 id: LeaseRecordId::from(lease.id.as_str()),
                 authority_realm_id: realm_id.clone(),
                 lease: lease.clone(),
-                binding: AuthorizationBinding::from_request(&self.request),
+                binding: AuthorizationBinding::from_request(&request),
             })?;
         }
         context.emit_set(&DecisionAudit {
             id: DecisionAuditId::from(decision_id),
             authority_realm_id: realm_id,
-            request: self.request,
+            request,
             decision: outcome.decision.clone(),
             recorded_at: self.now,
         })?;
@@ -1247,6 +1254,11 @@ fn evaluate(
     let mut contributing = BTreeSet::new();
     let mut required_obligations = BTreeSet::new();
     for claim in &claims {
+        if request.authorization_phase != myko_federation::AuthorizationPhase::Effect
+            && claim.kind == ResourceClaimKind::Affected
+        {
+            continue;
+        }
         let (permissions, operations, capabilities) = claim_requirements(request, claim);
         let candidates = state.grants.iter().filter(|record| {
             let grant = &record.grant;
@@ -1287,12 +1299,14 @@ fn evaluate(
             && missing_operations.is_empty()
             && missing_capabilities.is_empty())
         {
-            return deny(
-                request,
-                now,
-                "grant_coverage",
-                "active grants do not cover every required dimension of every resource claim",
+            let detail = format!(
+                "active grants do not cover claim {:?} during {:?} for command {:?}; known ancestors {:?}; missing permissions {missing_permissions:?}, operations {missing_operations:?}, capabilities {missing_capabilities:?}",
+                claim.selection,
+                request.authorization_phase,
+                request.command_type,
+                state.topology.ancestors(claim.selection.root()),
             );
+            return deny(request, now, "grant_coverage", &detail);
         }
     }
 
@@ -1848,6 +1862,12 @@ impl AuthorityPolicy {
             );
         }
         let request_for_error = request.clone();
+        let topology_proof = request
+            .topology
+            .as_ref()
+            .map_or_else(ScopeTopology::default, |topology| {
+                topology.proof_for(&request.scope_selections)
+            });
         let presentation = authority_presentation(&self.application);
         self.application
             .exec_authorized_command(
@@ -1856,6 +1876,7 @@ impl AuthorityPolicy {
                 EvaluateAuthority {
                     realm_id: self.realm_id.clone(),
                     request,
+                    topology_proof,
                     now: Utc::now(),
                 },
             )
@@ -2228,6 +2249,28 @@ impl AccessPolicy for AuthorityPolicy {
             if !command_presentation.approvals.contains(&decision.id) {
                 command_presentation.approvals.push(decision.id.clone());
             }
+            let topology = self
+                .application
+                .node()
+                .scope_topology()
+                .and_then(|mut topology| {
+                    topology.merge_proof(&binding.topology_proof)?;
+                    Ok(topology)
+                })
+                .map_err(|error| {
+                    deny(
+                        &AccessRequest::scoped(
+                            authenticated_executor.clone(),
+                            presentation.clone(),
+                            AccessOperation::ApproveAuthority,
+                            authority_realm_scope(&self.realm_id),
+                        ),
+                        Utc::now(),
+                        "approval_topology_failed",
+                        &error.to_string(),
+                    )
+                    .decision
+                })?;
             let effect_request = AccessRequest {
                 principal_id: binding.executor.id.clone(),
                 presentation: command_presentation,
@@ -2251,7 +2294,7 @@ impl AccessPolicy for AuthorityPolicy {
                 effect_digest: binding.effect_digest.clone(),
                 lease: None,
                 authorization_phase: myko_federation::AuthorizationPhase::Effect,
-                topology: self.application.node().scope_topology().ok(),
+                topology: Some(topology),
                 live_topics: Vec::new(),
             };
             let next = self.evaluate(effect_request);
@@ -2569,6 +2612,74 @@ mod tests {
         }
         assert!(matches!(
             policy.decide(&authorized),
+            AuthorizationDecision::Deny(_)
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn prospective_nested_scope_is_authorized_only_by_its_proven_parent() -> Result<(), String> {
+        let (_application, policy, administrator) = open(Node::in_memory())?;
+        let user = node_principal("node:nested-writer");
+        let parent = ScopeId::new("scope:parent");
+        let child = ScopeId::new("scope:child");
+        let unrelated = ScopeId::new("scope:unrelated");
+        let mut subtree_grant = grant(
+            "nested-write",
+            user.clone(),
+            parent.as_str(),
+            vec![FederationPermission::Write],
+            vec![AccessOperation::SubmitCommand],
+        );
+        subtree_grant.selection = ScopeSelection::Subtree(parent.clone());
+        put_grant(&policy, &administrator, subtree_grant)?;
+
+        let mut primary = ResourceClaim::scope(parent.clone(), ResourceClaimKind::Primary);
+        primary
+            .required_permissions
+            .push(FederationPermission::Write);
+        primary
+            .required_operations
+            .push(AccessOperation::SubmitCommand);
+        let mut affected = ResourceClaim::scope(child.clone(), ResourceClaimKind::Affected);
+        affected
+            .required_permissions
+            .push(FederationPermission::Write);
+        affected
+            .required_operations
+            .push(AccessOperation::SubmitCommand);
+
+        let mut admission = request(user, parent.as_str(), AccessOperation::SubmitCommand);
+        admission.resource_claims = vec![primary, affected];
+        admission.scope_selections = vec![
+            ScopeSelection::Exact(parent.clone()),
+            ScopeSelection::Exact(child.clone()),
+        ];
+        assert!(policy.decide(&admission).is_permit());
+
+        let mut effect = admission;
+        effect.authorization_phase = myko_federation::AuthorizationPhase::Effect;
+        assert!(matches!(
+            policy.decide(&effect),
+            AuthorizationDecision::Deny(_)
+        ));
+
+        let proven_topology = serde_json::from_value::<ScopeTopology>(serde_json::json!({
+            "parents": { (child.as_str()): parent.as_str() },
+            "known": [parent.as_str(), child.as_str()]
+        }))
+        .map_err(|error| error.to_string())?;
+        effect.topology = Some(proven_topology);
+        assert!(policy.decide(&effect).is_permit());
+
+        let unrelated_topology = serde_json::from_value::<ScopeTopology>(serde_json::json!({
+            "parents": { (child.as_str()): unrelated.as_str() },
+            "known": [parent.as_str(), child.as_str(), unrelated.as_str()]
+        }))
+        .map_err(|error| error.to_string())?;
+        effect.topology = Some(unrelated_topology);
+        assert!(matches!(
+            policy.decide(&effect),
             AuthorizationDecision::Deny(_)
         ));
         Ok(())

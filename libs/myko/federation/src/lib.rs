@@ -1638,7 +1638,8 @@ impl ScopeTopology {
         proof
     }
 
-    fn merge_proof(&mut self, proof: &Self) -> Result<(), NodeError> {
+    #[doc(hidden)]
+    pub fn merge_proof(&mut self, proof: &Self) -> Result<(), NodeError> {
         self.known.extend(proof.known.iter().cloned());
         for (child, parent) in &proof.parents {
             self.insert(child.clone(), parent.clone())?;
@@ -1716,11 +1717,14 @@ impl ScopeSelection {
         }
     }
 
-    fn contains_scope(&self, scope: &ScopeId, topology: &ScopeTopology) -> bool {
+    /// Returns whether this selection contains one concrete scope in the
+    /// supplied authoritative topology.
+    #[must_use]
+    pub fn contains_scope(&self, scope: &ScopeId, topology: &ScopeTopology) -> bool {
         match self {
-            Self::Exact(selected) => selected == scope,
+            Self::Exact(selected) => selected.equivalent_to(scope),
             Self::Subtree(selected) => {
-                selected == scope || topology.is_descendant_of(scope, selected)
+                selected.equivalent_to(scope) || topology.is_descendant_of(scope, selected)
             }
         }
     }
@@ -4621,6 +4625,46 @@ pub enum TypedCommandAdmission {
     Resume(CommandSnapshot),
 }
 
+fn item_query_claims<Q>(
+    selection: ScopeSelection,
+    source_node: NodeId,
+    query: &Q,
+) -> Vec<ResourceClaim>
+where
+    Q: ItemQuery,
+{
+    let Some(item_ids) = query.selected_item_ids() else {
+        return vec![item_query_claim::<Q>(selection, source_node, None)];
+    };
+    item_ids
+        .iter()
+        .map(|item_id| {
+            item_query_claim::<Q>(selection.clone(), source_node, Some(item_id.as_ref()))
+        })
+        .collect()
+}
+
+fn item_query_claim<Q>(
+    selection: ScopeSelection,
+    source_node: NodeId,
+    item_id: Option<&str>,
+) -> ResourceClaim
+where
+    Q: ItemQuery,
+{
+    ResourceClaim {
+        selection,
+        kind: ResourceClaimKind::Referenced,
+        source_node: Some(source_node),
+        service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
+        item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
+        item_id: item_id.map(ToOwned::to_owned),
+        required_permissions: vec![FederationPermission::ReadState],
+        required_operations: vec![AccessOperation::ReadItems],
+        required_capabilities: Vec::new(),
+    }
+}
+
 /// Atomic application command context owned by Myko.
 ///
 /// Handlers emit typed item sets/deletes and a typed result. Myko supplies the
@@ -4749,17 +4793,13 @@ impl CommandContext {
         Q: ItemQuery,
     {
         self.require_item_service::<Q::Item>()?;
-        self.record_actual_claim(ResourceClaim {
-            selection: ScopeSelection::Exact(self.command.request.scope_id.clone()),
-            kind: ResourceClaimKind::Referenced,
-            source_node: Some(self.node.node_id()),
-            service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
-            item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
-            item_id: None,
-            required_permissions: vec![FederationPermission::ReadState],
-            required_operations: vec![AccessOperation::ReadItems],
-            required_capabilities: Vec::new(),
-        })?;
+        for claim in item_query_claims(
+            ScopeSelection::Exact(self.command.request.scope_id.clone()),
+            self.node.node_id(),
+            &query,
+        ) {
+            self.record_actual_claim(claim)?;
+        }
         self.node
             .query_items_in(self.node.node_id(), &self.command.request.scope_id, query)
     }
@@ -4781,17 +4821,9 @@ impl CommandContext {
         Q: ItemQuery,
     {
         self.require_item_service::<Q::Item>()?;
-        self.record_actual_claim(ResourceClaim {
-            selection: selection.clone(),
-            kind: ResourceClaimKind::Referenced,
-            source_node: Some(self.node.node_id()),
-            service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
-            item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
-            item_id: None,
-            required_permissions: vec![FederationPermission::ReadState],
-            required_operations: vec![AccessOperation::ReadItems],
-            required_capabilities: Vec::new(),
-        })?;
+        for claim in item_query_claims(selection.clone(), self.node.node_id(), &query) {
+            self.record_actual_claim(claim)?;
+        }
         let history = self.node.events_after(None)?;
         let topology = ScopeTopology::from_events(&history)?;
         let mut projection = ItemProjection::default();
@@ -4842,8 +4874,8 @@ impl CommandContext {
             .any(|declared| declared.covers_actual(&claim, &topology))
         {
             return Err(NodeError::AuthorizationDenied(format!(
-                "handler used undeclared {:?} claim {:?}",
-                claim.kind, claim.selection
+                "{} handler used undeclared claim {claim:?}",
+                self.command.request.command_type
             )));
         }
         let mut actual = self.actual_claims.lock().map_err(|_| NodeError::Poisoned)?;
@@ -4869,8 +4901,8 @@ impl CommandContext {
             Ok(())
         } else {
             Err(NodeError::AuthorizationDenied(format!(
-                "nested handler declared authority outside outer preflight: {:?}",
-                claim.selection
+                "nested handler under {} declared authority outside outer preflight: {claim:?}",
+                self.command.request.command_type
             )))
         }
     }
@@ -4941,6 +4973,11 @@ impl CommandContext {
             causal_parents: vec![self.command.updated_at],
             changes,
         };
+        let mut prospective_topology = self.node.scope_topology()?;
+        prospective_topology.observe_event(&NodeEvent::CommandCommitted {
+            command: self.command.clone(),
+            batch: batch.clone(),
+        })?;
         let policy = self
             .node
             .command_access_policy
@@ -4981,7 +5018,7 @@ impl CommandContext {
             effect_digest: Some(effect_digest),
             lease: None,
             authorization_phase: AuthorizationPhase::Effect,
-            topology: self.node.scope_topology().ok(),
+            topology: Some(prospective_topology),
             live_topics: Vec::new(),
         };
         let decision = policy.decide(&request);

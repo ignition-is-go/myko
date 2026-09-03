@@ -1459,6 +1459,10 @@ impl Node {
         }
         self.replicator
             .sessions()
+            .clear_access_policy()
+            .map_err(NodeError::State)?;
+        self.replicator
+            .sessions()
             .clear_application()
             .map_err(NodeError::State)?;
         self.supervisor.shutdown_all().await?;

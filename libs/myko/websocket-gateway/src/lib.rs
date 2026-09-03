@@ -291,8 +291,8 @@ mod tests {
         ReportContext, ReportHandler, myko_report,
     };
     use myko_federation::{
-        BatchId, ChangeBatch, CommandId, CommandRequest, CommandSnapshot, CommandSubmission,
-        ItemMutation, LiveSubscription, LogPosition, PrincipalId, ScopeId, ServiceId,
+        BatchId, ChangeBatch, CommandSnapshot, CommandSubmission, ItemMutation, LiveSubscription,
+        LogPosition, PrincipalId, ScopeId,
     };
     use myko_items::{myko_command, myko_item, myko_service};
     use tokio_tungstenite::{MaybeTlsStream, WebSocketStream, connect_async};
@@ -483,16 +483,9 @@ mod tests {
         ) {
             return Err("WebSocket handler omitted its initial lifecycle state".to_owned());
         }
-        let command = CommandRequest {
-            id: CommandId::new(),
-            service_id: ServiceId::new(
-                <GatewayService as myko_federation::MykoService>::SERVICE_ID,
-            ),
-            scope_id: ScopeId::new("gateway"),
-            principal_id: PrincipalId::new("test:gateway"),
-            command_type: "gateway.test.set".to_owned(),
-            payload: Vec::new(),
-        };
+        let command = CommandSubmission::for_command(&QueueGatewayCommand)
+            .map_err(|error| error.to_string())?
+            .authenticate(ScopeId::new("gateway"), PrincipalId::new("test:gateway"));
         let admission = node
             .admit(command.clone())
             .map_err(|error| error.to_string())?;

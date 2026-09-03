@@ -667,6 +667,10 @@ fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
             type Item = #name;
             type Output = ::std::option::Option<#name>;
 
+            fn selected_item_ids(&self) -> ::std::option::Option<::std::vec::Vec<#id>> {
+                ::std::option::Option::Some(::std::vec![self.id.clone()])
+            }
+
             fn execute(self, projection: &::myko_items::ItemProjection<Self::Item>) -> Self::Output {
                 projection.get(&self.id).cloned()
             }
@@ -684,6 +688,10 @@ fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
         impl ::myko_items::ItemQuery for #get_many {
             type Item = #name;
             type Output = ::std::vec::Vec<#name>;
+
+            fn selected_item_ids(&self) -> ::std::option::Option<::std::vec::Vec<#id>> {
+                ::std::option::Option::Some(self.ids.clone())
+            }
 
             fn execute(self, projection: &::myko_items::ItemProjection<Self::Item>) -> Self::Output {
                 self.ids

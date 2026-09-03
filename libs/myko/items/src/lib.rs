@@ -901,6 +901,17 @@ pub trait ItemQuery:
     /// Stable application wire identity for this query handler.
     const QUERY_ID: &'static str = Self::OPERATION_ID;
 
+    /// Returns the exact item IDs this query can observe, when its typed
+    /// contract is narrower than the complete item projection.
+    ///
+    /// Myko uses this generated metadata to authorize and record point reads
+    /// without making application handlers manually repeat their query
+    /// parameters as federation claims. Custom queries conservatively default
+    /// to the complete projection.
+    fn selected_item_ids(&self) -> Option<Vec<<Self::Item as MykoItem>::Id>> {
+        None
+    }
+
     fn execute(self, projection: &ItemProjection<Self::Item>) -> Self::Output;
 }
 
@@ -967,12 +978,14 @@ mod tests {
             Ok(true)
         ));
         assert_eq!(projection.query(GetAllProjects), vec![project.clone()]);
+        let get_project = GetProjectById {
+            id: ProjectId::from("project-1"),
+        };
         assert_eq!(
-            projection.query(GetProjectById {
-                id: ProjectId::from("project-1"),
-            }),
-            Some(project)
+            get_project.selected_item_ids(),
+            Some(vec![ProjectId::from("project-1")])
         );
+        assert_eq!(projection.query(get_project), Some(project));
     }
 
     #[test]

@@ -22,8 +22,8 @@ use myko_app::{ApplicationNode, ErasedHandlerFrame, HandlerRequest};
 use myko_federation::{
     AccessOperation, AccessPolicy, AccessRequest, AuthorityPresentation, AuthorizationDecision,
     AuthorizationExplanation, AuthorizationPhase, AuthorizationReport, CommandId, CommandResponse,
-    CommandSubmission, DenyDecision, LiveEventHub, LogPosition, Node, NodeId, PermitDecision,
-    Principal, PrincipalId, ReplicationBatch, ReplicationSelection, ResourceClaim,
+    CommandSubmission, DenyAllAccessPolicy, DenyDecision, LiveEventHub, LogPosition, Node, NodeId,
+    PermitDecision, Principal, PrincipalId, ReplicationBatch, ReplicationSelection, ResourceClaim,
     ResourceClaimKind, ResourceVisibility, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
     SelectedReplicationBatch, ServiceId,
 };
@@ -262,6 +262,20 @@ impl NodeSessionService {
         *current = None;
         drop(current);
         Ok(())
+    }
+
+    /// Replaces the installed application policy with fail-closed framework
+    /// state, releasing any application graph retained by the policy.
+    ///
+    /// Node shutdown uses this before dropping its durable application so an
+    /// authority implementation may safely own an application handle without
+    /// keeping the journal open after the node has stopped.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the node or access-policy lock is unavailable.
+    pub fn clear_access_policy(&self) -> Result<(), String> {
+        self.set_access_policy(Arc::new(DenyAllAccessPolicy))
     }
 
     /// Replaces authorization for new and existing sessions.

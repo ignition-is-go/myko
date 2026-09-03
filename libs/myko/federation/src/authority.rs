@@ -463,6 +463,10 @@ pub struct AuthorizationBinding {
     pub capabilities: Vec<CapabilityId>,
     pub arguments_digest: Option<String>,
     pub effect_digest: Option<String>,
+    /// Locally derived ancestry needed to re-evaluate an exact pending effect
+    /// before its newly created nested scopes have committed.
+    #[serde(default)]
+    pub topology_proof: ScopeTopology,
 }
 
 impl AuthorizationBinding {
@@ -480,6 +484,16 @@ impl AuthorizationBinding {
             capabilities: request.application_capabilities.clone(),
             arguments_digest: request.arguments_digest.clone(),
             effect_digest: request.effect_digest.clone(),
+            topology_proof: if request.authorization_phase == AuthorizationPhase::Effect {
+                request
+                    .topology
+                    .as_ref()
+                    .map_or_else(ScopeTopology::default, |topology| {
+                        topology.proof_for(&request.scope_selections)
+                    })
+            } else {
+                ScopeTopology::default()
+            },
         }
     }
 }

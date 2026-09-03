@@ -20,7 +20,7 @@ use std::{
 
 use hyphae::{Gettable as _, MapDiff, Signal, SubscriptionGuard, Watchable as _};
 use myko_federation::{
-    AccessOperation, AccessRequest, ApplicationCapability, AuthorityConstraints,
+    AccessOperation, AccessPolicy, AccessRequest, ApplicationCapability, AuthorityConstraints,
     AuthorityPresentation, CapabilityId, CommandClient as FederationCommandClient,
     CommandClientFuture, CommandContext as FederationCommandContext, CommandDispatchResult,
     CommandHandlerError, CommandId, CommandRequest, CommandResponse, CommandSnapshot,
@@ -728,17 +728,18 @@ pub trait QueryHandler: ItemQuery {
     /// Declares every source/scope dependency before the handler is built.
     /// Custom multi-source queries must override this alongside `build`.
     fn authority_claims(&self, source_node: NodeId, scope_id: &ScopeId) -> Vec<ResourceClaim> {
-        vec![ResourceClaim {
-            selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
-            kind: ResourceClaimKind::Referenced,
-            source_node: Some(source_node),
-            service_id: Some(ServiceId::new(Self::Item::SERVICE_ID)),
-            item_type: Some(Self::Item::ITEM_TYPE.to_owned()),
-            item_id: None,
-            required_permissions: vec![myko_federation::FederationPermission::ReadState],
-            required_operations: vec![AccessOperation::ReadItems],
-            required_capabilities: Vec::new(),
-        }]
+        let item_ids = self.selected_item_ids();
+        item_ids.as_ref().map_or_else(
+            || vec![query_resource_claim::<Self>(source_node, scope_id, None)],
+            |item_ids| {
+                item_ids
+                    .iter()
+                    .map(|item_id| {
+                        query_resource_claim::<Self>(source_node, scope_id, Some(item_id.as_ref()))
+                    })
+                    .collect()
+            },
+        )
     }
 
     /// Builds this query's long-lived result.
@@ -756,6 +757,24 @@ pub trait QueryHandler: ItemQuery {
         context
             .core
             .query(context.source_node, context.scope_id.clone(), self.clone())
+    }
+}
+
+fn query_resource_claim<Q: ItemQuery>(
+    source_node: NodeId,
+    scope_id: &ScopeId,
+    item_id: Option<&str>,
+) -> ResourceClaim {
+    ResourceClaim {
+        selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
+        kind: ResourceClaimKind::Referenced,
+        source_node: Some(source_node),
+        service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
+        item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
+        item_id: item_id.map(ToOwned::to_owned),
+        required_permissions: vec![myko_federation::FederationPermission::ReadState],
+        required_operations: vec![AccessOperation::ReadItems],
+        required_capabilities: Vec::new(),
     }
 }
 
@@ -1207,6 +1226,22 @@ pub mod capability {
             T: MykoItem,
         {
             self.__reactive().federated_items(scope_id)
+        }
+
+        /// Projects one typed item schema across every authoritative source
+        /// for an exact scope or a complete nested subtree.
+        ///
+        /// # Errors
+        ///
+        /// Returns an error when history or its live continuation is invalid.
+        fn federated_items_selected<T>(
+            &self,
+            selection: myko_federation::ScopeSelection,
+        ) -> Result<myko_federation::LiveSubscription<Vec<super::SourcedItem<T>>>, super::AppError>
+        where
+            T: MykoItem,
+        {
+            self.__reactive().federated_items_selected(selection)
         }
     }
 
@@ -2355,6 +2390,25 @@ impl MykoApplicationBuilder {
         Ok(self)
     }
 
+    /// Declares the stable application capability for a typed process-local
+    /// resource that a host will install after the application is built.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the capability is empty or conflicts with a
+    /// prior declaration.
+    pub fn resource_capability<T>(
+        mut self,
+        capability: ApplicationCapability,
+    ) -> Result<Self, AppError>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.application
+            .register_resource_capability::<T>(capability)?;
+        Ok(self)
+    }
+
     /// Registers an opaque application capability and its default constraints.
     ///
     /// # Errors
@@ -2973,8 +3027,24 @@ impl ContextCore {
     where
         T: MykoItem,
     {
+        self.federated_items_selected(myko_federation::ScopeSelection::Exact(scope_id))
+    }
+
+    /// Starts one gap-free provenance-preserving projection across every
+    /// authoritative source for an exact scope or complete nested subtree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if matching history is malformed or cannot be followed.
+    pub fn federated_items_selected<T>(
+        &self,
+        selection: myko_federation::ScopeSelection,
+    ) -> Result<LiveSubscription<Vec<SourcedItem<T>>>, AppError>
+    where
+        T: MykoItem,
+    {
         self.require_dependency(&ResourceClaim {
-            selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
+            selection: selection.clone(),
             kind: ResourceClaimKind::Referenced,
             source_node: None,
             service_id: Some(ServiceId::new(T::SERVICE_ID)),
@@ -2987,8 +3057,10 @@ impl ContextCore {
         let history = self.node.events_after(None)?;
         let through = history.last().map(|event| event.position);
         let mut items = BTreeMap::new();
+        let topology = self.node.scope_topology()?;
         for envelope in &history {
-            let _changed = apply_sourced_item_event::<T>(&mut items, &scope_id, envelope)?;
+            let _changed =
+                apply_sourced_item_event::<T>(&mut items, &selection, &topology, envelope)?;
         }
         let mut events = self.node.subscribe(through)?;
         let (writer, live) = live_subscription(LiveSubscriptionState {
@@ -2997,6 +3069,7 @@ impl ContextCore {
             liveness: SubscriptionLiveness::Current,
         });
         let task_writer = writer.clone();
+        let node = self.node.clone();
         let task = spawn_handler_driver(async move {
             loop {
                 let envelope = match events.recv_async().await {
@@ -3006,7 +3079,14 @@ impl ContextCore {
                         return;
                     }
                 };
-                match apply_sourced_item_event::<T>(&mut items, &scope_id, &envelope) {
+                let topology = match node.scope_topology() {
+                    Ok(topology) => topology,
+                    Err(error) => {
+                        task_writer.invalidate(error.to_string());
+                        return;
+                    }
+                };
+                match apply_sourced_item_event::<T>(&mut items, &selection, &topology, &envelope) {
                     Ok(true) => task_writer
                         .publish(items.values().cloned().collect(), Some(envelope.position)),
                     Ok(false) => task_writer.advance_through(Some(envelope.position)),
@@ -3465,7 +3545,8 @@ fn replay_items<T: MykoItem>(
 
 fn apply_sourced_item_event<T>(
     items: &mut BTreeMap<(String, String), SourcedItem<T>>,
-    scope_id: &ScopeId,
+    selection: &myko_federation::ScopeSelection,
+    topology: &myko_federation::ScopeTopology,
     envelope: &myko_federation::EventEnvelope,
 ) -> Result<bool, NodeError>
 where
@@ -3479,10 +3560,24 @@ where
     }
     let mut changed = false;
     for mutation in &batch.changes {
-        if !mutation.affects_scope::<T>(batch.scope_id.as_str(), scope_id.as_str()) {
+        if !mutation.is::<T>() {
             continue;
         }
-        if mutation.item_type != T::ITEM_TYPE {
+        let affected_scope = if mutation.has_legacy_scope_metadata() && T::SCOPE.is_root() {
+            ScopeId::for_entity(&EntityRef::new(
+                T::SERVICE_ID,
+                T::ITEM_TYPE,
+                mutation.item_id.as_str(),
+            ))
+        } else {
+            ScopeId::new(
+                mutation
+                    .scope_id
+                    .as_deref()
+                    .unwrap_or(batch.scope_id.as_str()),
+            )
+        };
+        if !selection.contains_scope(&affected_scope, topology) {
             continue;
         }
         if mutation.service_id != T::SERVICE_ID.as_str()
@@ -3924,10 +4019,22 @@ where
 }
 
 /// One Myko node with its composed application.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ApplicationNode {
     node: Node,
     application: Arc<MykoApplication>,
+    access_policy: Option<Arc<dyn AccessPolicy>>,
+}
+
+impl fmt::Debug for ApplicationNode {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ApplicationNode")
+            .field("node", &self.node)
+            .field("application", &self.application)
+            .field("retains_access_policy", &self.access_policy.is_some())
+            .finish()
+    }
 }
 
 /// Retained, event-driven execution of every command registered by an
@@ -3999,7 +4106,28 @@ impl ApplicationNode {
         Self {
             node,
             application: Arc::new(application),
+            access_policy: None,
         }
+    }
+
+    /// Makes this application node the lifecycle owner of its command access
+    /// policy as well as installing that policy into the shared substrate.
+    ///
+    /// This is useful for embedded and in-memory nodes without a separate
+    /// session supervisor. Dropping the last application-node clone also drops
+    /// the policy, so the substrate fails closed instead of retaining hidden
+    /// process-global authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the node's policy slot is unavailable.
+    pub fn with_access_policy(
+        mut self,
+        access_policy: Arc<dyn AccessPolicy>,
+    ) -> Result<Self, AppError> {
+        self.node.set_command_access_policy(access_policy.clone())?;
+        self.access_policy = Some(access_policy);
+        Ok(self)
     }
 
     /// Attaches an application after restoring typed scope relationships from
@@ -5889,9 +6017,22 @@ mod tests {
         let capability = local_tool_capability();
         let application = MykoApplication::builder()
             .resource(capability.clone(), LocalTool)
-            .and_then(|builder| builder.resource(capability.clone(), ResourceAfterRustRename))
+            .and_then(|builder| {
+                builder.resource_capability::<ResourceAfterRustRename>(capability.clone())
+            })
             .map(MykoApplicationBuilder::build)
             .unwrap();
+        assert!(matches!(
+            application.resources().get::<ResourceAfterRustRename>(),
+            Err(AppError::MissingResource { .. })
+        ));
+        assert!(
+            application
+                .resources()
+                .insert(ResourceAfterRustRename)
+                .unwrap()
+                .is_none()
+        );
         let registered = application.authority_capabilities().collect::<Vec<_>>();
         assert_eq!(registered, vec![&capability]);
         let registered_capability = registered.first().unwrap();
@@ -6151,6 +6292,59 @@ mod tests {
                         element.id == element_id && element.scene_id == scene_id
                     })
         ));
+    }
+
+    #[test]
+    fn federated_item_projection_tracks_a_nested_scope_subtree() {
+        let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
+        let application = MykoApplication::builder()
+            .service::<SceneService>()
+            .map(MykoApplicationBuilder::build)
+            .unwrap();
+        let app = ApplicationNode::new(node.clone(), application);
+        let project_id = ProjectRootId::from("project-1");
+        let scene_id = SceneId::from("scene-1");
+        let project_scope = ScopeId::for_item::<ProjectRoot>(&project_id);
+        assert_eq!(
+            app.exec_authenticated_command(
+                PrincipalId::new("test:owner"),
+                CreateProjectScene {
+                    project: project_id,
+                    scene: scene_id.clone(),
+                    element: SceneElementId::from("element-1"),
+                },
+            )
+            .ok(),
+            Some(true)
+        );
+
+        let context = ContextCore::new(node.clone(), ApplicationResources::default());
+        let elements = context
+            .federated_items_selected::<SceneElement>(myko_federation::ScopeSelection::Subtree(
+                project_scope,
+            ))
+            .unwrap();
+        assert_eq!(elements.current().value.as_ref().map(Vec::len), Some(1));
+
+        assert_eq!(
+            app.exec_authenticated_command(
+                PrincipalId::new("test:owner"),
+                AddSceneElement {
+                    scene_id,
+                    element_id: SceneElementId::from("element-2"),
+                },
+            )
+            .ok(),
+            Some(true)
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        while elements.current().value.as_ref().map(Vec::len) != Some(2)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+        assert_eq!(elements.current().value.as_ref().map(Vec::len), Some(2));
     }
 
     #[tokio::test]
