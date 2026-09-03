@@ -111,7 +111,7 @@ impl MykoClient {
         let view_id_for_handler = view_id.clone();
         let sequences = Arc::new(MapSequence::new());
         let sequences_for_handler = Arc::clone(&sequences);
-        let handler: super::QueryHandler = Box::new(move |response_value: Value| {
+        let handler: super::QueryHandler = Arc::new(move |response_value: Value| {
             let Some(map_writer) = map_weak.upgrade() else {
                 return;
             };
