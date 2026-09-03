@@ -2429,7 +2429,21 @@ mod tests {
         authorized
             .application_capabilities
             .push(capability.id.clone());
-        assert!(policy.decide(&authorized).is_permit());
+        let permit = match policy.decide(&authorized) {
+            AuthorizationDecision::Permit(permit) => permit,
+            decision => return Err(format!("expected composed permit, found {decision:?}")),
+        };
+        let contributing = permit
+            .report
+            .explanations
+            .iter()
+            .filter_map(|explanation| explanation.grant_id.as_ref())
+            .map(ToString::to_string)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            contributing,
+            BTreeSet::from(["capability".to_owned(), "read".to_owned()])
+        );
 
         authorized.resource_claims.push(ResourceClaim::scope(
             ScopeId::new("scope:b"),
@@ -2776,8 +2790,11 @@ mod tests {
         delegated.presentation = delegated.presentation.forward(hop);
         assert!(matches!(
             policy.decide(&delegated),
-            AuthorizationDecision::Challenge { challenge, .. }
+            AuthorizationDecision::Challenge { challenge, report }
                 if challenge.obligation_id == obligation.id
+                    && report.explanations.iter().any(|explanation| {
+                        explanation.obligation_id.as_ref() == Some(&obligation.id)
+                    })
         ));
         policy
             .revoke(
@@ -3091,7 +3108,23 @@ mod tests {
         reconnect.lease = None;
         reconnect.presentation = AuthorityPresentation::direct(offline_user.clone())
             .with_lease(offline_lease.id.clone());
-        assert!(policy.decide(&reconnect).is_permit());
+        let reconnect_permit = match policy.decide(&reconnect) {
+            AuthorizationDecision::Permit(permit) => permit,
+            decision => {
+                return Err(format!(
+                    "expected offline reconnect permit, found {decision:?}"
+                ));
+            }
+        };
+        assert!(
+            reconnect_permit
+                .report
+                .explanations
+                .iter()
+                .any(|explanation| {
+                    explanation.code == "offline_lease" && explanation.constraint.is_some()
+                })
+        );
         std::thread::sleep(std::time::Duration::from_millis(1_100));
         assert!(matches!(
             policy.decide(&reconnect),
