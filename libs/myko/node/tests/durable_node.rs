@@ -236,6 +236,36 @@ async fn wait_for(description: &str, mut condition: impl FnMut() -> bool) -> Res
 }
 
 #[tokio::test]
+async fn identity_backed_application_honors_the_startup_barrier() -> Result<(), String> {
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let identity = SecretKey::generate();
+    let endpoint_id = identity.public();
+    let application = MykoApplication::builder().build();
+    let (node, startup) = Node::open_application_starting_with_identity_and_policy(
+        directory.path(),
+        Duration::from_millis(20),
+        identity,
+        application,
+        |_| Ok(Arc::new(AllowAllAccessPolicy)),
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    if node.descriptor().endpoint.id != endpoint_id {
+        return Err(
+            "identity-backed node did not retain the supplied endpoint identity".to_owned(),
+        );
+    }
+    if node.node().is_ready() {
+        return Err("identity-backed application escaped its startup barrier".to_owned());
+    }
+    startup.ready();
+    if !node.node().is_ready() {
+        return Err("identity-backed application did not become ready".to_owned());
+    }
+    node.shutdown().await.map_err(|error| error.to_string())
+}
+
+#[tokio::test]
 async fn typed_item_watch_drives_a_hyphae_cell_without_polling() -> Result<(), String> {
     use hyphae::{Signal, Watchable as _};
 

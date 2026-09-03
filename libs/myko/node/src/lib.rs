@@ -1002,6 +1002,43 @@ impl Node {
         Ok((node, startup))
     }
 
+    /// Opens an identity-backed application node with its transport held below
+    /// the startup barrier until the returned guard is completed.
+    ///
+    /// Platforms with a secure key store can restore their endpoint identity
+    /// while still preventing requests from reaching partially initialized
+    /// application resources and supervisors.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if durable state, policy restoration, endpoint
+    /// binding, application serving, or peer restoration fails.
+    pub async fn open_application_starting_with_identity_and_policy<F>(
+        data_dir: impl AsRef<Path>,
+        retry_interval: Duration,
+        identity: SecretKey,
+        application: MykoApplication,
+        resolve_policy: F,
+    ) -> Result<(Self, NodeStartupGuard), NodeError>
+    where
+        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+    {
+        let (node, startup) = Self::open_inner(
+            data_dir.as_ref(),
+            retry_interval,
+            BindMode::Network,
+            Some(identity),
+            Some(application),
+            true,
+            resolve_policy,
+        )
+        .await?;
+        let startup = startup.ok_or_else(|| {
+            NodeError::State("identity-backed starting node omitted its startup guard".to_owned())
+        })?;
+        Ok((node, startup))
+    }
+
     /// Opens a durable loopback node that serves one immutable Myko application.
     ///
     /// # Errors
