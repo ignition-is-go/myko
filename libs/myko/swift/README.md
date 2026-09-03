@@ -36,14 +36,15 @@ insert, update, remove, or batch semantics without rebuilding the collection.
 The Swift application applies those projected `upserts` and `removedIDs` to a
 `MykoCollectionState`; it owns only domain-to-presentation mapping and sorting.
 
-An embedded Apple application normally owns one `MykoNodeLifecycle`, registers
-its typed `MykoSubscriptionBinding` values with a `MykoSubscriptionGroup`, and
-uses a `MykoOperationScope` for node-bound commands. The operation scope moves
-blocking UniFFI work off the main actor and rejects stale completions after a
-node stop or restart. The application maps lifecycle and subscription updates
-into its presentation model; its generated adapter supplies concrete records
-and operations without reimplementing native concurrency or lifecycle
-mechanics.
+An embedded Apple application normally owns one `MykoNodeSession`, registers
+its typed `MykoSubscriptionBinding` values with the session's
+`MykoSubscriptionGroup`, and uses the session's `MykoOperationScope` for
+node-bound commands. The session serializes native start and stop, activates
+declared subscriptions only after startup, cancels them before stop or failure
+is published, and rejects stale command completions after a node transition.
+The application maps lifecycle and subscription updates into its presentation
+model; its generated adapter supplies concrete records and operations without
+reimplementing native concurrency or lifecycle mechanics.
 
 Long-lived query, report, and view bindings can be registered declaratively
 with `MykoSubscriptionGroup.register`. Activating the group opens every
