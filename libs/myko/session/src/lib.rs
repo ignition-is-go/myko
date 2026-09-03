@@ -737,6 +737,11 @@ impl NodeSessionService {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
+                    // The broad catalog grant can remain valid while a grant
+                    // covering one already-visible command is revoked. Close
+                    // so the client must refetch a freshly filtered snapshot
+                    // instead of retaining that command indefinitely.
+                    return Ok(());
                 }
             }
         }
@@ -1924,6 +1929,23 @@ mod tests {
         }
     }
 
+    #[derive(Debug)]
+    struct CatalogEntryPolicy {
+        entries_allowed: bool,
+    }
+
+    impl AccessPolicy for CatalogEntryPolicy {
+        fn authorize(&self, request: &AccessRequest) -> Result<(), String> {
+            if request.operation == AccessOperation::WatchCommands
+                && request.command_id.is_some()
+                && !self.entries_allowed
+            {
+                return Err("stored command claims were revoked".to_owned());
+            }
+            Ok(())
+        }
+    }
+
     #[tokio::test]
     async fn full_principal_kind_is_transport_bound() {
         let authenticated = Principal::new(PrincipalId::new("same-id"), PrincipalKind::Node);
@@ -1979,6 +2001,73 @@ mod tests {
             Ok(Some(NodeFrame::Authorization { decision }))
                 if matches!(*decision, AuthorizationDecision::Deny(_))
         ));
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
+            Ok(None)
+        ));
+    }
+
+    #[tokio::test]
+    async fn catalog_watch_closes_when_visible_entry_authority_changes() {
+        let node = Node::in_memory();
+        let session = NodeSessionService::new(
+            node.clone(),
+            Arc::new(CatalogEntryPolicy {
+                entries_allowed: true,
+            }),
+        );
+        let principal = PrincipalId::new("node:catalog-reader");
+        let service_id = ServiceId::new("test.service");
+        let scope_id = ScopeId::new("scope:catalog");
+        let mut frames = session
+            .open(
+                principal.clone(),
+                NodeRequestEnvelope::connected(NodeRequest::WatchCommands {
+                    request: myko_federation::CommandWatchRequest {
+                        serving_node: node.node_id(),
+                        source_node: node.node_id(),
+                        service_id: service_id.clone(),
+                        scope_id: scope_id.clone(),
+                        command_type: "test.command".to_owned(),
+                        after: None,
+                    },
+                }),
+            )
+            .await;
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::Authorization { decision })
+                if matches!(*decision, AuthorizationDecision::Permit(_))
+        ));
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::CommandWatchReady { .. })
+        ));
+
+        let command_id = CommandId::new();
+        node.admit(CommandRequest {
+            id: command_id,
+            service_id,
+            scope_id: scope_id.clone(),
+            principal_id: principal.clone(),
+            authority: AuthorityPresentation::direct_node(principal.clone()),
+            resource_claims: vec![ResourceClaim::scope(scope_id, ResourceClaimKind::Primary)],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
+            command_type: "test.command".to_owned(),
+            payload: Vec::new(),
+        })
+        .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
+            Ok(Some(NodeFrame::CommandUpdate { update })) if update.command.request.id == command_id
+        ));
+
+        session
+            .set_access_policy(Arc::new(CatalogEntryPolicy {
+                entries_allowed: false,
+            }))
+            .unwrap();
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
             Ok(None)
