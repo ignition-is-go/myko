@@ -16,10 +16,10 @@ mod federation;
 mod subscriptions;
 
 pub use authority::{
-    MykoAccessOperation, MykoAuthority, MykoAuthorityGrant, MykoAuthorityGrantInput,
-    MykoAuthorityGrantRecord, MykoAuthorityGrantsSubscription, MykoAuthorityGrantsUpdate,
-    MykoFederationPermission, MykoPrincipal, MykoPrincipalKind, MykoRevocationKind,
-    MykoScopeSelection,
+    MykoAccessOperation, MykoAuthority, MykoAuthorityConstraints, MykoAuthorityGrant,
+    MykoAuthorityGrantInput, MykoAuthorityGrantRecord, MykoAuthorityGrantsSubscription,
+    MykoAuthorityGrantsUpdate, MykoFederationPermission, MykoPrincipal, MykoPrincipalKind,
+    MykoRevocationKind, MykoScopeSelection,
 };
 pub use federation::MykoFederation;
 pub use subscriptions::{
