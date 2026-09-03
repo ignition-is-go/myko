@@ -38,3 +38,13 @@ node stop or restart. The application maps lifecycle and subscription updates
 into its presentation model; its generated adapter supplies concrete records
 and operations without reimplementing native concurrency or lifecycle
 mechanics.
+
+Long-lived query, report, and view bindings can be registered declaratively
+with `MykoSubscriptionGroup.register`. Activating the group opens every
+registered subscription; cancelling it preserves those declarations so a
+foregrounded node reopens fresh streams without application-owned restart
+wiring. Dynamic subscription families use `MykoKeyedSubscriptionGroup`: stable
+keys retain their live bindings while removed keys are cancelled and new keys
+are opened. This mirrors Myko's keyed reactive collections instead of making
+each application tear down and rebuild every child subscription after a parent
+revision.
