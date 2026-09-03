@@ -10,7 +10,7 @@
 public final class MykoOperationScope {
     private var generation: UInt = 0
 
-    public init() {}
+    public nonisolated init() {}
 
     /// Prevents every operation started before this call from publishing a
     /// completion into the current presentation state.

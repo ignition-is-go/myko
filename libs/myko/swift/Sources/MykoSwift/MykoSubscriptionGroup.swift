@@ -20,7 +20,7 @@ public final class MykoSubscriptionGroup {
     /// Whether lifecycle-managed subscriptions should currently be running.
     public private(set) var isActive = false
 
-    public init() {}
+    public nonisolated init() {}
 
     /// Retains a subscription until it is removed or the group is cancelled.
     public func insert<Subscription: MykoCancellableSubscription>(_ subscription: Subscription) {
