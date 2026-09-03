@@ -52,7 +52,7 @@ struct SagaChannel {
 
 use crate::postgres::{
     PostgresConfig, PostgresConsumer, PostgresHistoryReplayProvider, PostgresHistoryStore,
-    PostgresProducer, PostgresProducerHandle,
+    PostgresProducer, PostgresProducerHandle, postgres_catch_up_timeout_from_env,
 };
 
 /// Cell-based Myko server configuration.
@@ -590,6 +590,10 @@ impl MykoServer {
     ///
     /// Returns an error when `PostgreSQL` initialization fails or times out.
     pub fn init_postgres_and_wait(&self, timeout: Duration) -> Result<(), String> {
+        self.init_postgres_and_wait_configured(Some(timeout))
+    }
+
+    fn init_postgres_and_wait_configured(&self, timeout: Option<Duration>) -> Result<(), String> {
         if self.config.postgres.is_some() && self.postgres_consumer.is_none() {
             return Err(
                 "Postgres is configured but the Postgres consumer is not running".to_string(),
@@ -597,7 +601,11 @@ impl MykoServer {
         }
 
         if let Some(ref consumer) = self.postgres_consumer {
-            consumer.wait_until_caught_up(timeout)?;
+            if let Some(timeout) = timeout {
+                consumer.wait_until_caught_up(timeout)?;
+            } else {
+                consumer.wait_until_caught_up_without_timeout()?;
+            }
             self.ready.store(true, Ordering::SeqCst);
         }
         Ok(())
@@ -646,8 +654,17 @@ impl MykoServer {
         // Wait for Postgres catch-up if configured
         if self.postgres_consumer.is_some() {
             tracing::info!("Waiting for Postgres event consumer to catch up...");
-            let timeout = std::time::Duration::from_mins(5);
-            self.init_postgres_and_wait(timeout)
+            let timeout = postgres_catch_up_timeout_from_env()
+                .map_err(|reason| format!("Invalid Postgres startup configuration: {reason}"))?;
+            if let Some(timeout) = timeout {
+                tracing::info!(
+                    timeout_secs = timeout.as_secs(),
+                    "Postgres startup catch-up timeout configured"
+                );
+            } else {
+                tracing::info!("Postgres startup catch-up timeout disabled");
+            }
+            self.init_postgres_and_wait_configured(timeout)
                 .map_err(|reason| format!("Postgres startup catch-up failed: {reason}"))?;
             tracing::info!("Postgres caught up, ready to accept connections");
         }

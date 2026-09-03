@@ -168,6 +168,7 @@ All endpoints share a single TCP listener; the front-door router peeks at the HT
 | -------------------------------- | --------------------- | ------------------------------------------ |
 | `MYKO_ADDRESS`                   | `ws://localhost:5155` | Used by the stdio MCP binary and clients   |
 | `MYKO_POSTGRES_URL`              | —                     | Postgres connection string                 |
+| `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` | `300`             | Maximum startup snapshot/catch-up wait before the server exits; `0` disables the limit |
 | `MYKO_PORT`                      | `5155`                | Server bind port (when wired through env)  |
 | `MYKO_TRACING_ENDPOINT`          | —                     | OTLP/HTTP endpoint for traces+metrics (see `myko_server::telemetry::init_from_env`); unset = local console logging only |
 | `MYKO_CCMD_MONITOR`              | `0`                   | Set `1` to log command timing              |
