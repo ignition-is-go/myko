@@ -18,6 +18,7 @@ use hyphae::{
 };
 use myko_federation::{
     LiveCollection, LiveCollectionRevision, LiveSubscription, LiveSubscriptionState,
+    SubscriptionLiveness,
 };
 
 #[cfg(feature = "embedded-node")]
@@ -29,6 +30,7 @@ pub use embedded_node::{EmbeddedNodeError, EmbeddedNodeHost, EmbeddedNodeInfo};
 mod native_ffi;
 #[cfg(feature = "native-ffi")]
 pub use native_ffi::{
+    EmbeddedApplicationHost, EmbeddedApplicationRuntime, EmbeddedAuthorityRuntime,
     MykoAccessOperation, MykoAuthority, MykoAuthorityConstraints, MykoAuthorityGrant,
     MykoAuthorityGrantInput, MykoAuthorityGrantRecord, MykoAuthorityGrantsSubscription,
     MykoAuthorityGrantsUpdate, MykoFederation, MykoFederationError, MykoFederationPermission,
@@ -51,6 +53,20 @@ impl<T> SubscriptionOwner for T where T: Send {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("Myko subscription cancelled")]
 pub struct SubscriptionCancelled;
+
+/// Projects framework subscription liveness into the stable phase/reason
+/// pair used by generated native-language update records.
+#[must_use]
+pub fn project_subscription_liveness(liveness: &SubscriptionLiveness) -> (String, Option<String>) {
+    match liveness {
+        SubscriptionLiveness::Current => ("current".to_owned(), None),
+        SubscriptionLiveness::Connecting => ("connecting".to_owned(), None),
+        SubscriptionLiveness::Resynchronizing { reason } => {
+            ("resynchronizing".to_owned(), Some(reason.clone()))
+        }
+        SubscriptionLiveness::Invalid { reason } => ("invalid".to_owned(), Some(reason.clone())),
+    }
+}
 
 /// Exports one concrete application subscription through the uniform
 /// synchronous surface consumed by `MykoSubscriptionBinding`.
@@ -521,6 +537,30 @@ mod tests {
         fn drop(&mut self) {
             self.0.store(true, Ordering::Release);
         }
+    }
+
+    #[test]
+    fn native_liveness_projection_is_shared_and_lossless() {
+        assert_eq!(
+            project_subscription_liveness(&SubscriptionLiveness::Current),
+            ("current".to_owned(), None)
+        );
+        assert_eq!(
+            project_subscription_liveness(&SubscriptionLiveness::Connecting),
+            ("connecting".to_owned(), None)
+        );
+        assert_eq!(
+            project_subscription_liveness(&SubscriptionLiveness::Resynchronizing {
+                reason: "history gap".to_owned(),
+            }),
+            ("resynchronizing".to_owned(), Some("history gap".to_owned()))
+        );
+        assert_eq!(
+            project_subscription_liveness(&SubscriptionLiveness::Invalid {
+                reason: "revoked".to_owned(),
+            }),
+            ("invalid".to_owned(), Some("revoked".to_owned()))
+        );
     }
 
     #[test]

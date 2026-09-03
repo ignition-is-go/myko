@@ -15,7 +15,6 @@ use myko_federation::{
 use crate::BlockingCollectionSubscription;
 
 use super::federation::parse_node_id;
-use super::subscriptions::lifecycle;
 use super::{
     MykoFederationError, NativeAuthorityAccess, NativeAuthorityContext, authority_error,
     transport_error,
@@ -301,7 +300,7 @@ crate::export_blocking_collection_subscription! {
 fn authority_grants_update(
     revision: LiveCollectionRevision<GrantRecord, LogPosition>,
 ) -> MykoAuthorityGrantsUpdate {
-    let (lifecycle, reason) = lifecycle(&revision.state.liveness);
+    let (lifecycle, reason) = crate::project_subscription_liveness(&revision.state.liveness);
     let mut reset = false;
     let mut changes = BTreeMap::new();
     if let Some(diff) = revision.diff {

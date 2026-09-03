@@ -1,4 +1,13 @@
 import Foundation
+
+/// Storage for one opaque native value such as a node identity or provider
+/// secret. Applications choose the namespace; Myko owns the persistence flow.
+public protocol MykoOpaqueValueStore {
+    func load() throws -> Data?
+    func save(_ value: Data) throws
+    func remove() throws
+}
+
 #if canImport(Security)
 import Security
 
@@ -7,7 +16,7 @@ import Security
 /// The caller supplies a stable service and account so applications can keep
 /// node identities and other secrets in separate namespaces. Values never
 /// leave the current device through backup or Keychain synchronization.
-public struct MykoKeychainStore: Sendable {
+public struct MykoKeychainStore: Sendable, MykoOpaqueValueStore {
     public enum StoreError: LocalizedError, Sendable {
         case invalidResult
         case status(OSStatus)

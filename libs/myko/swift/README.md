@@ -23,13 +23,20 @@ and serialized foreground state. A concrete application supplies only its
 typed runtime construction and shutdown callbacks; it does not reimplement
 identity restoration, active-node locking, or foreground lifecycle mechanics.
 
+With `native-ffi`, `EmbeddedApplicationHost` also implements the framework's
+application and authority access adapters for any active runtime that exposes
+those two typed contexts. Application bridges no longer need an orphan-rule
+wrapper that forwards `ApplicationNode`, endpoint identity, and authority
+access back into Myko.
+
 The `native-ffi` feature adds Myko's generated Swift federation component.
 `MykoFederation` exposes framework-owned LAN discovery, pairing, remembered
 peers, directional replication, and their live subscriptions. A concrete app
-implements `NativeApplicationAccess` once for its composed application node;
-it does not duplicate those commands, records, projections, or subscription
-objects. UniFFI library-mode generation can emit this component beside the
-application component from the same linked native library and XCFramework.
+implements `EmbeddedApplicationRuntime` on its active runtime; Myko adapts that
+runtime to `NativeApplicationAccess`. The app does not duplicate federation
+commands, records, projections, or subscription objects. UniFFI library-mode
+generation can emit this component beside the application component from the
+same linked native library and XCFramework.
 
 Concrete applications still own exported records and projections for their
 domain entities. The Rust-side
@@ -37,6 +44,12 @@ domain entities. The Rust-side
 subscription object's uniform `current`/`next`/`cancel` surface. Applications
 do not own transport routing, subscription retention, revision waiting, or
 cancellation.
+
+`MykoNodeBootstrap` owns the other easy-to-get-wrong native boundary: resolving
+application storage, restoring a securely persisted opaque node identity, or
+creating and persisting a new identity before the node is exposed. Applications
+choose their storage directory and Keychain namespace and provide their
+generated node constructors; they do not reimplement restore-or-create logic.
 
 Keyed query and view results use `export_blocking_collection_subscription!`.
 Its initial update is a typed reset and every later update retains the native

@@ -1,9 +1,7 @@
 //! Generated records and live-subscription projection for native federation.
 
 use myko_discovery::{DiscoveredNode, ParticipantCapability, ParticipantKind};
-use myko_federation::{
-    LiveSubscriptionState, LogPosition, ReplicationSelection, ScopeSelection, SubscriptionLiveness,
-};
+use myko_federation::{LiveSubscriptionState, LogPosition, ReplicationSelection, ScopeSelection};
 use myko_node::{
     PairingInitiation, PairingInitiationPhase, PairingReceipt, Peer, endpoint_principal_id,
 };
@@ -154,7 +152,7 @@ crate::export_blocking_subscription! {
 fn paired_nodes_update(
     state: LiveSubscriptionState<Vec<Peer>, LogPosition>,
 ) -> MykoPairedNodesUpdate {
-    let (lifecycle, reason) = lifecycle(&state.liveness);
+    let (lifecycle, reason) = crate::project_subscription_liveness(&state.liveness);
     let mut nodes = state
         .value
         .unwrap_or_default()
@@ -214,7 +212,7 @@ fn scope_selection_list(scopes: &[ScopeSelection]) -> String {
 fn nearby_nodes_update(
     state: LiveSubscriptionState<Vec<DiscoveredNode>, u64>,
 ) -> MykoNearbyNodesUpdate {
-    let (lifecycle, reason) = lifecycle(&state.liveness);
+    let (lifecycle, reason) = crate::project_subscription_liveness(&state.liveness);
     let mut nodes = state
         .value
         .unwrap_or_default()
@@ -273,7 +271,7 @@ fn pairing_receipts_update(
     state: LiveSubscriptionState<Vec<PairingReceipt>, LogPosition>,
     local_endpoint_id: &str,
 ) -> Result<MykoPairingReceiptsUpdate, MykoFederationError> {
-    let (lifecycle, reason) = lifecycle(&state.liveness);
+    let (lifecycle, reason) = crate::project_subscription_liveness(&state.liveness);
     let receipts = state
         .value
         .unwrap_or_default()
@@ -310,7 +308,7 @@ fn pairing_receipts_update(
 fn pairing_initiation_update(
     state: LiveSubscriptionState<Option<PairingInitiation>, LogPosition>,
 ) -> Result<MykoPairingInitiationUpdate, MykoFederationError> {
-    let (lifecycle, reason) = lifecycle(&state.liveness);
+    let (lifecycle, reason) = crate::project_subscription_liveness(&state.liveness);
     let Some(initiation) = state.value.flatten() else {
         return Ok(MykoPairingInitiationUpdate {
             lifecycle,
@@ -368,17 +366,6 @@ fn pairing_initiation_update(
             error: Some(failure),
             is_terminal: true,
         }),
-    }
-}
-
-pub(super) fn lifecycle(liveness: &SubscriptionLiveness) -> (String, Option<String>) {
-    match liveness {
-        SubscriptionLiveness::Current => ("current".to_owned(), None),
-        SubscriptionLiveness::Connecting => ("connecting".to_owned(), None),
-        SubscriptionLiveness::Resynchronizing { reason } => {
-            ("resynchronizing".to_owned(), Some(reason.clone()))
-        }
-        SubscriptionLiveness::Invalid { reason } => ("invalid".to_owned(), Some(reason.clone())),
     }
 }
 

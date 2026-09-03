@@ -8,6 +8,7 @@ use myko_app::ApplicationNode;
 use myko_authority::AuthorityPolicy;
 use myko_federation::{AuthorityPresentation, AuthorityRealmId, Principal};
 use myko_node::EndpointId;
+use std::ops::Deref;
 
 use crate::{EmbeddedNodeError, EmbeddedNodeInfo};
 
@@ -129,6 +130,75 @@ pub trait NativeAuthorityAccess: NativeApplicationAccess {
     ///
     /// Returns an error while the application authority is unavailable.
     fn authority_context(&self) -> Result<NativeAuthorityContext, MykoFederationError>;
+}
+
+/// Application state exposed by one active embedded native node.
+///
+/// Concrete applications implement this on their active runtime. Myko can
+/// then provide the native federation adapter without an application-owned
+/// wrapper or transport-specific forwarding implementation.
+pub trait EmbeddedApplicationRuntime: Send + 'static {
+    /// Returns the composed typed application node.
+    fn application(&self) -> &ApplicationNode;
+}
+
+/// Authority state exposed by an active embedded native application.
+pub trait EmbeddedAuthorityRuntime: EmbeddedApplicationRuntime {
+    /// Returns the authenticated authority context for native administration.
+    fn authority_context(&self) -> NativeAuthorityContext;
+}
+
+/// Generic native adapter around an [`EmbeddedNodeHost`].
+///
+/// The adapter implements Myko's federation and authority access traits once
+/// for every embedded application runtime. Application crates retain their
+/// start and stop functions but do not create a forwarding host type.
+pub struct EmbeddedApplicationHost<Active> {
+    host: crate::EmbeddedNodeHost<Active>,
+}
+
+impl<Active> EmbeddedApplicationHost<Active> {
+    /// Wraps a stable-identity embedded node host.
+    #[must_use]
+    pub const fn new(host: crate::EmbeddedNodeHost<Active>) -> Self {
+        Self { host }
+    }
+}
+
+impl<Active> Deref for EmbeddedApplicationHost<Active> {
+    type Target = crate::EmbeddedNodeHost<Active>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.host
+    }
+}
+
+impl<Active> NativeApplicationAccess for EmbeddedApplicationHost<Active>
+where
+    Active: EmbeddedApplicationRuntime,
+{
+    fn application(&self) -> Result<ApplicationNode, MykoFederationError> {
+        self.host
+            .with_active(MykoFederationError::from, |active, _runtime| {
+                Ok(active.application().clone())
+            })
+    }
+
+    fn endpoint_id(&self) -> EndpointId {
+        self.host.info().endpoint_id
+    }
+}
+
+impl<Active> NativeAuthorityAccess for EmbeddedApplicationHost<Active>
+where
+    Active: EmbeddedAuthorityRuntime,
+{
+    fn authority_context(&self) -> Result<NativeAuthorityContext, MykoFederationError> {
+        self.host
+            .with_active(MykoFederationError::from, |active, _runtime| {
+                Ok(active.authority_context())
+            })
+    }
 }
 
 fn transport_error(error: &(impl ToString + ?Sized)) -> MykoFederationError {
