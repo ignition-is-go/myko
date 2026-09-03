@@ -81,6 +81,57 @@ macro_rules! export_blocking_subscription {
     };
 }
 
+/// Exports one concrete keyed collection subscription as lossless typed row
+/// revisions through the uniform Swift lifecycle surface.
+///
+/// Unlike [`export_blocking_subscription!`], the mapper receives the native
+/// [`myko_federation::LiveCollectionRevision`]. Its initial `current()` call
+/// contains one `MapDiff::Initial`; subsequent `next()` calls retain every
+/// insert, update, remove, batch, and lifecycle-only revision in order.
+#[macro_export]
+macro_rules! export_blocking_collection_subscription {
+    (
+        $subscription:ident => $update:ty,
+        field = $field:ident,
+        error = $error:ty,
+        transport_error = $transport_error:path,
+        map = $map:expr $(,)?
+    ) => {
+        #[uniffi::export]
+        impl $subscription {
+            /// Returns a complete typed reset plus the latest collection lifecycle.
+            ///
+            /// # Errors
+            ///
+            /// Returns an application bridge error when the revision cannot be
+            /// projected into its exported update record.
+            pub fn current(&self) -> Result<$update, $error> {
+                let revision = self.$field.current_revision();
+                ($map)(revision, self)
+            }
+
+            /// Waits for and returns the next lossless typed collection revision.
+            ///
+            /// # Errors
+            ///
+            /// Returns an application bridge error when the stream closes or
+            /// its revision cannot be projected into the exported update.
+            pub fn next(&self) -> Result<$update, $error> {
+                let revision = self
+                    .$field
+                    .next_revision()
+                    .map_err(|error| $transport_error(&error))?;
+                ($map)(revision, self)
+            }
+
+            /// Cancels the subscription and wakes a blocked [`Self::next`] call.
+            pub fn cancel(&self) {
+                self.$field.cancel();
+            }
+        }
+    };
+}
+
 struct BlockingRevisionWaiter<R>
 where
     R: CellValue,
@@ -185,6 +236,88 @@ where
     }
 }
 
+struct BlockingCollectionRevisionQueue<T, C>
+where
+    T: CellValue,
+    C: CellValue,
+{
+    owner: Mutex<Option<Box<dyn SubscriptionOwner>>>,
+    notifications_tx: flume::Sender<Option<LiveCollectionRevision<T, C>>>,
+    notifications_rx: flume::Receiver<Option<LiveCollectionRevision<T, C>>>,
+    changes: Mutex<Option<SubscriptionGuard>>,
+    cancelled: AtomicBool,
+}
+
+impl<T, C> BlockingCollectionRevisionQueue<T, C>
+where
+    T: CellValue,
+    C: CellValue,
+{
+    fn new<O>(owner: O, revision: &Cell<LiveCollectionRevision<T, C>, CellImmutable>) -> Self
+    where
+        O: Send + 'static,
+    {
+        let (notifications_tx, notifications_rx) = flume::unbounded();
+        let callback_tx = notifications_tx.clone();
+        let initial = AtomicBool::new(true);
+        let changes = revision.subscribe(move |signal| {
+            if let Signal::Value(revision) = signal
+                && !initial.swap(false, Ordering::AcqRel)
+            {
+                let _ignored = callback_tx.send(Some(revision.as_ref().clone()));
+            }
+        });
+        Self {
+            owner: Mutex::new(Some(Box::new(owner))),
+            notifications_tx,
+            notifications_rx,
+            changes: Mutex::new(Some(changes)),
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    fn next_revision(&self) -> Result<LiveCollectionRevision<T, C>, SubscriptionCancelled> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(SubscriptionCancelled);
+        }
+        match self.notifications_rx.recv() {
+            Ok(Some(revision)) => Ok(revision),
+            Ok(None) | Err(_) => Err(SubscriptionCancelled),
+        }
+    }
+
+    fn discard_pending_revisions(&self) {
+        while matches!(self.notifications_rx.try_recv(), Ok(Some(_))) {}
+    }
+
+    fn cancel(&self) {
+        if self.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Ok(mut changes) = self.changes.lock() {
+            drop(changes.take());
+        }
+        if let Ok(mut owner) = self.owner.lock() {
+            drop(owner.take());
+        }
+        let _ignored = self.notifications_tx.send(None);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+}
+
+impl<T, C> Drop for BlockingCollectionRevisionQueue<T, C>
+where
+    T: CellValue,
+    C: CellValue,
+{
+    fn drop(&mut self) {
+        self.cancel();
+    }
+}
+
 /// A coherent Myko value adapted to synchronous `current`/`next` FFI calls.
 ///
 /// The retained owner may be an in-process, local-socket, Iroh, or other
@@ -256,7 +389,7 @@ where
     C: hyphae::CellValue,
 {
     live: LiveCollection<T, C>,
-    waiter: BlockingRevisionWaiter<LiveCollectionRevision<T, C>>,
+    revisions: BlockingCollectionRevisionQueue<T, C>,
 }
 
 impl<T, C> BlockingCollectionSubscription<T, C>
@@ -271,7 +404,7 @@ where
         O: Send + 'static,
     {
         Self {
-            waiter: BlockingRevisionWaiter::new(owner, live.revision()),
+            revisions: BlockingCollectionRevisionQueue::new(owner, live.revision()),
             live: live.clone(),
         }
     }
@@ -279,9 +412,9 @@ where
     /// Reads the newest coherent collection snapshot without waiting.
     #[must_use]
     pub fn current(&self) -> LiveSubscriptionState<Vec<T>, C> {
-        let revision = self.live.revision().get();
+        self.revisions.discard_pending_revisions();
         let state = self.live.current_state();
-        let current = LiveSubscriptionState {
+        LiveSubscriptionState {
             value: Some(
                 self.live
                     .rows()
@@ -292,9 +425,7 @@ where
             ),
             through: state.through,
             liveness: state.liveness,
-        };
-        self.waiter.observe_current(revision);
-        current
+        }
     }
 
     /// Blocks until the collection changes, then reads its newest snapshot.
@@ -303,19 +434,43 @@ where
     ///
     /// Returns [`SubscriptionCancelled`] after this subscription is cancelled.
     pub fn next(&self) -> Result<LiveSubscriptionState<Vec<T>, C>, SubscriptionCancelled> {
-        self.waiter.wait_for_change()?;
+        let _revision = self.revisions.next_revision()?;
         Ok(self.current())
+    }
+
+    /// Returns a complete typed reset plus the current cursor and liveness.
+    ///
+    /// Use this with [`Self::next_revision`] when the foreign-language adapter
+    /// can apply keyed incremental changes instead of rebuilding a snapshot.
+    #[must_use]
+    pub fn current_revision(&self) -> LiveCollectionRevision<T, C> {
+        self.revisions.discard_pending_revisions();
+        LiveCollectionRevision {
+            diff: Some(hyphae::MapDiff::Initial {
+                entries: self.live.rows().snapshot(),
+            }),
+            state: self.live.current_state(),
+        }
+    }
+
+    /// Blocks until the next lossless typed row or lifecycle revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SubscriptionCancelled`] after this subscription is cancelled.
+    pub fn next_revision(&self) -> Result<LiveCollectionRevision<T, C>, SubscriptionCancelled> {
+        self.revisions.next_revision()
     }
 
     /// Cancels the subscription owner and wakes a blocked [`Self::next`] call.
     pub fn cancel(&self) {
-        self.waiter.cancel();
+        self.revisions.cancel();
     }
 
     /// Reports whether [`Self::cancel`] has been called.
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.waiter.is_cancelled()
+        self.revisions.is_cancelled()
     }
 }
 
@@ -410,6 +565,52 @@ mod tests {
             subscription.next().map(|state| state.value),
             Ok(Some(vec![2]))
         );
+    }
+
+    #[test]
+    fn collection_revision_stream_preserves_every_typed_row_change() {
+        let one = Arc::new(1_u32);
+        let (writer, live) = live_collection(
+            vec![(Arc::<str>::from("one"), Arc::clone(&one))],
+            LiveCollectionState {
+                through: None::<myko_federation::LogPosition>,
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        let subscription = BlockingCollectionSubscription::new((), &live);
+        assert!(matches!(
+            subscription.current_revision().diff,
+            Some(hyphae::MapDiff::Initial { entries }) if entries == [(Arc::from("one"), one.clone())]
+        ));
+
+        let two = Arc::new(2_u32);
+        writer.apply(
+            hyphae::MapDiff::Insert {
+                key: Arc::from("two"),
+                value: Arc::clone(&two),
+            },
+            None,
+        );
+        let three = Arc::new(3_u32);
+        writer.apply(
+            hyphae::MapDiff::Update {
+                key: Arc::from("one"),
+                old_value: one,
+                new_value: Arc::clone(&three),
+            },
+            None,
+        );
+
+        assert!(matches!(
+            subscription.next_revision().map(|revision| revision.diff),
+            Ok(Some(hyphae::MapDiff::Insert { key, value }))
+                if key.as_ref() == "two" && value == two
+        ));
+        assert!(matches!(
+            subscription.next_revision().map(|revision| revision.diff),
+            Ok(Some(hyphae::MapDiff::Update { key, new_value, .. }))
+                if key.as_ref() == "one" && new_value == three
+        ));
     }
 
     #[test]

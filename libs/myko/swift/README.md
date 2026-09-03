@@ -8,13 +8,14 @@ integration owns subscription lifetime and UI invalidation mechanics.
 The directory contains both sides of the native boundary:
 
 - the Rust `myko-swift` crate adapts any typed Hyphae subscription to
-  cancellable synchronous `current`/`next` calls suitable for UniFFI;
+  cancellable synchronous `current`/`next` calls suitable for UniFFI, including
+  lossless keyed collection revisions;
 - the Swift `MykoSwift` package consumes those calls off the main actor,
   delivers revisions on the main actor, rejects stale work after restart, and
   provides structured-concurrency bridging for blocking native calls,
   serialized foreground/background node lifecycle, heterogeneous subscription
-  ownership, and device-only Keychain storage for opaque node identities and
-  secrets.
+  ownership, reusable keyed collection materialization, and device-only
+  Keychain storage for opaque node identities and secrets.
 
 Concrete applications still own their exported records and projection from
 domain entities into presentation data. The Rust-side
@@ -22,6 +23,12 @@ domain entities into presentation data. The Rust-side
 subscription object's uniform `current`/`next`/`cancel` surface. Applications
 do not own transport routing, subscription retention, revision waiting, or
 cancellation.
+
+Keyed query and view results use `export_blocking_collection_subscription!`.
+Its initial update is a typed reset and every later update retains the native
+insert, update, remove, or batch semantics without rebuilding the collection.
+The Swift application applies those projected `upserts` and `removedIDs` to a
+`MykoCollectionState`; it owns only domain-to-presentation mapping and sorting.
 
 An embedded Apple application normally owns one `MykoNodeLifecycle`, registers
 its typed `MykoSubscriptionBinding` values with a `MykoSubscriptionGroup`, and
