@@ -5482,7 +5482,10 @@ dependencies = [
  "flume 0.11.1",
  "hyphae",
  "myko-federation",
+ "myko-node",
+ "tempfile",
  "thiserror 2.0.20",
+ "tokio",
 ]
 
 [[package]]

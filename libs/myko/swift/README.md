@@ -17,6 +17,12 @@ The directory contains both sides of the native boundary:
   ownership, reusable keyed collection materialization, and device-only
   Keychain storage for opaque node identities and secrets.
 
+With the Rust crate's `embedded-node` feature, `EmbeddedNodeHost` also owns the
+durable node identity, platform-supplied Iroh identity, asynchronous runtime,
+and serialized foreground state. A concrete application supplies only its
+typed runtime construction and shutdown callbacks; it does not reimplement
+identity restoration, active-node locking, or foreground lifecycle mechanics.
+
 Concrete applications still own their exported records and projection from
 domain entities into presentation data. The Rust-side
 `export_blocking_subscription!` macro generates each concrete UniFFI

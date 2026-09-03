@@ -8,8 +8,16 @@ license = "AGPL-3.0-or-later"
 [lints]
 workspace = true
 
+[features]
+embedded-node = ["dep:myko-node", "dep:tokio"]
+
 [dependencies]
 flume.workspace = true
 hyphae.workspace = true
 myko-federation.workspace = true
+myko-node = { workspace = true, optional = true }
 thiserror.workspace = true
+tokio = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = "3"

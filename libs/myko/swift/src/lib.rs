@@ -20,6 +20,11 @@ use myko_federation::{
     LiveCollection, LiveCollectionRevision, LiveSubscription, LiveSubscriptionState,
 };
 
+#[cfg(feature = "embedded-node")]
+mod embedded_node;
+#[cfg(feature = "embedded-node")]
+pub use embedded_node::{EmbeddedNodeError, EmbeddedNodeHost, EmbeddedNodeInfo};
+
 trait SubscriptionOwner: Send {}
 
 impl<T> SubscriptionOwner for T where T: Send {}
