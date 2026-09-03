@@ -8,8 +8,8 @@
 
 #![forbid(unsafe_code)]
 
-mod reactive;
 mod authority;
+mod reactive;
 
 pub use authority::*;
 
@@ -26,7 +26,7 @@ use std::{
     num::NonZeroUsize,
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc, Mutex, RwLock, Weak,
         atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll, Waker},
@@ -34,7 +34,9 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
+use parking_lot::ReentrantMutex;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -296,6 +298,16 @@ pub struct CommandRequest {
     pub service_id: ServiceId,
     pub scope_id: ScopeId,
     pub principal_id: PrincipalId,
+    /// Original principal and store-verifiable executor/provenance chain.
+    #[serde(default = "default_authority_presentation")]
+    pub authority: AuthorityPresentation,
+    /// Claims declared before handler execution. Actual reads/mutations must
+    /// remain within this set and are verified again before commit.
+    #[serde(default)]
+    pub resource_claims: Vec<ResourceClaim>,
+    #[serde(default)]
+    pub application_capabilities: Vec<CapabilityId>,
+    pub arguments_digest: Option<String>,
     pub command_type: String,
     pub payload: Vec<u8>,
 }
@@ -325,11 +337,20 @@ impl CommandSubmission {
     #[doc(hidden)]
     #[must_use]
     pub fn authenticate(self, scope_id: ScopeId, principal_id: PrincipalId) -> CommandRequest {
+        let authority = AuthorityPresentation::direct_node(principal_id.clone());
+        let arguments_digest = Some(digest_bytes(&self.payload));
         CommandRequest {
             id: self.id,
             service_id: self.service_id,
-            scope_id,
+            scope_id: scope_id.clone(),
             principal_id,
+            authority,
+            resource_claims: vec![ResourceClaim::scope(
+                scope_id.clone(),
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest,
             command_type: self.command_type,
             payload: self.payload,
         }
@@ -337,6 +358,15 @@ impl CommandSubmission {
 }
 
 impl CommandRequest {
+    /// Binds an untrusted wire presentation after the session has authenticated
+    /// the final executor; the policy still validates every stored hop.
+    #[must_use]
+    pub fn with_authority(mut self, authority: AuthorityPresentation) -> Self {
+        self.principal_id = authority.principal.id.clone();
+        self.authority = authority;
+        self
+    }
+
     fn for_command<C: MykoCommand>(
         scope_id: ScopeId,
         principal_id: PrincipalId,
@@ -357,8 +387,12 @@ impl CommandRequest {
     }
 }
 
+fn digest_bytes(value: &[u8]) -> String {
+    format!("sha256:{:x}", Sha256::digest(value))
+}
+
 /// Transport-neutral operation presented to a node access policy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccessOperation {
     ReadHistory,
@@ -373,6 +407,9 @@ pub enum AccessOperation {
     WatchCommand,
     WatchCommands,
     CancelCommand,
+    ApproveAuthority,
+    AdministerAuthority,
+    DelegateAuthority,
 }
 
 /// One transport-neutral authority over a single federated scope.
@@ -380,7 +417,7 @@ pub enum AccessOperation {
 /// These are deliberately narrower than an application's own permissions.
 /// They describe what a remote Myko principal may do with framework data; an
 /// application may layer its domain authorization on top of them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FederationPermission {
     /// Read the current materialized state in the scope.
@@ -478,10 +515,12 @@ const fn required_permission(operation: AccessOperation) -> Option<FederationPer
         AccessOperation::SubmitCommand | AccessOperation::CancelCommand => {
             Some(FederationPermission::Write)
         }
+        AccessOperation::AdministerAuthority => Some(FederationPermission::Admin),
+        AccessOperation::DelegateAuthority => Some(FederationPermission::Reshare),
         // Live topics do not carry a scope identifier. A scope grant must not
         // accidentally disclose them; an application can authorize exact
         // topics in its own policy once it has mapped them to a scope.
-        AccessOperation::SubscribeLive => None,
+        AccessOperation::SubscribeLive | AccessOperation::ApproveAuthority => None,
     }
 }
 
@@ -498,7 +537,10 @@ const fn stream_permission(operation: AccessOperation) -> Option<FederationPermi
         | AccessOperation::SubmitCommand
         | AccessOperation::ReadCommand
         | AccessOperation::ReadCommands
-        | AccessOperation::CancelCommand => None,
+        | AccessOperation::CancelCommand
+        | AccessOperation::ApproveAuthority
+        | AccessOperation::AdministerAuthority
+        | AccessOperation::DelegateAuthority => None,
     }
 }
 
@@ -590,10 +632,7 @@ impl AccessRequest {
             command_type: None,
             command_principal_id: None,
             scope_selections: vec![ScopeSelection::Exact(scope_id.clone())],
-            resource_claims: vec![ResourceClaim::scope(
-                scope_id,
-                ResourceClaimKind::Primary,
-            )],
+            resource_claims: vec![ResourceClaim::scope(scope_id, ResourceClaimKind::Primary)],
             application_capabilities: Vec::new(),
             arguments_digest: None,
             effect_digest: None,
@@ -681,6 +720,11 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
         0
     }
 
+    /// Subscribes to durable changes that may alter existing decisions.
+    fn subscribe_changes(&self) -> Option<flume::Receiver<u64>> {
+        None
+    }
+
     /// Intersects selective replication with current grants. Policies without
     /// a richer model must authorize the complete request or deny it.
     fn constrain_replication(
@@ -695,6 +739,44 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
         } else {
             Err(decision)
         }
+    }
+
+    /// Records an approval only when the transport executor and authority
+    /// presentation are validated by a durable policy implementation.
+    fn approve(
+        &self,
+        _authenticated_executor: &PrincipalId,
+        presentation: &AuthorityPresentation,
+        _challenge_id: &ChallengeId,
+        _approved: bool,
+    ) -> Result<ApprovalDecision, AuthorizationDecision> {
+        Err(AuthorizationDecision::Deny(DenyDecision {
+            report: AuthorizationReport {
+                evaluated_at: Utc::now(),
+                principal: presentation.principal.clone(),
+                executor: presentation.executor.clone(),
+                operation: AccessOperation::ApproveAuthority,
+                explanations: vec![AuthorizationExplanation {
+                    code: "approval_unsupported".to_owned(),
+                    message: "this access policy does not accept approvals".to_owned(),
+                    grant_id: None,
+                    delegation_id: None,
+                    obligation_id: None,
+                    constraint: None,
+                }],
+            },
+            visibility: ResourceVisibility::Unbound,
+        }))
+    }
+
+    /// Registers one opaque application capability before grants may cite it.
+    fn register_application_capability(
+        &self,
+        _authenticated_executor: &PrincipalId,
+        _presentation: &AuthorityPresentation,
+        _capability: ApplicationCapability,
+    ) -> Result<(), String> {
+        Err("this access policy does not accept application capabilities".to_owned())
     }
 }
 
@@ -787,6 +869,18 @@ pub enum CommandState {
     /// command for another ordered attempt.
     Retrying {
         reason: String,
+    },
+    /// Handler effects were computed and bound to a durable authority
+    /// challenge. The command is not executable again until that exact
+    /// challenge is approved through an authenticated session.
+    AuthorizationPending {
+        challenge_id: ChallengeId,
+        batch: Box<ChangeBatch>,
+        result: Vec<u8>,
+        /// Immutable approvals accumulated while advancing an exact parked
+        /// effect through multiple obligations.
+        #[serde(default)]
+        approvals: Vec<ApprovalId>,
     },
     Executing,
     CommittedLocally {
@@ -1369,7 +1463,7 @@ pub struct ReplicationBatch {
 }
 
 /// Parent relationships between concrete, service-qualified scope roots.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopeTopology {
     parents: HashMap<ScopeId, ScopeId>,
     known: HashSet<ScopeId>,
@@ -1489,6 +1583,45 @@ impl ScopeTopology {
         self.known.contains(scope_id)
     }
 
+    /// Returns every concrete scope observed by authoritative topology in
+    /// stable order. This is used to narrow broad replication requests into
+    /// explicit grant-checkable selections.
+    #[must_use]
+    pub fn scopes(&self) -> Vec<ScopeId> {
+        let mut scopes = self.known.iter().cloned().collect::<Vec<_>>();
+        scopes.sort_unstable_by(|left, right| left.as_str().cmp(right.as_str()));
+        scopes
+    }
+
+    #[doc(hidden)]
+    pub fn proof_for(&self, selections: &[ScopeSelection]) -> Self {
+        let mut proof = Self::default();
+        for selection in selections {
+            let roots = std::iter::once(selection.root().clone()).chain(match selection {
+                ScopeSelection::Exact(_) => Vec::new(),
+                ScopeSelection::Subtree(root) => self.descendants(root),
+            });
+            for scope in roots {
+                proof.known.insert(scope.clone());
+                let mut child = scope;
+                while let Some(parent) = self.parents.get(&child) {
+                    proof.known.insert(parent.clone());
+                    proof.parents.insert(child.clone(), parent.clone());
+                    child = parent.clone();
+                }
+            }
+        }
+        proof
+    }
+
+    fn merge_proof(&mut self, proof: &Self) -> Result<(), NodeError> {
+        self.known.extend(proof.known.iter().cloned());
+        for (child, parent) in &proof.parents {
+            self.insert(child.clone(), parent.clone())?;
+        }
+        Ok(())
+    }
+
     /// Returns whether `scope_id` is transitively nested under `ancestor`.
     #[must_use]
     pub fn is_descendant_of(&self, scope_id: &ScopeId, ancestor: &ScopeId) -> bool {
@@ -1518,6 +1651,13 @@ pub enum ReplicationSelection {
     },
     /// Copies the union of exact scopes and complete nested subtrees.
     Scopes(Vec<ScopeSelection>),
+    /// Framework-derived intersection of an original request and authorized
+    /// scope pieces. Keeping the original selector prevents a service-scoped
+    /// request from becoming a cross-service scope grant on the wire.
+    Intersection {
+        requested: Box<ReplicationSelection>,
+        scopes: Vec<ScopeSelection>,
+    },
 }
 
 /// One scope component in a composable replication selection.
@@ -1528,6 +1668,38 @@ pub enum ScopeSelection {
     Exact(ScopeId),
     /// Selects the named scope and every recursively nested scope.
     Subtree(ScopeId),
+}
+
+impl ScopeSelection {
+    /// Returns the selected root scope.
+    #[must_use]
+    pub const fn root(&self) -> &ScopeId {
+        match self {
+            Self::Exact(scope) | Self::Subtree(scope) => scope,
+        }
+    }
+
+    /// Returns whether this selection contains another selection under known
+    /// authoritative topology.
+    #[must_use]
+    pub fn covers_in(&self, other: &Self, topology: &ScopeTopology) -> bool {
+        match (self, other) {
+            (Self::Exact(parent), Self::Exact(child)) => parent == child,
+            (Self::Subtree(parent), Self::Exact(child) | Self::Subtree(child)) => {
+                parent == child || topology.is_descendant_of(child, parent)
+            }
+            (Self::Exact(_), Self::Subtree(_)) => false,
+        }
+    }
+
+    fn contains_scope(&self, scope: &ScopeId, topology: &ScopeTopology) -> bool {
+        match self {
+            Self::Exact(selected) => selected == scope,
+            Self::Subtree(selected) => {
+                selected == scope || topology.is_descendant_of(scope, selected)
+            }
+        }
+    }
 }
 
 impl ReplicationSelection {
@@ -1554,6 +1726,13 @@ impl ReplicationSelection {
                     }
                 })
             }),
+            Self::Intersection { requested, scopes } => {
+                requested.includes(event)
+                    && event
+                        .affected_scope_ids()
+                        .iter()
+                        .all(|scope_id| scopes.iter().any(|selection| selection.root() == scope_id))
+            }
         }
     }
 
@@ -1571,7 +1750,46 @@ impl ReplicationSelection {
                     }
                 })
             }),
+            Self::Intersection { requested, scopes } => {
+                requested.includes_in(event, topology)
+                    && event.affected_scope_ids().iter().all(|scope_id| {
+                        scopes
+                            .iter()
+                            .any(|selection| selection.contains_scope(scope_id, topology))
+                    })
+            }
             Self::All | Self::Service(_) | Self::ServiceScope { .. } => self.includes(event),
+        }
+    }
+
+    fn covers_scope_selection(
+        &self,
+        service_id: &ServiceId,
+        requested: &ScopeSelection,
+        topology: &ScopeTopology,
+    ) -> bool {
+        match self {
+            Self::All => true,
+            Self::Service(selected_service) => selected_service == service_id,
+            Self::ServiceScope {
+                service_id: selected_service,
+                scope_id,
+            } => {
+                selected_service == service_id
+                    && ScopeSelection::Exact(scope_id.clone()).covers_in(requested, topology)
+            }
+            Self::Scopes(selections) => selections
+                .iter()
+                .any(|selection| selection.covers_in(requested, topology)),
+            Self::Intersection {
+                requested: original,
+                scopes,
+            } => {
+                original.covers_scope_selection(service_id, requested, topology)
+                    && scopes
+                        .iter()
+                        .any(|selection| selection.covers_in(requested, topology))
+            }
         }
     }
 }
@@ -1586,6 +1804,10 @@ pub struct SelectedReplicationBatch {
     pub selection: ReplicationSelection,
     pub after: Option<LogPosition>,
     pub through: Option<LogPosition>,
+    /// Minimal authoritative parent-edge proof for the effective selection.
+    /// Hidden siblings are omitted.
+    #[serde(default)]
+    pub topology: ScopeTopology,
     pub events: Vec<EventEnvelope>,
 }
 
@@ -1752,10 +1974,14 @@ impl ReplicationCursorKey {
 /// The source identity is part of the checkpoint because a transport peer can
 /// be reconfigured with a fresh Myko journal. In that case its positions start
 /// over and a follower must not apply the old journal's cursor to the new one.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplicationCheckpoint {
     pub source_node: NodeId,
     pub position: Option<LogPosition>,
+    /// Effective selection that produced this cursor. `None` denotes the full
+    /// unfiltered history cursor used by legacy followers.
+    #[serde(default)]
+    pub selection: Option<ReplicationSelection>,
 }
 
 impl ReplicationCheckpoint {
@@ -1765,6 +1991,20 @@ impl ReplicationCheckpoint {
         Self {
             source_node,
             position,
+            selection: None,
+        }
+    }
+
+    #[must_use]
+    pub fn selected(
+        source_node: NodeId,
+        position: Option<LogPosition>,
+        selection: ReplicationSelection,
+    ) -> Self {
+        Self {
+            source_node,
+            position,
+            selection: Some(selection),
         }
     }
 }
@@ -1805,6 +2045,13 @@ impl NodeEvent {
     #[must_use]
     pub fn affected_scope_ids(&self) -> Vec<ScopeId> {
         let mut scopes = HashSet::from([self.scope_id().clone()]);
+        scopes.extend(
+            command_from_event(self)
+                .request
+                .resource_claims
+                .iter()
+                .map(|claim| claim.selection.root().clone()),
+        );
         if let Self::CommandCommitted { batch, .. } = self {
             scopes.extend(batch.changes.iter().filter_map(|mutation| {
                 mutation
@@ -1908,6 +2155,8 @@ pub enum NodeError {
     CorruptHistory(String),
     #[error("invalid replication batch: {0}")]
     InvalidReplicationBatch(String),
+    #[error("command authorization denied: {0}")]
+    AuthorizationDenied(String),
 }
 
 /// Durable append-only storage used by the reference event-sourced backend.
@@ -3050,6 +3299,107 @@ pub struct ItemQueryUpdate<T> {
     pub value: T,
 }
 
+/// One authorization-filtered reactive selected-query update.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedQueryUpdate<T> {
+    pub position: LogPosition,
+    pub result: SelectedQueryResult<T>,
+}
+
+/// Replay-then-live selected query. Rechecks use the continuation phase, so
+/// idle/event-driven authorization checks never consume another bounded use.
+pub struct SelectedQueryWatch<Q: ItemQuery> {
+    node: Node,
+    authenticated_executor: PrincipalId,
+    presentation: AuthorityPresentation,
+    source_node: NodeId,
+    requested: ScopeSelection,
+    query: Q,
+    wake: flume::Receiver<SelectedQueryWake>,
+    cursor: Option<LogPosition>,
+}
+
+enum SelectedQueryWake {
+    Event(LogPosition),
+    Policy,
+    Timer,
+}
+
+impl<Q: ItemQuery> SelectedQueryWatch<Q> {
+    fn reauthorize(&self) -> Result<SelectedQueryResult<Q::Output>, NodeError> {
+        let result = self.node.query_items_selected_phase(
+            self.authenticated_executor.clone(),
+            self.presentation.clone(),
+            self.source_node,
+            &self.requested,
+            AuthorizationPhase::Continuation,
+            self.query.clone(),
+        )?;
+        if let Some(decision) = result.authorization.as_ref() {
+            return Err(NodeError::AuthorizationDenied(decision.public_message()));
+        }
+        Ok(result)
+    }
+
+    /// Waits for the next durable event and recomputes the authorization-
+    /// filtered selected projection.
+    pub fn recv(&mut self) -> Result<SelectedQueryUpdate<Q::Output>, NodeError> {
+        loop {
+            match self
+                .wake
+                .recv()
+                .map_err(|_| NodeError::SubscriptionDisconnected)?
+            {
+                SelectedQueryWake::Event(position) => {
+                    self.cursor = Some(position);
+                    return Ok(SelectedQueryUpdate {
+                        position,
+                        result: self.reauthorize()?,
+                    });
+                }
+                SelectedQueryWake::Policy => {
+                    let result = self.reauthorize()?;
+                    if let Some(position) = self.cursor {
+                        return Ok(SelectedQueryUpdate { position, result });
+                    }
+                }
+                SelectedQueryWake::Timer => {
+                    let _still_authorized = self.reauthorize()?;
+                }
+            }
+        }
+    }
+
+    /// Asynchronously waits for the next selected projection revision.
+    pub async fn recv_async(&mut self) -> Result<SelectedQueryUpdate<Q::Output>, NodeError> {
+        loop {
+            match self
+                .wake
+                .recv_async()
+                .await
+                .map_err(|_| NodeError::SubscriptionDisconnected)?
+            {
+                SelectedQueryWake::Event(position) => {
+                    self.cursor = Some(position);
+                    return Ok(SelectedQueryUpdate {
+                        position,
+                        result: self.reauthorize()?,
+                    });
+                }
+                SelectedQueryWake::Policy => {
+                    let result = self.reauthorize()?;
+                    if let Some(position) = self.cursor {
+                        return Ok(SelectedQueryUpdate { position, result });
+                    }
+                }
+                SelectedQueryWake::Timer => {
+                    let _still_authorized = self.reauthorize()?;
+                }
+            }
+        }
+    }
+}
+
 /// Replay-then-live typed query materialization over a typed projection.
 ///
 /// The application sees generated query results rather than federation
@@ -3431,6 +3781,33 @@ pub trait NodeBackend: Send + Sync + 'static {
     /// the retry lifecycle cannot be durably appended.
     fn retry(&self, command_id: CommandId, reason: String) -> Result<CommandSnapshot, NodeError>;
 
+    /// Parks an executing command behind one exact durable challenge.
+    fn await_authorization(
+        &self,
+        command_id: CommandId,
+        challenge_id: ChallengeId,
+        batch: ChangeBatch,
+        result: Vec<u8>,
+    ) -> Result<CommandSnapshot, NodeError>;
+
+    /// Resubmits a parked command with the approval that released it.
+    fn resume_authorization(
+        &self,
+        command_id: CommandId,
+        challenge_id: &ChallengeId,
+        approval_id: ApprovalId,
+    ) -> Result<CommandSnapshot, NodeError>;
+
+    /// Advances a parked exact effect to its next required challenge without
+    /// rerunning the application handler.
+    fn advance_authorization(
+        &self,
+        command_id: CommandId,
+        challenge_id: &ChallengeId,
+        next_challenge_id: ChallengeId,
+        approval_id: ApprovalId,
+    ) -> Result<CommandSnapshot, NodeError>;
+
     /// Cancels submitted or executing work without committing graph changes.
     ///
     /// A terminal command is returned unchanged, making repeated cancellation
@@ -3516,7 +3893,39 @@ pub trait NodeBackend: Send + Sync + 'static {
 pub struct Node {
     backend: Arc<dyn NodeBackend>,
     readiness: Arc<NodeReadiness>,
-    command_dispatch: Arc<Mutex<()>>,
+    command_dispatch: Arc<ReentrantMutex<()>>,
+    command_access_policy: Arc<RwLock<Option<Weak<dyn AccessPolicy>>>>,
+    replication_coverage: Arc<RwLock<HashMap<(NodeId, ReplicationSelection), Option<LogPosition>>>>,
+    replication_resumptions:
+        Arc<RwLock<HashMap<(NodeId, ReplicationSelection), Option<LogPosition>>>>,
+    replication_sources: Arc<RwLock<HashMap<NodeId, ReplicationSourceAvailability>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplicationSourceAvailability {
+    Reachable,
+    Unreachable,
+    Undiscoverable,
+}
+
+/// A command whose complete declared claims were authorized before handler
+/// execution. Private fields prevent callers from manufacturing preflight.
+pub struct PreparedCommand {
+    node: Node,
+    request: CommandRequest,
+    permit: PermitDecision,
+}
+
+impl PreparedCommand {
+    #[must_use]
+    pub const fn permit(&self) -> &PermitDecision {
+        &self.permit
+    }
+
+    /// Durably submits the exact request that produced this preflight permit.
+    pub fn submit(self) -> Result<CommandSnapshot, NodeError> {
+        self.node.backend.submit(self.request)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -3635,11 +4044,26 @@ impl<C: MykoCommand> DeclaredCommand<C> {
     ///
     /// Returns an error if the typed body cannot be serialized.
     pub fn request(&self) -> Result<CommandRequest, NodeError> {
+        let authority = AuthorityPresentation::direct_node(self.principal_id.clone());
         Ok(CommandRequest {
             id: self.id,
             service_id: ServiceId::new(C::SERVICE_ID),
             scope_id: self.scope_id.clone(),
             principal_id: self.principal_id.clone(),
+            authority,
+            resource_claims: vec![ResourceClaim {
+                selection: ScopeSelection::Exact(self.scope_id.clone()),
+                kind: ResourceClaimKind::Primary,
+                source_node: None,
+                service_id: Some(ServiceId::new(C::SERVICE_ID)),
+                item_type: None,
+                item_id: None,
+                required_permissions: vec![FederationPermission::Write],
+                required_operations: vec![AccessOperation::SubmitCommand],
+                required_capabilities: Vec::new(),
+            }],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
             command_type: C::COMMAND_TYPE.to_owned(),
             payload: serde_json::to_vec(&self.body)
                 .map_err(|error| NodeError::CommandEncoding(error.to_string()))?,
@@ -3954,6 +4378,18 @@ pub enum CommandDispatchDisposition {
     Resumed,
 }
 
+impl CommandDispatchDisposition {
+    fn for_resumed_state(state: &CommandState) -> Self {
+        match state {
+            CommandState::Rejected { .. } | CommandState::Cancelled { .. } => Self::Rejected,
+            CommandState::Retrying { .. } | CommandState::AuthorizationPending { .. } => {
+                Self::Retrying
+            }
+            _ => Self::Resumed,
+        }
+    }
+}
+
 /// Application-selected lifecycle for a declared handler failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandHandlerError {
@@ -4142,6 +4578,8 @@ pub struct CommandContext {
     node: Node,
     command: CommandSnapshot,
     changes: Arc<Mutex<Vec<ItemMutation>>>,
+    actual_claims: Arc<Mutex<Vec<ResourceClaim>>>,
+    actual_capabilities: Arc<Mutex<Vec<CapabilityId>>>,
 }
 
 impl CommandContext {
@@ -4186,6 +4624,17 @@ impl CommandContext {
     /// Returns an error if the item cannot be encoded or belongs to another service.
     pub fn emit_set_in<T: MykoItem>(&self, scope_id: &ScopeId, item: &T) -> Result<(), NodeError> {
         self.require_item_service::<T>()?;
+        self.record_actual_claim(ResourceClaim {
+            selection: ScopeSelection::Exact(scope_id.clone()),
+            kind: ResourceClaimKind::Affected,
+            source_node: Some(self.node.node_id()),
+            service_id: Some(ServiceId::new(T::SERVICE_ID)),
+            item_type: Some(T::ITEM_TYPE.to_owned()),
+            item_id: Some(item.id().as_ref().to_owned()),
+            required_permissions: vec![FederationPermission::Write],
+            required_operations: Vec::new(),
+            required_capabilities: Vec::new(),
+        })?;
         let mut mutation = ItemMutation::set(item)
             .map_err(|error| NodeError::InvalidItemMutation(error.to_string()))?;
         mutation.scope_id = Some(scope_id.as_str().to_owned());
@@ -4216,6 +4665,17 @@ impl CommandContext {
         id: &T::Id,
     ) -> Result<(), NodeError> {
         self.require_item_service::<T>()?;
+        self.record_actual_claim(ResourceClaim {
+            selection: ScopeSelection::Exact(scope_id.clone()),
+            kind: ResourceClaimKind::Affected,
+            source_node: Some(self.node.node_id()),
+            service_id: Some(ServiceId::new(T::SERVICE_ID)),
+            item_type: Some(T::ITEM_TYPE.to_owned()),
+            item_id: Some(id.as_ref().to_owned()),
+            required_permissions: vec![FederationPermission::Write],
+            required_operations: Vec::new(),
+            required_capabilities: Vec::new(),
+        })?;
         let mut mutation = ItemMutation::delete::<T>(id);
         mutation.scope_id = Some(scope_id.as_str().to_owned());
         self.changes
@@ -4236,8 +4696,68 @@ impl CommandContext {
         Q: ItemQuery,
     {
         self.require_item_service::<Q::Item>()?;
+        self.record_actual_claim(ResourceClaim {
+            selection: ScopeSelection::Exact(self.command.request.scope_id.clone()),
+            kind: ResourceClaimKind::Referenced,
+            source_node: Some(self.node.node_id()),
+            service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
+            item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![FederationPermission::ReadState],
+            required_operations: vec![AccessOperation::ReadItems],
+            required_capabilities: Vec::new(),
+        })?;
         self.node
             .query_items_in(self.node.node_id(), &self.command.request.scope_id, query)
+    }
+
+    /// Executes a command-safe authoritative exact/subtree query after
+    /// validating the selected read against preflight claims.
+    pub fn query_selected<Q>(
+        &self,
+        selection: ScopeSelection,
+        query: Q,
+    ) -> Result<Q::Output, NodeError>
+    where
+        Q: ItemQuery,
+    {
+        self.require_item_service::<Q::Item>()?;
+        self.record_actual_claim(ResourceClaim {
+            selection: selection.clone(),
+            kind: ResourceClaimKind::Referenced,
+            source_node: Some(self.node.node_id()),
+            service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
+            item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![FederationPermission::ReadState],
+            required_operations: vec![AccessOperation::ReadItems],
+            required_capabilities: Vec::new(),
+        })?;
+        let history = self.node.events_after(None)?;
+        let topology = ScopeTopology::from_events(&history)?;
+        let mut projection = ItemProjection::default();
+        for envelope in &history {
+            if envelope.origin.node_id != self.node.node_id() {
+                continue;
+            }
+            let NodeEvent::CommandCommitted { command, .. } = &envelope.event else {
+                continue;
+            };
+            if command.request.service_id.as_str() != Q::Item::SERVICE_ID.as_str() {
+                continue;
+            }
+            let affected = envelope.event.affected_scope_ids();
+            if affected.is_empty()
+                || !affected
+                    .iter()
+                    .all(|scope| selection.contains_scope(scope, &topology))
+            {
+                continue;
+            }
+            let _changed =
+                apply_item_envelope(&mut projection, envelope, Some(self.node.node_id()), None)?;
+        }
+        Ok(query.execute(&projection))
     }
 
     fn require_item_service<T: MykoItem>(&self) -> Result<(), NodeError> {
@@ -4246,6 +4766,75 @@ impl CommandContext {
                 command_service: self.command.request.service_id.as_str().to_owned(),
                 item_service: T::SERVICE_ID.as_str(),
             });
+        }
+        Ok(())
+    }
+
+    /// Records a handler-observed claim after proving it was declared during
+    /// preflight. This check happens before the read or mutation is performed.
+    #[doc(hidden)]
+    pub fn record_actual_claim(&self, claim: ResourceClaim) -> Result<(), NodeError> {
+        let topology = self.node.scope_topology()?;
+        if !self
+            .command
+            .request
+            .resource_claims
+            .iter()
+            .any(|declared| declared.covers_actual(&claim, &topology))
+        {
+            return Err(NodeError::AuthorizationDenied(format!(
+                "handler used undeclared {:?} claim {:?}",
+                claim.kind, claim.selection
+            )));
+        }
+        let mut actual = self.actual_claims.lock().map_err(|_| NodeError::Poisoned)?;
+        if !actual.contains(&claim) {
+            actual.push(claim);
+        }
+        Ok(())
+    }
+
+    /// Verifies a nested handler's declared authority before entering it,
+    /// without treating a potential claim as an actual effect.
+    #[doc(hidden)]
+    pub fn validate_declared_claim(&self, claim: &ResourceClaim) -> Result<(), NodeError> {
+        let topology = self.node.scope_topology()?;
+        if self
+            .command
+            .request
+            .resource_claims
+            .iter()
+            .any(|declared| declared.covers_declared(claim, &topology))
+        {
+            Ok(())
+        } else {
+            Err(NodeError::AuthorizationDenied(format!(
+                "nested handler declared authority outside outer preflight: {:?}",
+                claim.selection
+            )))
+        }
+    }
+
+    /// Records an opaque application capability before nested execution. The
+    /// outer command must have declared it during transport preflight.
+    #[doc(hidden)]
+    pub fn record_actual_capability(&self, capability: CapabilityId) -> Result<(), NodeError> {
+        if !self
+            .command
+            .request
+            .application_capabilities
+            .contains(&capability)
+        {
+            return Err(NodeError::AuthorizationDenied(format!(
+                "handler used undeclared application capability {capability}"
+            )));
+        }
+        let mut actual = self
+            .actual_capabilities
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?;
+        if !actual.contains(&capability) {
+            actual.push(capability);
         }
         Ok(())
     }
@@ -4273,18 +4862,85 @@ impl CommandContext {
             .lock()
             .map_err(|_| NodeError::Poisoned)?
             .clone();
-        self.node.commit(
-            self.command.request.id,
-            ChangeBatch {
-                id: BatchId::new(),
-                command_id: self.command.request.id,
-                service_id: self.command.request.service_id.clone(),
-                scope_id: self.command.request.scope_id.clone(),
-                causal_parents: vec![self.command.updated_at],
-                changes,
-            },
-            result,
-        )
+        let actual_claims = self
+            .actual_claims
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .clone();
+        let actual_capabilities = self
+            .actual_capabilities
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .clone();
+        let batch = ChangeBatch {
+            id: BatchId::new(),
+            command_id: self.command.request.id,
+            service_id: self.command.request.service_id.clone(),
+            scope_id: self.command.request.scope_id.clone(),
+            causal_parents: vec![self.command.updated_at],
+            changes,
+        };
+        let policy = self
+            .node
+            .command_access_policy
+            .read()
+            .map_err(|_| NodeError::Poisoned)?
+            .as_ref()
+            .and_then(Weak::upgrade);
+        let Some(policy) = policy else {
+            let reason = "no command access policy is installed".to_owned();
+            let _rejected = self.node.reject(self.command.request.id, reason.clone())?;
+            return Err(NodeError::AuthorizationDenied(reason));
+        };
+        let effect_digest = serde_json::to_vec(&(
+            "myko-command-effect-v1",
+            &batch,
+            &actual_claims,
+            &actual_capabilities,
+            &result,
+        ))
+        .map(|bytes| digest_bytes(&bytes))
+        .map_err(|error| NodeError::ResultEncoding(error.to_string()))?;
+        let request = AccessRequest {
+            principal_id: self.command.request.authority.executor.id.clone(),
+            presentation: self.command.request.authority.clone(),
+            operation: AccessOperation::SubmitCommand,
+            service_id: Some(self.command.request.service_id.clone()),
+            scope_id: Some(self.command.request.scope_id.clone()),
+            command_id: Some(self.command.request.id),
+            command_type: Some(self.command.request.command_type.clone()),
+            command_principal_id: Some(self.command.request.principal_id.clone()),
+            scope_selections: actual_claims
+                .iter()
+                .map(|claim| claim.selection.clone())
+                .collect(),
+            resource_claims: actual_claims,
+            application_capabilities: actual_capabilities,
+            arguments_digest: self.command.request.arguments_digest.clone(),
+            effect_digest: Some(effect_digest),
+            lease: None,
+            authorization_phase: AuthorizationPhase::Effect,
+            topology: self.node.scope_topology().ok(),
+            live_topics: Vec::new(),
+        };
+        let decision = policy.decide(&request);
+        match decision {
+            AuthorizationDecision::Permit(_) => {}
+            AuthorizationDecision::Challenge { challenge, .. } => {
+                return self.node.backend.await_authorization(
+                    self.command.request.id,
+                    challenge.id,
+                    batch,
+                    result,
+                );
+            }
+            AuthorizationDecision::Deny(denied) => {
+                let reason = AuthorizationDecision::Deny(denied).public_message();
+                let _rejected = self.node.reject(self.command.request.id, reason.clone())?;
+                return Err(NodeError::AuthorizationDenied(reason));
+            }
+        }
+        self.node.commit(self.command.request.id, batch, result)
     }
 
     /// Rejects this executing command without committing emitted items.
@@ -4336,8 +4992,206 @@ impl Node {
         Self {
             backend,
             readiness: Arc::new(NodeReadiness::default()),
-            command_dispatch: Arc::new(Mutex::new(())),
+            command_dispatch: Arc::new(ReentrantMutex::new(())),
+            command_access_policy: Arc::new(RwLock::new(None)),
+            replication_coverage: Arc::new(RwLock::new(HashMap::new())),
+            replication_resumptions: Arc::new(RwLock::new(HashMap::new())),
+            replication_sources: Arc::new(RwLock::new(HashMap::new())),
         }
+    }
+
+    /// Registers a transport-validated durable cursor for continuity checking.
+    /// This does not establish query completeness; only ingestion of a fresh
+    /// authenticated batch whose `after` equals this cursor can do so.
+    #[doc(hidden)]
+    pub fn prepare_replication_resume(
+        &self,
+        source_node: NodeId,
+        selection: ReplicationSelection,
+        position: Option<LogPosition>,
+    ) -> Result<(), NodeError> {
+        self.replication_resumptions
+            .write()
+            .map_err(|_| NodeError::Poisoned)?
+            .insert((source_node, selection), position);
+        Ok(())
+    }
+
+    /// Records transport-owned knowledge about a configured replication
+    /// source. This never establishes completeness by itself.
+    #[doc(hidden)]
+    pub fn mark_replication_source_reachable(&self, source_node: NodeId) -> Result<(), NodeError> {
+        self.replication_sources
+            .write()
+            .map_err(|_| NodeError::Poisoned)?
+            .insert(source_node, ReplicationSourceAvailability::Reachable);
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn mark_replication_source_unreachable(
+        &self,
+        source_node: NodeId,
+    ) -> Result<(), NodeError> {
+        self.replication_sources
+            .write()
+            .map_err(|_| NodeError::Poisoned)?
+            .insert(source_node, ReplicationSourceAvailability::Unreachable);
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn mark_replication_source_undiscoverable(
+        &self,
+        source_node: NodeId,
+    ) -> Result<(), NodeError> {
+        self.replication_sources
+            .write()
+            .map_err(|_| NodeError::Poisoned)?
+            .insert(source_node, ReplicationSourceAvailability::Undiscoverable);
+        Ok(())
+    }
+
+    /// Installs the policy used for effect-phase command admission. Session
+    /// preflight and commit admission must share this exact policy instance.
+    ///
+    /// # Errors
+    /// Returns an error if the policy slot is poisoned.
+    pub fn set_command_access_policy(
+        &self,
+        policy: Arc<dyn AccessPolicy>,
+    ) -> Result<(), NodeError> {
+        *self
+            .command_access_policy
+            .write()
+            .map_err(|_| NodeError::Poisoned)? = Some(Arc::downgrade(&policy));
+        Ok(())
+    }
+
+    fn record_replication_coverage(
+        &self,
+        source_node: NodeId,
+        selection: ReplicationSelection,
+        after: Option<LogPosition>,
+        through: Option<LogPosition>,
+    ) -> Result<(), NodeError> {
+        self.mark_replication_source_reachable(source_node)?;
+        let key = (source_node, selection);
+        let trusted_resume = self
+            .replication_resumptions
+            .read()
+            .map_err(|_| NodeError::Poisoned)?
+            .get(&key)
+            .is_some_and(|position| *position == after);
+        let mut coverage = self
+            .replication_coverage
+            .write()
+            .map_err(|_| NodeError::Poisoned)?;
+        match coverage.get(&key) {
+            Some(previous) if *previous == after => {
+                coverage.insert(key.clone(), through);
+            }
+            None if after.is_none() || trusted_resume => {
+                coverage.insert(key.clone(), through);
+            }
+            _ => {}
+        }
+        drop(coverage);
+        if trusted_resume {
+            self.replication_resumptions
+                .write()
+                .map_err(|_| NodeError::Poisoned)?
+                .remove(&key);
+        }
+        Ok(())
+    }
+
+    fn selected_projection_coverage(
+        &self,
+        source_node: NodeId,
+        service_id: &ServiceId,
+        authorized: &[ScopeSelection],
+        topology: &ScopeTopology,
+    ) -> Result<(ProjectionCoverage, Option<LogPosition>), NodeError> {
+        if source_node == self.node_id() {
+            let through = self.events_after(None)?.last().map(|event| event.position);
+            return Ok((ProjectionCoverage::LocalAuthoritative, through));
+        }
+        let availability = self
+            .replication_sources
+            .read()
+            .map_err(|_| NodeError::Poisoned)?
+            .get(&source_node)
+            .copied();
+        if availability == Some(ReplicationSourceAvailability::Unreachable) {
+            return Ok((ProjectionCoverage::Unreachable, None));
+        }
+        if availability == Some(ReplicationSourceAvailability::Undiscoverable) {
+            return Ok((ProjectionCoverage::Undiscoverable, None));
+        }
+        let coverage = self
+            .replication_coverage
+            .read()
+            .map_err(|_| NodeError::Poisoned)?;
+        let observed_source = self
+            .events_after(None)?
+            .iter()
+            .any(|event| event.origin.node_id == source_node);
+        let mut through: Option<LogPosition> = None;
+        let all_covered = authorized.iter().all(|requested| {
+            let best = coverage
+                .iter()
+                .filter(|((candidate_source, selection), _)| {
+                    candidate_source == &source_node
+                        && selection.covers_scope_selection(service_id, requested, topology)
+                })
+                .filter_map(|(_, candidate_through)| *candidate_through)
+                .max();
+            let found = coverage.iter().any(|((candidate_source, selection), _)| {
+                candidate_source == &source_node
+                    && selection.covers_scope_selection(service_id, requested, topology)
+            });
+            if found {
+                through = match (through, best) {
+                    (Some(current), Some(candidate)) => Some(current.min(candidate)),
+                    (None, value) => value,
+                    (value, None) => value,
+                };
+            }
+            found
+        });
+        Ok(if all_covered && !authorized.is_empty() {
+            (ProjectionCoverage::ReplicatedComplete, through)
+        } else if availability.is_none() && !observed_source {
+            (ProjectionCoverage::Undiscoverable, None)
+        } else {
+            (ProjectionCoverage::ReplicatedIncomplete, None)
+        })
+    }
+
+    /// Releases an authority-pending command only for its exact challenge and
+    /// attaches the immutable approval to the original presentation.
+    #[doc(hidden)]
+    pub fn resume_authorization(
+        &self,
+        command_id: CommandId,
+        challenge_id: &ChallengeId,
+        approval_id: ApprovalId,
+    ) -> Result<CommandSnapshot, NodeError> {
+        self.backend
+            .resume_authorization(command_id, challenge_id, approval_id)
+    }
+
+    #[doc(hidden)]
+    pub fn advance_authorization(
+        &self,
+        command_id: CommandId,
+        challenge_id: &ChallengeId,
+        next_challenge_id: ChallengeId,
+        approval_id: ApprovalId,
+    ) -> Result<CommandSnapshot, NodeError> {
+        self.backend
+            .advance_authorization(command_id, challenge_id, next_challenge_id, approval_id)
     }
 
     /// Holds the node below its startup-ready barrier until the guard is
@@ -4377,7 +5231,79 @@ impl Node {
     ///
     /// Returns an error on backend failure or conflicting command reuse.
     pub fn submit(&self, request: CommandRequest) -> Result<CommandSnapshot, NodeError> {
-        self.backend.submit(request)
+        let authenticated_executor = request.authority.executor.id.clone();
+        self.prepare_command(authenticated_executor, request)
+            .map_err(|decision| NodeError::AuthorizationDenied(decision.public_message()))?
+            .submit()
+    }
+
+    /// Authorizes all declared command resources before any handler runs.
+    /// The authenticated executor comes from the transport or the embedding
+    /// application boundary and cannot be replaced by the wire presentation.
+    #[doc(hidden)]
+    pub fn prepare_command(
+        &self,
+        authenticated_executor: PrincipalId,
+        request: CommandRequest,
+    ) -> Result<PreparedCommand, AuthorizationDecision> {
+        match self.command_authorization(
+            authenticated_executor,
+            &request,
+            AuthorizationPhase::Admission,
+        ) {
+            AuthorizationDecision::Permit(permit) => Ok(PreparedCommand {
+                node: self.clone(),
+                request,
+                permit,
+            }),
+            decision => Err(decision),
+        }
+    }
+
+    fn command_authorization(
+        &self,
+        authenticated_executor: PrincipalId,
+        request: &CommandRequest,
+        phase: AuthorizationPhase,
+    ) -> AuthorizationDecision {
+        let mut access = AccessRequest::scoped(
+            authenticated_executor.clone(),
+            request.authority.clone(),
+            AccessOperation::SubmitCommand,
+            request.scope_id.clone(),
+        );
+        access.service_id = Some(request.service_id.clone());
+        access.command_id = Some(request.id);
+        access.command_type = Some(request.command_type.clone());
+        access.command_principal_id = Some(request.principal_id.clone());
+        access.scope_selections = request
+            .resource_claims
+            .iter()
+            .map(|claim| claim.selection.clone())
+            .collect();
+        access.resource_claims.clone_from(&request.resource_claims);
+        access
+            .application_capabilities
+            .clone_from(&request.application_capabilities);
+        access
+            .arguments_digest
+            .clone_from(&request.arguments_digest);
+        access.authorization_phase = phase;
+        access.topology = self.scope_topology().ok();
+        if request.authority.executor.id != authenticated_executor
+            || request.authority.principal.id != request.principal_id
+        {
+            return DenyAllAccessPolicy.decide(&access);
+        }
+        let Some(policy) = self
+            .command_access_policy
+            .read()
+            .ok()
+            .and_then(|policy| policy.as_ref().and_then(Weak::upgrade))
+        else {
+            return DenyAllAccessPolicy.decide(&access);
+        };
+        policy.decide(&access)
     }
 
     /// Durably submits a typed application command without executing it.
@@ -4433,15 +5359,48 @@ impl Node {
     /// Returns an error if the command is unknown, originated on another node,
     /// or cannot be claimed durably.
     pub fn begin_command(&self, command_id: CommandId) -> Result<TypedCommandAdmission, NodeError> {
+        let current = self
+            .command(command_id)?
+            .ok_or(NodeError::UnknownCommand(command_id))?;
         let origin = self
             .command_origin(command_id)?
             .ok_or(NodeError::UnknownCommand(command_id))?;
         if origin != self.node_id() {
             return Err(NodeError::ForeignCommand { command_id, origin });
         }
+        if matches!(
+            current.state,
+            CommandState::Submitted | CommandState::Retrying { .. }
+        ) {
+            let decision = self.command_authorization(
+                current.request.authority.executor.id.clone(),
+                &current.request,
+                AuthorizationPhase::Continuation,
+            );
+            if !decision.is_permit() {
+                return Ok(match self.claim(command_id)? {
+                    CommandAdmission::Execute(_) => TypedCommandAdmission::Resume(
+                        self.backend.reject(command_id, decision.public_message())?,
+                    ),
+                    CommandAdmission::Resume(command) => TypedCommandAdmission::Resume(command),
+                });
+            }
+        }
         Ok(match self.claim(command_id)? {
             CommandAdmission::Execute(command) => TypedCommandAdmission::Execute(CommandContext {
                 node: self.clone(),
+                actual_claims: Arc::new(Mutex::new(
+                    command
+                        .request
+                        .resource_claims
+                        .iter()
+                        .filter(|claim| claim.kind == ResourceClaimKind::Primary)
+                        .cloned()
+                        .collect(),
+                )),
+                actual_capabilities: Arc::new(Mutex::new(
+                    command.request.application_capabilities.clone(),
+                )),
                 command,
                 changes: Arc::new(Mutex::new(Vec::new())),
             }),
@@ -4811,18 +5770,21 @@ impl Node {
         // Claim, execute, and commit are one process-local ownership interval.
         // A competing synchronous caller must observe the terminal result, not
         // the transient `Executing` snapshot produced by the retained driver.
-        let _dispatch = self
-            .command_dispatch
-            .lock()
-            .map_err(|_| NodeError::Poisoned)?;
+        let _dispatch = self.command_dispatch.lock();
         match self.begin_declared_command::<C>(command_id) {
             Ok(DeclaredCommandAdmission::Execute(mut context)) => {
                 let handled = handle(&mut context);
                 let (command, disposition) = match handled {
-                    Ok(output) => (
-                        context.commit(&output)?,
-                        CommandDispatchDisposition::Committed,
-                    ),
+                    Ok(output) => {
+                        let command = context.commit(&output)?;
+                        let disposition =
+                            if matches!(command.state, CommandState::AuthorizationPending { .. }) {
+                                CommandDispatchDisposition::Retrying
+                            } else {
+                                CommandDispatchDisposition::Committed
+                            };
+                        (command, disposition)
+                    }
                     Err(CommandHandlerError::Reject(reason)) => (
                         context.reject(format!("declared command handler failed: {reason}"))?,
                         CommandDispatchDisposition::Rejected,
@@ -4836,10 +5798,13 @@ impl Node {
                     disposition,
                 })
             }
-            Ok(DeclaredCommandAdmission::Resume(command)) => Ok(CommandDispatchResult {
-                command,
-                disposition: CommandDispatchDisposition::Resumed,
-            }),
+            Ok(DeclaredCommandAdmission::Resume(command)) => {
+                let disposition = CommandDispatchDisposition::for_resumed_state(&command.state);
+                Ok(CommandDispatchResult {
+                    command,
+                    disposition,
+                })
+            }
             Err(
                 error @ (NodeError::CommandDecoding(_) | NodeError::CommandSchemaMismatch { .. }),
             ) => {
@@ -4850,7 +5815,9 @@ impl Node {
                         CommandDispatchDisposition::Rejected,
                     ),
                     TypedCommandAdmission::Resume(command) => {
-                        (command, CommandDispatchDisposition::Resumed)
+                        let disposition =
+                            CommandDispatchDisposition::for_resumed_state(&command.state);
+                        (command, disposition)
                     }
                 };
                 Ok(CommandDispatchResult {
@@ -5202,6 +6169,320 @@ impl Node {
             .query(query))
     }
 
+    /// Queries one exact scope or nested subtree after the installed policy
+    /// derives its authorized intersection. Neither authorization nor
+    /// replication completeness is accepted from the caller.
+    ///
+    /// # Errors
+    /// Returns an error when history or nested topology is malformed.
+    pub fn query_items_selected<Q>(
+        &self,
+        authenticated_executor: PrincipalId,
+        presentation: AuthorityPresentation,
+        source_node: NodeId,
+        requested: &ScopeSelection,
+        query: Q,
+    ) -> Result<SelectedQueryResult<Q::Output>, NodeError>
+    where
+        Q: ItemQuery,
+    {
+        self.query_items_selected_phase(
+            authenticated_executor,
+            presentation,
+            source_node,
+            requested,
+            AuthorizationPhase::Admission,
+            query,
+        )
+    }
+
+    /// Looks up one typed item inside an authorization-filtered selection.
+    /// `AuthoritativelyAbsent` is returned only when the entire requested view
+    /// is authorized and the node owns complete current-state coverage.
+    pub fn query_item_selected<T>(
+        &self,
+        authenticated_executor: PrincipalId,
+        presentation: AuthorityPresentation,
+        source_node: NodeId,
+        requested: &ScopeSelection,
+        query: T::GetByIdQuery,
+    ) -> Result<SelectedQueryResult<Option<T>>, NodeError>
+    where
+        T: MykoItem,
+    {
+        let mut result = self.query_items_selected(
+            authenticated_executor,
+            presentation,
+            source_node,
+            requested,
+            query,
+        )?;
+        if result.complete
+            && result.requested_fully_authorized
+            && result.value.as_ref().is_some_and(Option::is_none)
+        {
+            result.visibility = ResourceVisibility::AuthoritativelyAbsent;
+        }
+        Ok(result)
+    }
+
+    fn query_items_selected_phase<Q>(
+        &self,
+        authenticated_executor: PrincipalId,
+        presentation: AuthorityPresentation,
+        source_node: NodeId,
+        requested: &ScopeSelection,
+        authorization_phase: AuthorizationPhase,
+        query: Q,
+    ) -> Result<SelectedQueryResult<Q::Output>, NodeError>
+    where
+        Q: ItemQuery,
+    {
+        let history = self.events_after(None)?;
+        let topology = ScopeTopology::from_events(&history)?;
+        let Some(policy) = self
+            .command_access_policy
+            .read()
+            .map_err(|_| NodeError::Poisoned)?
+            .as_ref()
+            .and_then(Weak::upgrade)
+        else {
+            return Ok(SelectedQueryResult {
+                value: None,
+                visibility: ResourceVisibility::Unbound,
+                coverage: if source_node == self.node_id() {
+                    ProjectionCoverage::LocalAuthoritative
+                } else {
+                    ProjectionCoverage::ReplicatedIncomplete
+                },
+                through: None,
+                complete: false,
+                requested_fully_authorized: false,
+                authorization: None,
+                included_scopes: Vec::new(),
+            });
+        };
+        let mut access = AccessRequest::scoped(
+            authenticated_executor,
+            presentation,
+            AccessOperation::ReadItems,
+            requested.root().clone(),
+        );
+        access.service_id = Some(ServiceId::new(Q::Item::SERVICE_ID));
+        access.scope_selections = vec![requested.clone()];
+        access.resource_claims = vec![ResourceClaim {
+            selection: requested.clone(),
+            kind: ResourceClaimKind::Primary,
+            source_node: Some(source_node),
+            service_id: access.service_id.clone(),
+            item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![FederationPermission::ReadState],
+            required_operations: vec![AccessOperation::ReadItems],
+            required_capabilities: Vec::new(),
+        }];
+        access.authorization_phase = authorization_phase;
+        access.topology = Some(topology.clone());
+        let (authorized, policy_covers_request) = match policy.constrain_replication(
+            &access,
+            &ReplicationSelection::Scopes(vec![requested.clone()]),
+            &topology,
+        ) {
+            Ok(ReplicationSelection::Scopes(authorized)) => (authorized, true),
+            Ok(ReplicationSelection::Intersection { scopes, .. }) => {
+                let covers = scopes
+                    .iter()
+                    .any(|selection| selection.covers_in(requested, &topology));
+                (scopes, covers)
+            }
+            Ok(selection) => match selection {
+                ReplicationSelection::ServiceScope { scope_id, .. } => {
+                    (vec![ScopeSelection::Exact(scope_id)], true)
+                }
+                ReplicationSelection::All | ReplicationSelection::Service(_) => {
+                    (vec![requested.clone()], true)
+                }
+                ReplicationSelection::Scopes(_) | ReplicationSelection::Intersection { .. } => {
+                    (Vec::new(), false)
+                }
+            },
+            Err(decision) => {
+                return Ok(SelectedQueryResult {
+                    value: None,
+                    visibility: match decision {
+                        AuthorizationDecision::Deny(ref denied) => denied.visibility,
+                        AuthorizationDecision::Challenge { .. } => ResourceVisibility::Unauthorized,
+                        AuthorizationDecision::Permit(_) => ResourceVisibility::Unbound,
+                    },
+                    coverage: if source_node == self.node_id() {
+                        ProjectionCoverage::LocalAuthoritative
+                    } else {
+                        ProjectionCoverage::ReplicatedIncomplete
+                    },
+                    through: None,
+                    complete: false,
+                    requested_fully_authorized: false,
+                    authorization: Some(decision),
+                    included_scopes: Vec::new(),
+                });
+            }
+        };
+        let requested_scopes = match requested {
+            ScopeSelection::Exact(scope) => vec![scope.clone()],
+            ScopeSelection::Subtree(root) => std::iter::once(root.clone())
+                .chain(topology.descendants(root))
+                .collect(),
+        };
+        let fully_authorized = policy_covers_request
+            && requested_scopes.iter().all(|scope| {
+                authorized
+                    .iter()
+                    .any(|selection| selection.contains_scope(scope, &topology))
+            });
+        let (coverage, through) = self.selected_projection_coverage(
+            source_node,
+            &ServiceId::new(Q::Item::SERVICE_ID),
+            &authorized,
+            &topology,
+        )?;
+        let source_complete = matches!(
+            coverage,
+            ProjectionCoverage::LocalAuthoritative | ProjectionCoverage::ReplicatedComplete
+        );
+        let topology_complete = !policy_covers_request
+            || !matches!(requested, ScopeSelection::Subtree(root) if !topology.knows(root));
+        let complete = source_complete && topology_complete;
+        let mut projection = ItemProjection::default();
+        for envelope in &history {
+            if envelope.origin.node_id != source_node {
+                continue;
+            }
+            let NodeEvent::CommandCommitted { command, .. } = &envelope.event else {
+                continue;
+            };
+            if command.request.service_id.as_str() != Q::Item::SERVICE_ID.as_str() {
+                continue;
+            }
+            let affected = envelope.event.affected_scope_ids();
+            if affected.is_empty()
+                || !affected
+                    .iter()
+                    .all(|scope| requested.contains_scope(scope, &topology))
+                || !affected.iter().all(|scope| {
+                    authorized
+                        .iter()
+                        .any(|selection| selection.contains_scope(scope, &topology))
+                })
+            {
+                continue;
+            }
+            let _changed = apply_item_envelope(&mut projection, envelope, Some(source_node), None)?;
+        }
+        let visibility = match coverage {
+            ProjectionCoverage::Unreachable => ResourceVisibility::Unreachable,
+            ProjectionCoverage::Undiscoverable => ResourceVisibility::Undiscoverable,
+            ProjectionCoverage::ReplicatedIncomplete => ResourceVisibility::NotReplicated,
+            ProjectionCoverage::LocalAuthoritative | ProjectionCoverage::ReplicatedComplete
+                if !topology_complete =>
+            {
+                ResourceVisibility::TopologyIncomplete
+            }
+            ProjectionCoverage::LocalAuthoritative | ProjectionCoverage::ReplicatedComplete => {
+                ResourceVisibility::Present
+            }
+        };
+        Ok(SelectedQueryResult {
+            value: Some(query.execute(&projection)),
+            visibility,
+            coverage,
+            through,
+            complete,
+            requested_fully_authorized: fully_authorized,
+            authorization: None,
+            included_scopes: authorized
+                .iter()
+                .map(|selection| selection.root().clone())
+                .collect(),
+        })
+    }
+
+    /// Starts a gap-free selected query watch. Authorization and local-source
+    /// completeness are derived exactly as in [`Self::query_items_selected`].
+    pub fn watch_items_selected<Q>(
+        &self,
+        authenticated_executor: PrincipalId,
+        presentation: AuthorityPresentation,
+        source_node: NodeId,
+        requested: ScopeSelection,
+        query: Q,
+    ) -> Result<(SelectedQueryResult<Q::Output>, SelectedQueryWatch<Q>), NodeError>
+    where
+        Q: ItemQuery,
+    {
+        let history = self.events_after(None)?;
+        let through = history.last().map(|event| event.position);
+        let snapshot = self.query_items_selected(
+            authenticated_executor.clone(),
+            presentation.clone(),
+            source_node,
+            &requested,
+            query.clone(),
+        )?;
+        let mut events = self.subscribe(through)?;
+        let authorization_changes = self
+            .command_access_policy
+            .read()
+            .map_err(|_| NodeError::Poisoned)?
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .and_then(|policy| policy.subscribe_changes());
+        let (wake_send, wake) = flume::bounded(1);
+        std::thread::Builder::new()
+            .name("myko-selected-query-watch".to_owned())
+            .spawn(move || {
+                loop {
+                    match events.recv_timeout(Duration::from_millis(50)) {
+                        Ok(Some(event)) => {
+                            if wake_send
+                                .send(SelectedQueryWake::Event(event.position))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Err(_) => break,
+                        Ok(None) => {
+                            let policy_changed = authorization_changes
+                                .as_ref()
+                                .is_some_and(|changes| changes.try_recv().is_ok());
+                            let wake = if policy_changed {
+                                SelectedQueryWake::Policy
+                            } else {
+                                SelectedQueryWake::Timer
+                            };
+                            if wake_send.try_send(wake).is_err() && wake_send.is_disconnected() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            })
+            .map_err(|error| NodeError::Backend(error.to_string()))?;
+        Ok((
+            snapshot,
+            SelectedQueryWatch {
+                node: self.clone(),
+                authenticated_executor,
+                presentation,
+                source_node,
+                requested,
+                query,
+                wake,
+                cursor: through,
+            },
+        ))
+    }
+
     /// Returns authoritative sources that have changed one typed item schema
     /// in the requested service scope.
     ///
@@ -5551,11 +6832,19 @@ impl Node {
                 events.push(event);
             }
         }
+        let topology_proof = topology.proof_for(match &selection {
+            ReplicationSelection::Scopes(scopes)
+            | ReplicationSelection::Intersection { scopes, .. } => scopes.as_slice(),
+            ReplicationSelection::All
+            | ReplicationSelection::Service(_)
+            | ReplicationSelection::ServiceScope { .. } => &[],
+        });
         Ok(SelectedReplicationBatch {
             source_node: self.node_id(),
             selection,
             after,
             through,
+            topology: topology_proof,
             events,
         })
     }
@@ -5568,6 +6857,9 @@ impl Node {
     /// or contains an invalid atomic change batch.
     pub fn ingest_batch(&self, batch: ReplicationBatch) -> Result<ReplicationReport, NodeError> {
         validate_replication_batch(&batch)?;
+        let source_node = batch.source_node;
+        let after = batch.after;
+        let through = batch.through;
         let mut applied = 0usize;
         let mut duplicates = 0usize;
         for event in batch.events {
@@ -5576,9 +6868,10 @@ impl Node {
                 IngestStatus::Duplicate => duplicates = duplicates.saturating_add(1),
             }
         }
+        self.record_replication_coverage(source_node, ReplicationSelection::All, after, through)?;
         Ok(ReplicationReport {
-            source_node: batch.source_node,
-            through: batch.through,
+            source_node,
+            through,
             applied,
             duplicates,
         })
@@ -5598,6 +6891,10 @@ impl Node {
         batch: ScopedReplicationBatch,
     ) -> Result<ScopedReplicationReport, NodeError> {
         validate_scoped_replication_batch(&batch)?;
+        let source_node = batch.source_node;
+        let scope_id = batch.scope_id.clone();
+        let after = batch.after;
+        let through = batch.through;
         let mut applied = 0usize;
         let mut duplicates = 0usize;
         for event in batch.events {
@@ -5606,10 +6903,16 @@ impl Node {
                 IngestStatus::Duplicate => duplicates = duplicates.saturating_add(1),
             }
         }
+        self.record_replication_coverage(
+            source_node,
+            ReplicationSelection::Scopes(vec![ScopeSelection::Exact(scope_id.clone())]),
+            after,
+            through,
+        )?;
         Ok(ScopedReplicationReport {
-            source_node: batch.source_node,
-            scope_id: batch.scope_id,
-            through: batch.through,
+            source_node,
+            scope_id,
+            through,
             applied,
             duplicates,
         })
@@ -5627,6 +6930,10 @@ impl Node {
     ) -> Result<SelectedReplicationReport, NodeError> {
         let mut topology = self.scope_topology()?;
         validate_selected_replication_batch(&batch, &mut topology)?;
+        let source_node = batch.source_node;
+        let selection = batch.selection.clone();
+        let after = batch.after;
+        let through = batch.through;
         let mut applied = 0usize;
         let mut duplicates = 0usize;
         for event in batch.events {
@@ -5635,10 +6942,11 @@ impl Node {
                 IngestStatus::Duplicate => duplicates = duplicates.saturating_add(1),
             }
         }
+        self.record_replication_coverage(source_node, selection.clone(), after, through)?;
         Ok(SelectedReplicationReport {
-            source_node: batch.source_node,
-            selection: batch.selection,
-            through: batch.through,
+            source_node,
+            selection,
+            through,
             applied,
             duplicates,
         })
@@ -5718,6 +7026,38 @@ fn validate_selected_replication_batch(
         return Err(NodeError::InvalidReplicationBatch(
             "selected replication cursor moved backwards".to_owned(),
         ));
+    }
+    topology.merge_proof(&batch.topology)?;
+    if let ReplicationSelection::Intersection { requested, scopes } = &batch.selection {
+        let safely_bounded = scopes.iter().all(|scope| match requested.as_ref() {
+            ReplicationSelection::All => true,
+            ReplicationSelection::Scopes(requested) => requested
+                .iter()
+                .any(|requested| requested.covers_in(scope, topology)),
+            ReplicationSelection::Intersection {
+                requested,
+                scopes: outer_scopes,
+            } => {
+                outer_scopes
+                    .iter()
+                    .any(|allowed| allowed.covers_in(scope, topology))
+                    && match requested.as_ref() {
+                        ReplicationSelection::All => true,
+                        ReplicationSelection::Scopes(requested) => requested
+                            .iter()
+                            .any(|requested| requested.covers_in(scope, topology)),
+                        ReplicationSelection::Service(_)
+                        | ReplicationSelection::ServiceScope { .. } => true,
+                        ReplicationSelection::Intersection { .. } => false,
+                    }
+            }
+            ReplicationSelection::Service(_) | ReplicationSelection::ServiceScope { .. } => true,
+        });
+        if !safely_bounded {
+            return Err(NodeError::InvalidReplicationBatch(
+                "effective replication intersection is not proven beneath its request".to_owned(),
+            ));
+        }
     }
     let mut previous = batch.after;
     for event in &batch.events {
@@ -6220,6 +7560,140 @@ impl NodeBackend for InMemoryBackend {
         Ok(snapshot)
     }
 
+    fn await_authorization(
+        &self,
+        command_id: CommandId,
+        challenge_id: ChallengeId,
+        batch: ChangeBatch,
+        result: Vec<u8>,
+    ) -> Result<CommandSnapshot, NodeError> {
+        let mut state = self.state.lock().map_err(|_| NodeError::Poisoned)?;
+        let existing = state
+            .commands
+            .get(&command_id)
+            .cloned()
+            .ok_or(NodeError::UnknownCommand(command_id))?;
+        if !matches!(existing.state, CommandState::Executing) {
+            return Err(NodeError::CommandNotExecuting(command_id));
+        }
+        let position = state.next_position;
+        let origin = EventId::new(self.node_id, position);
+        let snapshot = CommandSnapshot {
+            request: existing.request,
+            state: CommandState::AuthorizationPending {
+                challenge_id,
+                batch: Box::new(batch),
+                result,
+                approvals: Vec::new(),
+            },
+            result: None,
+            updated_at: origin,
+        };
+        let envelope =
+            self.append_locked(&mut state, NodeEvent::CommandLifecycle(snapshot.clone()))?;
+        Self::broadcast_locked(&mut state, &envelope);
+        drop(state);
+        Ok(snapshot)
+    }
+
+    fn resume_authorization(
+        &self,
+        command_id: CommandId,
+        challenge_id: &ChallengeId,
+        approval_id: ApprovalId,
+    ) -> Result<CommandSnapshot, NodeError> {
+        let mut state = self.state.lock().map_err(|_| NodeError::Poisoned)?;
+        let existing = state
+            .commands
+            .get(&command_id)
+            .cloned()
+            .ok_or(NodeError::UnknownCommand(command_id))?;
+        let CommandState::AuthorizationPending {
+            challenge_id: expected,
+            batch,
+            result,
+            mut approvals,
+        } = existing.state
+        else {
+            return Err(NodeError::CommandNotExecuting(command_id));
+        };
+        if &expected != challenge_id {
+            return Err(NodeError::CommandNotExecuting(command_id));
+        }
+        if !approvals.contains(&approval_id) {
+            approvals.push(approval_id);
+        }
+        let position = state.next_position;
+        let origin = EventId::new(self.node_id, position);
+        let snapshot = CommandSnapshot {
+            request: existing.request,
+            state: CommandState::CommittedLocally {
+                batch_id: batch.id,
+                position: origin,
+            },
+            result: Some(result),
+            updated_at: origin,
+        };
+        let envelope = self.append_locked(
+            &mut state,
+            NodeEvent::CommandCommitted {
+                command: snapshot.clone(),
+                batch: *batch,
+            },
+        )?;
+        Self::broadcast_locked(&mut state, &envelope);
+        drop(state);
+        Ok(snapshot)
+    }
+
+    fn advance_authorization(
+        &self,
+        command_id: CommandId,
+        challenge_id: &ChallengeId,
+        next_challenge_id: ChallengeId,
+        approval_id: ApprovalId,
+    ) -> Result<CommandSnapshot, NodeError> {
+        let mut state = self.state.lock().map_err(|_| NodeError::Poisoned)?;
+        let existing = state
+            .commands
+            .get(&command_id)
+            .cloned()
+            .ok_or(NodeError::UnknownCommand(command_id))?;
+        let CommandState::AuthorizationPending {
+            challenge_id: expected,
+            batch,
+            result,
+            mut approvals,
+        } = existing.state
+        else {
+            return Err(NodeError::CommandNotExecuting(command_id));
+        };
+        if &expected != challenge_id {
+            return Err(NodeError::CommandNotExecuting(command_id));
+        }
+        if !approvals.contains(&approval_id) {
+            approvals.push(approval_id);
+        }
+        let position = state.next_position;
+        let origin = EventId::new(self.node_id, position);
+        let snapshot = CommandSnapshot {
+            request: existing.request,
+            state: CommandState::AuthorizationPending {
+                challenge_id: next_challenge_id,
+                batch,
+                result,
+                approvals,
+            },
+            result: None,
+            updated_at: origin,
+        };
+        let envelope =
+            self.append_locked(&mut state, NodeEvent::CommandLifecycle(snapshot.clone()))?;
+        Self::broadcast_locked(&mut state, &envelope);
+        drop(state);
+        Ok(snapshot)
+    }
+
     fn cancel(&self, command_id: CommandId, reason: String) -> Result<CommandSnapshot, NodeError> {
         let mut state = self.state.lock().map_err(|_| NodeError::Poisoned)?;
         let existing = state
@@ -6331,9 +7805,59 @@ mod tests {
     use super::*;
     use myko_items::{myko_item, myko_service};
 
+    fn install_allow_all(node: &Node) -> Arc<dyn AccessPolicy> {
+        let policy: Arc<dyn AccessPolicy> = Arc::new(AllowAllAccessPolicy);
+        node.set_command_access_policy(policy.clone()).unwrap();
+        policy
+    }
+
+    fn allow_all_node() -> Node {
+        static POLICY: std::sync::OnceLock<Arc<dyn AccessPolicy>> = std::sync::OnceLock::new();
+        let node = Node::in_memory();
+        let policy = POLICY
+            .get_or_init(|| Arc::new(AllowAllAccessPolicy))
+            .clone();
+        node.set_command_access_policy(policy).unwrap();
+        node
+    }
+
+    #[derive(Debug)]
+    struct SelectedScopesPolicy {
+        allowed: Vec<ScopeSelection>,
+    }
+
+    impl AccessPolicy for SelectedScopesPolicy {
+        fn authorize(&self, _request: &AccessRequest) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn constrain_replication(
+            &self,
+            request: &AccessRequest,
+            selection: &ReplicationSelection,
+            topology: &ScopeTopology,
+        ) -> Result<ReplicationSelection, AuthorizationDecision> {
+            let requested = request.scope_selections.first();
+            let scopes = self
+                .allowed
+                .iter()
+                .filter(|candidate| {
+                    requested.is_some_and(|requested| {
+                        requested.contains_scope(candidate.root(), topology)
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(ReplicationSelection::Intersection {
+                requested: Box::new(selection.clone()),
+                scopes,
+            })
+        }
+    }
+
     #[test]
     fn startup_gates_are_shared_by_every_node_clone() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let peer_handle = node.clone();
         assert!(node.is_ready());
 
@@ -6387,10 +7911,10 @@ mod tests {
         request.scope_id = None;
         request.resource_claims.clear();
         request.scope_selections = vec![
-                ScopeSelection::Exact(project.clone()),
-                ScopeSelection::Subtree(first_scene.clone()),
-                ScopeSelection::Subtree(second_scene.clone()),
-            ];
+            ScopeSelection::Exact(project.clone()),
+            ScopeSelection::Subtree(first_scene.clone()),
+            ScopeSelection::Subtree(second_scene.clone()),
+        ];
         let permissions = vec![
             FederationPermission::ReadHistory,
             FederationPermission::Subscribe,
@@ -6426,7 +7950,7 @@ mod tests {
 
     #[test]
     fn new_nested_scope_must_be_created_from_its_parent_scope() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let project_id = FederationProjectId::from("project-1");
         let scene_id = FederationSceneId::from("scene-1");
         let scene_scope = ScopeId::for_item::<FederationScene>(&scene_id);
@@ -6459,7 +7983,7 @@ mod tests {
 
     #[test]
     fn nested_scope_parent_is_immutable() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let first_project_id = FederationProjectId::from("project-1");
         let second_project_id = FederationProjectId::from("project-2");
         let scene_id = FederationSceneId::from("scene-1");
@@ -6598,11 +8122,33 @@ mod tests {
     }
 
     fn request(id: CommandId) -> CommandRequest {
+        let principal_id = PrincipalId::new("human:test");
+        let scope_id = ScopeId::new("session:test");
         CommandRequest {
             id,
             service_id: ServiceId::new(TestService::SERVICE_ID),
-            scope_id: ScopeId::new("session:test"),
-            principal_id: PrincipalId::new("human:test"),
+            scope_id: scope_id.clone(),
+            principal_id: principal_id.clone(),
+            authority: AuthorityPresentation::direct_node(principal_id),
+            resource_claims: vec![ResourceClaim {
+                selection: ScopeSelection::Exact(scope_id),
+                kind: ResourceClaimKind::Primary,
+                source_node: None,
+                service_id: Some(ServiceId::new(TestService::SERVICE_ID)),
+                item_type: None,
+                item_id: None,
+                required_permissions: vec![
+                    FederationPermission::ReadState,
+                    FederationPermission::Write,
+                ],
+                required_operations: vec![
+                    AccessOperation::ReadItems,
+                    AccessOperation::SubmitCommand,
+                ],
+                required_capabilities: Vec::new(),
+            }],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
             command_type: "prompt".to_owned(),
             payload: b"hello".to_vec(),
         }
@@ -6694,7 +8240,8 @@ mod tests {
         let project_scope = ScopeId::for_item::<FederationProject>(project_id);
         let scene_scope = ScopeId::for_item::<FederationScene>(scene_id);
         let mut request = request(CommandId::new());
-        request.scope_id = project_scope;
+        request.scope_id = project_scope.clone();
+        request.resource_claims[0].selection = ScopeSelection::Exact(project_scope);
         let executing = node.admit(request.clone()).unwrap().snapshot().clone();
         let scene = FederationScene {
             id: scene_id.clone(),
@@ -6726,7 +8273,7 @@ mod tests {
 
     #[test]
     fn stable_command_id_executes_once_and_resumes_after_commit() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let request = request(CommandId::new());
 
         assert!(node.admit(request.clone()).unwrap().should_execute());
@@ -6741,7 +8288,7 @@ mod tests {
 
     #[test]
     fn command_watch_starts_current_then_updates_without_a_gap() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let request = request(CommandId::new());
         node.submit(request.clone()).unwrap();
         let (initial, mut watch) = node.watch_command(request.id).unwrap();
@@ -6766,7 +8313,7 @@ mod tests {
 
     #[test]
     fn command_catalog_pages_hold_the_first_log_ceiling() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let scope_id = ScopeId::new("session:test");
         let principal_id = PrincipalId::new("human:test");
         let first = DeclaredCommand::new(
@@ -6844,7 +8391,8 @@ mod tests {
 
     #[test]
     fn typed_command_catalog_decodes_body_result_and_admission_order() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
+        let _policy = install_allow_all(&node);
         let scope_id = ScopeId::new("session:test");
         let principal_id = PrincipalId::new("human:test");
         let first = DeclaredCommand::new(
@@ -6901,7 +8449,7 @@ mod tests {
 
     #[test]
     fn command_catalog_ignores_stale_lifecycle_events() {
-        let source = Node::in_memory();
+        let source = allow_all_node();
         let command = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -6915,7 +8463,7 @@ mod tests {
         source.claim(command.id).unwrap();
         source.cancel(command.id, "stopped").unwrap();
 
-        let replica = Node::in_memory();
+        let replica = allow_all_node();
         for event in source.events_after(None).unwrap().into_iter().rev() {
             replica.ingest(event).unwrap();
         }
@@ -6939,7 +8487,7 @@ mod tests {
 
     #[test]
     fn command_catalog_stream_adds_and_advances_matching_commands() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let scope_id = ScopeId::new("session:test");
         let first = DeclaredCommand::new(
             CommandId::new(),
@@ -6999,7 +8547,8 @@ mod tests {
 
     #[test]
     fn typed_command_context_owns_atomic_item_batch_and_result_encoding() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
+        let _policy = install_allow_all(&node);
         let request = request(CommandId::new());
         node.submit(request.clone()).unwrap();
         let admission = node.begin_command(request.id).unwrap();
@@ -7028,8 +8577,25 @@ mod tests {
     }
 
     #[test]
-    fn command_context_rejects_items_owned_by_another_service() {
+    fn command_effects_fail_closed_without_an_installed_policy() {
         let node = Node::in_memory();
+        let request = request(CommandId::new());
+        assert!(matches!(
+            node.submit(request.clone()),
+            Err(NodeError::AuthorizationDenied(reason))
+                if reason.contains("does not serve application or federation data")
+        ));
+        assert!(node.command(request.id).unwrap().is_none());
+        assert!(
+            node.query_items_in(node.node_id(), &request.scope_id, GetAllTestRecords)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn command_context_rejects_items_owned_by_another_service() {
+        let node = allow_all_node();
         let request = request(CommandId::new());
         let _submitted = node.submit(request.clone()).unwrap();
         let context = match node.begin_command(request.id).unwrap() {
@@ -7067,7 +8633,7 @@ mod tests {
 
     #[test]
     fn raw_batch_rejects_a_forged_item_service() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let request = request(CommandId::new());
         let executing = node.admit(request.clone()).unwrap().snapshot().clone();
         let record = TestRecord {
@@ -7093,10 +8659,10 @@ mod tests {
 
     #[test]
     fn typed_command_context_refuses_replicated_execution() {
-        let source = Node::in_memory();
+        let source = allow_all_node();
         let request = request(CommandId::new());
         source.submit(request.clone()).unwrap();
-        let replica = Node::in_memory();
+        let replica = allow_all_node();
         for event in source.events_after(None).unwrap() {
             let _status = replica.ingest(event).unwrap();
         }
@@ -7108,7 +8674,8 @@ mod tests {
 
     #[test]
     fn declared_command_owns_submission_decoding_items_and_typed_result() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
+        let _policy = install_allow_all(&node);
         let command = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7147,7 +8714,8 @@ mod tests {
 
     #[test]
     fn concurrent_declared_dispatch_resumes_only_after_the_owner_commits() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
+        let _policy = install_allow_all(&node);
         let command = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7213,7 +8781,7 @@ mod tests {
 
     #[test]
     fn declared_command_schema_mismatch_does_not_claim_execution() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let command = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7234,7 +8802,8 @@ mod tests {
 
     #[test]
     fn declared_dispatch_rejects_malformed_work_and_continues_in_order() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
+        let _policy = install_allow_all(&node);
         let first = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7251,6 +8820,13 @@ mod tests {
             service_id: ServiceId::new(PutRecord::SERVICE_ID),
             scope_id: ScopeId::new("session:test"),
             principal_id: PrincipalId::new("human:test"),
+            authority: AuthorityPresentation::direct_node(PrincipalId::new("human:test")),
+            resource_claims: vec![ResourceClaim::scope(
+                ScopeId::new("session:test"),
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
             command_type: PutRecord::COMMAND_TYPE.to_owned(),
             payload: b"not json".to_vec(),
         })
@@ -7307,7 +8883,7 @@ mod tests {
 
     #[test]
     fn local_pending_discovery_never_executes_a_replicated_submission() {
-        let source = Node::in_memory();
+        let source = allow_all_node();
         let command = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7318,7 +8894,7 @@ mod tests {
             },
         );
         source.submit(command.request().unwrap()).unwrap();
-        let replica = Node::in_memory();
+        let replica = allow_all_node();
         for event in source.events_after(None).unwrap() {
             let _status = replica.ingest(event).unwrap();
         }
@@ -7332,7 +8908,8 @@ mod tests {
 
     #[test]
     fn declared_pending_watch_replays_current_then_follows_without_polling() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
+        let _policy = install_allow_all(&node);
         let completed = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7403,7 +8980,7 @@ mod tests {
 
     #[test]
     fn service_pending_watch_preserves_admission_order_and_omits_foreign_work() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let first = request(CommandId::new());
         node.submit(first.clone()).unwrap();
         let second = DeclaredCommand::new(
@@ -7417,7 +8994,7 @@ mod tests {
         );
         node.submit(second.request().unwrap()).unwrap();
 
-        let source = Node::in_memory();
+        let source = allow_all_node();
         let foreign = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7448,7 +9025,7 @@ mod tests {
 
     #[test]
     fn application_pending_watch_preserves_order_across_services() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let first = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7486,7 +9063,8 @@ mod tests {
 
     #[test]
     fn declared_dispatch_durably_retries_transient_handler_failures() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
+        let _policy = install_allow_all(&node);
         let command = DeclaredCommand::new(
             CommandId::new(),
             ScopeId::new("session:test"),
@@ -7535,7 +9113,7 @@ mod tests {
 
     #[test]
     fn typed_query_materializes_replicated_service_scope_state() {
-        let source = Node::in_memory();
+        let source = allow_all_node();
         let request = request(CommandId::new());
         let executing = source.admit(request.clone()).unwrap().snapshot().clone();
         let record = TestRecord {
@@ -7557,7 +9135,7 @@ mod tests {
             )
             .unwrap();
 
-        let replica = Node::in_memory();
+        let replica = allow_all_node();
         for event in source.events_after(None).unwrap() {
             let _status = replica.ingest(event).unwrap();
         }
@@ -7569,7 +9147,7 @@ mod tests {
 
     #[test]
     fn current_item_state_is_bounded_and_rehydrates_a_typed_query() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let first = commit_test_record(&node, "record-1", "first");
         let second = commit_test_record(&node, "record-2", "second");
         let request =
@@ -7664,7 +9242,7 @@ mod tests {
 
     #[test]
     fn item_state_pages_hold_the_first_log_ceiling_during_concurrent_commits() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let first = commit_test_record(&node, "record-1", "first");
         let third = commit_test_record(&node, "record-3", "third");
         let request =
@@ -7704,7 +9282,7 @@ mod tests {
 
     #[test]
     fn typed_item_stream_applies_each_atomic_update_or_none_of_it() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let first = commit_test_record(&node, "record-1", "initial");
         let snapshot = node
             .item_state_snapshot(ItemStateRequest::for_serving_item::<TestRecord>(
@@ -7747,9 +9325,9 @@ mod tests {
 
     #[test]
     fn typed_query_watch_replays_then_tracks_replicated_batches_without_a_gap() {
-        let source = Node::in_memory();
+        let source = allow_all_node();
         let first = commit_test_record(&source, "record-1", "initial");
-        let replica = Node::in_memory();
+        let replica = allow_all_node();
         for event in source.events_after(None).unwrap() {
             let _status = replica.ingest(event).unwrap();
         }
@@ -7779,7 +9357,7 @@ mod tests {
 
     #[test]
     fn typed_query_watch_from_tracks_every_scope_owned_by_one_source() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let first =
             commit_test_record_in(&node, ScopeId::new("session:first"), "record-1", "first");
         let (snapshot, mut watch) = node
@@ -7796,7 +9374,7 @@ mod tests {
 
     #[test]
     fn typed_query_watch_advances_across_other_item_types_in_the_same_scope() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let record = commit_test_record(&node, "record-1", "stable");
         let (snapshot, mut watch) = node
             .watch_items_in(
@@ -7819,7 +9397,7 @@ mod tests {
 
     #[test]
     fn malformed_item_mutation_is_rejected_before_commit() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let request = request(CommandId::new());
         let executing = node.admit(request.clone()).unwrap().snapshot().clone();
         let invalid = ItemMutation {
@@ -7858,8 +9436,8 @@ mod tests {
 
     #[test]
     fn scoped_replication_omits_other_scopes_and_advances_its_watermark() {
-        let source = Node::in_memory();
-        let target = Node::in_memory();
+        let source = allow_all_node();
+        let target = allow_all_node();
         let wanted = request(CommandId::new());
         let mut hidden = request(CommandId::new());
         hidden.scope_id = ScopeId::new("session:hidden");
@@ -7910,8 +9488,8 @@ mod tests {
 
     #[test]
     fn selected_replication_filters_by_service_and_service_scope() {
-        let source = Node::in_memory();
-        let target = Node::in_memory();
+        let source = allow_all_node();
+        let target = allow_all_node();
         let first = request(CommandId::new());
         let mut other_service = request(CommandId::new());
         other_service.service_id = ServiceId::new(OtherService::SERVICE_ID);
@@ -7962,8 +9540,8 @@ mod tests {
 
     #[test]
     fn selected_replication_composes_exact_scopes_and_nested_subtrees() {
-        let source = Node::in_memory();
-        let target = Node::in_memory();
+        let source = allow_all_node();
+        let target = allow_all_node();
         let project_id = FederationProjectId::from("project-1");
         let project_scope = ScopeId::for_item::<FederationProject>(&project_id);
         let project = FederationProject {
@@ -7972,6 +9550,7 @@ mod tests {
         };
         let mut project_request = request(CommandId::new());
         project_request.scope_id = project_scope.clone();
+        project_request.resource_claims[0].selection = ScopeSelection::Exact(project_scope.clone());
         let executing = source
             .admit(project_request.clone())
             .unwrap()
@@ -8062,8 +9641,250 @@ mod tests {
     }
 
     #[test]
+    fn selected_queries_use_authorized_view_and_node_owned_completeness() {
+        let source = allow_all_node();
+        let project_id = FederationProjectId::from("project-selected");
+        let project_scope = ScopeId::for_item::<FederationProject>(&project_id);
+        let project = FederationProject {
+            id: project_id.clone(),
+            name: "project".to_owned(),
+        };
+        let mut project_request = request(CommandId::new());
+        project_request.scope_id = project_scope.clone();
+        let executing = source
+            .admit(project_request.clone())
+            .unwrap()
+            .snapshot()
+            .clone();
+        source
+            .commit(
+                project_request.id,
+                ChangeBatch {
+                    id: BatchId::new(),
+                    command_id: project_request.id,
+                    service_id: project_request.service_id,
+                    scope_id: project_request.scope_id,
+                    causal_parents: vec![executing.updated_at],
+                    changes: vec![mutation_in(&project_scope, &project)],
+                },
+                Vec::new(),
+            )
+            .unwrap();
+
+        let first_scene = FederationSceneId::from("scene-visible");
+        let empty_scene = FederationSceneId::from("scene-empty");
+        let hidden_scene = FederationSceneId::from("scene-hidden");
+        let first_element = FederationSceneElementId::from("element-visible");
+        let deleted_element = FederationSceneElementId::from("element-deleted");
+        let hidden_element = FederationSceneElementId::from("element-hidden");
+        commit_nested_scene(&source, &project_id, &first_scene, &first_element);
+        commit_nested_scene(&source, &project_id, &empty_scene, &deleted_element);
+        commit_nested_scene(&source, &project_id, &hidden_scene, &hidden_element);
+
+        let first_scope = ScopeId::for_item::<FederationScene>(&first_scene);
+        let empty_scope = ScopeId::for_item::<FederationScene>(&empty_scene);
+        let hidden_scope = ScopeId::for_item::<FederationScene>(&hidden_scene);
+        let mut delete_request = request(CommandId::new());
+        delete_request.scope_id = empty_scope.clone();
+        delete_request.resource_claims[0].selection = ScopeSelection::Exact(empty_scope.clone());
+        let executing = source
+            .admit(delete_request.clone())
+            .unwrap()
+            .snapshot()
+            .clone();
+        let mut deletion = ItemMutation::delete::<FederationSceneElement>(&deleted_element);
+        deletion.scope_id = Some(empty_scope.as_str().to_owned());
+        source
+            .commit(
+                delete_request.id,
+                ChangeBatch {
+                    id: BatchId::new(),
+                    command_id: delete_request.id,
+                    service_id: delete_request.service_id,
+                    scope_id: delete_request.scope_id,
+                    causal_parents: vec![executing.updated_at],
+                    changes: vec![deletion],
+                },
+                Vec::new(),
+            )
+            .unwrap();
+
+        let requested = ScopeSelection::Subtree(project_scope.clone());
+        let allowed = vec![
+            ScopeSelection::Exact(project_scope.clone()),
+            ScopeSelection::Exact(first_scope.clone()),
+            ScopeSelection::Exact(empty_scope.clone()),
+        ];
+        let principal = PrincipalId::new("node:selected-reader");
+        let presentation = AuthorityPresentation::direct_node(principal.clone());
+
+        let unbound = Node::in_memory()
+            .query_items_selected(
+                principal.clone(),
+                presentation.clone(),
+                source.node_id(),
+                &requested,
+                GetAllFederationSceneElements,
+            )
+            .unwrap();
+        assert_eq!(unbound.visibility, ResourceVisibility::Unbound);
+        assert!(unbound.value.is_none());
+        assert!(!unbound.complete);
+
+        let policy: Arc<dyn AccessPolicy> = Arc::new(SelectedScopesPolicy {
+            allowed: allowed.clone(),
+        });
+        source.set_command_access_policy(policy.clone()).unwrap();
+        let local = source
+            .query_items_selected(
+                principal.clone(),
+                presentation.clone(),
+                source.node_id(),
+                &requested,
+                GetAllFederationSceneElements,
+            )
+            .unwrap();
+        assert_eq!(local.coverage, ProjectionCoverage::LocalAuthoritative);
+        assert!(local.complete);
+        assert!(!local.requested_fully_authorized);
+        assert_eq!(local.visibility, ResourceVisibility::Present);
+        assert_eq!(
+            local.included_scopes,
+            allowed.iter().map(|s| s.root().clone()).collect::<Vec<_>>()
+        );
+        assert!(
+            matches!(local.value, Some(ref items) if items == &vec![FederationSceneElement {
+                id: first_element.clone(),
+                federation_scene_id: first_scene.clone(),
+                name: "element".to_owned(),
+            }]),
+            "unexpected selected value: {:?}",
+            local.value
+        );
+        assert!(!local.included_scopes.contains(&hidden_scope));
+
+        let exact_empty = ScopeSelection::Exact(empty_scope.clone());
+        let absent = source
+            .query_item_selected::<FederationSceneElement>(
+                principal.clone(),
+                presentation.clone(),
+                source.node_id(),
+                &exact_empty,
+                GetFederationSceneElementById {
+                    id: deleted_element.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(absent.value, Some(None));
+        assert_eq!(absent.visibility, ResourceVisibility::AuthoritativelyAbsent);
+
+        let replica = allow_all_node();
+        for event in source.events_after(None).unwrap() {
+            replica.ingest(event).unwrap();
+        }
+        let replica_policy: Arc<dyn AccessPolicy> = Arc::new(SelectedScopesPolicy {
+            allowed: allowed.clone(),
+        });
+        replica
+            .set_command_access_policy(replica_policy.clone())
+            .unwrap();
+        let incomplete = replica
+            .query_items_selected(
+                principal.clone(),
+                presentation.clone(),
+                source.node_id(),
+                &requested,
+                GetAllFederationSceneElements,
+            )
+            .unwrap();
+        assert_eq!(
+            incomplete.coverage,
+            ProjectionCoverage::ReplicatedIncomplete
+        );
+        assert_eq!(incomplete.visibility, ResourceVisibility::NotReplicated);
+        assert!(!incomplete.complete);
+
+        let undiscoverable = allow_all_node();
+        undiscoverable
+            .set_command_access_policy(replica_policy.clone())
+            .unwrap();
+        let missing_source = undiscoverable
+            .query_items_selected(
+                principal.clone(),
+                presentation.clone(),
+                source.node_id(),
+                &requested,
+                GetAllFederationSceneElements,
+            )
+            .unwrap();
+        assert_eq!(missing_source.coverage, ProjectionCoverage::Undiscoverable);
+        assert_eq!(
+            missing_source.visibility,
+            ResourceVisibility::Undiscoverable
+        );
+        undiscoverable
+            .mark_replication_source_unreachable(source.node_id())
+            .unwrap();
+        let unreachable = undiscoverable
+            .query_items_selected(
+                principal.clone(),
+                presentation.clone(),
+                source.node_id(),
+                &requested,
+                GetAllFederationSceneElements,
+            )
+            .unwrap();
+        assert_eq!(unreachable.coverage, ProjectionCoverage::Unreachable);
+        assert_eq!(unreachable.visibility, ResourceVisibility::Unreachable);
+
+        let unknown_root = ScopeId::new("project:topology-unknown");
+        let topology_policy: Arc<dyn AccessPolicy> = Arc::new(SelectedScopesPolicy {
+            allowed: vec![ScopeSelection::Subtree(unknown_root.clone())],
+        });
+        source
+            .set_command_access_policy(topology_policy.clone())
+            .unwrap();
+        let topology_incomplete = source
+            .query_items_selected(
+                principal.clone(),
+                presentation.clone(),
+                source.node_id(),
+                &ScopeSelection::Subtree(unknown_root),
+                GetAllFederationSceneElements,
+            )
+            .unwrap();
+        assert_eq!(
+            topology_incomplete.visibility,
+            ResourceVisibility::TopologyIncomplete
+        );
+        assert!(!topology_incomplete.complete);
+        source.set_command_access_policy(policy).unwrap();
+
+        let effective = ReplicationSelection::Intersection {
+            requested: Box::new(ReplicationSelection::Scopes(vec![requested.clone()])),
+            scopes: allowed.clone(),
+        };
+        replica
+            .ingest_selected_batch(source.export_selected(effective, None).unwrap())
+            .unwrap();
+        let complete = replica
+            .query_items_selected(
+                principal,
+                presentation,
+                source.node_id(),
+                &requested,
+                GetAllFederationSceneElements,
+            )
+            .unwrap();
+        assert_eq!(complete.coverage, ProjectionCoverage::ReplicatedComplete);
+        assert!(complete.complete);
+        assert!(!complete.requested_fully_authorized);
+        assert!(matches!(complete.value, Some(items) if items.len() == 1));
+    }
+
+    #[test]
     fn selected_replication_rejects_an_event_outside_its_selection() {
-        let source = Node::in_memory();
+        let source = allow_all_node();
         let command = request(CommandId::new());
         source.submit(command).unwrap();
         let mut selected = source
@@ -8073,14 +9894,14 @@ mod tests {
             ReplicationSelection::Service(ServiceId::new(OtherService::SERVICE_ID));
 
         assert!(matches!(
-            Node::in_memory().ingest_selected_batch(selected),
+            allow_all_node().ingest_selected_batch(selected),
             Err(NodeError::InvalidReplicationBatch(_))
         ));
     }
 
     #[test]
     fn short_lived_client_submits_and_only_a_handler_claims_execution() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let request = request(CommandId::new());
 
         let submitted = node.submit(request.clone()).unwrap();
@@ -8100,7 +9921,7 @@ mod tests {
 
     #[test]
     fn cancellation_is_terminal_idempotent_and_blocks_execution() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let queued = request(CommandId::new());
         node.submit(queued.clone()).unwrap();
 
@@ -8128,8 +9949,8 @@ mod tests {
 
     #[test]
     fn stale_lifecycle_events_cannot_resurrect_a_cancelled_command() {
-        let source = Node::in_memory();
-        let target = Node::in_memory();
+        let source = allow_all_node();
+        let target = allow_all_node();
         let command = request(CommandId::new());
         source.submit(command.clone()).unwrap();
         source.claim(command.id).unwrap();
@@ -8150,6 +9971,7 @@ mod tests {
             node_id: NodeId::new(),
         }))
         .unwrap();
+        let _policy = install_allow_all(&node);
         let command = request(CommandId::new());
         let mut events = node.subscribe(None).unwrap();
 
@@ -8164,7 +9986,7 @@ mod tests {
 
     #[test]
     fn subscription_replays_then_continues_without_a_cursor_gap() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let first = request(CommandId::new());
         node.admit(first).unwrap();
 
@@ -8180,7 +10002,7 @@ mod tests {
 
     #[test]
     fn subscription_from_now_omits_existing_history_and_follows_new_events() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         node.admit(request(CommandId::new())).unwrap();
 
         let mut events = node.subscribe_from_now().unwrap();
@@ -8192,15 +10014,18 @@ mod tests {
 
     #[test]
     fn scope_catalog_is_sorted_and_deduplicated() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let mut second = request(CommandId::new());
         second.scope_id = ScopeId::new("session:zulu");
+        second.resource_claims[0].selection = ScopeSelection::Exact(second.scope_id.clone());
         node.admit(second).unwrap();
         let mut first = request(CommandId::new());
         first.scope_id = ScopeId::new("session:alpha");
+        first.resource_claims[0].selection = ScopeSelection::Exact(first.scope_id.clone());
         node.admit(first).unwrap();
         let mut duplicate = request(CommandId::new());
         duplicate.scope_id = ScopeId::new("session:zulu");
+        duplicate.resource_claims[0].selection = ScopeSelection::Exact(duplicate.scope_id.clone());
         node.admit(duplicate).unwrap();
 
         assert_eq!(
@@ -8211,7 +10036,7 @@ mod tests {
 
     #[test]
     fn commit_rejects_a_batch_from_another_scope() {
-        let node = Node::in_memory();
+        let node = allow_all_node();
         let request = request(CommandId::new());
         node.admit(request.clone()).unwrap();
         let mut wrong = batch(&request);
@@ -8231,8 +10056,8 @@ mod tests {
 
     #[test]
     fn another_node_ingests_origin_events_exactly_once() {
-        let source = Node::in_memory();
-        let target = Node::in_memory();
+        let source = allow_all_node();
+        let target = allow_all_node();
         let request = request(CommandId::new());
         source.admit(request.clone()).unwrap();
         source
@@ -8267,8 +10092,8 @@ mod tests {
 
     #[test]
     fn command_origin_survives_replication_without_becoming_the_replica() {
-        let source = Node::in_memory();
-        let target = Node::in_memory();
+        let source = allow_all_node();
+        let target = allow_all_node();
         let source_command = request(CommandId::new());
         source.submit(source_command.clone()).unwrap();
 
@@ -8294,8 +10119,8 @@ mod tests {
 
     #[test]
     fn invalid_batch_cursor_is_rejected_before_any_event_is_ingested() {
-        let source = Node::in_memory();
-        let target = Node::in_memory();
+        let source = allow_all_node();
+        let target = allow_all_node();
         let command = request(CommandId::new());
         source.admit(command).unwrap();
         let mut batch = source.export(None).unwrap();

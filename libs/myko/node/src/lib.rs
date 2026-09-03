@@ -49,10 +49,10 @@ use myko_app::{
     QueryHandler, ReportHandler, ViewHandler, ViewSubscription,
 };
 use myko_federation::{
-    AccessPolicy, AllowAllAccessPolicy, ItemQuery, ItemQueryWatch, LiveSubscription,
-    LiveSubscriptionState, Node as FederationNode, NodeError as FederationNodeError, NodeId,
-    NodeStartupGuard, ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness,
-    live_subscription,
+    AccessPolicy, AllowAllAccessPolicy, ApplicationCapability, CapabilityId, DenyAllAccessPolicy,
+    ItemQuery, ItemQueryWatch, LiveSubscription, LiveSubscriptionState, Node as FederationNode,
+    NodeError as FederationNodeError, NodeId, NodeStartupGuard, Principal, ProvenanceOperation,
+    ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness, live_subscription,
 };
 pub use myko_iroh::{
     EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference, PairingInvitation,
@@ -73,6 +73,32 @@ const LEGACY_CONFIG_VERSION: u32 = 1;
 const JOURNAL_FILE: &str = "node.redb";
 const SECRET_FILE: &str = "iroh-secret.json";
 const PEERS_FILE: &str = "peers.json";
+const IROH_REPLICATOR_CAPABILITY_ID: &str = "myko.node.iroh-replicator";
+const NODE_STATUS_CAPABILITY_ID: &str = "myko.node.status-runtime";
+const DISCOVERY_CAPABILITY_ID: &str = "myko.node.discovery-runtime";
+
+fn runtime_resource_capability(
+    id: &'static str,
+    description: &'static str,
+) -> ApplicationCapability {
+    ApplicationCapability {
+        id: CapabilityId::new(id),
+        description: description.to_owned(),
+        constraints: Default::default(),
+    }
+}
+
+pub(crate) fn iroh_replicator_capability_id() -> CapabilityId {
+    CapabilityId::new(IROH_REPLICATOR_CAPABILITY_ID)
+}
+
+pub(crate) fn node_status_capability_id() -> CapabilityId {
+    CapabilityId::new(NODE_STATUS_CAPABILITY_ID)
+}
+
+pub(crate) fn discovery_capability_id() -> CapabilityId {
+    CapabilityId::new(DISCOVERY_CAPABILITY_ID)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct StoredPeerConfig {
@@ -512,7 +538,7 @@ impl NodeRequestRouter for FederationRouter {
 
     fn route<'a>(
         &'a self,
-        envelope: NodeRequestEnvelope,
+        mut envelope: NodeRequestEnvelope,
         frames: &'a flume::Sender<NodeFrame>,
     ) -> NodeRouteFuture<'a> {
         Box::pin(async move {
@@ -520,6 +546,31 @@ impl NodeRequestRouter for FederationRouter {
                 .destination
                 .ok_or_else(|| "routed request omitted its destination".to_owned())?;
             let peer = self.peer(destination)?;
+            let mut presentation = envelope
+                .authority
+                .take()
+                .ok_or_else(|| "routed request omitted its validated authority".to_owned())?;
+            let forwarding_executor =
+                Principal::node(endpoint_principal_id(self.replicator.address().id));
+            if envelope.forwarding_provenance.is_empty() {
+                return Err(
+                    "routed request omitted an attenuating node-forward delegation".to_owned(),
+                );
+            }
+            let hop = envelope.forwarding_provenance.remove(0);
+            if hop.delegator != presentation.executor
+                || hop.delegate != forwarding_executor
+                || hop.operation
+                    != (ProvenanceOperation::NodeForward {
+                        node_id: self.node.node_id().to_string(),
+                    })
+            {
+                return Err(
+                    "node-forward delegation does not match the authenticated route".to_owned(),
+                );
+            }
+            presentation = presentation.forward(hop);
+            envelope.authority = Some(presentation);
             self.replicator
                 .forward_request(peer, envelope, frames)
                 .await
@@ -865,7 +916,7 @@ impl Node {
         retry_interval: Duration,
     ) -> Result<Self, NodeError> {
         Self::open_with_policy(data_dir, retry_interval, |_| {
-            Ok(Arc::new(AllowAllAccessPolicy))
+            Ok(Arc::new(DenyAllAccessPolicy))
         })
         .await
     }
@@ -909,7 +960,7 @@ impl Node {
         retry_interval: Duration,
     ) -> Result<Self, NodeError> {
         Self::open_loopback_with_policy(data_dir, retry_interval, |_| {
-            Ok(Arc::new(AllowAllAccessPolicy))
+            Ok(Arc::new(DenyAllAccessPolicy))
         })
         .await
     }
@@ -1146,16 +1197,39 @@ impl Node {
             None => load_or_create_secret_key(data_dir.join(SECRET_FILE))?,
         };
         let (node, journal) = RedbJournal::open_node_with_journal(data_dir.join(JOURNAL_FILE))?;
+        let runtime_startup = node.hold_startup();
         let startup = hold_startup.then(|| node.hold_startup());
         let application = application
             .unwrap_or_default()
-            .with_framework_service::<FederationService>()?;
+            .with_framework_service::<FederationService>()?
+            .with_framework_resource_capability::<IrohReplicator>(runtime_resource_capability(
+                IROH_REPLICATOR_CAPABILITY_ID,
+                "access the authenticated native peer transport",
+            ))?
+            .with_framework_resource_capability::<NodeStatusViewState>(
+                runtime_resource_capability(
+                    NODE_STATUS_CAPABILITY_ID,
+                    "read the native node status runtime",
+                ),
+            )?
+            .with_framework_resource_capability::<DiscoveryViewState>(
+                runtime_resource_capability(
+                    DISCOVERY_CAPABILITY_ID,
+                    "read the native LAN discovery runtime",
+                ),
+            )?;
         let advertised_services = application
             .services()
             .map(|service| ServiceId::new(service.service_id.as_str()))
             .collect::<Vec<_>>();
         let application = ApplicationNode::attach(node.clone(), application)
             .map_err(|error| NodeError::Configuration(error.to_string()))?;
+        // No transport or command driver exists during this bounded bootstrap
+        // window. Framework-owned node configuration is written through the
+        // ordinary command journal before the externally supplied policy is
+        // installed and the endpoint begins serving.
+        let startup_policy: Arc<dyn AccessPolicy> = Arc::new(AllowAllAccessPolicy);
+        node.set_command_access_policy(startup_policy.clone())?;
         ensure_advertised_services(&node, &application, advertised_services)?;
         let initial_policy = resolve_policy(&application)?;
         let replicator = match bind_mode {
@@ -1163,7 +1237,7 @@ impl Node {
                 IrohReplicator::bind_application_with_secret_and_policy(
                     application.clone(),
                     secret,
-                    initial_policy,
+                    initial_policy.clone(),
                 )
                 .await
             }
@@ -1171,11 +1245,12 @@ impl Node {
                 IrohReplicator::bind_loopback_application_with_secret_and_policy(
                     application.clone(),
                     secret,
-                    initial_policy,
+                    initial_policy.clone(),
                 )
                 .await
             }
         }?;
+        node.set_command_access_policy(startup_policy.clone())?;
         let FederationRuntimeParts {
             request_router,
             supervisor,
@@ -1192,6 +1267,7 @@ impl Node {
             &replicator,
         )
         .await?;
+        replicator.set_access_policy(initial_policy)?;
         let command_dispatch = application.drive_commands()?;
         let pairing = PairingSupervisor::start(application.clone(), replicator.clone())
             .map_err(NodeError::State)?;
@@ -1208,6 +1284,7 @@ impl Node {
             matches!(bind_mode, BindMode::Network),
         )
         .map_err(NodeError::State)?;
+        runtime_startup.ready();
         Ok((
             Self {
                 data_dir: data_dir.to_path_buf(),

@@ -173,6 +173,7 @@ impl ReplicationCursorStore for RedbJournal {
                 .transpose()?;
             if existing.is_some_and(|existing: ReplicationCheckpoint| {
                 existing.source_node == checkpoint.source_node
+                    && existing.selection == checkpoint.selection
                     && match (existing.position, checkpoint.position) {
                         (Some(_), None) => true,
                         (Some(existing), Some(next)) => existing > next,
@@ -232,18 +233,30 @@ fn backend_error(error: impl fmt::Display) -> NodeError {
 #[cfg(test)]
 mod tests {
     use myko_federation::{
-        BatchId, ChangeBatch, CommandId, CommandRequest, CommandState, LogPosition, PrincipalId,
-        ScopeId, ServiceId,
+        AccessPolicy, AllowAllAccessPolicy, BatchId, ChangeBatch, CommandId, CommandRequest,
+        CommandState, LogPosition, PrincipalId, ScopeId, ServiceId,
     };
 
     use super::*;
 
+    fn allow_commands(node: &Node) -> Result<Arc<dyn AccessPolicy>, String> {
+        let policy: Arc<dyn AccessPolicy> = Arc::new(AllowAllAccessPolicy);
+        node.set_command_access_policy(policy.clone())
+            .map_err(|error| error.to_string())?;
+        Ok(policy)
+    }
+
     fn request(id: CommandId) -> CommandRequest {
+        let principal_id = PrincipalId::new("human:test");
         CommandRequest {
             id,
             service_id: ServiceId::new("agent"),
             scope_id: ScopeId::new("session:durable"),
-            principal_id: PrincipalId::new("human:test"),
+            principal_id: principal_id.clone(),
+            authority: myko_federation::AuthorityPresentation::direct_node(principal_id),
+            resource_claims: Vec::new(),
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
             command_type: "prompt".to_owned(),
             payload: b"remember me".to_vec(),
         }
@@ -255,6 +268,7 @@ mod tests {
         let path = directory.path().join("node.redb");
         let command = request(CommandId::new());
         let first_node = RedbJournal::open_node(&path).map_err(|error| error.to_string())?;
+        let _policy = allow_commands(&first_node)?;
         let node_id = first_node.node_id();
 
         first_node
@@ -316,6 +330,7 @@ mod tests {
         let path = directory.path().join("abandoned.redb");
         let command = request(CommandId::new());
         let first_node = RedbJournal::open_node(&path).map_err(|error| error.to_string())?;
+        let _policy = allow_commands(&first_node)?;
         first_node
             .submit(command.clone())
             .map_err(|error| error.to_string())?;
@@ -352,6 +367,7 @@ mod tests {
         let path = directory.path().join("retrying.redb");
         let command = request(CommandId::new());
         let first_node = RedbJournal::open_node(&path).map_err(|error| error.to_string())?;
+        let _policy = allow_commands(&first_node)?;
         first_node
             .submit(command.clone())
             .map_err(|error| error.to_string())?;
@@ -391,6 +407,7 @@ mod tests {
         let path = directory.path().join("cancelled.redb");
         let command = request(CommandId::new());
         let first_node = RedbJournal::open_node(&path).map_err(|error| error.to_string())?;
+        let _policy = allow_commands(&first_node)?;
         first_node
             .submit(command.clone())
             .map_err(|error| error.to_string())?;
@@ -439,7 +456,7 @@ mod tests {
             return Err("new journal contained a replication checkpoint".to_owned());
         }
         journal
-            .save_checkpoint(&key, first_checkpoint)
+            .save_checkpoint(&key, first_checkpoint.clone())
             .map_err(|error| error.to_string())?;
         drop(journal);
 
@@ -463,7 +480,7 @@ mod tests {
 
         let replacement = ReplicationCheckpoint::new(NodeId::new(), None);
         reopened
-            .save_checkpoint(&key, replacement)
+            .save_checkpoint(&key, replacement.clone())
             .map_err(|error| error.to_string())?;
         if reopened
             .load_checkpoint(&key)

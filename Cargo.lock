@@ -5269,6 +5269,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "myko-authority"
+version = "7.0.0-alpha.1"
+dependencies = [
+ "chrono",
+ "flume 0.11.1",
+ "myko-app",
+ "myko-federation",
+ "myko-items",
+ "myko-redb",
+ "myko-session",
+ "myko-wire",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "myko-discovery"
 version = "7.0.0-alpha.1"
 dependencies = [
@@ -5297,8 +5317,10 @@ dependencies = [
  "flume 0.11.1",
  "hyphae",
  "myko-items",
+ "parking_lot",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror 2.0.20",
  "uuid",
 ]
@@ -5321,6 +5343,7 @@ dependencies = [
 name = "myko-iroh"
 version = "7.0.0-alpha.1"
 dependencies = [
+ "chrono",
  "flume 0.11.1",
  "getrandom 0.3.4",
  "hex",
@@ -5375,6 +5398,7 @@ dependencies = [
 name = "myko-local"
 version = "7.0.0-alpha.1"
 dependencies = [
+ "chrono",
  "flume 0.11.1",
  "hyphae",
  "myko-app",
@@ -5477,10 +5501,13 @@ dependencies = [
 name = "myko-session"
 version = "7.0.0-alpha.1"
 dependencies = [
+ "chrono",
  "flume 0.11.1",
  "myko-app",
  "myko-federation",
  "myko-wire",
+ "serde_json",
+ "sha2 0.10.9",
  "tokio",
 ]
 

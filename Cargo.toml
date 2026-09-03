@@ -3,6 +3,7 @@ resolver = "2"
 default-members = [
   "libs/myko/app",
   "libs/myko/app-macros",
+  "libs/myko/authority",
   "libs/myko/discovery",
   "libs/myko/wire",
   "libs/myko/federation",
@@ -20,6 +21,7 @@ members = [
   "apps/docs-site",
   "libs/myko/app",
   "libs/myko/app-macros",
+  "libs/myko/authority",
   "libs/myko/discovery",
   "libs/myko/core",
   "libs/myko/federation",
@@ -150,6 +152,7 @@ myko-macros = { version = "6.5.10", path = "libs/myko/macros" }
 myko = { version = "6.5.10", path = "libs/myko/core" }
 myko-app = { version = "7.0.0-alpha.1", path = "libs/myko/app" }
 myko-app-macros = { version = "7.0.0-alpha.1", path = "libs/myko/app-macros" }
+myko-authority = { version = "7.0.0-alpha.1", path = "libs/myko/authority" }
 myko-discovery = { version = "7.0.0-alpha.1", path = "libs/myko/discovery" }
 myko-wire = { version = "7.0.0-alpha.1", path = "libs/myko/wire" }
 myko-federation = { version = "7.0.0-alpha.1", path = "libs/myko/federation" }

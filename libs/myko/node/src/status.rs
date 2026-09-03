@@ -7,12 +7,12 @@ use std::{
 
 use myko_app::capability::{CollectionBuilding as _, ResourceScoped as _};
 use myko_app::{AppError, ViewContext, ViewHandler, myko_view};
-use myko_federation::{NodeId, ReplicationSelection};
+use myko_federation::{NodeId, ReplicationSelection, ResourceClaim, ResourceClaimKind, ScopeId};
 use myko_iroh::{EndpointId, NativeNodeDescriptor, PeerSupervisor, PeerSyncStatus};
 use myko_items::myko_subtype;
 use tokio::sync::watch;
 
-use crate::{ConfiguredPeer, Peer, live_state::RuntimeFeed};
+use crate::{ConfiguredPeer, Peer, live_state::RuntimeFeed, node_status_capability_id};
 
 /// One node identity and its directional replication status.
 #[myko_subtype(derive(Eq))]
@@ -65,6 +65,16 @@ pub struct NodeStatusView;
 impl ViewHandler for NodeStatusView {
     type Item = NodeStatus;
     type Cursor = u64;
+
+    fn authority_claims(&self) -> Vec<ResourceClaim> {
+        vec![
+            ResourceClaim::scope(
+                ScopeId::new(format!("myko.handler:view:{}", Self::VIEW_ID)),
+                ResourceClaimKind::Referenced,
+            )
+            .requiring_capability(node_status_capability_id()),
+        ]
+    }
 
     fn item_key(item: &Self::Item) -> Arc<str> {
         Arc::from(item.endpoint_id.to_string())

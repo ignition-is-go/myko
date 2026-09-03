@@ -13,14 +13,15 @@ use myko_app::{
 };
 use myko_discovery::{DiscoveredNode, LanAdvertisement, LanDiscovery};
 use myko_federation::{
-    LiveCollection, LiveSubscription, LogPosition, NodeId, ScopeId, SubscriptionLiveness,
+    LiveCollection, LiveSubscription, LogPosition, NodeId, ResourceClaim, ResourceClaimKind,
+    ScopeId, SubscriptionLiveness,
 };
 use myko_iroh::NativeNodeDescriptor;
 use myko_items::{myko_command, myko_item};
 use tokio::sync::{mpsc, watch};
 
 use crate::{
-    FederationService,
+    FederationService, discovery_capability_id,
     live_state::RuntimeFeed,
     peer::{PeerRoster, PeerRosterId, peer_scope},
 };
@@ -146,6 +147,16 @@ pub struct NearbyNodesView;
 impl ViewHandler for NearbyNodesView {
     type Item = DiscoveredNode;
     type Cursor = u64;
+
+    fn authority_claims(&self) -> Vec<ResourceClaim> {
+        vec![
+            ResourceClaim::scope(
+                ScopeId::new(format!("myko.handler:view:{}", Self::VIEW_ID)),
+                ResourceClaimKind::Referenced,
+            )
+            .requiring_capability(discovery_capability_id()),
+        ]
+    }
 
     fn item_key(item: &Self::Item) -> Arc<str> {
         Arc::from(item.endpoint_id().to_string())

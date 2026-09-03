@@ -11,11 +11,12 @@ use myko_app::{
     ReportHandler, ViewContext, ViewHandler, myko_query, myko_report, myko_view,
 };
 use myko_federation::{
-    ItemProjection, ItemQuery, LiveCollection, LiveSubscription, LogPosition, NodeId,
-    ReplicationSelection, ScopeId,
+    AccessOperation, FederationPermission, ItemProjection, ItemQuery, LiveCollection,
+    LiveSubscription, LogPosition, NodeId, ReplicationSelection, ResourceClaim, ResourceClaimKind,
+    ScopeId, ScopeSelection, ServiceId,
 };
 use myko_iroh::{EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference};
-use myko_items::MykoService;
+use myko_items::{MykoItem, MykoService};
 use myko_items::{myko_command, myko_item, myko_service};
 
 use crate::{DiscoverySettings, PairingInitiation, PairingRedemption, PendingPairingReceipt};
@@ -124,9 +125,41 @@ pub struct AdvertiseServices {
     pub services: Vec<myko_federation::ServiceId>,
 }
 
+pub(crate) fn peer_roster_claims(node_id: NodeId, item_type: &'static str) -> Vec<ResourceClaim> {
+    let selection = ScopeSelection::Exact(peer_scope(node_id));
+    vec![
+        ResourceClaim {
+            selection: selection.clone(),
+            kind: ResourceClaimKind::Primary,
+            source_node: None,
+            service_id: Some(ServiceId::new(FederationService::SERVICE_ID)),
+            item_type: Some(item_type.to_owned()),
+            item_id: None,
+            required_permissions: vec![FederationPermission::ReadState],
+            required_operations: vec![AccessOperation::ReadItems],
+            required_capabilities: Vec::new(),
+        },
+        ResourceClaim {
+            selection,
+            kind: ResourceClaimKind::Affected,
+            source_node: None,
+            service_id: Some(ServiceId::new(FederationService::SERVICE_ID)),
+            item_type: Some(PeerRoster::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![FederationPermission::Write],
+            required_operations: Vec::new(),
+            required_capabilities: Vec::new(),
+        },
+    ]
+}
+
 impl CommandHandler for AddPeer {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
+    }
+
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
     fn execute(
@@ -148,6 +181,10 @@ impl CommandHandler for AddPeer {
 impl CommandHandler for RememberPeer {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
+    }
+
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
     fn execute(
@@ -180,6 +217,10 @@ impl CommandHandler for SetPeerReplication {
         PeerRosterId::from(node_id.to_string())
     }
 
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        peer_roster_claims(node_id, Peer::ITEM_TYPE)
+    }
+
     fn execute(
         self,
         context: CommandContext<FederationService, PeerRoster>,
@@ -199,6 +240,10 @@ impl CommandHandler for SetPeerReplication {
 impl CommandHandler for SetPeerReplicationSelection {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
+    }
+
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
     fn execute(
@@ -222,6 +267,10 @@ impl CommandHandler for RemovePeer {
         PeerRosterId::from(node_id.to_string())
     }
 
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        peer_roster_claims(node_id, Peer::ITEM_TYPE)
+    }
+
     fn execute(
         self,
         context: CommandContext<FederationService, PeerRoster>,
@@ -233,6 +282,10 @@ impl CommandHandler for RemovePeer {
 impl CommandHandler for RestorePeer {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
+    }
+
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
     fn execute(
@@ -256,6 +309,10 @@ impl CommandHandler for RestorePeer {
 impl CommandHandler for AdvertiseServices {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
+    }
+
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        peer_roster_claims(node_id, AdvertisedService::ITEM_TYPE)
     }
 
     fn execute(

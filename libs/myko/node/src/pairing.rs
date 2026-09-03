@@ -12,13 +12,15 @@ use myko_app::{
     ReportContext, ReportHandler, ViewContext, ViewHandler, myko_query, myko_report, myko_view,
 };
 use myko_federation::{
-    ItemProjection, ItemQuery, LiveCollection, LiveSubscription, LogPosition, NodeId, ScopeId,
+    AccessOperation, FederationPermission, ItemProjection, ItemQuery, LiveCollection,
+    LiveSubscription, LogPosition, NodeId, ResourceClaim, ResourceClaimKind, ScopeId,
+    ScopeSelection, ServiceId,
 };
 use myko_iroh::{
     IrohReplicator, NativeNodeDescriptor, PairingInvitation, PairingReceipt,
     PairingReceiptSubscription,
 };
-use myko_items::{myko_command, myko_item, myko_subtype};
+use myko_items::{MykoItem, MykoService, myko_command, myko_item, myko_subtype};
 use tokio::{
     sync::{mpsc, watch},
     task::JoinSet,
@@ -26,9 +28,9 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    FederationService, Peer, RememberPeer,
+    FederationService, Peer, RememberPeer, iroh_replicator_capability_id,
     discovery::DiscoveryViewState,
-    peer::{PeerRoster, PeerRosterId, peer_scope},
+    peer::{PeerRoster, PeerRosterId, peer_roster_claims, peer_scope},
 };
 
 /// Durable lifecycle of redeeming one remote pairing invitation.
@@ -120,6 +122,10 @@ impl CommandHandler for InitiatePairing {
         PeerRosterId::from(node_id.to_string())
     }
 
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        vec![iroh_replicator_capability_id()]
+    }
+
     fn execute(
         self,
         context: CommandContext<FederationService, PeerRoster>,
@@ -191,6 +197,10 @@ impl CommandHandler for IssuePairingInvitation {
         PeerRosterId::from(node_id.to_string())
     }
 
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        vec![iroh_replicator_capability_id()]
+    }
+
     fn execute(
         self,
         context: CommandContext<FederationService, PeerRoster>,
@@ -241,6 +251,26 @@ pub struct ConfirmPairing {
 impl CommandHandler for ConfirmPairing {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
+    }
+
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        let mut claims = peer_roster_claims(node_id, Peer::ITEM_TYPE);
+        claims.push(ResourceClaim {
+            selection: ScopeSelection::Exact(peer_scope(node_id)),
+            kind: ResourceClaimKind::Affected,
+            source_node: None,
+            service_id: Some(ServiceId::new(FederationService::SERVICE_ID)),
+            item_type: Some(PendingPairingReceipt::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![FederationPermission::Write],
+            required_operations: Vec::new(),
+            required_capabilities: Vec::new(),
+        });
+        claims
+    }
+
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        vec![iroh_replicator_capability_id()]
     }
 
     fn execute(
@@ -309,9 +339,24 @@ struct AdvancePairingInitiation {
     next: PairingInitiationPhase,
 }
 
+fn lifecycle_claims(node_id: NodeId) -> Vec<ResourceClaim> {
+    let mut claim = ResourceClaim::scope(peer_scope(node_id), ResourceClaimKind::Primary);
+    claim
+        .required_permissions
+        .extend([FederationPermission::ReadState, FederationPermission::Write]);
+    claim
+        .required_operations
+        .extend([AccessOperation::ReadItems, AccessOperation::SubmitCommand]);
+    vec![claim]
+}
+
 impl CommandHandler for AdvancePairingInitiation {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
+    }
+
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        lifecycle_claims(node_id)
     }
 
     fn execute(
@@ -346,6 +391,10 @@ impl CommandHandler for AdvancePairingInitiation {
 impl CommandHandler for AdvancePairingRedemption {
     fn scope(&self, node_id: NodeId) -> PeerRosterId {
         PeerRosterId::from(node_id.to_string())
+    }
+
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        lifecycle_claims(node_id)
     }
 
     fn execute(

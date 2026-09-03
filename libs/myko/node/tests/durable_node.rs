@@ -1,4 +1,7 @@
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use myko_app::capability::NodeScoped as _;
 use myko_app::{
@@ -6,11 +9,13 @@ use myko_app::{
     QueryHandler, myko_query,
 };
 use myko_federation::{
-    AccessPolicy, AccessRequest, AllowAllAccessPolicy, BatchId, ChangeBatch, CommandClient as _,
-    CommandId, CommandRequest, CommandState, MykoItem, MykoService, Node as FederationNode, NodeId,
-    PrincipalId, ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness,
+    AccessOperation, AccessPolicy, AccessRequest, AllowAllAccessPolicy, AuthorityPresentation,
+    BatchId, ChangeBatch, CommandClient as _, CommandId, CommandRequest, CommandState,
+    DelegationId, MykoItem, MykoService, Node as FederationNode, NodeId, Principal, PrincipalId,
+    ProvenanceHop, ProvenanceOperation, ReplicationSelection, ScopeId, ServiceId,
+    SubscriptionLiveness,
 };
-use myko_iroh::{IrohReplicator, SecretKey};
+use myko_iroh::{IrohReplicator, SecretKey, endpoint_principal_id};
 use myko_items::{ItemMutation, ItemProjection, ItemQuery, myko_command, myko_item, myko_service};
 use myko_local::{LocalCommandClient, LocalNodeClient, LocalNodeServer};
 use myko_node::{
@@ -22,6 +27,16 @@ use myko_node::{
     PeersView, RedeemPairingInvitation, RemovePeer, ServiceCapabilityReport, SetPeerReplication,
     SetPeerReplicationSelection, peer_id,
 };
+
+async fn open_loopback_allow(
+    data_dir: impl AsRef<std::path::Path>,
+    retry_interval: Duration,
+) -> Result<Node, myko_node::NodeError> {
+    Node::open_loopback_with_policy(data_dir, retry_interval, |_| {
+        Ok(Arc::new(AllowAllAccessPolicy))
+    })
+    .await
+}
 
 fn watch_peers(node: &Node) -> Result<myko_app::ViewSubscription<Peer>, String> {
     node.application()
@@ -177,12 +192,54 @@ impl AccessPolicy for DenyAllPolicy {
     }
 }
 
+#[derive(Debug, Clone, Default)]
+struct RecordingAllowPolicy {
+    requests: Arc<Mutex<Vec<AccessRequest>>>,
+}
+
+impl AccessPolicy for RecordingAllowPolicy {
+    fn authorize(&self, request: &AccessRequest) -> Result<(), String> {
+        self.requests
+            .lock()
+            .map_err(|_| "recording-policy lock is poisoned".to_owned())?
+            .push(request.clone());
+        Ok(())
+    }
+}
+
+fn routed_command_client(
+    socket: &std::path::Path,
+    destination: NodeId,
+    authenticated_local_principal: Principal,
+    forwarding_node: Principal,
+    forwarding_node_id: NodeId,
+) -> LocalCommandClient {
+    let authority = AuthorityPresentation::direct(authenticated_local_principal.clone());
+    LocalCommandClient::new(socket)
+        .at(destination)
+        .with_authority(authority)
+        .with_forwarding_hop(ProvenanceHop {
+            delegation_id: DelegationId::random(),
+            delegator: authenticated_local_principal,
+            delegate: forwarding_node,
+            operation: ProvenanceOperation::NodeForward {
+                node_id: forwarding_node_id.to_string(),
+            },
+        })
+}
+
 fn commit_test_command(node: &FederationNode, command_type: &str) -> Result<CommandId, String> {
     let request = CommandRequest {
         id: CommandId::new(),
         service_id: ServiceId::new("myko.node.test"),
         scope_id: ScopeId::new("restart"),
         principal_id: PrincipalId::new("node:test"),
+        authority: myko_federation::AuthorityPresentation::direct_node(PrincipalId::new(
+            "node:test",
+        )),
+        resource_claims: Vec::new(),
+        application_capabilities: Vec::new(),
+        arguments_digest: None,
         command_type: command_type.to_owned(),
         payload: Vec::new(),
     };
@@ -270,7 +327,7 @@ async fn typed_item_watch_drives_a_hyphae_cell_without_polling() -> Result<(), S
     use hyphae::{Signal, Watchable as _};
 
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let node = Node::open_loopback(directory.path(), Duration::from_millis(20))
+    let node = open_loopback_allow(directory.path(), Duration::from_millis(20))
         .await
         .map_err(|error| error.to_string())?;
     let scope_id = ScopeId::new("reactive");
@@ -290,6 +347,12 @@ async fn typed_item_watch_drives_a_hyphae_cell_without_polling() -> Result<(), S
         service_id: ServiceId::new(ReactiveService::SERVICE_ID),
         scope_id: scope_id.clone(),
         principal_id: PrincipalId::new("node:test"),
+        authority: myko_federation::AuthorityPresentation::direct_node(PrincipalId::new(
+            "node:test",
+        )),
+        resource_claims: Vec::new(),
+        application_capabilities: Vec::new(),
+        arguments_digest: None,
         command_type: "reactive.insert".to_owned(),
         payload: Vec::new(),
     };
@@ -368,7 +431,7 @@ async fn caller_owned_identity_remains_outside_node_storage() -> Result<(), Stri
 async fn restored_policy_is_installed_before_the_router_serves() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let initial = Node::open_loopback(directory.path(), retry_interval)
+    let initial = open_loopback_allow(directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let _command = commit_test_command(initial.node(), "policy-window")?;
@@ -483,22 +546,27 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
     let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let local = Node::open_loopback(local_directory.path(), retry_interval)
-        .await
-        .map_err(|error| error.to_string())?;
+    let local = Node::open_loopback_with_policy(local_directory.path(), retry_interval, |_| {
+        Ok(Arc::new(myko_federation::AllowAllAccessPolicy))
+    })
+    .await
+    .map_err(|error| format!("open local: {error}"))?;
     let remote_application = MykoApplication::builder()
         .service::<ReactiveService>()
         .map_err(|error| error.to_string())?
         .build();
+    let remote_policy = RecordingAllowPolicy::default();
     let remote = Node::open_loopback_application_with_policy(
         remote_directory.path(),
         retry_interval,
         remote_application,
-        |_| Ok(Arc::new(AllowAllAccessPolicy)),
+        |_| Ok(Arc::new(remote_policy.clone())),
     )
     .await
-    .map_err(|error| error.to_string())?;
-    let _peer = add_pinned_peer(&local, remote.descriptor()).await?;
+    .map_err(|error| format!("open remote: {error}"))?;
+    let _peer = add_pinned_peer(&local, remote.descriptor())
+        .await
+        .map_err(|error| format!("add peer: {error}"))?;
     let socket = local_directory.path().join("myko.sock");
     let server = LocalNodeServer::spawn_sessions(
         &socket,
@@ -506,12 +574,62 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
         PrincipalId::new("owner:local"),
     )
     .await
-    .map_err(|error| error.to_string())?;
-    let commands = LocalCommandClient::new(&socket).at(remote.node().node_id());
+    .map_err(|error| format!("spawn local server: {error}"))?;
+    let owner = Principal::node(PrincipalId::new("owner:local"));
+    let forwarding_node = Principal::node(endpoint_principal_id(local.address().id));
+    let forwarding_hop = ProvenanceHop {
+        delegation_id: DelegationId::random(),
+        delegator: owner.clone(),
+        delegate: forwarding_node.clone(),
+        operation: ProvenanceOperation::NodeForward {
+            node_id: local.node().node_id().to_string(),
+        },
+    };
+
+    if LocalCommandClient::new(&socket)
+        .at(remote.node().node_id())
+        .submit_command(RemoteLifecycleCommand)
+        .await
+        .is_ok()
+    {
+        return Err("remote route accepted a missing node-forward delegation".to_owned());
+    }
+    if routed_command_client(
+        &socket,
+        remote.node().node_id(),
+        Principal::node(PrincipalId::new("node:forged")),
+        forwarding_node.clone(),
+        local.node().node_id(),
+    )
+    .submit_command(RemoteLifecycleCommand)
+    .await
+    .is_ok()
+    {
+        return Err("remote route accepted a substituted authenticated principal".to_owned());
+    }
+    let wrong_delegate = Principal::node(PrincipalId::new("node:not-the-router"));
+    if routed_command_client(
+        &socket,
+        remote.node().node_id(),
+        owner.clone(),
+        wrong_delegate,
+        local.node().node_id(),
+    )
+    .submit_command(RemoteLifecycleCommand)
+    .await
+    .is_ok()
+    {
+        return Err("remote route accepted a forged forwarding hop".to_owned());
+    }
+
+    let commands = LocalCommandClient::new(&socket)
+        .at(remote.node().node_id())
+        .with_authority(AuthorityPresentation::direct(owner.clone()))
+        .with_forwarding_hop(forwarding_hop.clone());
     let submitted = commands
         .submit_command(RemoteLifecycleCommand)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("valid routed submit: {error}"))?;
     if submitted.source_node != remote.node().node_id()
         || !matches!(
             submitted.command.as_ref().map(|command| &command.state),
@@ -530,7 +648,7 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
     let observed = commands
         .command_state(command_id)
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("routed state: {error}"))?;
     if observed
         .command
         .as_ref()
@@ -543,7 +661,7 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
     let cancelled = commands
         .cancel_command(command_id, "test complete".to_owned())
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| format!("routed cancel: {error}"))?;
     if cancelled
         .command
         .as_ref()
@@ -553,10 +671,37 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
             "terminal remote command changed after cancellation: {cancelled:?}"
         ));
     }
+    let recorded = remote_policy
+        .requests
+        .lock()
+        .map_err(|_| "recording-policy lock is poisoned".to_owned())?;
+    let routed = recorded
+        .iter()
+        .find(|request| request.operation == AccessOperation::SubmitCommand)
+        .ok_or_else(|| "destination policy did not observe the routed submission".to_owned())?;
+    if routed.presentation.principal != owner
+        || routed.presentation.executor != forwarding_node
+        || routed.presentation.provenance != vec![forwarding_hop]
+    {
+        return Err(format!(
+            "routed authority did not preserve the original principal and forwarding hop: {:?}",
+            routed.presentation
+        ));
+    }
+    drop(recorded);
 
-    server.shutdown().await.map_err(|error| error.to_string())?;
-    local.shutdown().await.map_err(|error| error.to_string())?;
-    remote.shutdown().await.map_err(|error| error.to_string())
+    server
+        .shutdown()
+        .await
+        .map_err(|error| format!("shutdown local server: {error}"))?;
+    local
+        .shutdown()
+        .await
+        .map_err(|error| format!("shutdown local: {error}"))?;
+    remote
+        .shutdown()
+        .await
+        .map_err(|error| format!("shutdown remote: {error}"))
 }
 
 #[tokio::test]
@@ -655,7 +800,7 @@ async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), Str
     let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let local = Node::open_loopback(local_directory.path(), retry_interval)
+    let local = open_loopback_allow(local_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let remote_application = MykoApplication::builder()
@@ -708,7 +853,18 @@ async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), Str
     )
     .await
     .map_err(|error| error.to_string())?;
+    let owner = Principal::node(PrincipalId::new("owner:local"));
+    let forwarding_node = Principal::node(endpoint_principal_id(local.address().id));
     let executed_by = LocalCommandClient::new(&socket)
+        .with_authority(AuthorityPresentation::direct(owner.clone()))
+        .with_forwarding_hop(ProvenanceHop {
+            delegation_id: DelegationId::random(),
+            delegator: owner,
+            delegate: forwarding_node,
+            operation: ProvenanceOperation::NodeForward {
+                node_id: local.node().node_id().to_string(),
+            },
+        })
         .exec_command(RemoteLifecycleCommand)
         .await
         .map_err(|error| error.to_string())?;
@@ -731,10 +887,10 @@ async fn local_node_routes_remote_live_events_without_an_application_protocol() 
     let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let local = Node::open_loopback(local_directory.path(), retry_interval)
+    let local = open_loopback_allow(local_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
-    let remote = Node::open_loopback(remote_directory.path(), retry_interval)
+    let remote = open_loopback_allow(remote_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let _peer = add_pinned_peer(&local, remote.descriptor()).await?;
@@ -748,7 +904,19 @@ async fn local_node_routes_remote_live_events_without_an_application_protocol() 
     .await
     .map_err(|error| error.to_string())?;
     let target_node = remote.node().node_id();
-    let client = LocalNodeClient::new(&socket).at(target_node);
+    let owner = Principal::node(PrincipalId::new("owner:local"));
+    let forwarding_node = Principal::node(endpoint_principal_id(local.address().id));
+    let client = LocalNodeClient::new(&socket)
+        .at(target_node)
+        .with_authority(AuthorityPresentation::direct(owner.clone()))
+        .with_forwarding_hop(ProvenanceHop {
+            delegation_id: DelegationId::random(),
+            delegator: owner,
+            delegate: forwarding_node,
+            operation: ProvenanceOperation::NodeForward {
+                node_id: local.node().node_id().to_string(),
+            },
+        });
     let mut events = client
         .follow_live(vec!["agent:test".to_owned()])
         .await
@@ -780,10 +948,10 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let source = Node::open_loopback(source_directory.path(), retry_interval)
+    let source = open_loopback_allow(source_directory.path(), retry_interval)
         .await
         .map_err(|error| format!("open pairing source: {error}"))?;
-    let target = Node::open_loopback(target_directory.path(), retry_interval)
+    let target = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| format!("open pairing target: {error}"))?;
     let application = target.application();
@@ -888,10 +1056,10 @@ async fn peer_replication_selection_survives_restart() -> Result<(), String> {
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let source = Node::open_loopback(source_directory.path(), retry_interval)
+    let source = open_loopback_allow(source_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
-    let target = Node::open_loopback(target_directory.path(), retry_interval)
+    let target = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let peer = add_pinned_peer(&target, source.descriptor()).await?;
@@ -913,7 +1081,7 @@ async fn peer_replication_selection_survives_restart() -> Result<(), String> {
     }
     target.shutdown().await.map_err(|error| error.to_string())?;
 
-    let reopened = Node::open_loopback(target_directory.path(), retry_interval)
+    let reopened = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let peers = watch_peers(&reopened)?;
@@ -938,7 +1106,7 @@ async fn peer_replication_selection_survives_restart() -> Result<(), String> {
 async fn discovery_configuration_is_a_durable_live_framework_report() -> Result<(), String> {
     let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let node = Node::open_loopback(directory.path(), retry_interval)
+    let node = open_loopback_allow(directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let report = node
@@ -975,7 +1143,7 @@ async fn discovery_configuration_is_a_durable_live_framework_report() -> Result<
     let node_id = node.node().node_id();
     node.shutdown().await.map_err(|error| error.to_string())?;
 
-    let reopened = Node::open_loopback(directory.path(), retry_interval)
+    let reopened = open_loopback_allow(directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let restored = reopened
@@ -1139,10 +1307,10 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let source = Node::open_loopback(source_directory.path(), retry_interval)
+    let source = open_loopback_allow(source_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
-    let target = Node::open_loopback(target_directory.path(), retry_interval)
+    let target = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let inbound = source
@@ -1197,7 +1365,7 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
         .shutdown()
         .await
         .map_err(|error| format!("shutdown pairing target: {error}"))?;
-    let reopened = Node::open_loopback(target_directory.path(), retry_interval)
+    let reopened = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| format!("reopen pairing target: {error}"))?;
     let reopened_peers = watch_peers(&reopened)?;
@@ -1224,10 +1392,10 @@ async fn typed_pairing_initiation_is_live_and_requires_mutual_confirmation() -> 
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let source = Node::open_loopback(source_directory.path(), retry_interval)
+    let source = open_loopback_allow(source_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
-    let target = Node::open_loopback(target_directory.path(), retry_interval)
+    let target = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let source_receipts = source
@@ -1278,10 +1446,10 @@ async fn pending_pairing_receipt_survives_recipient_restart() -> Result<(), Stri
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let source = Node::open_loopback(source_directory.path(), retry_interval)
+    let source = open_loopback_allow(source_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
-    let target = Node::open_loopback(target_directory.path(), retry_interval)
+    let target = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let target_receipts = target
@@ -1294,7 +1462,7 @@ async fn pending_pairing_receipt_survives_recipient_restart() -> Result<(), Stri
     target_receipts.shutdown().await;
     target.shutdown().await.map_err(|error| error.to_string())?;
 
-    let reopened = Node::open_loopback(target_directory.path(), retry_interval)
+    let reopened = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let reopened_receipts = reopened
@@ -1322,14 +1490,14 @@ async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), St
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let source = Node::open_loopback(source_directory.path(), retry_interval)
+    let source = open_loopback_allow(source_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let source_descriptor = source.descriptor();
     let source_address = source_descriptor.endpoint.clone();
     let first_command = commit_test_command(source.node(), "before-restart")?;
 
-    let target = Node::open_loopback(target_directory.path(), retry_interval)
+    let target = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let first_transport_id = target.address().id;
@@ -1339,7 +1507,7 @@ async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), St
     target.shutdown().await.map_err(|error| error.to_string())?;
 
     let second_command = commit_test_command(source.node(), "while-target-offline")?;
-    let reopened = Node::open_loopback(target_directory.path(), retry_interval)
+    let reopened = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     if reopened.address().id != first_transport_id || reopened.node().node_id() != first_node_id {
@@ -1375,7 +1543,7 @@ async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), St
         .shutdown()
         .await
         .map_err(|error| error.to_string())?;
-    let after_removal = Node::open_loopback(target_directory.path(), retry_interval)
+    let after_removal = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let remaining_peers = watch_peers(&after_removal)?;
@@ -1421,13 +1589,13 @@ async fn pinned_peer_rejects_an_endpoint_serving_another_myko_history() -> Resul
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let source = Node::open_loopback(source_directory.path(), retry_interval)
+    let source = open_loopback_allow(source_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let command_id = commit_test_command(source.node(), "must-not-replicate")?;
     let source_address = source.address();
     let expected_source = NodeId::new();
-    let target = Node::open_loopback(target_directory.path(), retry_interval)
+    let target = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let status_view = watch_node_statuses(&target)?;
@@ -1473,7 +1641,7 @@ async fn legacy_endpoint_only_peer_files_remain_loadable() -> Result<(), String>
     let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let retry_interval = Duration::from_millis(20);
-    let source = Node::open_loopback(source_directory.path(), retry_interval)
+    let source = open_loopback_allow(source_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let source_address = source.address();
@@ -1485,7 +1653,7 @@ async fn legacy_endpoint_only_peer_files_remain_loadable() -> Result<(), String>
     std::fs::write(target_directory.path().join("peers.json"), encoded)
         .map_err(|error| error.to_string())?;
 
-    let target = Node::open_loopback(target_directory.path(), retry_interval)
+    let target = open_loopback_allow(target_directory.path(), retry_interval)
         .await
         .map_err(|error| error.to_string())?;
     let peers = watch_peers(&target)?;

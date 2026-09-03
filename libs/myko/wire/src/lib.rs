@@ -10,9 +10,10 @@ use std::fmt;
 
 use myko_app::{ErasedHandlerState, ErasedViewDelta, HandlerRequest};
 use myko_federation::{
-    CommandId, CommandResponse, CommandStatePage, CommandStateRequest, CommandStateUpdate,
-    CommandSubmission, CommandWatchRequest, ItemFollowRequest, ItemStatePage, ItemStateRequest,
-    ItemStateUpdate, LiveEvent, LogPosition, NodeId, ReplicationBatch, ReplicationSelection,
+    ApprovalDecision, AuthorityPresentation, AuthorizationDecision, ChallengeId, CommandId,
+    CommandResponse, CommandStatePage, CommandStateRequest, CommandStateUpdate, CommandSubmission,
+    CommandWatchRequest, ItemFollowRequest, ItemStatePage, ItemStateRequest, ItemStateUpdate,
+    LiveEvent, LogPosition, NodeId, ProvenanceHop, ReplicationBatch, ReplicationSelection,
     ScopeCatalogPage, ScopeId, ScopedReplicationBatch, SelectedReplicationBatch,
 };
 use serde::{Deserialize, Serialize};
@@ -21,7 +22,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Transport adapters may version their framing independently, but a peer must
 /// not decode an envelope whose message schema it does not understand.
-pub const WIRE_PROTOCOL_VERSION: u32 = 3;
+pub const WIRE_PROTOCOL_VERSION: u32 = 5;
 
 /// A versioned message envelope for framed transports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +88,15 @@ impl std::error::Error for UnsupportedWireVersion {}
 pub struct NodeRequestEnvelope {
     /// Requested destination, or the node that accepted the connection.
     pub destination: Option<NodeId>,
+    /// Optional original-principal presentation. It is untrusted until the
+    /// destination binds its final executor to the transport-authenticated peer
+    /// and validates every hop/approval against its authority journal.
+    #[serde(default)]
+    pub authority: Option<AuthorityPresentation>,
+    /// Store-verifiable delegations reserved for federation routers. Each
+    /// forwarding node consumes one hop before opening the next connection.
+    #[serde(default)]
+    pub forwarding_provenance: Vec<ProvenanceHop>,
     /// The unchanged canonical request to execute at the destination.
     pub request: NodeRequest,
 }
@@ -97,6 +107,8 @@ impl NodeRequestEnvelope {
     pub const fn connected(request: NodeRequest) -> Self {
         Self {
             destination: None,
+            authority: None,
+            forwarding_provenance: Vec::new(),
             request,
         }
     }
@@ -106,8 +118,24 @@ impl NodeRequestEnvelope {
     pub const fn at(destination: NodeId, request: NodeRequest) -> Self {
         Self {
             destination: Some(destination),
+            authority: None,
+            forwarding_provenance: Vec::new(),
             request,
         }
+    }
+
+    /// Attaches a provenance/approval presentation for store-backed validation.
+    #[must_use]
+    pub fn with_authority(mut self, authority: AuthorityPresentation) -> Self {
+        self.authority = Some(authority);
+        self
+    }
+
+    /// Reserves one attenuating delegation for the next federation hop.
+    #[must_use]
+    pub fn with_forwarding_hop(mut self, hop: ProvenanceHop) -> Self {
+        self.forwarding_provenance.push(hop);
+        self
     }
 }
 
@@ -214,6 +242,11 @@ pub enum NodeRequest {
         /// Handler lifecycle request.
         request: HandlerRequest,
     },
+    /// Records an approval through the same authenticated session boundary.
+    ApproveAuthority {
+        challenge_id: ChallengeId,
+        approved: bool,
+    },
 }
 
 /// Frames a Myko node emits in response to a [`NodeRequest`].
@@ -250,6 +283,12 @@ pub enum NodeFrame {
     HandlerState { state: Box<ErasedHandlerState> },
     /// Incremental keyed application-view rows after its initial state.
     HandlerViewDelta { delta: Box<ErasedViewDelta> },
+    /// First-class permit/deny/challenge result for an authority operation.
+    Authorization {
+        decision: Box<AuthorizationDecision>,
+    },
+    /// Immutable approval accepted by the authority journal.
+    Approval { decision: Box<ApprovalDecision> },
     /// Best-effort live event.
     Live { event: Box<LiveEvent> },
     /// Operation failure, represented as a portable diagnostic.

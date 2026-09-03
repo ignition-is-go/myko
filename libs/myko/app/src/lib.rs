@@ -20,7 +20,8 @@ use std::{
 
 use hyphae::{Gettable as _, MapDiff, Signal, SubscriptionGuard, Watchable as _};
 use myko_federation::{
-    AccessOperation, AccessRequest, CommandClient as FederationCommandClient, CommandClientFuture,
+    AccessOperation, AccessRequest, ApplicationCapability, AuthorityPresentation, CapabilityId,
+    CommandClient as FederationCommandClient, CommandClientFuture,
     CommandContext as FederationCommandContext, CommandDispatchResult, CommandHandlerError,
     CommandId, CommandRequest, CommandResponse, CommandSnapshot, CommandStateRequest,
     CommandStateSnapshot, CommandStateStream, CommandSubmission, CommandWatch, CommandWatchFuture,
@@ -28,8 +29,8 @@ use myko_federation::{
     GraphEdge, ItemProjection, ItemQuery, ItemScope, LiveCollection, LiveCollectionRevision,
     LiveCollectionState, LiveSubscription, LiveSubscriptionState, LogPosition, MutationOperation,
     MykoCommand, MykoItem, MykoOperation, MykoService, Node, NodeError, NodeEvent, NodeId,
-    PendingCommandSubscription, PrincipalId, ScopeId, ServiceId, ServiceTypeId,
-    SubscriptionLiveness, TypedCommandClientFuture, TypedEdgeEnds, live_collection,
+    PendingCommandSubscription, PrincipalId, ResourceClaim, ResourceClaimKind, ScopeId, ServiceId,
+    ServiceTypeId, SubscriptionLiveness, TypedCommandClientFuture, TypedEdgeEnds, live_collection,
     live_subscription,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -40,6 +41,16 @@ use tokio::task::JoinHandle;
 pub use myko_app_macros::{myko_query, myko_report, myko_view};
 /// Framework-selected durable command failure.
 pub type CommandError = CommandHandlerError;
+
+fn command_capability_error(error: NodeError) -> CommandError {
+    match error {
+        error @ (NodeError::AuthorizationDenied(_)
+        | NodeError::ItemServiceMismatch { .. }
+        | NodeError::InvalidItemMutation(_)
+        | NodeError::CommandSchemaMismatch { .. }) => CommandError::reject(error.to_string()),
+        error => CommandError::retry(error.to_string()),
+    }
+}
 
 /// Pluggable full-text index used by the sealed [`capability::Searching`]
 /// capability.
@@ -497,7 +508,11 @@ impl ItemRegistry {
 #[derive(Clone)]
 pub struct ApplicationResources {
     values: Arc<RwLock<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>>,
+    capability_ids: Arc<RwLock<HashMap<TypeId, CapabilityId>>>,
 }
+
+/// Stable capability protecting the application-installed search provider.
+pub const SEARCH_PROVIDER_CAPABILITY_ID: &str = "myko.application.search-provider";
 
 impl Default for ApplicationResources {
     fn default() -> Self {
@@ -508,6 +523,7 @@ impl Default for ApplicationResources {
         );
         Self {
             values: Arc::new(RwLock::new(values)),
+            capability_ids: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 }
@@ -532,12 +548,51 @@ impl ApplicationResources {
     where
         T: Send + Sync + 'static,
     {
+        if TypeId::of::<T>() != TypeId::of::<ItemRegistry>()
+            && !self
+                .capability_ids
+                .read()
+                .map_err(|_| {
+                    AppError::State("application resource registry is poisoned".to_owned())
+                })?
+                .contains_key(&TypeId::of::<T>())
+        {
+            return Err(AppError::State(format!(
+                "application resource {} requires an explicit stable capability ID",
+                std::any::type_name::<T>()
+            )));
+        }
         let previous = self
             .values
             .write()
             .map_err(|_| AppError::State("application resource registry is poisoned".to_owned()))?
             .insert(TypeId::of::<T>(), Arc::new(value));
         Ok(previous.and_then(|value| value.downcast::<T>().ok()))
+    }
+
+    fn register_capability<T: 'static>(&self, capability: CapabilityId) -> Result<(), AppError> {
+        let mut registered = self
+            .capability_ids
+            .write()
+            .map_err(|_| AppError::State("application resource registry is poisoned".to_owned()))?;
+        match registered.get(&TypeId::of::<T>()) {
+            Some(existing) if existing == &capability => Ok(()),
+            Some(existing) => Err(AppError::State(format!(
+                "application resource {} is already bound to capability {existing}",
+                std::any::type_name::<T>()
+            ))),
+            None => {
+                registered.insert(TypeId::of::<T>(), capability);
+                Ok(())
+            }
+        }
+    }
+
+    fn capability_id<T: 'static>(&self) -> Result<Option<CapabilityId>, AppError> {
+        self.capability_ids
+            .read()
+            .map_err(|_| AppError::State("application resource registry is poisoned".to_owned()))
+            .map(|registered| registered.get(&TypeId::of::<T>()).cloned())
     }
 
     /// Resolves one typed application service.
@@ -580,6 +635,22 @@ impl ApplicationResources {
 pub trait CommandHandler: MykoCommand {
     /// Selects the concrete entity whose typed ID defines this command's scope.
     fn scope(&self, node_id: NodeId) -> <Self::Scope as MykoItem>::Id;
+
+    /// Declares every resource that may be read, mutated, or used for an
+    /// external effect before the handler runs. Runtime claim tracking verifies
+    /// the actual set is a subset and commit authorization rechecks it all.
+    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
+        let scope = self.scope(node_id);
+        vec![ResourceClaim::scope(
+            ScopeId::for_item::<Self::Scope>(&scope),
+            ResourceClaimKind::Primary,
+        )]
+    }
+
+    /// Declares opaque application capabilities needed by this handler.
+    fn required_capabilities(&self) -> Vec<CapabilityId> {
+        Vec::new()
+    }
 
     /// Executes against Myko's sealed command capability context.
     ///
@@ -647,6 +718,22 @@ impl<T> CommandClient for T where T: FederationCommandWatchingClient {}
 /// this trait opts a custom query into application registration and allows it
 /// to compose other reactive dependencies through [`QueryBuildContext`].
 pub trait QueryHandler: ItemQuery {
+    /// Declares every source/scope dependency before the handler is built.
+    /// Custom multi-source queries must override this alongside `build`.
+    fn authority_claims(&self, source_node: NodeId, scope_id: &ScopeId) -> Vec<ResourceClaim> {
+        vec![ResourceClaim {
+            selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
+            kind: ResourceClaimKind::Referenced,
+            source_node: Some(source_node),
+            service_id: Some(ServiceId::new(Self::Item::SERVICE_ID)),
+            item_type: Some(Self::Item::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![myko_federation::FederationPermission::ReadState],
+            required_operations: vec![AccessOperation::ReadItems],
+            required_capabilities: Vec::new(),
+        }]
+    }
+
     /// Builds this query's long-lived result.
     ///
     /// Simple handlers can use the default projection-backed implementation;
@@ -678,10 +765,11 @@ pub mod capability {
     use std::sync::Arc;
 
     use myko_federation::{
-        CommandContext as FederationCommandContext, CommandRequest, CommandSnapshot, ItemQuery,
-        MykoCommand, MykoItem, Node, NodeError,
+        CommandContext as FederationCommandContext, CommandRequest, CommandSnapshot,
+        CommandSubmission, ItemQuery, MykoCommand, MykoItem, Node, NodeError,
     };
 
+    use super::ErasedCommandFactory as _;
     use super::{ApplicationResources, CommandContext, CommandError, CommandHandler, ItemRegistry};
 
     pub(crate) mod sealed {
@@ -727,6 +815,14 @@ pub mod capability {
         #[doc(hidden)]
         fn __resources(&self) -> &ApplicationResources;
 
+        #[doc(hidden)]
+        fn __require_resource_capability(
+            &self,
+            _capability: myko_federation::CapabilityId,
+        ) -> Result<(), super::AppError> {
+            Ok(())
+        }
+
         /// Resolves a service by Rust type, without stringly typed wiring.
         ///
         /// # Errors
@@ -736,6 +832,9 @@ pub mod capability {
         where
             T: Send + Sync + 'static,
         {
+            if let Some(capability) = self.__resources().capability_id::<T>()? {
+                self.__require_resource_capability(capability)?;
+            }
             self.__resources().get::<T>()
         }
     }
@@ -825,10 +924,28 @@ pub mod capability {
         where
             Q: ItemQuery,
         {
-            self.__node()
-                .query_items_in(self.__node().node_id(), self.scope_id(), query)
-                .map_err(|error| CommandError::retry(error.to_string()))
+            self.__command_query_context()
+                .query(query)
+                .map_err(super::command_capability_error)
         }
+
+        /// Queries an authorized exact scope or nested subtree from local
+        /// authoritative state and records the read in the effect claim set.
+        fn exec_selected_query<Q>(
+            &self,
+            selection: myko_federation::ScopeSelection,
+            query: Q,
+        ) -> Result<Q::Output, CommandError>
+        where
+            Q: ItemQuery,
+        {
+            self.__command_query_context()
+                .query_selected(selection, query)
+                .map_err(super::command_capability_error)
+        }
+
+        #[doc(hidden)]
+        fn __command_query_context(&self) -> &FederationCommandContext;
     }
 
     /// Typed atomic item publication. Read-only contexts do not implement it.
@@ -867,7 +984,7 @@ pub mod capability {
             }
             self.__federation_command_context()
                 .emit_set_in(self.__mutation_scope_id(), item)
-                .map_err(|error| CommandError::retry(error.to_string()))
+                .map_err(super::command_capability_error)
         }
 
         /// Adds a typed deletion to the command's atomic batch.
@@ -882,7 +999,7 @@ pub mod capability {
         {
             self.__federation_command_context()
                 .emit_delete_in::<T>(self.__mutation_scope_id(), id)
-                .map_err(|error| CommandError::retry(error.to_string()))
+                .map_err(super::command_capability_error)
         }
     }
 
@@ -957,6 +1074,22 @@ pub mod capability {
             let context = self.__typed_command_context();
             let nested_scope = command.scope(context.node_id());
             let nested_scope_id = myko_federation::ScopeId::for_item::<C::Scope>(&nested_scope);
+            for claim in super::normalized_command_claims(
+                &command,
+                context.node_id(),
+                nested_scope_id.clone(),
+            ) {
+                context
+                    .inner
+                    .validate_declared_claim(&claim)
+                    .map_err(|error| CommandError::reject(error.to_string()))?;
+            }
+            for capability in command.required_capabilities() {
+                context
+                    .inner
+                    .record_actual_capability(capability)
+                    .map_err(|error| CommandError::reject(error.to_string()))?;
+            }
             command.execute(context.retarget::<C::Scope>(nested_scope_id))
         }
     }
@@ -972,11 +1105,18 @@ pub mod capability {
             &self,
             command: C,
         ) -> Result<CommandSnapshot, CommandError> {
-            let scope = command.scope(self.node_id());
-            let scope_id = myko_federation::ScopeId::for_item::<C::Scope>(&scope);
+            let submission = CommandSubmission::for_command(&command)
+                .map_err(super::command_capability_error)?;
+            let presentation = self.__request().authority.clone();
+            let request = super::CommandFactory::<C>(std::marker::PhantomData)
+                .authenticate(self.node_id(), presentation.executor.id.clone(), submission)
+                .map_err(super::command_capability_error)?
+                .with_authority(presentation.clone());
             self.__node()
-                .submit_authenticated_command(scope_id, self.principal_id().clone(), &command)
-                .map_err(|error| CommandError::retry(error.to_string()))
+                .prepare_command(presentation.executor.id, request)
+                .map_err(|decision| CommandError::reject(decision.public_message()))?
+                .submit()
+                .map_err(super::command_capability_error)
         }
     }
 
@@ -1094,6 +1234,8 @@ pub mod capability {
         where
             R: super::ReportHandler,
         {
+            self.__reactive()
+                .require_dependencies(&report.authority_claims())?;
             report.build(&super::ReportContext {
                 core: self.__reactive().clone(),
             })
@@ -1114,6 +1256,8 @@ pub mod capability {
         where
             V: super::ViewHandler,
         {
+            self.__reactive()
+                .require_dependencies(&view.authority_claims())?;
             view.build(&super::ViewContext {
                 core: self.__reactive().clone(),
             })
@@ -1331,10 +1475,20 @@ impl<S: MykoService, R: MykoItem> capability::ResourceScoped for CommandContext<
     fn __resources(&self) -> &ApplicationResources {
         &self.resources
     }
+
+    fn __require_resource_capability(&self, capability: CapabilityId) -> Result<(), AppError> {
+        self.inner
+            .record_actual_capability(capability)
+            .map_err(AppError::Node)
+    }
 }
 impl<S: MykoService, R: MykoItem> capability::RegistryScoped for CommandContext<S, R> {}
 
-impl<S: MykoService, R: MykoItem> capability::CommandQuerying for CommandContext<S, R> {}
+impl<S: MykoService, R: MykoItem> capability::CommandQuerying for CommandContext<S, R> {
+    fn __command_query_context(&self) -> &FederationCommandContext {
+        &self.inner
+    }
+}
 impl<S: MykoService, R: MykoItem> capability::EventPublishing for CommandContext<S, R> {
     type Service = S;
     type Scope = R;
@@ -1483,6 +1637,21 @@ pub trait ReportHandler:
         None
     }
 
+    /// Declares every dependency before `build` starts reactive streams.
+    fn authority_claims(&self) -> Vec<ResourceClaim> {
+        self.access_scope()
+            .map(|scope| {
+                let mut claim = ResourceClaim::scope(scope, ResourceClaimKind::Referenced);
+                claim
+                    .required_permissions
+                    .push(myko_federation::FederationPermission::ReadState);
+                claim.required_operations.push(AccessOperation::ReadItems);
+                claim
+            })
+            .into_iter()
+            .collect()
+    }
+
     /// Builds the report once from long-lived reactive dependencies.
     ///
     /// The returned cell must be derived from the supplied context rather than
@@ -1524,6 +1693,21 @@ pub trait ViewHandler:
     #[must_use]
     fn access_scope(&self) -> Option<ScopeId> {
         None
+    }
+
+    /// Declares every dependency before `build` starts reactive streams.
+    fn authority_claims(&self) -> Vec<ResourceClaim> {
+        self.access_scope()
+            .map(|scope| {
+                let mut claim = ResourceClaim::scope(scope, ResourceClaimKind::Referenced);
+                claim
+                    .required_permissions
+                    .push(myko_federation::FederationPermission::ReadState);
+                claim.required_operations.push(AccessOperation::ReadItems);
+                claim
+            })
+            .into_iter()
+            .collect()
     }
 
     /// Returns the stable identity of one row across view revisions.
@@ -1748,6 +1932,48 @@ trait ErasedCommandFactory: fmt::Debug + Send + Sync {
 
 struct CommandFactory<C>(PhantomData<fn() -> C>);
 
+fn normalized_command_claims<C: CommandHandler>(
+    command: &C,
+    node_id: NodeId,
+    scope_id: ScopeId,
+) -> Vec<ResourceClaim> {
+    let mut claims = command.authority_claims(node_id);
+    if !claims.iter().any(|claim| {
+        claim.kind == ResourceClaimKind::Primary
+            && claim.selection == myko_federation::ScopeSelection::Exact(scope_id.clone())
+    }) {
+        claims.push(ResourceClaim::scope(scope_id, ResourceClaimKind::Primary));
+    }
+    for claim in claims
+        .iter_mut()
+        .filter(|claim| claim.kind == ResourceClaimKind::Primary)
+    {
+        claim
+            .service_id
+            .get_or_insert_with(|| ServiceId::new(C::SERVICE_ID));
+        if let Some(item_type) = C::ITEM_TYPE {
+            claim.item_type.get_or_insert_with(|| item_type.to_owned());
+        }
+        if !claim
+            .required_permissions
+            .contains(&myko_federation::FederationPermission::Write)
+        {
+            claim
+                .required_permissions
+                .push(myko_federation::FederationPermission::Write);
+        }
+        if !claim
+            .required_operations
+            .contains(&AccessOperation::SubmitCommand)
+        {
+            claim
+                .required_operations
+                .push(AccessOperation::SubmitCommand);
+        }
+    }
+    claims
+}
+
 impl<C> fmt::Debug for CommandFactory<C> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
@@ -1770,7 +1996,11 @@ where
         let command: C = serde_json::from_slice(&submission.payload)
             .map_err(|error| NodeError::CommandDecoding(error.to_string()))?;
         let scope = command.scope(node_id);
-        Ok(submission.authenticate(ScopeId::for_item::<C::Scope>(&scope), principal_id))
+        let scope_id = ScopeId::for_item::<C::Scope>(&scope);
+        let mut request = submission.authenticate(scope_id.clone(), principal_id);
+        request.resource_claims = normalized_command_claims(&command, node_id, scope_id);
+        request.application_capabilities = command.required_capabilities();
+        Ok(request)
     }
 
     fn dispatch(
@@ -1804,6 +2034,7 @@ pub struct MykoApplication {
     services: BTreeSet<MykoServiceId>,
     globals_registered: bool,
     resources: ApplicationResources,
+    capabilities: BTreeMap<CapabilityId, ApplicationCapability>,
     commands: CommandFactoryMap,
     queries: BTreeMap<&'static str, Arc<dyn ErasedHandlerFactory>>,
     reports: BTreeMap<&'static str, Arc<dyn ErasedHandlerFactory>>,
@@ -1818,6 +2049,7 @@ impl MykoApplication {
             services: BTreeSet::new(),
             globals_registered: false,
             resources: ApplicationResources::default(),
+            capabilities: BTreeMap::new(),
             commands: BTreeMap::new(),
             queries: BTreeMap::new(),
             reports: BTreeMap::new(),
@@ -1845,6 +2077,11 @@ impl MykoApplication {
 
     fn restore_item_scope_topology(&self, node: &Node) -> Result<(), AppError> {
         self.resources.get::<ItemRegistry>()?.restore_topology(node)
+    }
+
+    /// Returns application-owned opaque capabilities for authority registration.
+    pub fn authority_capabilities(&self) -> impl ExactSizeIterator<Item = &ApplicationCapability> {
+        self.capabilities.values()
     }
 
     /// Adds one framework-owned service to an already composed application.
@@ -1967,6 +2204,43 @@ impl MykoApplication {
             Arc::new(ViewFactory::<V>(PhantomData)),
         )
     }
+
+    fn register_resource_capability<T: 'static>(
+        &mut self,
+        capability: ApplicationCapability,
+    ) -> Result<(), AppError> {
+        if capability.id.as_str().is_empty() {
+            return Err(AppError::State(format!(
+                "application resource {} requires a non-empty stable capability ID",
+                std::any::type_name::<T>()
+            )));
+        }
+        self.resources
+            .register_capability::<T>(capability.id.clone())?;
+        match self.capabilities.get(&capability.id) {
+            Some(existing) if existing == &capability => Ok(()),
+            Some(_) => Err(AppError::DuplicateHandler {
+                kind: "authority capability",
+                id: capability.id.to_string(),
+            }),
+            None => {
+                self.capabilities.insert(capability.id.clone(), capability);
+                Ok(())
+            }
+        }
+    }
+
+    /// Declares a framework-installed runtime resource before the access
+    /// policy is restored and capability definitions are registered.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_framework_resource_capability<T: 'static>(
+        mut self,
+        capability: ApplicationCapability,
+    ) -> Result<Self, AppError> {
+        self.register_resource_capability::<T>(capability)?;
+        Ok(self)
+    }
 }
 
 fn register_query<Q: QueryHandler>(application: &mut MykoApplication) -> Result<(), AppError> {
@@ -2055,11 +2329,38 @@ impl MykoApplicationBuilder {
     /// # Errors
     ///
     /// Returns an error when the application resource registry is unavailable.
-    pub fn resource<T>(self, value: T) -> Result<Self, AppError>
+    pub fn resource<T>(
+        mut self,
+        capability: ApplicationCapability,
+        value: T,
+    ) -> Result<Self, AppError>
     where
         T: Send + Sync + 'static,
     {
+        self.application
+            .register_resource_capability::<T>(capability)?;
         let _previous = self.application.resources.insert(value)?;
+        Ok(self)
+    }
+
+    /// Registers an opaque application capability and its default constraints.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the same stable capability ID is registered twice.
+    pub fn capability(mut self, capability: ApplicationCapability) -> Result<Self, AppError> {
+        let id = capability.id.clone();
+        if self
+            .application
+            .capabilities
+            .insert(id.clone(), capability)
+            .is_some()
+        {
+            return Err(AppError::DuplicateHandler {
+                kind: "authority capability",
+                id: id.to_string(),
+            });
+        }
         Ok(self)
     }
 
@@ -2068,10 +2369,16 @@ impl MykoApplicationBuilder {
     /// # Errors
     ///
     /// Returns an error when the application resource registry is unavailable.
-    pub fn search_provider<P>(self, provider: P) -> Result<Self, AppError>
+    pub fn search_provider<P>(mut self, provider: P) -> Result<Self, AppError>
     where
         P: SearchProvider,
     {
+        self.application
+            .register_resource_capability::<SearchService>(ApplicationCapability {
+                id: CapabilityId::new(SEARCH_PROVIDER_CAPABILITY_ID),
+                description: "access the application full-text search provider".to_owned(),
+                constraints: Default::default(),
+            })?;
         let _previous = self
             .application
             .resources
@@ -2139,11 +2446,14 @@ fn insert_handler(
 }
 
 trait ErasedHandlerFactory: fmt::Debug + Send + Sync {
+    fn authority_claims(&self, request: &HandlerRequest) -> Result<Vec<ResourceClaim>, AppError>;
+
     fn watch(
         &self,
         node: Node,
         resources: ApplicationResources,
         request: &HandlerRequest,
+        declared_claims: Arc<[ResourceClaim]>,
     ) -> Result<ErasedHandlerSubscription, AppError>;
 }
 
@@ -2159,11 +2469,24 @@ impl<Q: QueryHandler> fmt::Debug for QueryFactory<Q> {
 }
 
 impl<Q: QueryHandler> ErasedHandlerFactory for QueryFactory<Q> {
+    fn authority_claims(&self, request: &HandlerRequest) -> Result<Vec<ResourceClaim>, AppError> {
+        let source_node = request.source_node.ok_or_else(|| {
+            AppError::State("query handler request omitted its authoritative source".to_owned())
+        })?;
+        let scope_id = request.scope_id.as_ref().ok_or_else(|| {
+            AppError::State("query handler request omitted its federation scope".to_owned())
+        })?;
+        let query = serde_json::from_value::<Q>(request.params.clone())
+            .map_err(|error| AppError::Serialization(error.to_string()))?;
+        Ok(query.authority_claims(source_node, scope_id))
+    }
+
     fn watch(
         &self,
         node: Node,
         resources: ApplicationResources,
         request: &HandlerRequest,
+        declared_claims: Arc<[ResourceClaim]>,
     ) -> Result<ErasedHandlerSubscription, AppError> {
         let source_node = request.source_node.ok_or_else(|| {
             AppError::State("query handler request omitted its authoritative source".to_owned())
@@ -2173,7 +2496,8 @@ impl<Q: QueryHandler> ErasedHandlerFactory for QueryFactory<Q> {
         })?;
         let query = serde_json::from_value::<Q>(request.params.clone())
             .map_err(|error| AppError::Serialization(error.to_string()))?;
-        let context = QueryBuildContext::new(node, resources, source_node, scope_id);
+        let context =
+            QueryBuildContext::new_guarded(node, resources, source_node, scope_id, declared_claims);
         let live = query.build(&context)?;
         Ok(erase_handler(HandlerSubscription {
             live,
@@ -2194,11 +2518,34 @@ impl<Q: ItemQuery> fmt::Debug for ProjectionQueryFactory<Q> {
 }
 
 impl<Q: ItemQuery> ErasedHandlerFactory for ProjectionQueryFactory<Q> {
+    fn authority_claims(&self, request: &HandlerRequest) -> Result<Vec<ResourceClaim>, AppError> {
+        let source_node = request.source_node.ok_or_else(|| {
+            AppError::State("query handler request omitted its authoritative source".to_owned())
+        })?;
+        let scope_id = request.scope_id.as_ref().ok_or_else(|| {
+            AppError::State("query handler request omitted its federation scope".to_owned())
+        })?;
+        let _query = serde_json::from_value::<Q>(request.params.clone())
+            .map_err(|error| AppError::Serialization(error.to_string()))?;
+        Ok(vec![ResourceClaim {
+            selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
+            kind: ResourceClaimKind::Referenced,
+            source_node: Some(source_node),
+            service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
+            item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![myko_federation::FederationPermission::ReadState],
+            required_operations: vec![AccessOperation::ReadItems],
+            required_capabilities: Vec::new(),
+        }])
+    }
+
     fn watch(
         &self,
         node: Node,
         resources: ApplicationResources,
         request: &HandlerRequest,
+        declared_claims: Arc<[ResourceClaim]>,
     ) -> Result<ErasedHandlerSubscription, AppError> {
         let source_node = request.source_node.ok_or_else(|| {
             AppError::State("query handler request omitted its authoritative source".to_owned())
@@ -2208,7 +2555,7 @@ impl<Q: ItemQuery> ErasedHandlerFactory for ProjectionQueryFactory<Q> {
         })?;
         let query = serde_json::from_value::<Q>(request.params.clone())
             .map_err(|error| AppError::Serialization(error.to_string()))?;
-        let context = ContextCore::new(node, resources);
+        let context = ContextCore::guarded(node, resources, declared_claims);
         let live = context.query(source_node, scope_id, query)?;
         Ok(erase_handler(HandlerSubscription {
             live,
@@ -2229,11 +2576,23 @@ impl<R: ReportHandler> fmt::Debug for ReportFactory<R> {
 }
 
 impl<R: ReportHandler> ErasedHandlerFactory for ReportFactory<R> {
+    fn authority_claims(&self, request: &HandlerRequest) -> Result<Vec<ResourceClaim>, AppError> {
+        let report = serde_json::from_value::<R>(request.params.clone())
+            .map_err(|error| AppError::Serialization(error.to_string()))?;
+        if request.scope_id != report.access_scope() {
+            return Err(AppError::State(
+                "report access scope does not match its typed parameters".to_owned(),
+            ));
+        }
+        Ok(report.authority_claims())
+    }
+
     fn watch(
         &self,
         node: Node,
         resources: ApplicationResources,
         request: &HandlerRequest,
+        declared_claims: Arc<[ResourceClaim]>,
     ) -> Result<ErasedHandlerSubscription, AppError> {
         let report = serde_json::from_value::<R>(request.params.clone())
             .map_err(|error| AppError::Serialization(error.to_string()))?;
@@ -2242,7 +2601,7 @@ impl<R: ReportHandler> ErasedHandlerFactory for ReportFactory<R> {
                 "report access scope does not match its typed parameters".to_owned(),
             ));
         }
-        let context = ReportContext::new(node, resources);
+        let context = ReportContext::new_guarded(node, resources, declared_claims);
         let live = report.build(&context)?;
         Ok(erase_handler(HandlerSubscription {
             live,
@@ -2263,11 +2622,23 @@ impl<V: ViewHandler> fmt::Debug for ViewFactory<V> {
 }
 
 impl<V: ViewHandler> ErasedHandlerFactory for ViewFactory<V> {
+    fn authority_claims(&self, request: &HandlerRequest) -> Result<Vec<ResourceClaim>, AppError> {
+        let view = serde_json::from_value::<V>(request.params.clone())
+            .map_err(|error| AppError::Serialization(error.to_string()))?;
+        if request.scope_id != view.access_scope() {
+            return Err(AppError::State(
+                "view access scope does not match its typed parameters".to_owned(),
+            ));
+        }
+        Ok(view.authority_claims())
+    }
+
     fn watch(
         &self,
         node: Node,
         resources: ApplicationResources,
         request: &HandlerRequest,
+        declared_claims: Arc<[ResourceClaim]>,
     ) -> Result<ErasedHandlerSubscription, AppError> {
         let view = serde_json::from_value::<V>(request.params.clone())
             .map_err(|error| AppError::Serialization(error.to_string()))?;
@@ -2276,7 +2647,7 @@ impl<V: ViewHandler> ErasedHandlerFactory for ViewFactory<V> {
                 "view access scope does not match its typed parameters".to_owned(),
             ));
         }
-        let context = ViewContext::new(node, resources);
+        let context = ViewContext::new_guarded(node, resources, declared_claims);
         let live = view.build(&context)?;
         Ok(erase_view_handler::<V>(ViewSubscription {
             live,
@@ -2360,6 +2731,7 @@ pub struct ContextCore {
     node: Node,
     resources: ApplicationResources,
     runtime: Arc<HandlerRuntime>,
+    declared_claims: Option<Arc<[ResourceClaim]>>,
 }
 
 impl ContextCore {
@@ -2368,6 +2740,76 @@ impl ContextCore {
             node,
             resources,
             runtime: Arc::new(HandlerRuntime::default()),
+            declared_claims: None,
+        }
+    }
+
+    fn guarded(
+        node: Node,
+        resources: ApplicationResources,
+        declared_claims: Arc<[ResourceClaim]>,
+    ) -> Self {
+        Self {
+            node,
+            resources,
+            runtime: Arc::new(HandlerRuntime::default()),
+            declared_claims: Some(declared_claims),
+        }
+    }
+
+    fn require_dependency(&self, actual: &ResourceClaim) -> Result<(), AppError> {
+        let Some(declared_claims) = self.declared_claims.as_ref() else {
+            return Ok(());
+        };
+        let topology = self.node.scope_topology()?;
+        if declared_claims
+            .iter()
+            .any(|declared| declared.covers_actual(actual, &topology))
+        {
+            return Ok(());
+        }
+        Err(AppError::Node(NodeError::AuthorizationDenied(format!(
+            "reactive handler used undeclared {:?} dependency {:?}",
+            actual.kind, actual.selection
+        ))))
+    }
+
+    fn require_dependencies(&self, actual: &[ResourceClaim]) -> Result<(), AppError> {
+        for claim in actual {
+            self.require_dependency(claim)?;
+        }
+        Ok(())
+    }
+
+    fn require_application_capability(&self, capability: CapabilityId) -> Result<(), AppError> {
+        let Some(declared_claims) = self.declared_claims.as_ref() else {
+            return Ok(());
+        };
+        if declared_claims
+            .iter()
+            .any(|claim| claim.required_capabilities.contains(&capability))
+        {
+            return Ok(());
+        }
+        Err(AppError::Node(NodeError::AuthorizationDenied(format!(
+            "reactive handler used undeclared application capability {capability}"
+        ))))
+    }
+
+    fn item_dependency<Q: ItemQuery>(
+        source_node: Option<NodeId>,
+        selection: myko_federation::ScopeSelection,
+    ) -> ResourceClaim {
+        ResourceClaim {
+            selection,
+            kind: ResourceClaimKind::Referenced,
+            source_node,
+            service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
+            item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![myko_federation::FederationPermission::ReadState],
+            required_operations: vec![AccessOperation::ReadItems],
+            required_capabilities: Vec::new(),
         }
     }
 
@@ -2386,6 +2828,10 @@ impl ContextCore {
     where
         Q: ItemQuery,
     {
+        self.require_dependency(&Self::item_dependency::<Q>(
+            Some(source_node),
+            myko_federation::ScopeSelection::Exact(scope_id.clone()),
+        ))?;
         let (initial, mut watch) = self.node.watch_items_in(source_node, scope_id, query)?;
         let (writer, live) = live_subscription(LiveSubscriptionState {
             value: Some(initial.value),
@@ -2425,6 +2871,12 @@ impl ContextCore {
     where
         Q: ItemQuery,
     {
+        if self.declared_claims.is_some() {
+            return Err(AppError::Node(NodeError::AuthorizationDenied(
+                "reactive query_from dependency is unbounded; declare and use explicit scopes"
+                    .to_owned(),
+            )));
+        }
         let (initial, mut watch) = self.node.watch_items_from(source_node, query)?;
         let (writer, live) = live_subscription(LiveSubscriptionState {
             value: Some(initial.value),
@@ -2464,6 +2916,10 @@ impl ContextCore {
     where
         Q: ItemQuery,
     {
+        self.require_dependency(&Self::item_dependency::<Q>(
+            None,
+            myko_federation::ScopeSelection::Exact(scope_id.clone()),
+        ))?;
         let (initial, mut watch) = self.node.watch_items_across_sources_in(scope_id, query)?;
         let (writer, live) = live_subscription(LiveSubscriptionState {
             value: Some(initial.value),
@@ -2505,6 +2961,17 @@ impl ContextCore {
     where
         T: MykoItem,
     {
+        self.require_dependency(&ResourceClaim {
+            selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
+            kind: ResourceClaimKind::Referenced,
+            source_node: None,
+            service_id: Some(ServiceId::new(T::SERVICE_ID)),
+            item_type: Some(T::ITEM_TYPE.to_owned()),
+            item_id: None,
+            required_permissions: vec![myko_federation::FederationPermission::ReadState],
+            required_operations: vec![AccessOperation::ReadItems],
+            required_capabilities: Vec::new(),
+        })?;
         let history = self.node.events_after(None)?;
         let through = history.last().map(|event| event.position);
         let mut items = BTreeMap::new();
@@ -2561,6 +3028,20 @@ impl ContextCore {
     where
         C: MykoCommand,
     {
+        self.require_dependency(&ResourceClaim {
+            selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
+            kind: ResourceClaimKind::Referenced,
+            source_node: Some(source_node),
+            service_id: Some(ServiceId::new(C::SERVICE_ID)),
+            item_type: None,
+            item_id: None,
+            required_permissions: vec![myko_federation::FederationPermission::ReadState],
+            required_operations: vec![
+                AccessOperation::ReadCommands,
+                AccessOperation::WatchCommands,
+            ],
+            required_capabilities: Vec::new(),
+        })?;
         let through = self
             .node
             .events_after(None)?
@@ -2714,6 +3195,16 @@ impl ReportContext {
             core: ContextCore::new(node, resources),
         }
     }
+
+    fn new_guarded(
+        node: Node,
+        resources: ApplicationResources,
+        declared_claims: Arc<[ResourceClaim]>,
+    ) -> Self {
+        Self {
+            core: ContextCore::guarded(node, resources, declared_claims),
+        }
+    }
 }
 
 /// Read-only context supplied while a keyed view is built.
@@ -2746,6 +3237,16 @@ impl ViewContext {
             core: ContextCore::new(node, resources),
         }
     }
+
+    fn new_guarded(
+        node: Node,
+        resources: ApplicationResources,
+        declared_claims: Arc<[ResourceClaim]>,
+    ) -> Self {
+        Self {
+            core: ContextCore::guarded(node, resources, declared_claims),
+        }
+    }
 }
 
 /// Read-only context supplied while a custom query builds its reactive value.
@@ -2763,14 +3264,15 @@ pub struct QueryBuildContext {
 }
 
 impl QueryBuildContext {
-    fn new(
+    fn new_guarded(
         node: Node,
         resources: ApplicationResources,
         source_node: NodeId,
         scope_id: ScopeId,
+        declared_claims: Arc<[ResourceClaim]>,
     ) -> Self {
         Self {
-            core: ContextCore::new(node, resources),
+            core: ContextCore::guarded(node, resources, declared_claims),
             source_node,
             scope_id,
         }
@@ -2802,6 +3304,13 @@ macro_rules! impl_reactive_context_capabilities {
         impl capability::ResourceScoped for $context {
             fn __resources(&self) -> &ApplicationResources {
                 &self.core.resources
+            }
+
+            fn __require_resource_capability(
+                &self,
+                capability: CapabilityId,
+            ) -> Result<(), AppError> {
+                self.core.require_application_capability(capability)
             }
         }
         impl capability::RegistryScoped for $context {}
@@ -2835,6 +3344,10 @@ impl capability::NodeScoped for QueryBuildContext {
 impl capability::ResourceScoped for QueryBuildContext {
     fn __resources(&self) -> &ApplicationResources {
         &self.core.resources
+    }
+
+    fn __require_resource_capability(&self, capability: CapabilityId) -> Result<(), AppError> {
+        self.core.require_application_capability(capability)
     }
 }
 impl capability::RegistryScoped for QueryBuildContext {}
@@ -3501,6 +4014,12 @@ impl ApplicationNode {
         self.application.resources()
     }
 
+    /// Returns application-declared opaque capabilities for authenticated
+    /// authority registration during node composition.
+    pub fn authority_capabilities(&self) -> impl ExactSizeIterator<Item = &ApplicationCapability> {
+        self.application.authority_capabilities()
+    }
+
     /// Starts lossless command dispatch for this application.
     ///
     /// The returned guard owns the subscription. Current pending commands are
@@ -3543,6 +4062,30 @@ impl ApplicationNode {
     ///
     /// Returns an error when the stable ID is absent, the handler kind does
     /// not match, parameters are malformed, or its dependencies cannot start.
+    pub fn handler_authority_claims(
+        &self,
+        request: &HandlerRequest,
+    ) -> Result<Vec<ResourceClaim>, AppError> {
+        let handlers = match request.kind {
+            HandlerKind::Command => {
+                return Err(AppError::UnregisteredHandler {
+                    kind: HandlerKind::Command.as_str(),
+                    id: request.handler_id.clone(),
+                });
+            }
+            HandlerKind::Query => &self.application.queries,
+            HandlerKind::Report => &self.application.reports,
+            HandlerKind::View => &self.application.views,
+        };
+        handlers
+            .get(request.handler_id.as_str())
+            .ok_or_else(|| AppError::UnregisteredHandler {
+                kind: request.kind.as_str(),
+                id: request.handler_id.clone(),
+            })?
+            .authority_claims(request)
+    }
+
     pub fn watch_handler(
         &self,
         request: &HandlerRequest,
@@ -3564,7 +4107,13 @@ impl ApplicationNode {
                 id: request.handler_id.clone(),
             }
         })?;
-        factory.watch(self.node.clone(), self.application.resources(), request)
+        let declared_claims: Arc<[ResourceClaim]> = factory.authority_claims(request)?.into();
+        factory.watch(
+            self.node.clone(),
+            self.application.resources(),
+            request,
+            declared_claims,
+        )
     }
 
     /// Returns whether this composed application can authenticate and execute
@@ -3640,6 +4189,48 @@ impl ApplicationNode {
             .ok_or_else(|| AppError::State("command handler did not produce a result".to_owned()))
     }
 
+    /// Executes a typed command using authority already validated at an
+    /// authenticated transport boundary. The executor remains the transport
+    /// identity while the original principal and delegated provenance are
+    /// preserved for both preflight and effect admission.
+    #[doc(hidden)]
+    pub fn exec_authorized_command<C>(
+        &self,
+        authenticated_executor: PrincipalId,
+        presentation: AuthorityPresentation,
+        command: C,
+    ) -> Result<C::Output, AppError>
+    where
+        C: CommandHandler,
+    {
+        if authenticated_executor != presentation.executor.id {
+            return Err(AppError::State(
+                "authority executor does not match authenticated principal".to_owned(),
+            ));
+        }
+        let submission = CommandSubmission::for_command(&command)?;
+        let mut request = self
+            .command_factory(C::SERVICE_ID.as_str(), C::COMMAND_TYPE)?
+            .authenticate(
+                self.node.node_id(),
+                authenticated_executor.clone(),
+                submission,
+            )?;
+        request.principal_id = presentation.principal.id.clone();
+        request.authority = presentation;
+        let submitted = self
+            .node
+            .prepare_command(authenticated_executor, request)
+            .map_err(|decision| AppError::State(decision.public_message()))?
+            .submit()?;
+        drop(command);
+        let result = self.dispatch_command::<C>(submitted.request.id)?;
+        result
+            .command
+            .typed_completion::<C>()?
+            .ok_or_else(|| AppError::State("command handler did not produce a result".to_owned()))
+    }
+
     /// Admits a typed command for a principal already authenticated by Myko.
     #[doc(hidden)]
     pub fn submit_authenticated_command<C>(
@@ -3650,13 +4241,14 @@ impl ApplicationNode {
     where
         C: CommandHandler,
     {
-        let scope = command.scope(self.node.node_id());
+        let submission = CommandSubmission::for_command(command)?;
+        let request = self
+            .command_factory(C::SERVICE_ID.as_str(), C::COMMAND_TYPE)?
+            .authenticate(self.node.node_id(), principal_id.clone(), submission)?;
         self.node
-            .submit_authenticated_command(
-                ScopeId::for_item::<C::Scope>(&scope),
-                principal_id,
-                command,
-            )
+            .prepare_command(principal_id, request)
+            .map_err(|decision| AppError::State(decision.public_message()))?
+            .submit()
             .map_err(Into::into)
     }
 
@@ -4039,8 +4631,8 @@ impl FederationCommandWatchingClient for ApplicationNode {
 /// Shared in-memory harness for application contract and transport-adapter tests.
 pub mod testing {
     use myko_federation::{
-        BatchId, ChangeBatch, CommandId, CommandRequest, LogPosition, MykoItem, PrincipalId,
-        ScopeId, ServiceId,
+        AuthorityPresentation, BatchId, ChangeBatch, CommandId, CommandRequest, LogPosition,
+        MykoItem, PrincipalId, ResourceClaim, ResourceClaimKind, ScopeId, ServiceId,
     };
 
     use super::{AppError, ApplicationNode, MykoApplication, Node};
@@ -4095,6 +4687,15 @@ pub mod testing {
                 service_id: ServiceId::new(T::SERVICE_ID),
                 scope_id: scope_id.clone(),
                 principal_id: PrincipalId::new("test:application-harness"),
+                authority: AuthorityPresentation::direct_node(PrincipalId::new(
+                    "test:application-harness",
+                )),
+                resource_claims: vec![ResourceClaim::scope(
+                    scope_id.clone(),
+                    ResourceClaimKind::Primary,
+                )],
+                application_capabilities: Vec::new(),
+                arguments_digest: None,
                 command_type: format!("{}.test_set", T::ITEM_TYPE),
                 payload: Vec::new(),
             };
@@ -4142,7 +4743,9 @@ mod tests {
 
     use hyphae::{Signal, Watchable as _};
     use myko_federation::{
-        BatchId, ChangeBatch, CommandId, CommandRequest, PrincipalId, ServiceId,
+        AccessPolicy, AllowAllAccessPolicy, AuthorityPresentation, BatchId, ChangeBatch, CommandId,
+        CommandRequest, DelegationId, Principal, PrincipalId, PrincipalKind, ProvenanceHop,
+        ProvenanceOperation, ServiceId,
     };
     use myko_items::{
         ItemMutation, ItemProjection, ItemQuery, myko_command, myko_item, myko_service,
@@ -4150,11 +4753,18 @@ mod tests {
 
     use super::*;
     use crate::capability::{
-        CollectionBuilding as _, CommandExecuting as _, EventPublishing as _, GraphQuerying as _,
-        Querying as _, RegistryScoped as _, Searching as _,
+        CollectionBuilding as _, CommandExecuting as _, CommandQuerying as _, CommandSending as _,
+        EventPublishing as _, GraphQuerying as _, Querying as _, RegistryScoped as _,
+        ResourceScoped as _, Searching as _,
     };
 
     struct ReleaseProbe(Arc<AtomicBool>);
+
+    fn install_allow_all(node: &Node) -> Arc<dyn AccessPolicy> {
+        let policy: Arc<dyn AccessPolicy> = Arc::new(AllowAllAccessPolicy);
+        node.set_command_access_policy(policy.clone()).unwrap();
+        policy
+    }
 
     impl Drop for ReleaseProbe {
         fn drop(&mut self) {
@@ -4239,6 +4849,158 @@ mod tests {
         }
     }
 
+    static UNDECLARED_READ_RETURNED: AtomicBool = AtomicBool::new(false);
+
+    #[myko_command(usize, item = CounterItem)]
+    struct ReadWithoutClaim;
+
+    impl CommandHandler for ReadWithoutClaim {
+        fn scope(&self, _node_id: NodeId) -> CounterItemId {
+            CounterItemId::from("counter")
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<TestService, CounterItem>,
+        ) -> Result<usize, CommandError> {
+            let items = context.exec_query(GetAllCounterItems)?;
+            UNDECLARED_READ_RETURNED.store(true, Ordering::Release);
+            Ok(items.len())
+        }
+    }
+
+    static NESTED_CAPABILITY_EXECUTED: AtomicBool = AtomicBool::new(false);
+    static PREFLIGHT_HANDLER_EXECUTED: AtomicBool = AtomicBool::new(false);
+    static UNDECLARED_RESOURCE_RETURNED: AtomicBool = AtomicBool::new(false);
+
+    #[derive(Debug)]
+    struct LocalTool;
+
+    fn local_tool_capability() -> ApplicationCapability {
+        ApplicationCapability {
+            id: CapabilityId::new("test.application.local-tool"),
+            description: "access the test-local tool".to_owned(),
+            constraints: Default::default(),
+        }
+    }
+
+    #[myko_command(bool, item = CounterItem)]
+    struct UseUndeclaredResource;
+
+    impl CommandHandler for UseUndeclaredResource {
+        fn scope(&self, _node_id: NodeId) -> CounterItemId {
+            CounterItemId::from("counter")
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<TestService, CounterItem>,
+        ) -> Result<bool, CommandError> {
+            let _tool = context
+                .resource::<LocalTool>()
+                .map_err(|error| CommandError::reject(error.to_string()))?;
+            UNDECLARED_RESOURCE_RETURNED.store(true, Ordering::Release);
+            Ok(true)
+        }
+    }
+
+    #[derive(Debug)]
+    struct TogglePolicy(Arc<AtomicBool>);
+
+    impl AccessPolicy for TogglePolicy {
+        fn authorize(&self, _request: &AccessRequest) -> Result<(), String> {
+            self.0
+                .load(Ordering::Acquire)
+                .then_some(())
+                .ok_or_else(|| "test authority was revoked".to_owned())
+        }
+    }
+
+    #[myko_command(bool, item = CounterItem)]
+    struct PreflightProbe;
+
+    impl CommandHandler for PreflightProbe {
+        fn scope(&self, _node_id: NodeId) -> CounterItemId {
+            CounterItemId::from("counter")
+        }
+
+        fn execute(
+            self,
+            _context: CommandContext<TestService, CounterItem>,
+        ) -> Result<bool, CommandError> {
+            PREFLIGHT_HANDLER_EXECUTED.store(true, Ordering::Release);
+            Ok(true)
+        }
+    }
+
+    #[myko_command(CommandId, item = CounterItem)]
+    struct SubmitNestedCommand;
+
+    impl CommandHandler for SubmitNestedCommand {
+        fn scope(&self, _node_id: NodeId) -> CounterItemId {
+            CounterItemId::from("counter")
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<TestService, CounterItem>,
+        ) -> Result<CommandId, CommandError> {
+            context
+                .submit_command(PreflightProbe)
+                .map(|command| command.request.id)
+        }
+    }
+
+    fn privileged_capability() -> myko_federation::CapabilityId {
+        myko_federation::CapabilityId::new("test.privileged")
+    }
+
+    #[myko_command(bool, item = CounterItem)]
+    struct CapabilityInner;
+
+    impl CommandHandler for CapabilityInner {
+        fn scope(&self, _node_id: NodeId) -> CounterItemId {
+            CounterItemId::from("counter")
+        }
+
+        fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+            vec![privileged_capability()]
+        }
+
+        fn execute(
+            self,
+            _context: CommandContext<TestService, CounterItem>,
+        ) -> Result<bool, CommandError> {
+            NESTED_CAPABILITY_EXECUTED.store(true, Ordering::Release);
+            Ok(true)
+        }
+    }
+
+    #[myko_command(bool, item = CounterItem)]
+    struct CapabilityOuter {
+        declare_capability: bool,
+    }
+
+    impl CommandHandler for CapabilityOuter {
+        fn scope(&self, _node_id: NodeId) -> CounterItemId {
+            CounterItemId::from("counter")
+        }
+
+        fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+            self.declare_capability
+                .then(privileged_capability)
+                .into_iter()
+                .collect()
+        }
+
+        fn execute(
+            self,
+            context: CommandContext<TestService, CounterItem>,
+        ) -> Result<bool, CommandError> {
+            context.exec_command(CapabilityInner)
+        }
+    }
+
     #[myko_command(bool, service = TestService, scope = CounterItem)]
     struct ComposeCounter {
         id: CounterItemId,
@@ -4294,6 +5056,26 @@ mod tests {
     impl CommandHandler for ComposeAcrossCounterScopes {
         fn scope(&self, _node_id: NodeId) -> CounterItemId {
             self.outer_scope.clone()
+        }
+
+        fn authority_claims(&self, _node_id: NodeId) -> Vec<ResourceClaim> {
+            let mut affected = ResourceClaim::scope(
+                ScopeId::for_item::<CounterItem>(&self.inner_scope),
+                ResourceClaimKind::Affected,
+            );
+            affected
+                .required_permissions
+                .push(myko_federation::FederationPermission::Write);
+            affected
+                .required_operations
+                .push(AccessOperation::SubmitCommand);
+            vec![
+                ResourceClaim::scope(
+                    ScopeId::for_item::<CounterItem>(&self.outer_scope),
+                    ResourceClaimKind::Primary,
+                ),
+                affected,
+            ]
         }
 
         fn execute(
@@ -4369,6 +5151,26 @@ mod tests {
             self.project.clone()
         }
 
+        fn authority_claims(&self, _node_id: NodeId) -> Vec<ResourceClaim> {
+            let mut scene = ResourceClaim::scope(
+                ScopeId::for_item::<Scene>(&self.scene),
+                ResourceClaimKind::Affected,
+            );
+            scene
+                .required_permissions
+                .push(myko_federation::FederationPermission::Write);
+            scene
+                .required_operations
+                .push(AccessOperation::SubmitCommand);
+            vec![
+                ResourceClaim::scope(
+                    ScopeId::for_item::<ProjectRoot>(&self.project),
+                    ResourceClaimKind::Primary,
+                ),
+                scene,
+            ]
+        }
+
         fn execute(
             self,
             context: CommandContext<SceneService, ProjectRoot>,
@@ -4421,6 +5223,28 @@ mod tests {
     }
 
     impl QueryHandler for SumCounters {}
+
+    #[myko_query(CounterItem)]
+    #[derive(Copy)]
+    struct UnderdeclaredQuery;
+
+    impl ItemQuery for UnderdeclaredQuery {
+        type Item = CounterItem;
+        type Output = u64;
+
+        fn execute(self, projection: &ItemProjection<Self::Item>) -> Self::Output {
+            projection.values().map(|item| item.value).sum()
+        }
+    }
+
+    impl QueryHandler for UnderdeclaredQuery {
+        fn build(
+            &self,
+            context: &QueryBuildContext,
+        ) -> Result<LiveSubscription<Self::Output>, AppError> {
+            context.query(context.source_node(), ScopeId::new("hidden"), *self)
+        }
+    }
 
     #[myko_report(String, item = CounterItem)]
     #[derive(Copy)]
@@ -4494,8 +5318,12 @@ mod tests {
         let command = CommandRequest {
             id: CommandId::new(),
             service_id: ServiceId::new(TestService::SERVICE_ID),
-            scope_id,
+            scope_id: scope_id.clone(),
             principal_id: PrincipalId::new("test:owner"),
+            authority: AuthorityPresentation::direct_node(PrincipalId::new("test:owner")),
+            resource_claims: vec![ResourceClaim::scope(scope_id, ResourceClaimKind::Primary)],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
             command_type: "counter.set".to_owned(),
             payload: Vec::new(),
         };
@@ -4650,6 +5478,29 @@ mod tests {
         })
         .await;
         assert!(updated.is_ok());
+    }
+
+    #[test]
+    fn reactive_build_cannot_open_an_underdeclared_dependency() {
+        let node = Node::in_memory();
+        let application = MykoApplication::builder()
+            .service::<TestService>()
+            .map(MykoApplicationBuilder::build)
+            .unwrap();
+        let app = ApplicationNode::new(node.clone(), application);
+        let request = HandlerRequest {
+            kind: HandlerKind::Query,
+            handler_id: UnderdeclaredQuery::QUERY_ID.to_owned(),
+            source_node: Some(node.node_id()),
+            scope_id: Some(ScopeId::new("allowed")),
+            params: serde_json::to_value(UnderdeclaredQuery).unwrap(),
+        };
+
+        assert!(matches!(
+            app.watch_handler(&request),
+            Err(AppError::Node(NodeError::AuthorizationDenied(message)))
+                if message.contains("undeclared") && message.contains("hidden")
+        ));
     }
 
     #[tokio::test]
@@ -4838,6 +5689,7 @@ mod tests {
     #[test]
     fn registered_command_dispatch_selects_its_typed_handler_from_durable_metadata() {
         let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
         let application = MykoApplication::builder()
             .service::<TestService>()
             .map(MykoApplicationBuilder::build);
@@ -4885,6 +5737,13 @@ mod tests {
             service_id: ServiceId::new("other.application"),
             scope_id: ScopeId::new("counter"),
             principal_id: PrincipalId::new("test:owner"),
+            authority: AuthorityPresentation::direct_node(PrincipalId::new("test:owner")),
+            resource_claims: vec![ResourceClaim::scope(
+                ScopeId::new("counter"),
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
             command_type: "OtherCommand".to_owned(),
             payload: Vec::new(),
         };
@@ -4906,9 +5765,175 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn undeclared_reads_and_nested_capabilities_are_denied_before_execution() {
+        UNDECLARED_READ_RETURNED.store(false, Ordering::Release);
+        NESTED_CAPABILITY_EXECUTED.store(false, Ordering::Release);
+        UNDECLARED_RESOURCE_RETURNED.store(false, Ordering::Release);
+        let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
+        let application = MykoApplication::builder()
+            .service::<TestService>()
+            .and_then(|builder| builder.resource(local_tool_capability(), LocalTool))
+            .map(MykoApplicationBuilder::build)
+            .unwrap();
+        let app = ApplicationNode::new(node.clone(), application);
+        commit_counter(&node, "secret", 41).unwrap();
+
+        let read = app
+            .submit_authenticated_command(PrincipalId::new("test:reader"), &ReadWithoutClaim)
+            .unwrap();
+        let read_result = app.dispatch_registered_command(read.request.id).unwrap();
+        assert_eq!(
+            read_result.disposition,
+            myko_federation::CommandDispatchDisposition::Rejected
+        );
+        assert!(!UNDECLARED_READ_RETURNED.load(Ordering::Acquire));
+
+        let confused_deputy = app
+            .submit_authenticated_command(
+                PrincipalId::new("test:caller"),
+                &CapabilityOuter {
+                    declare_capability: false,
+                },
+            )
+            .unwrap();
+        let denied = app
+            .dispatch_registered_command(confused_deputy.request.id)
+            .unwrap();
+        assert_eq!(
+            denied.disposition,
+            myko_federation::CommandDispatchDisposition::Rejected
+        );
+        assert!(!NESTED_CAPABILITY_EXECUTED.load(Ordering::Acquire));
+
+        let declared = app
+            .submit_authenticated_command(
+                PrincipalId::new("test:caller"),
+                &CapabilityOuter {
+                    declare_capability: true,
+                },
+            )
+            .unwrap();
+        let permitted = app
+            .dispatch_registered_command(declared.request.id)
+            .unwrap();
+        assert_eq!(
+            permitted.disposition,
+            myko_federation::CommandDispatchDisposition::Committed
+        );
+        assert!(NESTED_CAPABILITY_EXECUTED.load(Ordering::Acquire));
+
+        let resource = app
+            .submit_authenticated_command(
+                PrincipalId::new("test:resource-caller"),
+                &UseUndeclaredResource,
+            )
+            .unwrap();
+        let denied = app
+            .dispatch_registered_command(resource.request.id)
+            .unwrap();
+        assert_eq!(
+            denied.disposition,
+            myko_federation::CommandDispatchDisposition::Rejected
+        );
+        assert!(!UNDECLARED_RESOURCE_RETURNED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn resource_capabilities_are_explicit_stable_contract_ids() {
+        #[derive(Debug)]
+        struct ResourceAfterRustRename;
+
+        let capability = local_tool_capability();
+        let application = MykoApplication::builder()
+            .resource(capability.clone(), LocalTool)
+            .and_then(|builder| builder.resource(capability.clone(), ResourceAfterRustRename))
+            .map(MykoApplicationBuilder::build)
+            .unwrap();
+        let registered = application.authority_capabilities().collect::<Vec<_>>();
+        assert_eq!(registered, vec![&capability]);
+        assert_eq!(registered[0].id.as_str(), "test.application.local-tool");
+        assert!(
+            !registered[0]
+                .id
+                .as_str()
+                .contains("ResourceAfterRustRename")
+        );
+
+        let undeclared = ApplicationResources::default().insert(LocalTool);
+        assert!(
+            matches!(undeclared, Err(AppError::State(message)) if message.contains("explicit stable capability ID"))
+        );
+    }
+
+    #[test]
+    fn in_process_preflight_and_execute_time_recheck_precede_handler_side_effects() {
+        PREFLIGHT_HANDLER_EXECUTED.store(false, Ordering::Release);
+        let node = Node::in_memory();
+        let allowed = Arc::new(AtomicBool::new(false));
+        let policy: Arc<dyn AccessPolicy> = Arc::new(TogglePolicy(allowed.clone()));
+        node.set_command_access_policy(policy.clone()).unwrap();
+        let application = MykoApplication::builder()
+            .service::<TestService>()
+            .map(MykoApplicationBuilder::build)
+            .unwrap();
+        let app = ApplicationNode::new(node.clone(), application);
+
+        assert!(
+            app.exec_authenticated_command(PrincipalId::new("test:denied"), PreflightProbe)
+                .is_err()
+        );
+        assert!(!PREFLIGHT_HANDLER_EXECUTED.load(Ordering::Acquire));
+
+        allowed.store(true, Ordering::Release);
+        let submitted = app
+            .submit_authenticated_command(PrincipalId::new("test:revoked"), &PreflightProbe)
+            .unwrap();
+        allowed.store(false, Ordering::Release);
+        let dispatched = app
+            .dispatch_registered_command(submitted.request.id)
+            .unwrap();
+        assert_eq!(
+            dispatched.disposition,
+            myko_federation::CommandDispatchDisposition::Rejected
+        );
+        assert!(!PREFLIGHT_HANDLER_EXECUTED.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn nested_durable_submission_preserves_principal_executor_and_provenance() {
+        let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
+        let application = MykoApplication::builder()
+            .service::<TestService>()
+            .map(MykoApplicationBuilder::build)
+            .unwrap();
+        let app = ApplicationNode::new(node.clone(), application);
+        let person = Principal::new(PrincipalId::new("person:caller"), PrincipalKind::Person);
+        let agent = Principal::new(PrincipalId::new("agent:executor"), PrincipalKind::Agent);
+        let presentation = AuthorityPresentation::direct(person.clone()).forward(ProvenanceHop {
+            delegation_id: DelegationId::new("delegated-execution"),
+            delegator: person.clone(),
+            delegate: agent.clone(),
+            operation: ProvenanceOperation::AgentInvocation {
+                agent_id: agent.id.to_string(),
+            },
+        });
+        let nested_id = app
+            .exec_authorized_command(agent.id.clone(), presentation.clone(), SubmitNestedCommand)
+            .unwrap();
+        let nested = node.command(nested_id).unwrap().unwrap();
+        assert_eq!(nested.request.principal_id, person.id);
+        assert_eq!(nested.request.authority, presentation);
+        assert_eq!(nested.request.authority.executor, agent);
+        assert_eq!(nested.state, myko_federation::CommandState::Submitted);
+    }
+
     #[tokio::test]
     async fn retained_command_guard_dispatches_registered_commands_without_polling() {
         let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
         let application = MykoApplication::builder()
             .service::<TestService>()
             .map(MykoApplicationBuilder::build);
@@ -4955,6 +5980,7 @@ mod tests {
     #[test]
     fn nested_commands_share_the_outer_atomic_context() {
         let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
         let application = MykoApplication::builder()
             .service::<TestService>()
             .map(MykoApplicationBuilder::build);
@@ -4984,6 +6010,7 @@ mod tests {
     #[test]
     fn nested_commands_commit_multiple_scopes_atomically() {
         let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
         let application = MykoApplication::builder()
             .service::<TestService>()
             .map(MykoApplicationBuilder::build);
@@ -5022,6 +6049,7 @@ mod tests {
     #[test]
     fn parent_scoped_command_creates_a_nested_scope_atomically() {
         let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
         let application = MykoApplication::builder()
             .service::<SceneService>()
             .map(MykoApplicationBuilder::build);
@@ -5118,6 +6146,7 @@ mod tests {
     #[test]
     fn item_command_scope_may_be_rooted_in_another_service() {
         let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
         let application = MykoApplication::builder()
             .service::<ProjectTaskService>()
             .map(MykoApplicationBuilder::build);
@@ -5193,6 +6222,13 @@ mod tests {
             service_id: ServiceId::new(CounterLink::SERVICE_ID),
             scope_id: ScopeId::new("counter"),
             principal_id: PrincipalId::new("test:owner"),
+            authority: AuthorityPresentation::direct_node(PrincipalId::new("test:owner")),
+            resource_claims: vec![ResourceClaim::scope(
+                ScopeId::new("counter"),
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
             command_type: "counter.link".to_owned(),
             payload: Vec::new(),
         };
