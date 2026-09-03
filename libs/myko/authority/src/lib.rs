@@ -11,10 +11,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use chrono::{DateTime, Duration, Utc};
 use myko_app::capability::{
-    CommandQuerying as _, EventPublishing as _, NodeScoped as _, RequestScoped as _,
+    CollectionBuilding as _, CommandQuerying as _, EventPublishing as _, NodeScoped as _,
+    Querying as _, RequestScoped as _,
 };
 use myko_app::{
     AppError, ApplicationNode, CommandContext, CommandError, CommandHandler, MykoApplication,
+    QueryHandler, ViewContext, ViewHandler, myko_query, myko_view,
 };
 use myko_federation::{
     AccessOperation, AccessPolicy, AccessRequest, AllowAllAccessPolicy, ApplicationCapability,
@@ -22,9 +24,10 @@ use myko_federation::{
     AuthorityGrant, AuthorityGrantId, AuthorityLease, AuthorityLeaseRequest, AuthorityPresentation,
     AuthorityRealmId as AuthorityRealmKey, AuthorizationBinding, AuthorizationDecision,
     AuthorizationExplanation, AuthorizationReport, CapabilityId, ChallengeId, CommandState,
-    DelegationId, DenyDecision, FederationPermission, LeaseId, MykoService as _, Node, NodeEvent,
-    Obligation, PermitDecision, Principal, PrincipalId, PrincipalKind, ReplicationSelection,
-    ResourceClaim, ResourceClaimKind, ResourceVisibility, ScopeId, ScopeSelection, ScopeTopology,
+    DelegationId, DenyDecision, FederationPermission, ItemProjection, ItemQuery, LeaseId,
+    LiveCollection, LogPosition, MykoService as _, Node, NodeEvent, Obligation, PermitDecision,
+    Principal, PrincipalId, PrincipalKind, ReplicationSelection, ResourceClaim, ResourceClaimKind,
+    ResourceVisibility, ScopeId, ScopeSelection, ScopeTopology,
 };
 use myko_items::{myko_command, myko_item, myko_service};
 use serde::{Deserialize, Serialize};
@@ -125,7 +128,62 @@ pub struct DecisionAudit {
     pub recorded_at: DateTime<Utc>,
 }
 
-fn realm_scope(realm_id: &AuthorityRealmKey) -> ScopeId {
+/// Returns every durable grant record in stable grant-identity order.
+///
+/// Revoked records remain present so native administration surfaces can
+/// distinguish revocation from temporary subscription loss.
+#[myko_query(GrantRecord)]
+#[derive(Copy, PartialEq, Eq)]
+pub struct GetAuthorityGrantRecords;
+
+impl ItemQuery for GetAuthorityGrantRecords {
+    type Item = GrantRecord;
+    type Output = Vec<GrantRecord>;
+
+    fn execute(self, projection: &ItemProjection<GrantRecord>) -> Self::Output {
+        let mut grants = projection.values().cloned().collect::<Vec<_>>();
+        grants.sort_by(|left, right| left.grant.id.cmp(&right.grant.id));
+        grants
+    }
+}
+
+impl QueryHandler for GetAuthorityGrantRecords {}
+
+/// Live grant state for one authority realm on one authoritative node.
+#[myko_view(GrantRecord, item = GrantRecord)]
+#[derive(PartialEq, Eq)]
+pub struct AuthorityGrantsView {
+    pub source_node: myko_federation::NodeId,
+    pub realm_id: AuthorityRealmKey,
+}
+
+impl ViewHandler for AuthorityGrantsView {
+    type Item = GrantRecord;
+    type Cursor = LogPosition;
+
+    fn access_scope(&self) -> Option<ScopeId> {
+        Some(authority_realm_scope(&self.realm_id))
+    }
+
+    fn item_key(item: &Self::Item) -> Arc<str> {
+        Arc::from(item.grant.id.as_str())
+    }
+
+    fn build(&self, context: &ViewContext) -> Result<LiveCollection<Self::Item>, AppError> {
+        let live = context
+            .query(
+                self.source_node,
+                authority_realm_scope(&self.realm_id),
+                GetAuthorityGrantRecords,
+            )?
+            .map_value(Clone::clone);
+        context.collection_from_subscription(&live, Self::item_key)
+    }
+}
+
+/// Returns the typed scope containing one authority realm's durable facts.
+#[must_use]
+pub fn authority_realm_scope(realm_id: &AuthorityRealmKey) -> ScopeId {
     ScopeId::for_item::<AuthorityRealm>(&AuthorityRealmId::from(realm_id.as_str()))
 }
 
@@ -134,7 +192,8 @@ fn realm_item_id(realm_id: &AuthorityRealmKey) -> AuthorityRealmId {
 }
 
 fn administration_claim(realm_id: &AuthorityRealmKey) -> ResourceClaim {
-    let mut claim = ResourceClaim::scope(realm_scope(realm_id), ResourceClaimKind::Primary);
+    let mut claim =
+        ResourceClaim::scope(authority_realm_scope(realm_id), ResourceClaimKind::Primary);
     claim.service_id = Some(myko_federation::ServiceId::new(
         AuthorityService::SERVICE_ID,
     ));
@@ -249,12 +308,12 @@ impl CommandHandler for BootstrapRealm {
 }
 
 #[myko_command((), service = AuthorityService, scope = AuthorityRealm)]
-struct PutGrant {
+pub struct IssueAuthorityGrant {
     pub realm_id: AuthorityRealmKey,
     pub grant: AuthorityGrant,
 }
 
-impl CommandHandler for PutGrant {
+impl CommandHandler for IssueAuthorityGrant {
     fn scope(&self, _node_id: myko_federation::NodeId) -> AuthorityRealmId {
         realm_item_id(&self.realm_id)
     }
@@ -550,7 +609,7 @@ impl CommandHandler for PutCapability {
 }
 
 #[myko_command((), service = AuthorityService, scope = AuthorityRealm)]
-struct RevokeAuthorityFact {
+pub struct RevokeAuthorityFact {
     pub realm_id: AuthorityRealmKey,
     pub kind: RevocationKind,
     pub id: String,
@@ -851,7 +910,7 @@ fn load_state(
     node: &Node,
     realm_id: &AuthorityRealmKey,
 ) -> Result<EvaluationState, myko_federation::NodeError> {
-    let scope = realm_scope(realm_id);
+    let scope = authority_realm_scope(realm_id);
     let source = node.node_id();
     Ok(EvaluationState {
         realm: node.query_items_in(
@@ -1589,7 +1648,7 @@ impl AuthorityPolicy {
         self.application.exec_authorized_command(
             authenticated.id,
             presentation,
-            PutGrant {
+            IssueAuthorityGrant {
                 realm_id: self.realm_id.clone(),
                 grant,
             },
@@ -1621,7 +1680,7 @@ impl AuthorityPolicy {
             presentation.clone(),
             AccessOperation::DelegateAuthority,
             delegation.selections.first().map_or_else(
-                || realm_scope(&self.realm_id),
+                || authority_realm_scope(&self.realm_id),
                 |selection| selection.root().clone(),
             ),
         );
@@ -1750,7 +1809,7 @@ impl AuthorityPolicy {
         for capability in application.authority_capabilities().cloned() {
             let existing = self.application.node().query_items_in(
                 self.application.node_id(),
-                &realm_scope(&self.realm_id),
+                &authority_realm_scope(&self.realm_id),
                 GetCapabilityRegistrationById {
                     id: CapabilityRegistrationId::from(capability.id.as_str()),
                 },
@@ -2079,7 +2138,7 @@ impl AccessPolicy for AuthorityPolicy {
                     authenticated_executor.clone(),
                     presentation.clone(),
                     AccessOperation::ApproveAuthority,
-                    realm_scope(&self.realm_id),
+                    authority_realm_scope(&self.realm_id),
                 ),
                 Utc::now(),
                 "approval_executor_mismatch",
@@ -2107,7 +2166,7 @@ impl AccessPolicy for AuthorityPolicy {
                         authenticated_executor.clone(),
                         presentation.clone(),
                         AccessOperation::ApproveAuthority,
-                        realm_scope(&self.realm_id),
+                        authority_realm_scope(&self.realm_id),
                     ),
                     Utc::now(),
                     "approval_failed",
@@ -2127,7 +2186,7 @@ impl AccessPolicy for AuthorityPolicy {
                             authenticated_executor.clone(),
                             presentation.clone(),
                             AccessOperation::ApproveAuthority,
-                            realm_scope(&self.realm_id),
+                            authority_realm_scope(&self.realm_id),
                         ),
                         Utc::now(),
                         "approval_pending_command_failed",
@@ -2141,7 +2200,7 @@ impl AccessPolicy for AuthorityPolicy {
                             authenticated_executor.clone(),
                             presentation.clone(),
                             AccessOperation::ApproveAuthority,
-                            realm_scope(&self.realm_id),
+                            authority_realm_scope(&self.realm_id),
                         ),
                         Utc::now(),
                         "approval_pending_command_missing",
@@ -2218,7 +2277,7 @@ impl AccessPolicy for AuthorityPolicy {
                         authenticated_executor.clone(),
                         presentation.clone(),
                         AccessOperation::ApproveAuthority,
-                        realm_scope(&self.realm_id),
+                        authority_realm_scope(&self.realm_id),
                     ),
                     Utc::now(),
                     "approval_resume_failed",
@@ -2344,6 +2403,59 @@ mod tests {
                 grant,
             )
             .map_err(|error| error.to_string())
+    }
+
+    fn wait_for_grant_record(
+        view: &myko_app::ViewSubscription<GrantRecord>,
+        grant_id: &str,
+        revoked: bool,
+    ) -> Result<(), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if view.live().rows().snapshot().iter().any(|(_, record)| {
+                record.grant.id.as_str() == grant_id && record.revoked_at.is_some() == revoked
+            }) {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "grant view did not observe {grant_id} with revoked={revoked}"
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+
+    #[test]
+    fn authority_grants_view_keeps_revoked_records_live() -> Result<(), String> {
+        let (application, policy, administrator) = open(Node::in_memory())?;
+        let view = application
+            .watch_view(&AuthorityGrantsView {
+                source_node: application.node_id(),
+                realm_id: AuthorityRealmKey::new("main"),
+            })
+            .map_err(|error| error.to_string())?;
+        let issued = grant(
+            "grant:native-view",
+            node_principal("node:peer"),
+            "scope:agents",
+            vec![FederationPermission::ReadState],
+            vec![AccessOperation::ReadItems],
+        );
+        put_grant(&policy, &administrator, issued)?;
+
+        wait_for_grant_record(&view, "grant:native-view", false)?;
+
+        policy
+            .revoke(
+                administrator.clone(),
+                AuthorityPresentation::direct(administrator),
+                RevocationKind::Grant,
+                "grant:native-view".to_owned(),
+            )
+            .map_err(|error| error.to_string())?;
+        wait_for_grant_record(&view, "grant:native-view", true)?;
+        Ok(())
     }
 
     #[test]
@@ -3180,7 +3292,7 @@ mod tests {
                 )
                 .map_err(|error| error.to_string())?;
         }
-        let realm = realm_scope(&AuthorityRealmKey::new("main"));
+        let realm = authority_realm_scope(&AuthorityRealmKey::new("main"));
         let mut delegated_admin = grant(
             "reviewed-admin",
             user.clone(),

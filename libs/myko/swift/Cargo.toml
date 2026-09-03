@@ -12,7 +12,9 @@ workspace = true
 embedded-node = ["dep:myko-node", "dep:tokio"]
 native-ffi = [
   "embedded-node",
+  "dep:chrono",
   "dep:myko-app",
+  "dep:myko-authority",
   "dep:myko-discovery",
   "dep:serde_json",
   "dep:uniffi",
@@ -20,10 +22,12 @@ native-ffi = [
 ]
 
 [dependencies]
+chrono = { workspace = true, optional = true }
 flume.workspace = true
 hyphae.workspace = true
 myko-federation.workspace = true
 myko-app = { workspace = true, optional = true }
+myko-authority = { workspace = true, optional = true }
 myko-discovery = { workspace = true, optional = true }
 myko-node = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

@@ -234,7 +234,7 @@ impl MykoFederation {
     }
 }
 
-fn parse_node_id(value: &str) -> Result<NodeId, MykoFederationError> {
+pub(super) fn parse_node_id(value: &str) -> Result<NodeId, MykoFederationError> {
     Uuid::parse_str(value)
         .map(NodeId::from_uuid)
         .map_err(|error| MykoFederationError::InvalidIdentifier {

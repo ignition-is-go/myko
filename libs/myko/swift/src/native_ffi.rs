@@ -5,13 +5,22 @@
 //! subscription surface exposed to Swift through `UniFFI`.
 
 use myko_app::ApplicationNode;
+use myko_authority::AuthorityPolicy;
+use myko_federation::{AuthorityPresentation, AuthorityRealmId, Principal};
 use myko_node::EndpointId;
 
 use crate::{EmbeddedNodeError, EmbeddedNodeInfo};
 
+mod authority;
 mod federation;
 mod subscriptions;
 
+pub use authority::{
+    MykoAccessOperation, MykoAuthority, MykoAuthorityGrant, MykoAuthorityGrantInput,
+    MykoAuthorityGrantRecord, MykoAuthorityGrantsSubscription, MykoAuthorityGrantsUpdate,
+    MykoFederationPermission, MykoPrincipal, MykoPrincipalKind, MykoRevocationKind,
+    MykoScopeSelection,
+};
 pub use federation::MykoFederation;
 pub use subscriptions::{
     MykoNearbyNode, MykoNearbyNodesSubscription, MykoNearbyNodesUpdate, MykoPairedNode,
@@ -53,6 +62,9 @@ pub enum MykoFederationError {
     /// The identity-pinned pairing protocol failed.
     #[error("Myko pairing failed: {message}")]
     Pairing { message: String },
+    /// A durable authority command or subscription failed.
+    #[error("Myko authority failed: {message}")]
+    Authority { message: String },
 }
 
 impl From<EmbeddedNodeError> for MykoFederationError {
@@ -80,6 +92,45 @@ pub trait NativeApplicationAccess: Send + Sync + 'static {
     fn endpoint_id(&self) -> EndpointId;
 }
 
+/// Authenticated application-owned context for native authority administration.
+///
+/// The application selects its realm and authenticated administrator once.
+/// Myko owns grant persistence, command execution, and live projections.
+#[derive(Clone)]
+pub struct NativeAuthorityContext {
+    policy: AuthorityPolicy,
+    realm_id: AuthorityRealmId,
+    authenticated: Principal,
+    presentation: AuthorityPresentation,
+}
+
+impl NativeAuthorityContext {
+    #[must_use]
+    pub const fn new(
+        policy: AuthorityPolicy,
+        realm_id: AuthorityRealmId,
+        authenticated: Principal,
+        presentation: AuthorityPresentation,
+    ) -> Self {
+        Self {
+            policy,
+            realm_id,
+            authenticated,
+            presentation,
+        }
+    }
+}
+
+/// Application hook required by Myko's reusable native authority component.
+pub trait NativeAuthorityAccess: NativeApplicationAccess {
+    /// Returns the active node's authenticated authority context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while the application authority is unavailable.
+    fn authority_context(&self) -> Result<NativeAuthorityContext, MykoFederationError>;
+}
+
 fn transport_error(error: &(impl ToString + ?Sized)) -> MykoFederationError {
     MykoFederationError::Unavailable {
         message: error.to_string(),
@@ -88,6 +139,12 @@ fn transport_error(error: &(impl ToString + ?Sized)) -> MykoFederationError {
 
 fn pairing_error(error: &(impl ToString + ?Sized)) -> MykoFederationError {
     MykoFederationError::Pairing {
+        message: error.to_string(),
+    }
+}
+
+fn authority_error(error: &(impl ToString + ?Sized)) -> MykoFederationError {
+    MykoFederationError::Authority {
         message: error.to_string(),
     }
 }

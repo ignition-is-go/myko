@@ -5515,9 +5515,11 @@ dependencies = [
 name = "myko-swift"
 version = "7.0.0-alpha.1"
 dependencies = [
+ "chrono",
  "flume 0.11.1",
  "hyphae",
  "myko-app",
+ "myko-authority",
  "myko-discovery",
  "myko-federation",
  "myko-node",

@@ -29,11 +29,15 @@ pub use embedded_node::{EmbeddedNodeError, EmbeddedNodeHost, EmbeddedNodeInfo};
 mod native_ffi;
 #[cfg(feature = "native-ffi")]
 pub use native_ffi::{
-    MykoFederation, MykoFederationError, MykoNearbyNode, MykoNearbyNodesSubscription,
-    MykoNearbyNodesUpdate, MykoNodeInfo, MykoPairedNode, MykoPairedNodesSubscription,
-    MykoPairedNodesUpdate, MykoPairingInitiationSubscription, MykoPairingInitiationUpdate,
-    MykoPairingReceipt, MykoPairingReceiptsSubscription, MykoPairingReceiptsUpdate,
-    MykoPendingPairingReceipt, NativeApplicationAccess,
+    MykoAccessOperation, MykoAuthority, MykoAuthorityGrant, MykoAuthorityGrantInput,
+    MykoAuthorityGrantRecord, MykoAuthorityGrantsSubscription, MykoAuthorityGrantsUpdate,
+    MykoFederation, MykoFederationError, MykoFederationPermission, MykoNearbyNode,
+    MykoNearbyNodesSubscription, MykoNearbyNodesUpdate, MykoNodeInfo, MykoPairedNode,
+    MykoPairedNodesSubscription, MykoPairedNodesUpdate, MykoPairingInitiationSubscription,
+    MykoPairingInitiationUpdate, MykoPairingReceipt, MykoPairingReceiptsSubscription,
+    MykoPairingReceiptsUpdate, MykoPendingPairingReceipt, MykoPrincipal, MykoPrincipalKind,
+    MykoRevocationKind, MykoScopeSelection, NativeApplicationAccess, NativeAuthorityAccess,
+    NativeAuthorityContext,
 };
 
 #[cfg(feature = "native-ffi")]

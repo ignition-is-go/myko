@@ -4,7 +4,9 @@ use myko_discovery::{DiscoveredNode, ParticipantCapability, ParticipantKind};
 use myko_federation::{
     LiveSubscriptionState, LogPosition, ReplicationSelection, ScopeSelection, SubscriptionLiveness,
 };
-use myko_node::{PairingInitiation, PairingInitiationPhase, PairingReceipt, Peer};
+use myko_node::{
+    PairingInitiation, PairingInitiationPhase, PairingReceipt, Peer, endpoint_principal_id,
+};
 
 use crate::{BlockingCollectionSubscription, BlockingSubscription};
 
@@ -40,6 +42,9 @@ pub struct MykoPairingReceiptsUpdate {
 pub struct MykoPairedNode {
     pub peer_id: String,
     pub source_node_id: Option<String>,
+    /// Authenticated authority principal derived by Myko from the transport.
+    pub principal_id: String,
+    /// Transport identity retained for diagnostics and invitation receipts.
     pub endpoint_id: String,
     pub replication_enabled: bool,
     pub replication_selection: String,
@@ -154,12 +159,16 @@ fn paired_nodes_update(
         .value
         .unwrap_or_default()
         .into_iter()
-        .map(|peer| MykoPairedNode {
-            peer_id: peer.id.to_string(),
-            source_node_id: peer.source_node.map(|node_id| node_id.to_string()),
-            endpoint_id: peer.endpoint.id.to_string(),
-            replication_enabled: peer.replication_enabled,
-            replication_selection: replication_selection(&peer.replication_selection),
+        .map(|peer| {
+            let endpoint_id = peer.endpoint.id;
+            MykoPairedNode {
+                peer_id: peer.id.to_string(),
+                source_node_id: peer.source_node.map(|node_id| node_id.to_string()),
+                principal_id: endpoint_principal_id(endpoint_id).to_string(),
+                endpoint_id: endpoint_id.to_string(),
+                replication_enabled: peer.replication_enabled,
+                replication_selection: replication_selection(&peer.replication_selection),
+            }
         })
         .collect::<Vec<_>>();
     nodes.sort_by(|left, right| {
@@ -362,7 +371,7 @@ fn pairing_initiation_update(
     }
 }
 
-fn lifecycle(liveness: &SubscriptionLiveness) -> (String, Option<String>) {
+pub(super) fn lifecycle(liveness: &SubscriptionLiveness) -> (String, Option<String>) {
     match liveness {
         SubscriptionLiveness::Current => ("current".to_owned(), None),
         SubscriptionLiveness::Connecting => ("connecting".to_owned(), None),
