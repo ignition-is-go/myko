@@ -11,9 +11,9 @@
 mod reactive;
 
 pub use reactive::{
-    LiveCollection, LiveCollectionError, LiveCollectionRevision, LiveCollectionState,
-    LiveCollectionWriter, LiveSubscription, LiveSubscriptionState, LiveSubscriptionWriter,
-    SubscriptionLiveness, live_collection, live_subscription,
+    CompositeFrontier, LiveCollection, LiveCollectionError, LiveCollectionRevision,
+    LiveCollectionState, LiveCollectionWriter, LiveSubscription, LiveSubscriptionState,
+    LiveSubscriptionWriter, SubscriptionLiveness, live_collection, live_subscription,
 };
 
 use std::{

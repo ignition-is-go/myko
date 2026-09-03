@@ -45,6 +45,17 @@ pub struct LiveCollectionState<C = LogPosition> {
     pub liveness: SubscriptionLiveness,
 }
 
+/// Exact progress of two independently advancing reactive dependencies.
+///
+/// Unlike a shared cursor, neither side is required to equal or wait for the
+/// other. A derived report carries this frontier so it never invents a single
+/// ordering across unrelated runtime feeds, journals, or remote sources.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct CompositeFrontier<L, R> {
+    pub left: Option<L>,
+    pub right: Option<R>,
+}
+
 /// One atomic publication from a keyed reactive collection.
 ///
 /// A revision carries the typed row diff together with the exact cursor and
@@ -99,6 +110,38 @@ where
     #[must_use]
     pub fn current_state(&self) -> LiveCollectionState<C> {
         self.state.get()
+    }
+
+    /// Projects keyed rows into a coherent live value for derived reports.
+    ///
+    /// The keyed collection remains authoritative. This projection is intended
+    /// for in-process reactive composition when a report needs the complete
+    /// value of multiple dependencies; clients should retain the collection's
+    /// fine-grained revision surface instead.
+    #[must_use]
+    pub fn as_subscription(&self) -> LiveSubscription<Vec<T>, C> {
+        let state = self
+            .rows
+            .entries()
+            .materialize()
+            .join(self.state.clone())
+            .map(|(entries, state)| {
+                let mut entries = entries.clone();
+                entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+                LiveSubscriptionState {
+                    value: Some(
+                        entries
+                            .into_iter()
+                            .map(|(_, value)| value.as_ref().clone())
+                            .collect(),
+                    ),
+                    through: state.through.clone(),
+                    liveness: state.liveness.clone(),
+                }
+            })
+            .materialize()
+            .with_name("myko.live_collection.as_subscription");
+        LiveSubscription::from_state_cell(state)
     }
 }
 
@@ -367,6 +410,96 @@ where
             .materialize()
             .with_name("myko.live_subscription.join_coherent");
         LiveSubscription::from_state_cell(state)
+    }
+
+    /// Joins dependencies that advance through independent cursor spaces.
+    ///
+    /// Either current dependency may publish immediately. The result records
+    /// both exact cursors in a [`CompositeFrontier`] instead of pretending they
+    /// share an ordering. During reconnection the last complete value/frontier
+    /// is retained and marked stale until both dependencies are current again.
+    #[must_use]
+    pub fn join_frontiers<U, D>(
+        &self,
+        other: &LiveSubscription<U, D>,
+    ) -> LiveSubscription<(T, U), CompositeFrontier<C, D>>
+    where
+        U: hyphae::CellValue,
+        D: hyphae::CellValue,
+    {
+        let initial_dependencies = (self.current(), other.current());
+        let initial = frontier_join_state(
+            &LiveSubscriptionState {
+                value: None,
+                through: None,
+                liveness: SubscriptionLiveness::Connecting,
+            },
+            &initial_dependencies,
+        );
+        let state = self
+            .state
+            .clone()
+            .join(other.state.clone())
+            .scan(initial, frontier_join_state)
+            .materialize()
+            .with_name("myko.live_subscription.join_frontiers");
+        LiveSubscription::from_state_cell(state)
+    }
+}
+
+fn frontier_join_state<T, U, C, D>(
+    previous: &LiveSubscriptionState<(T, U), CompositeFrontier<C, D>>,
+    dependencies: &(LiveSubscriptionState<T, C>, LiveSubscriptionState<U, D>),
+) -> LiveSubscriptionState<(T, U), CompositeFrontier<C, D>>
+where
+    T: hyphae::CellValue,
+    U: hyphae::CellValue,
+    C: hyphae::CellValue,
+    D: hyphae::CellValue,
+{
+    let (left, right) = dependencies;
+    let invalid = match (&left.liveness, &right.liveness) {
+        (SubscriptionLiveness::Invalid { reason }, _)
+        | (_, SubscriptionLiveness::Invalid { reason }) => Some(reason.clone()),
+        _ => None,
+    };
+    if let Some(reason) = invalid {
+        return LiveSubscriptionState {
+            value: previous.value.clone(),
+            through: previous.through.clone(),
+            liveness: SubscriptionLiveness::Invalid { reason },
+        };
+    }
+    if left.liveness != SubscriptionLiveness::Current
+        || right.liveness != SubscriptionLiveness::Current
+    {
+        let liveness = if previous.value.is_some() {
+            SubscriptionLiveness::Resynchronizing {
+                reason: "waiting for independent dependencies".to_owned(),
+            }
+        } else {
+            SubscriptionLiveness::Connecting
+        };
+        return LiveSubscriptionState {
+            value: previous.value.clone(),
+            through: previous.through.clone(),
+            liveness,
+        };
+    }
+    let (Some(left_value), Some(right_value)) = (&left.value, &right.value) else {
+        return LiveSubscriptionState {
+            value: previous.value.clone(),
+            through: previous.through.clone(),
+            liveness: SubscriptionLiveness::Connecting,
+        };
+    };
+    LiveSubscriptionState {
+        value: Some((left_value.clone(), right_value.clone())),
+        through: Some(CompositeFrontier {
+            left: left.through.clone(),
+            right: right.through.clone(),
+        }),
+        liveness: SubscriptionLiveness::Current,
     }
 }
 
@@ -663,6 +796,100 @@ mod tests {
             LiveSubscriptionState {
                 value: Some(("left-2".to_owned(), "right-1".to_owned())),
                 through: Some(LogPosition::new(2)),
+                liveness: SubscriptionLiveness::Current,
+            }
+        );
+    }
+
+    #[test]
+    fn frontier_join_tracks_independent_cursor_spaces_without_waiting() {
+        let (left_writer, left) = live_subscription(LiveSubscriptionState {
+            value: Some("runtime-1".to_owned()),
+            through: Some(1_u64),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let (right_writer, right) = live_subscription(LiveSubscriptionState {
+            value: Some("history-7".to_owned()),
+            through: Some(LogPosition::new(7)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let joined = left.join_frontiers(&right);
+        assert_eq!(
+            joined.current(),
+            LiveSubscriptionState {
+                value: Some(("runtime-1".to_owned(), "history-7".to_owned())),
+                through: Some(CompositeFrontier {
+                    left: Some(1),
+                    right: Some(LogPosition::new(7)),
+                }),
+                liveness: SubscriptionLiveness::Current,
+            }
+        );
+
+        left_writer.publish("runtime-2".to_owned(), Some(2));
+        assert_eq!(
+            joined.current(),
+            LiveSubscriptionState {
+                value: Some(("runtime-2".to_owned(), "history-7".to_owned())),
+                through: Some(CompositeFrontier {
+                    left: Some(2),
+                    right: Some(LogPosition::new(7)),
+                }),
+                liveness: SubscriptionLiveness::Current,
+            }
+        );
+
+        right_writer.resynchronizing("remote reconnect");
+        let stale = joined.current();
+        assert_eq!(
+            stale.value,
+            Some(("runtime-2".to_owned(), "history-7".to_owned()))
+        );
+        assert!(matches!(
+            stale.liveness,
+            SubscriptionLiveness::Resynchronizing { .. }
+        ));
+        right_writer.publish("history-8".to_owned(), Some(LogPosition::new(8)));
+        assert_eq!(
+            joined.current().through,
+            Some(CompositeFrontier {
+                left: Some(2),
+                right: Some(LogPosition::new(8)),
+            })
+        );
+    }
+
+    #[test]
+    fn collection_projects_rows_into_a_live_derived_value() {
+        let (writer, collection) = live_collection(
+            vec![(Arc::<str>::from("one"), Arc::new(1_u32))],
+            LiveCollectionState {
+                through: Some(1_u64),
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        let values = collection.as_subscription();
+        assert_eq!(values.current().value, Some(vec![1]));
+
+        writer.apply(
+            MapDiff::Insert {
+                key: Arc::from("two"),
+                value: Arc::new(2),
+            },
+            Some(2),
+        );
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        while values.current().through != Some(2) && Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+
+        assert_eq!(
+            values.current(),
+            LiveSubscriptionState {
+                value: Some(vec![1, 2]),
+                through: Some(2),
                 liveness: SubscriptionLiveness::Current,
             }
         );
