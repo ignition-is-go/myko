@@ -10,6 +10,7 @@
 #![allow(clippy::result_large_err)]
 
 use std::{
+    collections::BTreeMap,
     future::Future,
     num::NonZeroUsize,
     pin::Pin,
@@ -63,6 +64,12 @@ struct AuthorizationPulse {
     deadline: Interval,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AuthorizationWake {
+    Revision,
+    Deadline,
+}
+
 impl AuthorizationPulse {
     fn new(
         policy_revision: watch::Receiver<u64>,
@@ -81,16 +88,19 @@ impl AuthorizationPulse {
         }
     }
 
-    async fn changed(&mut self) {
+    async fn changed(&mut self) -> AuthorizationWake {
         tokio::select! {
             _ = self.policy_revision.changed() => {
                 self.authority_revision = self
                     .access_policy
                     .read()
                     .map_or(None, |policy| policy.subscribe_changes());
+                AuthorizationWake::Revision
             }
-            () = wait_for_authority_change(self.authority_revision.as_ref()) => {}
-            _ = self.deadline.tick() => {}
+            () = wait_for_authority_change(self.authority_revision.as_ref()) => {
+                AuthorizationWake::Revision
+            }
+            _ = self.deadline.tick() => AuthorizationWake::Deadline,
         }
     }
 }
@@ -714,6 +724,31 @@ impl NodeSessionService {
             },
         )
         .await?;
+        let snapshot = self
+            .node
+            .command_states(myko_federation::CommandStateRequest {
+                source_node: Some(watch.source_node),
+                service_id: watch.service_id.clone(),
+                scope_id: watch.scope_id.clone(),
+                command_type: watch.command_type.clone(),
+                snapshot_through: watch.after,
+                after_command_id: None,
+                page_size: myko_federation::DEFAULT_COMMAND_STATE_PAGE_SIZE,
+            })
+            .map_err(|error| error.to_string())?;
+        let mut visible_commands = snapshot
+            .commands
+            .into_iter()
+            .filter_map(|entry| {
+                self.command_snapshot_authorized(
+                    &principal,
+                    &presentation,
+                    AccessOperation::WatchCommands,
+                    &entry.command,
+                )
+                .then(|| (entry.command.request.id.to_string(), entry.command))
+            })
+            .collect::<BTreeMap<_, _>>();
         let mut authorization = self.authorization_pulse();
         loop {
             tokio::select! {
@@ -722,26 +757,44 @@ impl NodeSessionService {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
-                    if let Some(update) = watch.update_from_envelope(&event)
-                        && self.command_snapshot_authorized(
+                    if let Some(update) = watch.update_from_envelope(&event) {
+                        let command_id = update.command.request.id.to_string();
+                        if self.command_snapshot_authorized(
                             &principal,
                             &presentation,
                             AccessOperation::WatchCommands,
                             &update.command,
-                        )
-                    {
-                        emit(send, NodeFrame::CommandUpdate { update: Box::new(update) }).await?;
+                        ) {
+                            visible_commands.insert(command_id, update.command.clone());
+                            emit(send, NodeFrame::CommandUpdate { update: Box::new(update) }).await?;
+                        } else if visible_commands.contains_key(&command_id) {
+                            return Ok(());
+                        }
                     }
                 }
-                () = authorization.changed() => {
+                wake = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
-                    // The broad catalog grant can remain valid while a grant
-                    // covering one already-visible command is revoked. Close
-                    // so the client must refetch a freshly filtered snapshot
-                    // instead of retaining that command indefinitely.
-                    return Ok(());
+                    match wake {
+                        // The broad catalog grant can remain valid while a
+                        // grant covering one already-visible command changes.
+                        // Refetching is the only way to retract stale entries.
+                        AuthorizationWake::Revision => return Ok(()),
+                        AuthorizationWake::Deadline => {
+                            let stale_entry = visible_commands.values().any(|command| {
+                                !self.command_snapshot_authorized(
+                                    &principal,
+                                    &presentation,
+                                    AccessOperation::WatchCommands,
+                                    command,
+                                )
+                            });
+                            if stale_entry {
+                                return Ok(());
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -813,7 +866,7 @@ impl NodeSessionService {
                     }
                     self.emit_command(send, Some(command)).await?;
                 }
-                () = authorization.changed() => {
+                _ = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -892,7 +945,7 @@ impl NodeSessionService {
                         emit(send, NodeFrame::ItemUpdate { update: Box::new(update) }).await?;
                     }
                 }
-                () = authorization.changed() => {
+                _ = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -998,7 +1051,7 @@ impl NodeSessionService {
                     }) }).await?;
                     cursor = Some(through);
                 }
-                () = authorization.changed() => {
+                _ = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -1053,7 +1106,7 @@ impl NodeSessionService {
                     }) }).await?;
                     cursor = Some(through);
                 }
-                () = authorization.changed() => {
+                _ = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -1148,7 +1201,7 @@ impl NodeSessionService {
                     }) }).await?;
                     cursor = Some(through);
                 }
-                () = authorization.changed() => {
+                _ = authorization.changed() => {
                     if let Err(decision) = self.constrain_replication(
                         &principal,
                         &presentation,
@@ -1194,7 +1247,7 @@ impl NodeSessionService {
                     }
                     emit(send, NodeFrame::Live { event: Box::new(event) }).await?;
                 }
-                () = authorization.changed() => {
+                _ = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -1250,7 +1303,7 @@ impl NodeSessionService {
                 wake = wake_rx.recv_async() => {
                     if wake.is_err() { return Ok(()); }
                 }
-                () = authorization.changed() => {
+                _ = authorization.changed() => {
                 }
             }
         }
@@ -1932,13 +1985,17 @@ mod tests {
     #[derive(Debug)]
     struct CatalogEntryPolicy {
         entries_allowed: bool,
+        entries_expire_at: Option<tokio::time::Instant>,
     }
 
     impl AccessPolicy for CatalogEntryPolicy {
         fn authorize(&self, request: &AccessRequest) -> Result<(), String> {
             if request.operation == AccessOperation::WatchCommands
                 && request.command_id.is_some()
-                && !self.entries_allowed
+                && (!self.entries_allowed
+                    || self
+                        .entries_expire_at
+                        .is_some_and(|deadline| tokio::time::Instant::now() >= deadline))
             {
                 return Err("stored command claims were revoked".to_owned());
             }
@@ -2014,6 +2071,7 @@ mod tests {
             node.clone(),
             Arc::new(CatalogEntryPolicy {
                 entries_allowed: true,
+                entries_expire_at: None,
             }),
         );
         let principal = PrincipalId::new("node:catalog-reader");
@@ -2043,6 +2101,12 @@ mod tests {
             frames.recv().await,
             Some(NodeFrame::CommandWatchReady { .. })
         ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(175), frames.recv())
+                .await
+                .is_err(),
+            "deadline rechecks must not close an unchanged catalog watch"
+        );
 
         let command_id = CommandId::new();
         node.admit(CommandRequest {
@@ -2066,8 +2130,73 @@ mod tests {
         session
             .set_access_policy(Arc::new(CatalogEntryPolicy {
                 entries_allowed: false,
+                entries_expire_at: None,
             }))
             .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
+            Ok(None)
+        ));
+    }
+
+    #[tokio::test]
+    async fn catalog_watch_closes_when_visible_entry_authority_expires() {
+        let node = Node::in_memory();
+        let principal = PrincipalId::new("node:catalog-reader");
+        let service_id = ServiceId::new("test.service");
+        let scope_id = ScopeId::new("scope:catalog");
+        let command_id = CommandId::new();
+        node.admit(CommandRequest {
+            id: command_id,
+            service_id: service_id.clone(),
+            scope_id: scope_id.clone(),
+            principal_id: principal.clone(),
+            authority: AuthorityPresentation::direct_node(principal.clone()),
+            resource_claims: vec![ResourceClaim::scope(
+                scope_id.clone(),
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
+            command_type: "test.command".to_owned(),
+            payload: Vec::new(),
+        })
+        .unwrap();
+        let session = NodeSessionService::new(
+            node.clone(),
+            Arc::new(CatalogEntryPolicy {
+                entries_allowed: true,
+                entries_expire_at: Some(tokio::time::Instant::now() + Duration::from_millis(125)),
+            }),
+        );
+        let mut frames = session
+            .open(
+                principal,
+                NodeRequestEnvelope::connected(NodeRequest::WatchCommands {
+                    request: myko_federation::CommandWatchRequest {
+                        serving_node: node.node_id(),
+                        source_node: node.node_id(),
+                        service_id,
+                        scope_id,
+                        command_type: "test.command".to_owned(),
+                        after: None,
+                    },
+                }),
+            )
+            .await;
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::Authorization { decision })
+                if matches!(*decision, AuthorizationDecision::Permit(_))
+        ));
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::CommandWatchReady { .. })
+        ));
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::CommandUpdate { update }) if update.command.request.id == command_id
+        ));
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
             Ok(None)
