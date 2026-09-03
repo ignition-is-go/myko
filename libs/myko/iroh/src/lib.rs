@@ -2020,11 +2020,8 @@ enum FollowSelection {
 }
 
 impl FollowSelection {
-    fn replication(selection: ReplicationSelection) -> Self {
-        match selection {
-            ReplicationSelection::All => Self::All,
-            selection => Self::Selected(selection),
-        }
+    const fn replication(selection: ReplicationSelection) -> Self {
+        Self::Selected(selection)
     }
 }
 
@@ -4265,6 +4262,16 @@ mod tests {
     };
     use myko_items::{myko_command, myko_item, myko_service};
     use myko_redb::RedbJournal;
+
+    #[test]
+    fn all_replication_uses_the_authority_constrained_handshake() {
+        let selection = FollowSelection::replication(ReplicationSelection::All);
+
+        assert!(matches!(
+            selection,
+            FollowSelection::Selected(ReplicationSelection::All)
+        ));
+    }
 
     async fn bind_allow_all(node: Node) -> Result<IrohReplicator, IrohReplicationError> {
         IrohReplicator::bind_loopback_with_policy(node, Arc::new(AllowAllAccessPolicy)).await
