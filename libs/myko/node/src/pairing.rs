@@ -27,6 +27,7 @@ use uuid::Uuid;
 
 use crate::{
     FederationService, Peer, RememberPeer,
+    discovery::DiscoveryViewState,
     peer::{PeerRoster, PeerRosterId, peer_scope},
 };
 
@@ -141,6 +142,37 @@ impl CommandHandler for InitiatePairing {
         };
         context.emit_set(&initiation)?;
         Ok(initiation)
+    }
+}
+
+/// Starts an asynchronous pairing offer to a node in the live discovery view.
+///
+/// Frontends identify the nearby node; the framework resolves its current,
+/// transport-specific descriptor inside the command handler.
+#[myko_command(PairingInitiation, item = PairingInitiation)]
+pub struct InitiateDiscoveredPairing {
+    pub peer_node_id: NodeId,
+    pub ttl_seconds: u64,
+}
+
+impl CommandHandler for InitiateDiscoveredPairing {
+    fn scope(&self, node_id: NodeId) -> PeerRosterId {
+        PeerRosterId::from(node_id.to_string())
+    }
+
+    fn execute(
+        self,
+        context: CommandContext<FederationService, PeerRoster>,
+    ) -> Result<Self::Output, CommandError> {
+        let peer = context
+            .resource::<DiscoveryViewState>()
+            .map_err(|error| CommandError::reject(error.to_string()))?
+            .descriptor_for(self.peer_node_id)
+            .map_err(CommandError::reject)?;
+        context.exec_command(InitiatePairing {
+            peer,
+            ttl_seconds: self.ttl_seconds,
+        })
     }
 }
 

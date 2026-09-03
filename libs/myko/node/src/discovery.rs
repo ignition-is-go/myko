@@ -115,6 +115,27 @@ impl DiscoveryViewState {
     pub fn publish(&self, nodes: Vec<DiscoveredNode>) {
         self.nearby.publish(nodes);
     }
+
+    pub(crate) fn descriptor_for(&self, node_id: NodeId) -> Result<NativeNodeDescriptor, String> {
+        let state = self.nearby.live.current();
+        match state.liveness {
+            SubscriptionLiveness::Current => state
+                .value
+                .ok_or_else(|| "current LAN discovery state omitted its value".to_owned())?
+                .iter()
+                .find(|node| node.node_id() == node_id)
+                .map(|node| node.descriptor.clone())
+                .ok_or_else(|| {
+                    "the selected node is no longer visible through discovery".to_owned()
+                }),
+            SubscriptionLiveness::Connecting | SubscriptionLiveness::Resynchronizing { .. } => {
+                Err("LAN discovery is not current".to_owned())
+            }
+            SubscriptionLiveness::Invalid { reason } => {
+                Err(format!("LAN discovery is invalid: {reason}"))
+            }
+        }
+    }
 }
 
 /// Live untrusted LAN advertisements visible to this node.
@@ -276,5 +297,43 @@ async fn wait_for_discovery(
     match updates {
         Some(updates) => updates.changed().await.map_err(|error| error.to_string()),
         None => std::future::pending().await,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use myko_discovery::{ParticipantCapabilities, ParticipantKind};
+    use myko_iroh::{EndpointAddr, SecretKey};
+
+    fn discovered_node(node_id: NodeId, display_name: &str) -> DiscoveredNode {
+        DiscoveredNode {
+            descriptor: NativeNodeDescriptor::new(
+                node_id,
+                EndpointAddr::new(SecretKey::generate().public()),
+            ),
+            display_name: display_name.to_owned(),
+            kind: ParticipantKind::FullNode,
+            capabilities: ParticipantCapabilities::full_node(),
+            reachable: true,
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn discovery_resolves_the_current_descriptor_by_node_identity() -> Result<(), String> {
+        let state = DiscoveryViewState::new();
+        let first = discovered_node(NodeId::new(), "first");
+        let selected = discovered_node(NodeId::new(), "selected");
+        state.publish(vec![first, selected.clone()]);
+
+        let descriptor = state.descriptor_for(selected.node_id())?;
+        if descriptor != selected.descriptor {
+            return Err("discovery resolved the wrong node descriptor".to_owned());
+        }
+        if state.descriptor_for(NodeId::new()).is_ok() {
+            return Err("discovery resolved a node that is not currently visible".to_owned());
+        }
+        Ok(())
     }
 }
