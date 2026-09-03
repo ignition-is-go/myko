@@ -182,15 +182,24 @@ fn replication_selection(selection: &ReplicationSelection) -> String {
             service_id,
             scope_id,
         } => format!("service:{service_id}/scope:{scope_id}"),
-        ReplicationSelection::Scopes(scopes) => scopes
-            .iter()
-            .map(|scope| match scope {
-                ScopeSelection::Exact(scope_id) => format!("scope:{scope_id}"),
-                ScopeSelection::Subtree(scope_id) => format!("subtree:{scope_id}"),
-            })
-            .collect::<Vec<_>>()
-            .join(","),
+        ReplicationSelection::Scopes(scopes) => scope_selection_list(scopes),
+        ReplicationSelection::Intersection { requested, scopes } => format!(
+            "intersection:{}&{}",
+            replication_selection(requested),
+            scope_selection_list(scopes)
+        ),
     }
+}
+
+fn scope_selection_list(scopes: &[ScopeSelection]) -> String {
+    scopes
+        .iter()
+        .map(|scope| match scope {
+            ScopeSelection::Exact(scope_id) => format!("scope:{scope_id}"),
+            ScopeSelection::Subtree(scope_id) => format!("subtree:{scope_id}"),
+        })
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 fn nearby_nodes_update(
@@ -383,6 +392,13 @@ mod tests {
                 ScopeSelection::Subtree(ScopeId::new("b")),
             ])),
             "scope:a,subtree:b"
+        );
+        assert_eq!(
+            replication_selection(&ReplicationSelection::Intersection {
+                requested: Box::new(ReplicationSelection::Service(ServiceId::new("chat"))),
+                scopes: vec![ScopeSelection::Exact(ScopeId::new("a"))],
+            }),
+            "intersection:service:chat&scope:a"
         );
     }
 }
