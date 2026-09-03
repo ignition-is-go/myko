@@ -159,10 +159,45 @@ impl MykoAuthority {
     fn context(&self) -> Result<NativeAuthorityContext, MykoFederationError> {
         self.application.authority_context()
     }
+
+    fn grant_subscription(
+        &self,
+        source_node: myko_federation::NodeId,
+        realm_id: myko_federation::AuthorityRealmId,
+    ) -> Result<Arc<MykoAuthorityGrantsSubscription>, MykoFederationError> {
+        let subscription = self
+            .application
+            .application()?
+            .watch_view(&AuthorityGrantsView {
+                source_node,
+                realm_id,
+            })
+            .map_err(|error| authority_error(&error))?;
+        let live = subscription.live().clone();
+        Ok(Arc::new(MykoAuthorityGrantsSubscription {
+            subscription: BlockingCollectionSubscription::new(subscription, &live),
+        }))
+    }
 }
 
 #[uniffi::export]
 impl MykoAuthority {
+    /// Watches the active node's own configured authority realm.
+    ///
+    /// Native application code does not need to duplicate the node identity or
+    /// application-selected realm at the foreign-language boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error while the node or its authority context is unavailable.
+    pub fn subscribe_local_grants(
+        &self,
+    ) -> Result<Arc<MykoAuthorityGrantsSubscription>, MykoFederationError> {
+        let application = self.application.application()?;
+        let context = self.context()?;
+        self.grant_subscription(application.node_id(), context.realm_id)
+    }
+
     /// Watches every durable grant record for one source node and realm.
     ///
     /// # Errors
@@ -176,18 +211,10 @@ impl MykoAuthority {
         realm_id: String,
     ) -> Result<Arc<MykoAuthorityGrantsSubscription>, MykoFederationError> {
         let source_node = parse_node_id(&source_node_id)?;
-        let subscription = self
-            .application
-            .application()?
-            .watch_view(&AuthorityGrantsView {
-                source_node,
-                realm_id: myko_federation::AuthorityRealmId::new(realm_id),
-            })
-            .map_err(|error| authority_error(&error))?;
-        let live = subscription.live().clone();
-        Ok(Arc::new(MykoAuthorityGrantsSubscription {
-            subscription: BlockingCollectionSubscription::new(subscription, &live),
-        }))
+        self.grant_subscription(
+            source_node,
+            myko_federation::AuthorityRealmId::new(realm_id),
+        )
     }
 
     /// Issues one immutable grant as the application-authenticated authority.
