@@ -25,6 +25,20 @@ mod embedded_node;
 #[cfg(feature = "embedded-node")]
 pub use embedded_node::{EmbeddedNodeError, EmbeddedNodeHost, EmbeddedNodeInfo};
 
+#[cfg(feature = "native-ffi")]
+mod native_ffi;
+#[cfg(feature = "native-ffi")]
+pub use native_ffi::{
+    MykoFederation, MykoFederationError, MykoNearbyNode, MykoNearbyNodesSubscription,
+    MykoNearbyNodesUpdate, MykoNodeInfo, MykoPairedNode, MykoPairedNodesSubscription,
+    MykoPairedNodesUpdate, MykoPairingInitiationSubscription, MykoPairingInitiationUpdate,
+    MykoPairingReceipt, MykoPairingReceiptsSubscription, MykoPairingReceiptsUpdate,
+    MykoPendingPairingReceipt, NativeApplicationAccess,
+};
+
+#[cfg(feature = "native-ffi")]
+uniffi::setup_scaffolding!();
+
 trait SubscriptionOwner: Send {}
 
 impl<T> SubscriptionOwner for T where T: Send {}

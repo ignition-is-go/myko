@@ -10,14 +10,27 @@ workspace = true
 
 [features]
 embedded-node = ["dep:myko-node", "dep:tokio"]
+native-ffi = [
+  "embedded-node",
+  "dep:myko-app",
+  "dep:myko-discovery",
+  "dep:serde_json",
+  "dep:uniffi",
+  "dep:uuid",
+]
 
 [dependencies]
 flume.workspace = true
 hyphae.workspace = true
 myko-federation.workspace = true
+myko-app = { workspace = true, optional = true }
+myko-discovery = { workspace = true, optional = true }
 myko-node = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio = { workspace = true, optional = true }
+uniffi = { workspace = true, optional = true }
+uuid = { workspace = true, optional = true }
 
 [dev-dependencies]
 tempfile = "3"

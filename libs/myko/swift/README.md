@@ -23,8 +23,16 @@ and serialized foreground state. A concrete application supplies only its
 typed runtime construction and shutdown callbacks; it does not reimplement
 identity restoration, active-node locking, or foreground lifecycle mechanics.
 
-Concrete applications still own their exported records and projection from
-domain entities into presentation data. The Rust-side
+The `native-ffi` feature adds Myko's generated Swift federation component.
+`MykoFederation` exposes framework-owned LAN discovery, pairing, remembered
+peers, directional replication, and their live subscriptions. A concrete app
+implements `NativeApplicationAccess` once for its composed application node;
+it does not duplicate those commands, records, projections, or subscription
+objects. UniFFI library-mode generation can emit this component beside the
+application component from the same linked native library and XCFramework.
+
+Concrete applications still own exported records and projections for their
+domain entities. The Rust-side
 `export_blocking_subscription!` macro generates each concrete UniFFI
 subscription object's uniform `current`/`next`/`cancel` surface. Applications
 do not own transport routing, subscription retention, revision waiting, or
