@@ -6,6 +6,8 @@
 //! semantics and differ only in framing and authentication.
 
 #![forbid(unsafe_code)]
+// Denials retain their structured explanation while they cross session seams.
+#![allow(clippy::result_large_err)]
 
 use std::{
     future::Future,
@@ -87,7 +89,7 @@ impl AuthorizationPulse {
                     .read()
                     .map_or(None, |policy| policy.subscribe_changes());
             }
-            _ = wait_for_authority_change(self.authority_revision.as_ref()) => {}
+            () = wait_for_authority_change(self.authority_revision.as_ref()) => {}
             _ = self.deadline.tick() => {}
         }
     }
@@ -300,6 +302,7 @@ impl NodeSessionService {
 
     /// Opens a request bound to the complete transport-authenticated identity,
     /// including its principal kind. IDs alone are not authority credentials.
+    #[allow(clippy::too_many_lines)] // Keeps authentication and first-frame ordering in one task.
     pub async fn open_authenticated(
         &self,
         authenticated: Principal,
@@ -719,18 +722,18 @@ impl NodeSessionService {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
-                    if let Some(update) = watch.update_from_envelope(&event) {
-                        if self.command_snapshot_authorized(
+                    if let Some(update) = watch.update_from_envelope(&event)
+                        && self.command_snapshot_authorized(
                             &principal,
                             &presentation,
                             AccessOperation::WatchCommands,
                             &update.command,
-                        ) {
-                            emit(send, NodeFrame::CommandUpdate { update: Box::new(update) }).await?;
-                        }
+                        )
+                    {
+                        emit(send, NodeFrame::CommandUpdate { update: Box::new(update) }).await?;
                     }
                 }
-                _ = authorization.changed() => {
+                () = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -773,8 +776,7 @@ impl NodeSessionService {
         self.access_policy
             .read()
             .ok()
-            .map(|policy| policy.decide(&access).is_permit())
-            .unwrap_or(false)
+            .is_some_and(|policy| policy.decide(&access).is_permit())
     }
 
     async fn watch_command(
@@ -806,7 +808,7 @@ impl NodeSessionService {
                     }
                     self.emit_command(send, Some(command)).await?;
                 }
-                _ = authorization.changed() => {
+                () = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -885,7 +887,7 @@ impl NodeSessionService {
                         emit(send, NodeFrame::ItemUpdate { update: Box::new(update) }).await?;
                     }
                 }
-                _ = authorization.changed() => {
+                () = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -991,7 +993,7 @@ impl NodeSessionService {
                     }) }).await?;
                     cursor = Some(through);
                 }
-                _ = authorization.changed() => {
+                () = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -1046,7 +1048,7 @@ impl NodeSessionService {
                     }) }).await?;
                     cursor = Some(through);
                 }
-                _ = authorization.changed() => {
+                () = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -1141,7 +1143,7 @@ impl NodeSessionService {
                     }) }).await?;
                     cursor = Some(through);
                 }
-                _ = authorization.changed() => {
+                () = authorization.changed() => {
                     if let Err(decision) = self.constrain_replication(
                         &principal,
                         &presentation,
@@ -1187,7 +1189,7 @@ impl NodeSessionService {
                     }
                     emit(send, NodeFrame::Live { event: Box::new(event) }).await?;
                 }
-                _ = authorization.changed() => {
+                () = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
@@ -1243,7 +1245,7 @@ impl NodeSessionService {
                 wake = wake_rx.recv_async() => {
                     if wake.is_err() { return Ok(()); }
                 }
-                _ = authorization.changed() => {
+                () = authorization.changed() => {
                 }
             }
         }
@@ -1367,7 +1369,7 @@ impl NodeSessionService {
         let access =
             match self.access_request(principal, presentation, request, authorization_phase) {
                 Ok(access) => access,
-                Err(_decision)
+                Err(missing_command_decision)
                     if matches!(
                         request,
                         NodeRequest::Command { .. }
@@ -1379,7 +1381,7 @@ impl NodeSessionService {
                         NodeRequest::Command { .. } => AccessOperation::ReadCommand,
                         NodeRequest::WatchCommand { .. } => AccessOperation::WatchCommand,
                         NodeRequest::Cancel { .. } => AccessOperation::CancelCommand,
-                        _ => unreachable!(),
+                        _ => return Err(missing_command_decision),
                     };
                     return Err(undiscoverable_command_decision(presentation, operation));
                 }
@@ -1715,7 +1717,7 @@ async fn emit(send: &flume::Sender<NodeFrame>, frame: NodeFrame) -> Result<(), S
         .map_err(|_| "client disconnected".to_owned())
 }
 
-fn metadata(operation: AccessOperation) -> AccessMetadata {
+const fn metadata(operation: AccessOperation) -> AccessMetadata {
     AccessMetadata {
         operation,
         service_id: None,
@@ -1755,7 +1757,7 @@ fn selected(operation: AccessOperation, selection: &ReplicationSelection) -> Acc
         }
         ReplicationSelection::Scopes(selections) => {
             let mut metadata = metadata(operation);
-            metadata.scope_selections = selections.clone();
+            metadata.scope_selections.clone_from(selections);
             metadata.resource_claims = selections
                 .iter()
                 .cloned()
@@ -1865,6 +1867,7 @@ fn validate_live_topics(topics: &[String]) -> Result<(), String> {
 }
 
 #[cfg(test)]
+#[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
     use std::sync::{
         Arc, Mutex,

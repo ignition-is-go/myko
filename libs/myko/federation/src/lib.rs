@@ -7,6 +7,9 @@
 //! transport-neutral contracts.
 
 #![forbid(unsafe_code)]
+// Authorization denials carry the same structured report returned on the wire;
+// boxing it would make every policy consumer allocate merely to propagate it.
+#![allow(clippy::result_large_err)]
 
 mod authority;
 mod reactive;
@@ -339,16 +342,14 @@ impl CommandSubmission {
     pub fn authenticate(self, scope_id: ScopeId, principal_id: PrincipalId) -> CommandRequest {
         let authority = AuthorityPresentation::direct_node(principal_id.clone());
         let arguments_digest = Some(digest_bytes(&self.payload));
+        let primary_claim = ResourceClaim::scope(scope_id.clone(), ResourceClaimKind::Primary);
         CommandRequest {
             id: self.id,
             service_id: self.service_id,
-            scope_id: scope_id.clone(),
+            scope_id,
             principal_id,
             authority,
-            resource_claims: vec![ResourceClaim::scope(
-                scope_id.clone(),
-                ResourceClaimKind::Primary,
-            )],
+            resource_claims: vec![primary_claim],
             application_capabilities: Vec::new(),
             arguments_digest,
             command_type: self.command_type,
@@ -727,6 +728,11 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
 
     /// Intersects selective replication with current grants. Policies without
     /// a richer model must authorize the complete request or deny it.
+    ///
+    /// # Errors
+    ///
+    /// Returns the structured authorization decision when the selection is not
+    /// permitted.
     fn constrain_replication(
         &self,
         request: &AccessRequest,
@@ -743,6 +749,11 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
 
     /// Records an approval only when the transport executor and authority
     /// presentation are validated by a durable policy implementation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a structured denial when this policy cannot validate or record
+    /// the approval.
     fn approve(
         &self,
         _authenticated_executor: &PrincipalId,
@@ -770,6 +781,10 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
     }
 
     /// Registers one opaque application capability before grants may cite it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the policy cannot durably register the capability.
     fn register_application_capability(
         &self,
         _authenticated_executor: &PrincipalId,
@@ -1470,6 +1485,14 @@ pub struct ScopeTopology {
 }
 
 impl ScopeTopology {
+    fn from_events(events: &[EventEnvelope]) -> Result<Self, NodeError> {
+        let mut topology = Self::default();
+        for envelope in events {
+            topology.observe_event(&envelope.event)?;
+        }
+        Ok(topology)
+    }
+
     /// Incorporates nested scope roots established by one immutable event.
     ///
     /// # Errors
@@ -1594,6 +1617,7 @@ impl ScopeTopology {
     }
 
     #[doc(hidden)]
+    #[must_use]
     pub fn proof_for(&self, selections: &[ScopeSelection]) -> Self {
         let mut proof = Self::default();
         for selection in selections {
@@ -1655,7 +1679,7 @@ pub enum ReplicationSelection {
     /// scope pieces. Keeping the original selector prevents a service-scoped
     /// request from becoming a cross-service scope grant on the wire.
     Intersection {
-        requested: Box<ReplicationSelection>,
+        requested: Box<Self>,
         scopes: Vec<ScopeSelection>,
     },
 }
@@ -1996,7 +2020,7 @@ impl ReplicationCheckpoint {
     }
 
     #[must_use]
-    pub fn selected(
+    pub const fn selected(
         source_node: NodeId,
         position: Option<LogPosition>,
         selection: ReplicationSelection,
@@ -3343,6 +3367,11 @@ impl<Q: ItemQuery> SelectedQueryWatch<Q> {
 
     /// Waits for the next durable event and recomputes the authorization-
     /// filtered selected projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when history, authority, or the wake channel becomes
+    /// unavailable.
     pub fn recv(&mut self) -> Result<SelectedQueryUpdate<Q::Output>, NodeError> {
         loop {
             match self
@@ -3371,6 +3400,11 @@ impl<Q: ItemQuery> SelectedQueryWatch<Q> {
     }
 
     /// Asynchronously waits for the next selected projection revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when history, authority, or the wake channel becomes
+    /// unavailable.
     pub async fn recv_async(&mut self) -> Result<SelectedQueryUpdate<Q::Output>, NodeError> {
         loop {
             match self
@@ -3782,6 +3816,10 @@ pub trait NodeBackend: Send + Sync + 'static {
     fn retry(&self, command_id: CommandId, reason: String) -> Result<CommandSnapshot, NodeError>;
 
     /// Parks an executing command behind one exact durable challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the exact effect cannot be durably parked.
     fn await_authorization(
         &self,
         command_id: CommandId,
@@ -3791,6 +3829,10 @@ pub trait NodeBackend: Send + Sync + 'static {
     ) -> Result<CommandSnapshot, NodeError>;
 
     /// Resubmits a parked command with the approval that released it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the challenge no longer owns the parked command.
     fn resume_authorization(
         &self,
         command_id: CommandId,
@@ -3800,6 +3842,10 @@ pub trait NodeBackend: Send + Sync + 'static {
 
     /// Advances a parked exact effect to its next required challenge without
     /// rerunning the application handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the current challenge cannot be durably advanced.
     fn advance_authorization(
         &self,
         command_id: CommandId,
@@ -3895,11 +3941,13 @@ pub struct Node {
     readiness: Arc<NodeReadiness>,
     command_dispatch: Arc<ReentrantMutex<()>>,
     command_access_policy: Arc<RwLock<Option<Weak<dyn AccessPolicy>>>>,
-    replication_coverage: Arc<RwLock<HashMap<(NodeId, ReplicationSelection), Option<LogPosition>>>>,
-    replication_resumptions:
-        Arc<RwLock<HashMap<(NodeId, ReplicationSelection), Option<LogPosition>>>>,
+    replication_coverage: SharedReplicationPositions,
+    replication_resumptions: SharedReplicationPositions,
     replication_sources: Arc<RwLock<HashMap<NodeId, ReplicationSourceAvailability>>>,
 }
+
+type ReplicationPositions = HashMap<(NodeId, ReplicationSelection), Option<LogPosition>>;
+type SharedReplicationPositions = Arc<RwLock<ReplicationPositions>>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplicationSourceAvailability {
@@ -3923,6 +3971,11 @@ impl PreparedCommand {
     }
 
     /// Durably submits the exact request that produced this preflight permit.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when durable submission fails or conflicts with an
+    /// existing command identity.
     pub fn submit(self) -> Result<CommandSnapshot, NodeError> {
         self.node.backend.submit(self.request)
     }
@@ -4379,7 +4432,7 @@ pub enum CommandDispatchDisposition {
 }
 
 impl CommandDispatchDisposition {
-    fn for_resumed_state(state: &CommandState) -> Self {
+    const fn for_resumed_state(state: &CommandState) -> Self {
         match state {
             CommandState::Rejected { .. } | CommandState::Cancelled { .. } => Self::Rejected,
             CommandState::Retrying { .. } | CommandState::AuthorizationPending { .. } => {
@@ -4713,6 +4766,12 @@ impl CommandContext {
 
     /// Executes a command-safe authoritative exact/subtree query after
     /// validating the selected read against preflight claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selection was not declared, current history
+    /// is invalid, or the typed projection cannot be evaluated.
+    #[allow(clippy::needless_pass_by_value)] // Mirrors the other owned typed query capabilities.
     pub fn query_selected<Q>(
         &self,
         selection: ScopeSelection,
@@ -4791,6 +4850,7 @@ impl CommandContext {
         if !actual.contains(&claim) {
             actual.push(claim);
         }
+        drop(actual);
         Ok(())
     }
 
@@ -4836,6 +4896,7 @@ impl CommandContext {
         if !actual.contains(&capability) {
             actual.push(capability);
         }
+        drop(actual);
         Ok(())
     }
 
@@ -5057,6 +5118,7 @@ impl Node {
     ///
     /// # Errors
     /// Returns an error if the policy slot is poisoned.
+    #[allow(clippy::needless_pass_by_value)] // The caller deliberately transfers policy installation intent.
     pub fn set_command_access_policy(
         &self,
         policy: Arc<dyn AccessPolicy>,
@@ -5154,8 +5216,7 @@ impl Node {
             if found {
                 through = match (through, best) {
                     (Some(current), Some(candidate)) => Some(current.min(candidate)),
-                    (None, value) => value,
-                    (value, None) => value,
+                    (None, value) | (value, None) => value,
                 };
             }
             found
@@ -5241,13 +5302,14 @@ impl Node {
     /// The authenticated executor comes from the transport or the embedding
     /// application boundary and cannot be replaced by the wire presentation.
     #[doc(hidden)]
+    #[allow(clippy::needless_pass_by_value)] // Authentication boundaries transfer the observed identity.
     pub fn prepare_command(
         &self,
         authenticated_executor: PrincipalId,
         request: CommandRequest,
     ) -> Result<PreparedCommand, AuthorizationDecision> {
         match self.command_authorization(
-            authenticated_executor,
+            &authenticated_executor,
             &request,
             AuthorizationPhase::Admission,
         ) {
@@ -5262,7 +5324,7 @@ impl Node {
 
     fn command_authorization(
         &self,
-        authenticated_executor: PrincipalId,
+        authenticated_executor: &PrincipalId,
         request: &CommandRequest,
         phase: AuthorizationPhase,
     ) -> AuthorizationDecision {
@@ -5290,7 +5352,7 @@ impl Node {
             .clone_from(&request.arguments_digest);
         access.authorization_phase = phase;
         access.topology = self.scope_topology().ok();
-        if request.authority.executor.id != authenticated_executor
+        if &request.authority.executor.id != authenticated_executor
             || request.authority.principal.id != request.principal_id
         {
             return DenyAllAccessPolicy.decide(&access);
@@ -5373,7 +5435,7 @@ impl Node {
             CommandState::Submitted | CommandState::Retrying { .. }
         ) {
             let decision = self.command_authorization(
-                current.request.authority.executor.id.clone(),
+                &current.request.authority.executor.id,
                 &current.request,
                 AuthorizationPhase::Continuation,
             );
@@ -6199,6 +6261,10 @@ impl Node {
     /// Looks up one typed item inside an authorization-filtered selection.
     /// `AuthoritativelyAbsent` is returned only when the entire requested view
     /// is authorized and the node owns complete current-state coverage.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when history, topology, or policy evaluation fails.
     pub fn query_item_selected<T>(
         &self,
         authenticated_executor: PrincipalId,
@@ -6226,6 +6292,7 @@ impl Node {
         Ok(result)
     }
 
+    #[allow(clippy::too_many_lines)] // Keeps one fail-closed visibility derivation auditable.
     fn query_items_selected_phase<Q>(
         &self,
         authenticated_executor: PrincipalId,
@@ -6408,6 +6475,11 @@ impl Node {
 
     /// Starts a gap-free selected query watch. Authorization and local-source
     /// completeness are derived exactly as in [`Self::query_items_selected`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the initial snapshot or event subscription cannot
+    /// be established.
     pub fn watch_items_selected<Q>(
         &self,
         authenticated_executor: PrincipalId,
@@ -7030,7 +7102,9 @@ fn validate_selected_replication_batch(
     topology.merge_proof(&batch.topology)?;
     if let ReplicationSelection::Intersection { requested, scopes } = &batch.selection {
         let safely_bounded = scopes.iter().all(|scope| match requested.as_ref() {
-            ReplicationSelection::All => true,
+            ReplicationSelection::All
+            | ReplicationSelection::Service(_)
+            | ReplicationSelection::ServiceScope { .. } => true,
             ReplicationSelection::Scopes(requested) => requested
                 .iter()
                 .any(|requested| requested.covers_in(scope, topology)),
@@ -7042,16 +7116,15 @@ fn validate_selected_replication_batch(
                     .iter()
                     .any(|allowed| allowed.covers_in(scope, topology))
                     && match requested.as_ref() {
-                        ReplicationSelection::All => true,
+                        ReplicationSelection::All
+                        | ReplicationSelection::Service(_)
+                        | ReplicationSelection::ServiceScope { .. } => true,
                         ReplicationSelection::Scopes(requested) => requested
                             .iter()
                             .any(|requested| requested.covers_in(scope, topology)),
-                        ReplicationSelection::Service(_)
-                        | ReplicationSelection::ServiceScope { .. } => true,
                         ReplicationSelection::Intersection { .. } => false,
                     }
             }
-            ReplicationSelection::Service(_) | ReplicationSelection::ServiceScope { .. } => true,
         });
         if !safely_bounded {
             return Err(NodeError::InvalidReplicationBatch(
@@ -8241,7 +8314,8 @@ mod tests {
         let scene_scope = ScopeId::for_item::<FederationScene>(scene_id);
         let mut request = request(CommandId::new());
         request.scope_id = project_scope.clone();
-        request.resource_claims[0].selection = ScopeSelection::Exact(project_scope);
+        request.resource_claims.first_mut().unwrap().selection =
+            ScopeSelection::Exact(project_scope);
         let executing = node.admit(request.clone()).unwrap().snapshot().clone();
         let scene = FederationScene {
             id: scene_id.clone(),
@@ -9550,7 +9624,11 @@ mod tests {
         };
         let mut project_request = request(CommandId::new());
         project_request.scope_id = project_scope.clone();
-        project_request.resource_claims[0].selection = ScopeSelection::Exact(project_scope.clone());
+        project_request
+            .resource_claims
+            .first_mut()
+            .unwrap()
+            .selection = ScopeSelection::Exact(project_scope.clone());
         let executing = source
             .admit(project_request.clone())
             .unwrap()
@@ -9641,6 +9719,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // Exercises every fail-closed visibility branch together.
     fn selected_queries_use_authorized_view_and_node_owned_completeness() {
         let source = allow_all_node();
         let project_id = FederationProjectId::from("project-selected");
@@ -9686,7 +9765,11 @@ mod tests {
         let hidden_scope = ScopeId::for_item::<FederationScene>(&hidden_scene);
         let mut delete_request = request(CommandId::new());
         delete_request.scope_id = empty_scope.clone();
-        delete_request.resource_claims[0].selection = ScopeSelection::Exact(empty_scope.clone());
+        delete_request
+            .resource_claims
+            .first_mut()
+            .unwrap()
+            .selection = ScopeSelection::Exact(empty_scope.clone());
         let executing = source
             .admit(delete_request.clone())
             .unwrap()
@@ -9711,8 +9794,8 @@ mod tests {
 
         let requested = ScopeSelection::Subtree(project_scope.clone());
         let allowed = vec![
-            ScopeSelection::Exact(project_scope.clone()),
-            ScopeSelection::Exact(first_scope.clone()),
+            ScopeSelection::Exact(project_scope),
+            ScopeSelection::Exact(first_scope),
             ScopeSelection::Exact(empty_scope.clone()),
         ];
         let principal = PrincipalId::new("node:selected-reader");
@@ -9754,8 +9837,8 @@ mod tests {
         );
         assert!(
             matches!(local.value, Some(ref items) if items == &vec![FederationSceneElement {
-                id: first_element.clone(),
-                federation_scene_id: first_scene.clone(),
+                id: first_element,
+                federation_scene_id: first_scene,
                 name: "element".to_owned(),
             }]),
             "unexpected selected value: {:?}",
@@ -9763,7 +9846,7 @@ mod tests {
         );
         assert!(!local.included_scopes.contains(&hidden_scope));
 
-        let exact_empty = ScopeSelection::Exact(empty_scope.clone());
+        let exact_empty = ScopeSelection::Exact(empty_scope);
         let absent = source
             .query_item_selected::<FederationSceneElement>(
                 principal.clone(),
@@ -9771,7 +9854,7 @@ mod tests {
                 source.node_id(),
                 &exact_empty,
                 GetFederationSceneElementById {
-                    id: deleted_element.clone(),
+                    id: deleted_element,
                 },
             )
             .unwrap();
@@ -9862,7 +9945,7 @@ mod tests {
 
         let effective = ReplicationSelection::Intersection {
             requested: Box::new(ReplicationSelection::Scopes(vec![requested.clone()])),
-            scopes: allowed.clone(),
+            scopes: allowed,
         };
         replica
             .ingest_selected_batch(source.export_selected(effective, None).unwrap())
@@ -10017,15 +10100,18 @@ mod tests {
         let node = allow_all_node();
         let mut second = request(CommandId::new());
         second.scope_id = ScopeId::new("session:zulu");
-        second.resource_claims[0].selection = ScopeSelection::Exact(second.scope_id.clone());
+        second.resource_claims.first_mut().unwrap().selection =
+            ScopeSelection::Exact(second.scope_id.clone());
         node.admit(second).unwrap();
         let mut first = request(CommandId::new());
         first.scope_id = ScopeId::new("session:alpha");
-        first.resource_claims[0].selection = ScopeSelection::Exact(first.scope_id.clone());
+        first.resource_claims.first_mut().unwrap().selection =
+            ScopeSelection::Exact(first.scope_id.clone());
         node.admit(first).unwrap();
         let mut duplicate = request(CommandId::new());
         duplicate.scope_id = ScopeId::new("session:zulu");
-        duplicate.resource_claims[0].selection = ScopeSelection::Exact(duplicate.scope_id.clone());
+        duplicate.resource_claims.first_mut().unwrap().selection =
+            ScopeSelection::Exact(duplicate.scope_id.clone());
         node.admit(duplicate).unwrap();
 
         assert_eq!(
@@ -10173,6 +10259,7 @@ mod tests {
     #[test]
     fn command_snapshot_and_follow_stream_match_legacy_scope_spelling() {
         let node = Node::in_memory();
+        let _policy = install_allow_all(&node);
         let record_id = TestRecordId::from("record-1");
         let current_scope = ScopeId::for_item::<TestRecord>(&record_id);
         let legacy_scope = ScopeId::new(current_scope.as_str().split_once('/').unwrap().1);

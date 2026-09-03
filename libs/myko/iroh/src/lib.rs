@@ -1414,6 +1414,11 @@ impl IrohCommandClient {
     }
 
     /// Records one authenticated approval decision on the remote authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the peer is unreachable, authorization fails, or
+    /// the response is malformed.
     pub async fn approve_authority(
         &self,
         challenge_id: ChallengeId,
@@ -2973,6 +2978,11 @@ impl IrohReplicator {
 
     /// Opens a best-effort live-event stream with delegated authority,
     /// approvals, or a lease attached to the authenticated request.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if filters are invalid, the peer cannot be reached, or
+    /// the stream handshake is malformed.
     pub async fn subscribe_live_remote_with_authority(
         &self,
         peer: EndpointAddr,
@@ -3988,6 +3998,7 @@ impl IrohReplicator {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn consume_follow_stream(
         &self,
         peer: EndpointAddr,
@@ -4229,6 +4240,12 @@ impl ProtocolHandler for ReplicationProtocol {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::panic_in_result_fn,
+    clippy::too_many_lines,
+    clippy::unwrap_used
+)]
 mod tests {
     use super::*;
     use chrono::{Duration as ChronoDuration, Utc};
@@ -4584,22 +4601,23 @@ mod tests {
             .map_err(|error| error.to_string())?;
         live.close();
 
-        let observed = operations
-            .lock()
-            .map_err(|_| "presentation-policy lock is poisoned".to_owned())?;
-        for expected in [
-            AccessOperation::ReadItems,
-            AccessOperation::FollowItems,
-            AccessOperation::FollowHandler,
-            AccessOperation::SubscribeLive,
-        ] {
-            if !observed.contains(&expected) {
-                return Err(format!(
-                    "authority presentation was not exercised for {expected:?}"
-                ));
+        {
+            let observed = operations
+                .lock()
+                .map_err(|_| "presentation-policy lock is poisoned".to_owned())?;
+            for expected in [
+                AccessOperation::ReadItems,
+                AccessOperation::FollowItems,
+                AccessOperation::FollowHandler,
+                AccessOperation::SubscribeLive,
+            ] {
+                if !observed.contains(&expected) {
+                    return Err(format!(
+                        "authority presentation was not exercised for {expected:?}"
+                    ));
+                }
             }
         }
-        drop(observed);
         client.shutdown().await.map_err(|error| error.to_string())?;
         server.shutdown().await.map_err(|error| error.to_string())
     }

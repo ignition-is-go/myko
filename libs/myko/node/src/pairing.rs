@@ -28,8 +28,9 @@ use tokio::{
 use uuid::Uuid;
 
 use crate::{
-    FederationService, Peer, RememberPeer, iroh_replicator_capability_id,
+    FederationService, Peer, RememberPeer,
     discovery::DiscoveryViewState,
+    iroh_replicator_capability_id,
     peer::{PeerRoster, PeerRosterId, peer_roster_claims, peer_scope},
 };
 

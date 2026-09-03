@@ -139,11 +139,19 @@ impl ItemQuery for AllLegacyChildren {
 impl QueryHandler for AllLegacyChildren {}
 
 fn commit_legacy_child(node: &FederationNode) -> Result<(), String> {
+    let scope_id = ScopeId::new("legacy_parent:parent-1");
     let request = CommandRequest {
         id: CommandId::new(),
         service_id: ServiceId::new(LegacyService::SERVICE_ID),
-        scope_id: ScopeId::new("legacy_parent:parent-1"),
+        scope_id: scope_id.clone(),
         principal_id: PrincipalId::new("node:test"),
+        authority: AuthorityPresentation::direct_node(PrincipalId::new("node:test")),
+        resource_claims: vec![myko_federation::ResourceClaim::scope(
+            scope_id,
+            myko_federation::ResourceClaimKind::Primary,
+        )],
+        application_capabilities: Vec::new(),
+        arguments_digest: None,
         command_type: "legacy.child.set".to_owned(),
         payload: Vec::new(),
     };
@@ -542,6 +550,7 @@ async fn native_restart_restores_pre_topology_item_history_before_serving() -> R
 }
 
 #[tokio::test]
+#[allow(clippy::too_many_lines)]
 async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), String> {
     let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
@@ -671,24 +680,26 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
             "terminal remote command changed after cancellation: {cancelled:?}"
         ));
     }
-    let recorded = remote_policy
-        .requests
-        .lock()
-        .map_err(|_| "recording-policy lock is poisoned".to_owned())?;
-    let routed = recorded
-        .iter()
-        .find(|request| request.operation == AccessOperation::SubmitCommand)
-        .ok_or_else(|| "destination policy did not observe the routed submission".to_owned())?;
-    if routed.presentation.principal != owner
-        || routed.presentation.executor != forwarding_node
-        || routed.presentation.provenance != vec![forwarding_hop]
     {
-        return Err(format!(
-            "routed authority did not preserve the original principal and forwarding hop: {:?}",
-            routed.presentation
-        ));
+        let recorded = remote_policy
+            .requests
+            .lock()
+            .map_err(|_| "recording-policy lock is poisoned".to_owned())?;
+        let routed_presentation = recorded
+            .iter()
+            .find(|request| request.operation == AccessOperation::SubmitCommand)
+            .map(|request| request.presentation.clone())
+            .ok_or_else(|| "destination policy did not observe the routed submission".to_owned())?;
+        drop(recorded);
+        if routed_presentation.principal != owner
+            || routed_presentation.executor != forwarding_node
+            || routed_presentation.provenance != vec![forwarding_hop]
+        {
+            return Err(format!(
+                "routed authority did not preserve the original principal and forwarding hop: {routed_presentation:?}"
+            ));
+        }
     }
-    drop(recorded);
 
     server
         .shutdown()

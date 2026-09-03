@@ -125,7 +125,7 @@ pub struct AdvertiseServices {
     pub services: Vec<myko_federation::ServiceId>,
 }
 
-pub(crate) fn peer_roster_claims(node_id: NodeId, item_type: &'static str) -> Vec<ResourceClaim> {
+pub fn peer_roster_claims(node_id: NodeId, item_type: &'static str) -> Vec<ResourceClaim> {
     let selection = ScopeSelection::Exact(peer_scope(node_id));
     vec![
         ResourceClaim {

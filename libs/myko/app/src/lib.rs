@@ -20,18 +20,18 @@ use std::{
 
 use hyphae::{Gettable as _, MapDiff, Signal, SubscriptionGuard, Watchable as _};
 use myko_federation::{
-    AccessOperation, AccessRequest, ApplicationCapability, AuthorityPresentation, CapabilityId,
-    CommandClient as FederationCommandClient, CommandClientFuture,
-    CommandContext as FederationCommandContext, CommandDispatchResult, CommandHandlerError,
-    CommandId, CommandRequest, CommandResponse, CommandSnapshot, CommandStateRequest,
-    CommandStateSnapshot, CommandStateStream, CommandSubmission, CommandWatch, CommandWatchFuture,
-    CommandWatchingClient as FederationCommandWatchingClient, EdgeEnds, EndpointSpec, EntityRef,
-    GraphEdge, ItemProjection, ItemQuery, ItemScope, LiveCollection, LiveCollectionRevision,
-    LiveCollectionState, LiveSubscription, LiveSubscriptionState, LogPosition, MutationOperation,
-    MykoCommand, MykoItem, MykoOperation, MykoService, Node, NodeError, NodeEvent, NodeId,
-    PendingCommandSubscription, PrincipalId, ResourceClaim, ResourceClaimKind, ScopeId, ServiceId,
-    ServiceTypeId, SubscriptionLiveness, TypedCommandClientFuture, TypedEdgeEnds, live_collection,
-    live_subscription,
+    AccessOperation, AccessRequest, ApplicationCapability, AuthorityConstraints,
+    AuthorityPresentation, CapabilityId, CommandClient as FederationCommandClient,
+    CommandClientFuture, CommandContext as FederationCommandContext, CommandDispatchResult,
+    CommandHandlerError, CommandId, CommandRequest, CommandResponse, CommandSnapshot,
+    CommandStateRequest, CommandStateSnapshot, CommandStateStream, CommandSubmission, CommandWatch,
+    CommandWatchFuture, CommandWatchingClient as FederationCommandWatchingClient, EdgeEnds,
+    EndpointSpec, EntityRef, GraphEdge, ItemProjection, ItemQuery, ItemScope, LiveCollection,
+    LiveCollectionRevision, LiveCollectionState, LiveSubscription, LiveSubscriptionState,
+    LogPosition, MutationOperation, MykoCommand, MykoItem, MykoOperation, MykoService, Node,
+    NodeError, NodeEvent, NodeId, PendingCommandSubscription, PrincipalId, ResourceClaim,
+    ResourceClaimKind, ScopeId, ServiceId, ServiceTypeId, SubscriptionLiveness,
+    TypedCommandClientFuture, TypedEdgeEnds, live_collection, live_subscription,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -531,9 +531,14 @@ impl Default for ApplicationResources {
 impl fmt::Debug for ApplicationResources {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let count = self.values.read().map_or(0, |values| values.len());
+        let capability_count = self
+            .capability_ids
+            .read()
+            .map_or(0, |capabilities| capabilities.len());
         formatter
             .debug_struct("ApplicationResources")
             .field("registered_types", &count)
+            .field("protected_types", &capability_count)
             .finish()
     }
 }
@@ -575,7 +580,7 @@ impl ApplicationResources {
             .capability_ids
             .write()
             .map_err(|_| AppError::State("application resource registry is poisoned".to_owned()))?;
-        match registered.get(&TypeId::of::<T>()) {
+        let result = match registered.get(&TypeId::of::<T>()) {
             Some(existing) if existing == &capability => Ok(()),
             Some(existing) => Err(AppError::State(format!(
                 "application resource {} is already bound to capability {existing}",
@@ -585,7 +590,9 @@ impl ApplicationResources {
                 registered.insert(TypeId::of::<T>(), capability);
                 Ok(())
             }
-        }
+        };
+        drop(registered);
+        result
     }
 
     fn capability_id<T: 'static>(&self) -> Result<Option<CapabilityId>, AppError> {
@@ -931,6 +938,11 @@ pub mod capability {
 
         /// Queries an authorized exact scope or nested subtree from local
         /// authoritative state and records the read in the effect claim set.
+        ///
+        /// # Errors
+        ///
+        /// Returns a terminal command error when the selected dependency was
+        /// not declared or cannot be projected.
         fn exec_selected_query<Q>(
             &self,
             selection: myko_federation::ScopeSelection,
@@ -2080,6 +2092,7 @@ impl MykoApplication {
     }
 
     /// Returns application-owned opaque capabilities for authority registration.
+    #[must_use]
     pub fn authority_capabilities(&self) -> impl ExactSizeIterator<Item = &ApplicationCapability> {
         self.capabilities.values()
     }
@@ -2233,7 +2246,6 @@ impl MykoApplication {
     /// Declares a framework-installed runtime resource before the access
     /// policy is restored and capability definitions are registered.
     #[doc(hidden)]
-    #[must_use]
     pub fn with_framework_resource_capability<T: 'static>(
         mut self,
         capability: ApplicationCapability,
@@ -2377,7 +2389,7 @@ impl MykoApplicationBuilder {
             .register_resource_capability::<SearchService>(ApplicationCapability {
                 id: CapabilityId::new(SEARCH_PROVIDER_CAPABILITY_ID),
                 description: "access the application full-text search provider".to_owned(),
-                constraints: Default::default(),
+                constraints: AuthorityConstraints::default(),
             })?;
         let _previous = self
             .application
@@ -2781,13 +2793,13 @@ impl ContextCore {
         Ok(())
     }
 
-    fn require_application_capability(&self, capability: CapabilityId) -> Result<(), AppError> {
+    fn require_application_capability(&self, capability: &CapabilityId) -> Result<(), AppError> {
         let Some(declared_claims) = self.declared_claims.as_ref() else {
             return Ok(());
         };
         if declared_claims
             .iter()
-            .any(|claim| claim.required_capabilities.contains(&capability))
+            .any(|claim| claim.required_capabilities.contains(capability))
         {
             return Ok(());
         }
@@ -3264,6 +3276,19 @@ pub struct QueryBuildContext {
 }
 
 impl QueryBuildContext {
+    fn new(
+        node: Node,
+        resources: ApplicationResources,
+        source_node: NodeId,
+        scope_id: ScopeId,
+    ) -> Self {
+        Self {
+            core: ContextCore::new(node, resources),
+            source_node,
+            scope_id,
+        }
+    }
+
     fn new_guarded(
         node: Node,
         resources: ApplicationResources,
@@ -3310,7 +3335,7 @@ macro_rules! impl_reactive_context_capabilities {
                 &self,
                 capability: CapabilityId,
             ) -> Result<(), AppError> {
-                self.core.require_application_capability(capability)
+                self.core.require_application_capability(&capability)
             }
         }
         impl capability::RegistryScoped for $context {}
@@ -3347,7 +3372,7 @@ impl capability::ResourceScoped for QueryBuildContext {
     }
 
     fn __require_resource_capability(&self, capability: CapabilityId) -> Result<(), AppError> {
-        self.core.require_application_capability(capability)
+        self.core.require_application_capability(&capability)
     }
 }
 impl capability::RegistryScoped for QueryBuildContext {}
@@ -4016,6 +4041,7 @@ impl ApplicationNode {
 
     /// Returns application-declared opaque capabilities for authenticated
     /// authority registration during node composition.
+    #[must_use]
     pub fn authority_capabilities(&self) -> impl ExactSizeIterator<Item = &ApplicationCapability> {
         self.application.authority_capabilities()
     }
@@ -4086,6 +4112,13 @@ impl ApplicationNode {
             .authority_claims(request)
     }
 
+    /// Builds a handler only after its exact declared dependency set has been
+    /// resolved for the supplied typed parameters.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the handler is unknown, its parameters are
+    /// invalid, or it attempts to build an undeclared dependency.
     pub fn watch_handler(
         &self,
         request: &HandlerRequest,
@@ -4735,6 +4768,7 @@ fn require_handler(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use std::sync::{
         Arc, Mutex,
@@ -4880,7 +4914,7 @@ mod tests {
         ApplicationCapability {
             id: CapabilityId::new("test.application.local-tool"),
             description: "access the test-local tool".to_owned(),
-            constraints: Default::default(),
+            constraints: AuthorityConstraints::default(),
         }
     }
 
@@ -5355,8 +5389,15 @@ mod tests {
         let command = CommandRequest {
             id: CommandId::new(),
             service_id: ServiceId::new(SceneService::SERVICE_ID),
-            scope_id: legacy_project_scope,
+            scope_id: legacy_project_scope.clone(),
             principal_id: PrincipalId::new("test:owner"),
+            authority: AuthorityPresentation::direct_node(PrincipalId::new("test:owner")),
+            resource_claims: vec![ResourceClaim::scope(
+                legacy_project_scope,
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
             command_type: "legacy.scene.set".to_owned(),
             payload: Vec::new(),
         };
@@ -5853,9 +5894,13 @@ mod tests {
             .unwrap();
         let registered = application.authority_capabilities().collect::<Vec<_>>();
         assert_eq!(registered, vec![&capability]);
-        assert_eq!(registered[0].id.as_str(), "test.application.local-tool");
+        let registered_capability = registered.first().unwrap();
+        assert_eq!(
+            registered_capability.id.as_str(),
+            "test.application.local-tool"
+        );
         assert!(
-            !registered[0]
+            !registered_capability
                 .id
                 .as_str()
                 .contains("ResourceAfterRustRename")
@@ -5878,7 +5923,7 @@ mod tests {
             .service::<TestService>()
             .map(MykoApplicationBuilder::build)
             .unwrap();
-        let app = ApplicationNode::new(node.clone(), application);
+        let app = ApplicationNode::new(node, application);
 
         assert!(
             app.exec_authenticated_command(PrincipalId::new("test:denied"), PreflightProbe)

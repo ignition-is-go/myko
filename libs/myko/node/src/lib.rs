@@ -49,10 +49,11 @@ use myko_app::{
     QueryHandler, ReportHandler, ViewHandler, ViewSubscription,
 };
 use myko_federation::{
-    AccessPolicy, AllowAllAccessPolicy, ApplicationCapability, CapabilityId, DenyAllAccessPolicy,
-    ItemQuery, ItemQueryWatch, LiveSubscription, LiveSubscriptionState, Node as FederationNode,
-    NodeError as FederationNodeError, NodeId, NodeStartupGuard, Principal, ProvenanceOperation,
-    ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness, live_subscription,
+    AccessPolicy, AllowAllAccessPolicy, ApplicationCapability, AuthorityConstraints, CapabilityId,
+    DenyAllAccessPolicy, ItemQuery, ItemQueryWatch, LiveSubscription, LiveSubscriptionState,
+    Node as FederationNode, NodeError as FederationNodeError, NodeId, NodeStartupGuard, Principal,
+    ProvenanceOperation, ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness,
+    live_subscription,
 };
 pub use myko_iroh::{
     EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference, PairingInvitation,
@@ -84,7 +85,7 @@ fn runtime_resource_capability(
     ApplicationCapability {
         id: CapabilityId::new(id),
         description: description.to_owned(),
-        constraints: Default::default(),
+        constraints: AuthorityConstraints::default(),
     }
 }
 
@@ -1179,6 +1180,7 @@ impl Node {
         .map(|(node, _startup)| node)
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn open_inner<F>(
         data_dir: &Path,
         retry_interval: Duration,

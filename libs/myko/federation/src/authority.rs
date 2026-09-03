@@ -80,7 +80,7 @@ impl Principal {
     }
 
     #[must_use]
-    pub fn node(id: PrincipalId) -> Self {
+    pub const fn node(id: PrincipalId) -> Self {
         Self::new(id, PrincipalKind::Node)
     }
 }
@@ -208,7 +208,7 @@ pub struct ResourceClaim {
 
 impl ResourceClaim {
     #[must_use]
-    pub fn scope(scope_id: ScopeId, kind: ResourceClaimKind) -> Self {
+    pub const fn scope(scope_id: ScopeId, kind: ResourceClaimKind) -> Self {
         Self {
             selection: ScopeSelection::Exact(scope_id),
             kind,
@@ -288,10 +288,10 @@ fn selection_covers(
 ) -> bool {
     match (declared, actual) {
         (ScopeSelection::Exact(declared), ScopeSelection::Exact(actual)) => declared == actual,
-        (ScopeSelection::Subtree(declared), ScopeSelection::Exact(actual))
-        | (ScopeSelection::Subtree(declared), ScopeSelection::Subtree(actual)) => {
-            declared == actual || topology.is_descendant_of(actual, declared)
-        }
+        (
+            ScopeSelection::Subtree(declared),
+            ScopeSelection::Exact(actual) | ScopeSelection::Subtree(actual),
+        ) => declared == actual || topology.is_descendant_of(actual, declared),
         (ScopeSelection::Exact(_), ScopeSelection::Subtree(_)) => false,
     }
 }
@@ -535,9 +535,11 @@ pub enum ProjectionCoverage {
     Undiscoverable,
 }
 
-/// Authorization-filtered selected query result. `value == None` means the
-/// resource was not visible; an empty value inside `Some` is an actual query
-/// result and its visibility states whether absence is authoritative.
+/// Authorization-filtered selected query result.
+///
+/// `value == None` means the resource was not visible; an empty value inside
+/// `Some` is an actual query result and its visibility states whether absence
+/// is authoritative.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectedQueryResult<T> {
     pub value: Option<T>,
@@ -589,6 +591,7 @@ pub struct DenyDecision {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "decision", rename_all = "snake_case")]
+#[allow(clippy::large_enum_variant)] // Decisions stay directly inspectable across the public wire API.
 pub enum AuthorizationDecision {
     Permit(PermitDecision),
     Deny(DenyDecision),

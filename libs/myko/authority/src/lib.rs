@@ -312,6 +312,7 @@ impl CommandHandler for PutDelegation {
         vec![administration_claim(&self.realm_id)]
     }
 
+    #[allow(clippy::too_many_lines)] // Parent-chain validation is kept contiguous for auditability.
     fn execute(
         self,
         context: CommandContext<AuthorityService, AuthorityRealm>,
@@ -344,14 +345,20 @@ impl CommandHandler for PutDelegation {
         let grant_uses = context.exec_query(GetAllGrantUses)?.into_iter().fold(
             BTreeMap::<AuthorityGrantId, u64>::new(),
             |mut counts, usage| {
-                *counts.entry(usage.grant_id).or_default() += 1;
+                counts
+                    .entry(usage.grant_id)
+                    .and_modify(|count| *count = count.saturating_add(1))
+                    .or_insert(1);
                 counts
             },
         );
         let delegation_uses = context.exec_query(GetAllDelegationUses)?.into_iter().fold(
             BTreeMap::<DelegationId, u64>::new(),
             |mut counts, usage| {
-                *counts.entry(usage.delegation_id).or_default() += 1;
+                counts
+                    .entry(usage.delegation_id)
+                    .and_modify(|count| *count = count.saturating_add(1))
+                    .or_insert(1);
                 counts
             },
         );
@@ -800,6 +807,10 @@ impl CommandHandler for DecideChallenge {
         }
         let lifetime = i64::try_from(obligation.approval_lifetime_seconds)
             .map_err(|error| CommandError::reject(format!("approval lifetime invalid: {error}")))?;
+        let expires_at = self
+            .now
+            .checked_add_signed(Duration::seconds(lifetime))
+            .ok_or_else(|| CommandError::reject("approval expiry exceeds supported time"))?;
         let decision = ApprovalDecision {
             id: ApprovalId::random(),
             realm_id: self.realm_id,
@@ -809,7 +820,7 @@ impl CommandHandler for DecideChallenge {
             binding: challenge.binding,
             approved: self.approved,
             decided_at: self.now,
-            expires_at: self.now + Duration::seconds(lifetime),
+            expires_at,
             max_uses: obligation.approval_use_count,
         };
         context.emit_set(&ApprovalRecord {
@@ -871,7 +882,7 @@ struct EvaluationOutcome {
     approvals: BTreeSet<ApprovalId>,
 }
 
-fn permission_for(operation: AccessOperation) -> Option<FederationPermission> {
+const fn permission_for(operation: AccessOperation) -> Option<FederationPermission> {
     match operation {
         AccessOperation::ReadHistory | AccessOperation::FollowHistory => {
             Some(FederationPermission::ReadHistory)
@@ -892,7 +903,7 @@ fn permission_for(operation: AccessOperation) -> Option<FederationPermission> {
     }
 }
 
-fn is_stream(operation: AccessOperation) -> bool {
+const fn is_stream(operation: AccessOperation) -> bool {
     matches!(
         operation,
         AccessOperation::FollowItems
@@ -911,12 +922,10 @@ fn selection_covers(
 ) -> bool {
     match (granted, claimed) {
         (ScopeSelection::Exact(grant), ScopeSelection::Exact(claim)) => grant == claim,
-        (ScopeSelection::Subtree(grant), ScopeSelection::Exact(claim)) => {
-            grant == claim || topology.is_descendant_of(claim, grant)
-        }
-        (ScopeSelection::Subtree(grant), ScopeSelection::Subtree(claim)) => {
-            grant == claim || topology.is_descendant_of(claim, grant)
-        }
+        (
+            ScopeSelection::Subtree(grant),
+            ScopeSelection::Exact(claim) | ScopeSelection::Subtree(claim),
+        ) => grant == claim || topology.is_descendant_of(claim, grant),
         (ScopeSelection::Exact(_), ScopeSelection::Subtree(_)) => false,
     }
 }
@@ -1043,6 +1052,7 @@ fn grant_independently_covers(
         })
 }
 
+#[allow(clippy::too_many_lines, clippy::suspicious_operation_groupings)]
 fn evaluate(
     state: &EvaluationState,
     request: &AccessRequest,
@@ -1411,6 +1421,9 @@ fn evaluate(
         }
         let lifetime =
             i64::try_from(obligation.obligation.approval_lifetime_seconds).unwrap_or(i64::MAX);
+        let expires_at = now
+            .checked_add_signed(Duration::seconds(lifetime))
+            .unwrap_or(DateTime::<Utc>::MAX_UTC);
         let challenge = AuthorityChallenge {
             id: ChallengeId::random(),
             realm_id: obligation.obligation.realm_id.clone(),
@@ -1419,7 +1432,7 @@ fn evaluate(
             prompt: obligation.obligation.prompt.clone(),
             binding,
             issued_at: now,
-            expires_at: now + Duration::seconds(lifetime),
+            expires_at,
         };
         return EvaluationOutcome {
             decision: AuthorizationDecision::Challenge {
@@ -1477,10 +1490,11 @@ fn evaluate(
 
 fn make_lease(request: AuthorityLeaseRequest, now: DateTime<Utc>) -> Option<AuthorityLease> {
     let seconds = i64::try_from(request.duration_seconds).ok()?;
+    let expires_at = now.checked_add_signed(Duration::seconds(seconds))?;
     Some(AuthorityLease {
         id: LeaseId::random(),
         issued_at: now,
-        expires_at: now + Duration::seconds(seconds),
+        expires_at,
         offline: request.offline,
     })
 }
@@ -1524,6 +1538,10 @@ impl AuthorityPolicy {
 
     /// The only unauthorised mutation: create one previously absent realm and
     /// its bounded administrator grant. The command rejects every replay.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the realm exists or durable bootstrap fails.
     pub fn bootstrap(&self, principal: Principal) -> Result<AuthorityRealm, AppError> {
         let presentation = authority_presentation(&self.application);
         self.application.exec_authorized_command(
@@ -1551,6 +1569,11 @@ impl AuthorityPolicy {
 
     /// Issues an immutable grant through the authenticated administrator path.
     /// The grantor is always the original authenticated authority principal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authentication, administration authority, or the
+    /// immutable durable write fails.
     pub fn issue_grant(
         &self,
         authenticated: Principal,
@@ -1575,6 +1598,12 @@ impl AuthorityPolicy {
 
     /// Creates a store-bound delegation only after the delegator proves
     /// `Reshare` authority over every attenuated selection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when issuer binding, attenuation, or durable creation
+    /// fails.
+    #[allow(clippy::suspicious_operation_groupings)] // Realm and issuer are independent bindings.
     pub fn delegate(
         &self,
         authenticated: Principal,
@@ -1588,14 +1617,13 @@ impl AuthorityPolicy {
             ));
         }
         let mut request = AccessRequest::scoped(
-            authenticated.id.clone(),
+            authenticated.id,
             presentation.clone(),
             AccessOperation::DelegateAuthority,
-            delegation
-                .selections
-                .first()
-                .map(|selection| selection.root().clone())
-                .unwrap_or_else(|| realm_scope(&self.realm_id)),
+            delegation.selections.first().map_or_else(
+                || realm_scope(&self.realm_id),
+                |selection| selection.root().clone(),
+            ),
         );
         request.scope_selections.clone_from(&delegation.selections);
         request.resource_claims = delegation
@@ -1639,6 +1667,11 @@ impl AuthorityPolicy {
     }
 
     /// Installs one immutable obligation through authenticated realm admin authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authentication, administration authority, or the
+    /// immutable durable write fails.
     pub fn issue_obligation(
         &self,
         authenticated: Principal,
@@ -1657,6 +1690,11 @@ impl AuthorityPolicy {
     }
 
     /// Revokes one durable authority fact through authenticated realm admin authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authentication, administration authority, or the
+    /// durable revocation fails.
     pub fn revoke(
         &self,
         authenticated: Principal,
@@ -1696,6 +1734,12 @@ impl AuthorityPolicy {
     /// Registers every capability declared by a composed application through
     /// the authenticated administrator path. Exact re-registration after a
     /// restart is idempotent; a conflicting definition is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authentication, registration conflict checks, or
+    /// a durable capability write fails.
+    #[allow(clippy::needless_pass_by_value)] // Registration snapshots both authentication inputs.
     pub fn register_application_capabilities(
         &self,
         authenticated: Principal,
@@ -1712,7 +1756,7 @@ impl AuthorityPolicy {
                 },
             )?;
             match existing {
-                Some(existing) if existing.capability == capability => continue,
+                Some(existing) if existing.capability == capability => {}
                 Some(_) => {
                     return Err(AppError::State(format!(
                         "capability {} is already registered with a different definition",
@@ -1746,8 +1790,7 @@ impl AuthorityPolicy {
         }
         let request_for_error = request.clone();
         let presentation = authority_presentation(&self.application);
-        let decision = self
-            .application
+        self.application
             .exec_authorized_command(
                 presentation.executor.id.clone(),
                 presentation,
@@ -1765,8 +1808,7 @@ impl AuthorityPolicy {
                     &format!("durable authority evaluation failed: {error}"),
                 )
                 .decision
-            });
-        decision
+            })
     }
 }
 
@@ -1833,6 +1875,7 @@ impl AccessPolicy for AuthorityPolicy {
         Some(rx)
     }
 
+    #[allow(clippy::too_many_lines)] // Intersection and one-shot consumption form one audit unit.
     fn constrain_replication(
         &self,
         request: &AccessRequest,
@@ -1937,8 +1980,7 @@ impl AccessPolicy for AuthorityPolicy {
         let now = Utc::now();
         let authorized = selections
             .iter()
-            .cloned()
-            .filter(|selection| {
+            .filter(|&selection| {
                 let mut candidate = request.clone();
                 candidate.scope_id = Some(selection.root().clone());
                 candidate.scope_selections = vec![selection.clone()];
@@ -1970,6 +2012,7 @@ impl AccessPolicy for AuthorityPolicy {
                 }];
                 evaluate(&state, &candidate, now).decision.is_permit()
             })
+            .cloned()
             .collect::<Vec<_>>();
         if authorized.is_empty() {
             let decision = self.evaluate(request.clone());
@@ -2019,6 +2062,7 @@ impl AccessPolicy for AuthorityPolicy {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // Approval binding and idempotent persistence are one operation.
     fn approve(
         &self,
         authenticated_executor: &PrincipalId,
@@ -2211,6 +2255,16 @@ impl AccessPolicy for AuthorityPolicy {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    clippy::needless_pass_by_value,
+    clippy::panic,
+    clippy::panic_in_result_fn,
+    clippy::redundant_clone,
+    clippy::too_many_lines,
+    clippy::unwrap_used
+)]
 mod tests {
     use std::sync::Arc;
 

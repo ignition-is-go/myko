@@ -148,6 +148,11 @@ impl LocalNodeServer {
     /// Binds a local socket to an explicit complete authenticated principal.
     /// This is the local transport seam for person/agent/service identities;
     /// the wire cannot substitute another kind with the same string ID.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unsafe or active path, bind failure, or
+    /// permission failure.
     pub async fn spawn_sessions_authenticated(
         socket_path: impl AsRef<Path>,
         sessions: NodeSessionService,
@@ -666,6 +671,11 @@ impl LocalCommandClient {
     }
 
     /// Records one authenticated, immutable approval decision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket is unavailable, the server rejects
+    /// the authenticated decision, or the response is malformed.
     pub async fn approve_authority(
         &self,
         challenge_id: ChallengeId,
@@ -1767,6 +1777,11 @@ fn remove_owned_socket(path: &Path) -> Result<(), LocalPeerError> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::panic_in_result_fn,
+    clippy::unwrap_used
+)]
 mod tests {
     use std::{
         sync::{Arc, Mutex},
@@ -2236,22 +2251,23 @@ mod tests {
             .await?;
         drop(live);
 
-        let observed = operations.lock().map_err(|_| {
-            LocalPeerError::Protocol("presentation-policy lock is poisoned".to_owned())
-        })?;
-        for expected in [
-            AccessOperation::ReadItems,
-            AccessOperation::FollowItems,
-            AccessOperation::FollowHandler,
-            AccessOperation::SubscribeLive,
-        ] {
-            if !observed.contains(&expected) {
-                return Err(LocalPeerError::Protocol(format!(
-                    "authority presentation was not exercised for {expected:?}"
-                )));
+        {
+            let observed = operations.lock().map_err(|_| {
+                LocalPeerError::Protocol("presentation-policy lock is poisoned".to_owned())
+            })?;
+            for expected in [
+                AccessOperation::ReadItems,
+                AccessOperation::FollowItems,
+                AccessOperation::FollowHandler,
+                AccessOperation::SubscribeLive,
+            ] {
+                if !observed.contains(&expected) {
+                    return Err(LocalPeerError::Protocol(format!(
+                        "authority presentation was not exercised for {expected:?}"
+                    )));
+                }
             }
         }
-        drop(observed);
         server.shutdown().await
     }
 
