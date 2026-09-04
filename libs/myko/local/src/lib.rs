@@ -38,7 +38,7 @@ use myko_wire::{
 use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncReadExt as _, AsyncWriteExt as _},
+    io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _},
     net::{UnixListener, UnixStream},
     sync::{Semaphore, watch},
     task::{JoinHandle, JoinSet},
@@ -49,8 +49,16 @@ const MAX_FRAME_BYTES: usize = 64 * 1024 * 1024;
 static NEXT_LOCAL_CONNECTION_ID: AtomicU64 = AtomicU64::new(1);
 const MAX_CONNECTIONS: usize = 64;
 
+mod session_mux;
 mod transport;
-pub use transport::*;
+pub use transport::{
+    LocalClientSession, LocalCommandClient, LocalCommandSubscription, LocalHandlerConnector,
+    LocalItemClient, LocalItemQuerySubscription, LocalLiveEventSubscription, LocalNodeClient,
+    LocalNodeServer, LocalPeerError, LocalReactiveItemSubscription,
+};
+
+#[cfg(test)]
+use transport::LocalServerProbe;
 
 #[cfg(test)]
 #[allow(

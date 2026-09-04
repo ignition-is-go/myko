@@ -5,7 +5,8 @@ use std::{future::Future, sync::Arc};
 use myko_federation::{
     LiveCollection, LiveCollectionHandle, LiveCollectionState, LiveCollectionWriter,
     LiveSubscription, LiveSubscriptionHandle, LiveSubscriptionState, LiveSubscriptionWriter,
-    LogPosition, NodeId, ReconnectPolicy, ScopeId, live_collection, live_subscription,
+    LogPosition, NodeId, ReconnectPolicy, ScopeId, SubscriptionLiveness, live_collection,
+    live_subscription,
 };
 use myko_wire::{ErasedHandlerState, ErasedViewDelta, HandlerRequest, HandlerStreamRevision};
 use serde::de::DeserializeOwned;
@@ -47,6 +48,9 @@ impl HandlerClientError {
 /// One transport-neutral handler frame after connection authorization.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HandlerFrame {
+    Resynchronizing {
+        reason: String,
+    },
     State {
         revision: HandlerStreamRevision,
         state: ErasedHandlerState,
@@ -147,33 +151,47 @@ where
         self.row_keys.as_deref()
     }
 
-    /// Wait for the next ordered handler revision.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error on transport loss, a sequence gap, or invalid typed data.
-    pub async fn recv(&mut self) -> Result<LiveSubscriptionState<T, C>, HandlerClientError> {
-        let frame = self.connection.recv().await?;
-        let revision = match &frame {
-            HandlerFrame::State { revision, .. } | HandlerFrame::ViewDelta { revision, .. } => {
-                *revision
-            }
-        };
+    fn validate_revision(
+        &self,
+        revision: HandlerStreamRevision,
+        is_state: bool,
+    ) -> Result<(), HandlerClientError> {
+        let is_fresh_epoch =
+            is_state && revision.epoch != self.revision.epoch && revision.sequence == 0;
         let expected = self.revision.sequence.saturating_add(1);
-        if revision.epoch != self.revision.epoch || revision.sequence != expected {
+        if !is_fresh_epoch
+            && (revision.epoch != self.revision.epoch || revision.sequence != expected)
+        {
             return Err(HandlerClientError::Protocol(format!(
                 "handler revision gap: expected {}:{expected}, received {}:{}",
                 self.revision.epoch, revision.epoch, revision.sequence
             )));
         }
-        match frame {
-            HandlerFrame::State { state, .. } => {
+        Ok(())
+    }
+
+    /// Wait for the next ordered handler revision.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on terminal transport loss, a sequence gap, or invalid typed data.
+    pub async fn recv(&mut self) -> Result<LiveSubscriptionState<T, C>, HandlerClientError> {
+        match self.connection.recv().await? {
+            HandlerFrame::Resynchronizing { reason } => {
+                self.current.liveness = SubscriptionLiveness::Resynchronizing { reason };
+                return Ok(self.current.clone());
+            }
+            HandlerFrame::State { revision, state } => {
+                self.validate_revision(revision, true)?;
                 let (current, row_keys) = decode_handler_state(state)?;
                 self.current = current;
                 self.row_keys = row_keys;
+                self.revision = revision;
             }
-            HandlerFrame::ViewDelta { delta, .. } if self.keyed => {
+            HandlerFrame::ViewDelta { revision, delta } if self.keyed => {
+                self.validate_revision(revision, false)?;
                 (self.apply_delta)(&mut self.current, &mut self.row_keys, delta)?;
+                self.revision = revision;
             }
             HandlerFrame::ViewDelta { .. } => {
                 return Err(HandlerClientError::Protocol(
@@ -181,7 +199,6 @@ where
                 ));
             }
         }
-        self.revision = revision;
         Ok(self.current.clone())
     }
 
@@ -817,5 +834,49 @@ mod tests {
 
         assert!(error.to_string().contains("expected 2:1, received 2:2"));
         assert_eq!(subscription.current().value, Some(TestRow { value: 1 }));
+    }
+
+    #[tokio::test]
+    async fn handler_accepts_a_fresh_epoch_state_as_resynchronization() {
+        let connector: Arc<dyn HandlerConnector> = Arc::new(TestConnector {
+            initial: HandlerFrame::State {
+                revision: HandlerStreamRevision {
+                    epoch: 2,
+                    sequence: 0,
+                },
+                state: ErasedHandlerState {
+                    value: Some(serde_json::json!({"value": 1})),
+                    through: None,
+                    liveness: SubscriptionLiveness::Current,
+                    row_keys: None,
+                },
+            },
+            frames: Mutex::new(Some(VecDeque::from([HandlerFrame::State {
+                revision: HandlerStreamRevision {
+                    epoch: 3,
+                    sequence: 0,
+                },
+                state: ErasedHandlerState {
+                    value: Some(serde_json::json!({"value": 9})),
+                    through: None,
+                    liveness: SubscriptionLiveness::Current,
+                    row_keys: None,
+                },
+            }]))),
+        });
+        let mut subscription = NodeHandlerSubscription::connect(
+            connector,
+            request(),
+            false,
+            reject_view_delta::<TestRow, LogPosition>,
+        )
+        .await
+        .expect("open scalar handler");
+
+        let state = subscription.recv().await.expect("resynchronize handler");
+
+        assert_eq!(state.value, Some(TestRow { value: 9 }));
+        assert_eq!(subscription.revision.epoch, 3);
+        assert_eq!(subscription.revision.sequence, 0);
     }
 }

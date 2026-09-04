@@ -6,7 +6,7 @@ use std::{
 use super::*;
 use chrono::{Duration as ChronoDuration, Utc};
 use hyphae::{Signal, Watchable as _};
-use myko::{CommandContext, CommandError, CommandHandler};
+use myko::{CommandContext, CommandError, CommandHandler, view::ViewHandler};
 use myko_federation::{
     AccessAttempt, AccessOperation, AllowAllAccessPolicy, ApprovalId, AuthorityPresentation,
     AuthorityRealmId, AuthorizationBinding, AuthorizationDecision, BatchId, ChangeBatch,
@@ -94,6 +94,27 @@ impl myko::query::QueryHandler for AllLocalRecordHandlers {
         Some(
             ctx.federated_items::<LocalRecord>()
                 .expect("test federation source is configured"),
+        )
+    }
+}
+
+#[myko::myko_view(LocalRecord, item = LocalRecord)]
+#[derive(Copy, PartialEq, Eq)]
+struct AllLocalRecordsView {}
+
+impl ViewHandler for AllLocalRecordsView {
+    fn scope_id(&self, _local_node: NodeId) -> Option<ScopeId> {
+        Some(ScopeId::new("local-scope"))
+    }
+
+    fn build_cell(
+        context: myko::view::ViewBuildArgs<Self>,
+    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+        myko::item::typed_map_arc_from_any_item::<LocalRecord>(
+            context
+                .federated_items::<LocalRecord>()
+                .expect("test federation source is configured"),
+            "AllLocalRecordsView",
         )
     }
 }
@@ -305,19 +326,302 @@ async fn local_handler_connector_follows_retained_query() -> Result<(), LocalPee
 }
 
 #[tokio::test]
+async fn one_connector_family_multiplexes_128_handler_subscriptions() -> Result<(), LocalPeerError>
+{
+    const SUBSCRIPTION_COUNT: usize = 128;
+
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("myko.sock");
+    let node = Node::in_memory();
+    let scope_id = ScopeId::new("local-scope");
+    let first = commit_record(&node, scope_id.clone(), "record-1")?;
+    let probe = LocalServerProbe::default();
+    let server = LocalNodeServer::spawn_application_with_probe(
+        &socket,
+        local_record_application(node.clone())?,
+        PrincipalId::new("local:owner"),
+        Arc::new(AllowAllAccessPolicy),
+        probe.clone(),
+    )
+    .await?;
+
+    let connector = LocalHandlerConnector::new(&socket);
+    let identified = HandlerConnector::target_node(&connector)
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    assert_eq!(identified, node.node_id());
+    let client = connector.client();
+    let routed_client = client.clone().at(node.node_id());
+    let mut opening = JoinSet::new();
+    for index in 0..SUBSCRIPTION_COUNT {
+        let client = if index % 2 == 0 {
+            client.clone()
+        } else {
+            routed_client.clone()
+        };
+        let source_node = node.node_id();
+        let scope_id = scope_id.clone();
+        opening.spawn(async move {
+            client
+                .follow_query(source_node, scope_id, &AllLocalRecordHandlers {})
+                .await
+        });
+    }
+
+    let mut subscriptions = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut subscriptions = Vec::with_capacity(SUBSCRIPTION_COUNT);
+        while let Some(joined) = opening.join_next().await {
+            let subscription = joined
+                .map_err(|error| LocalPeerError::Protocol(error.to_string()))?
+                .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+            assert_eq!(
+                subscription.current().value.as_deref(),
+                Some(std::slice::from_ref(&first))
+            );
+            subscriptions.push(subscription);
+        }
+        Ok::<_, LocalPeerError>(subscriptions)
+    })
+    .await
+    .map_err(|_| {
+        LocalPeerError::Protocol("opening 128 handler subscriptions timed out".to_owned())
+    })??;
+
+    assert_eq!(subscriptions.len(), SUBSCRIPTION_COUNT);
+    assert_eq!(probe.accepted(), 1);
+    assert_eq!(probe.peak_active(), 1);
+
+    drop(subscriptions.pop());
+    let second = commit_record(&node, scope_id, "record-2")?;
+    let surviving = subscriptions
+        .get_mut(0)
+        .ok_or_else(|| LocalPeerError::Protocol("missing surviving subscription".to_owned()))?;
+    let update = tokio::time::timeout(Duration::from_secs(2), surviving.recv())
+        .await
+        .map_err(|_| LocalPeerError::Protocol("surviving handler update timed out".to_owned()))?
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    assert_eq!(update.value, Some(vec![first, second]));
+    assert_eq!(probe.accepted(), 1);
+    assert_eq!(probe.peak_active(), 1);
+
+    drop(subscriptions);
+    server.shutdown().await
+}
+
+#[tokio::test]
+#[allow(clippy::too_many_lines)]
+async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerError> {
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("myko.sock");
+    let node = Node::in_memory();
+    let scope_id = ScopeId::new("local-scope");
+    let first = commit_record(&node, scope_id.clone(), "record-1")?;
+    let reconnect_policy =
+        ReconnectPolicy::new(Duration::from_millis(10), Duration::from_millis(20))
+            .map_err(|error| LocalPeerError::Protocol(error.to_owned()))?;
+    let first_probe = LocalServerProbe::default();
+    let server = LocalNodeServer::spawn_application_with_probe(
+        &socket,
+        local_record_application(node.clone())?,
+        PrincipalId::new("local:owner"),
+        Arc::new(AllowAllAccessPolicy),
+        first_probe.clone(),
+    )
+    .await?;
+    let local = LocalClientSession::new(&socket).with_reconnect_policy(reconnect_policy);
+    let client = local.handler_connector().client();
+    let mut query = client
+        .follow_query(node.node_id(), scope_id.clone(), &AllLocalRecordHandlers {})
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    assert_eq!(
+        query.current().value.as_deref(),
+        Some(std::slice::from_ref(&first))
+    );
+    let mut report = client
+        .follow_report(&CountAllLocalRecords {})
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    assert_eq!(
+        report.current().value.as_ref().map(|count| count.count),
+        Some(0)
+    );
+    let mut view = client
+        .follow_view(&AllLocalRecordsView {})
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    assert_eq!(
+        view.current().value.as_deref(),
+        Some(std::slice::from_ref(&first))
+    );
+    let submitted = local
+        .command_client()
+        .submit_typed_command(SetLocalRecord {
+            id: LocalRecordId::from("restart-command"),
+            value: "pending".to_owned(),
+        })
+        .await?;
+    let command = submitted.command.ok_or_else(|| {
+        LocalPeerError::Protocol("local command submission returned no state".to_owned())
+    })?;
+    let command_id = command.request.id;
+    let (_initial, mut command_watch) = local.command_client().watch_command(command_id).await?;
+    assert_eq!(first_probe.accepted(), 1);
+
+    server.shutdown().await?;
+    let admission = node.claim(command_id)?;
+    node.commit(
+        command_id,
+        ChangeBatch {
+            id: BatchId::new(),
+            command_id,
+            service_id: command.request.service_id,
+            scope_id: command.request.scope_id,
+            causal_parents: vec![admission.snapshot().updated_at],
+            changes: Vec::new(),
+        },
+        Vec::new(),
+    )?;
+    let second = commit_record(&node, scope_id, "record-2")?;
+    let second_probe = LocalServerProbe::default();
+    let restarted = LocalNodeServer::spawn_application_with_probe(
+        &socket,
+        local_record_application(node.clone())?,
+        PrincipalId::new("local:owner"),
+        Arc::new(AllowAllAccessPolicy),
+        second_probe.clone(),
+    )
+    .await?;
+
+    let query_resync = query
+        .recv()
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    let report_resync = report
+        .recv()
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    let view_resync = view
+        .recv()
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    assert!(matches!(
+        query_resync.liveness,
+        SubscriptionLiveness::Resynchronizing { .. }
+    ));
+    assert!(matches!(
+        report_resync.liveness,
+        SubscriptionLiveness::Resynchronizing { .. }
+    ));
+    assert!(matches!(
+        view_resync.liveness,
+        SubscriptionLiveness::Resynchronizing { .. }
+    ));
+
+    let query_update = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let update = query.recv().await?;
+            if update.liveness == SubscriptionLiveness::Current {
+                return Ok::<_, HandlerClientError>(update);
+            }
+        }
+    })
+    .await
+    .map_err(|_| LocalPeerError::Protocol("live query did not reconnect after restart".to_owned()))?
+    .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    let report_update = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let update = report.recv().await?;
+            if update.liveness == SubscriptionLiveness::Current {
+                return Ok::<_, HandlerClientError>(update);
+            }
+        }
+    })
+    .await
+    .map_err(|_| {
+        LocalPeerError::Protocol("live report did not reconnect after restart".to_owned())
+    })?
+    .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    let view_update = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let update = view.recv().await?;
+            if update.liveness == SubscriptionLiveness::Current {
+                return Ok::<_, HandlerClientError>(update);
+            }
+        }
+    })
+    .await
+    .map_err(|_| LocalPeerError::Protocol("live view did not reconnect after restart".to_owned()))?
+    .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    assert_eq!(
+        query_update.value,
+        Some(vec![first.clone(), second.clone()])
+    );
+    assert_eq!(
+        report_update.value.as_ref().map(|count| count.count),
+        Some(0)
+    );
+    assert_eq!(view_update.value, Some(vec![first, second]));
+    let command_update = tokio::time::timeout(Duration::from_secs(2), command_watch.recv())
+        .await
+        .map_err(|_| {
+            LocalPeerError::Protocol("command watch did not reconnect after restart".to_owned())
+        })??;
+    assert!(command_update.state.is_committed());
+    assert_eq!(second_probe.accepted(), 1);
+    restarted.shutdown().await
+}
+
+#[tokio::test]
+async fn dropped_handler_clients_release_connection_capacity() -> Result<(), LocalPeerError> {
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("myko.sock");
+    let node = Node::in_memory();
+    let server = LocalNodeServer::spawn_application(
+        &socket,
+        local_record_application(node.clone())?,
+        PrincipalId::new("local:owner"),
+        Arc::new(AllowAllAccessPolicy),
+    )
+    .await?;
+    let client = LocalHandlerConnector::new(&socket).client();
+
+    for _ in 0..MAX_CONNECTIONS + 8 {
+        let query = client
+            .follow_query(
+                node.node_id(),
+                ScopeId::new("local-scope"),
+                &AllLocalRecordHandlers {},
+            )
+            .await
+            .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+        drop(query);
+        tokio::task::yield_now().await;
+    }
+
+    server.shutdown().await
+}
+
+#[tokio::test]
 async fn local_peer_watches_command_lifecycle_without_polling() -> Result<(), LocalPeerError> {
     let directory = tempfile::tempdir()?;
     let socket = directory.path().join("myko.sock");
     let node = Node::in_memory();
     let application = local_record_application(node.clone())?;
-    let server = LocalNodeServer::spawn_application(
+    let probe = LocalServerProbe::default();
+    let server = LocalNodeServer::spawn_application_with_probe(
         &socket,
         application,
         PrincipalId::new("local:owner"),
         Arc::new(AllowAllAccessPolicy),
+        probe.clone(),
     )
     .await?;
-    let client = LocalCommandClient::new(&socket);
+    let local = LocalClientSession::new(&socket);
+    let identified = local.node_client().identify().await?;
+    assert_eq!(identified, node.node_id());
+    let client = local.command_client();
+    let handler = local.handler_connector().client();
     let submitted = client
         .submit_typed_command(SetLocalRecord {
             id: LocalRecordId::from("lifecycle-record"),
@@ -331,6 +635,21 @@ async fn local_peer_watches_command_lifecycle_without_polling() -> Result<(), Lo
     };
     let command_id = snapshot.request.id;
     let (_initial, mut subscription) = client.watch_command(command_id).await?;
+    let handler_subscription = handler
+        .follow_query(
+            node.node_id(),
+            ScopeId::new("local-scope"),
+            &AllLocalRecordHandlers {},
+        )
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    let (_items, item_subscription) = local
+        .item_client()
+        .watch_serving_items(ScopeId::new("local-scope"), GetAllLocalRecords {})
+        .await?;
+    let live_subscription = local.node_client().follow_live(Vec::new()).await?;
+    assert_eq!(probe.accepted(), 1);
+    assert_eq!(probe.peak_active(), 1);
     let admission = node.claim(command_id)?;
     node.commit(
         command_id,
@@ -359,6 +678,11 @@ async fn local_peer_watches_command_lifecycle_without_polling() -> Result<(), Lo
             "local command watch returned a non-commit".to_owned(),
         ));
     }
+    drop(live_subscription);
+    drop(item_subscription);
+    drop(handler_subscription);
+    assert_eq!(probe.accepted(), 1);
+    assert_eq!(probe.peak_active(), 1);
     server.shutdown().await
 }
 

@@ -1,4 +1,7 @@
 use super::*;
+use crate::session_mux::{
+    LocalInitialBody, LocalMultiplexedSession, MuxRouteEvent, MuxSubscription, serve_session_mux,
+};
 fn authorized_request_envelope(
     destination: Option<NodeId>,
     authority: Option<AuthorityPresentation>,
@@ -33,6 +36,55 @@ pub struct LocalNodeServer {
     socket_path: PathBuf,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), LocalPeerError>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct LocalServerProbe {
+    counters: Arc<LocalServerProbeCounters>,
+}
+
+#[derive(Debug, Default)]
+struct LocalServerProbeCounters {
+    accepted: AtomicU64,
+    active: AtomicU64,
+    peak_active: AtomicU64,
+}
+
+impl LocalServerProbe {
+    fn connection_started(&self) -> LocalServerConnectionGuard {
+        self.counters.accepted.fetch_add(1, Ordering::Relaxed);
+        let active = self
+            .counters
+            .active
+            .fetch_add(1, Ordering::Relaxed)
+            .saturating_add(1);
+        self.counters
+            .peak_active
+            .fetch_max(active, Ordering::Relaxed);
+        LocalServerConnectionGuard {
+            probe: self.clone(),
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accepted(&self) -> u64 {
+        self.counters.accepted.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn peak_active(&self) -> u64 {
+        self.counters.peak_active.load(Ordering::Relaxed)
+    }
+}
+
+struct LocalServerConnectionGuard {
+    probe: LocalServerProbe,
+}
+
+impl Drop for LocalServerConnectionGuard {
+    fn drop(&mut self) {
+        self.probe.counters.active.fetch_sub(1, Ordering::Relaxed);
+    }
 }
 
 impl LocalNodeServer {
@@ -80,6 +132,23 @@ impl LocalNodeServer {
         .await
     }
 
+    #[cfg(test)]
+    pub(crate) async fn spawn_application_with_probe(
+        socket_path: impl AsRef<Path>,
+        application: ApplicationHost,
+        principal_id: PrincipalId,
+        access_policy: Arc<dyn AccessPolicy>,
+        probe: LocalServerProbe,
+    ) -> Result<Self, LocalPeerError> {
+        Self::spawn_sessions_authenticated_inner(
+            socket_path,
+            FederatedSession::for_application(application, access_policy),
+            Principal::node(principal_id),
+            Some(probe),
+        )
+        .await
+    }
+
     /// Binds an owner-only socket to an existing semantic node endpoint.
     ///
     /// Use this when Iroh and WebSocket adapters serve the same node so all
@@ -111,6 +180,15 @@ impl LocalNodeServer {
         sessions: FederatedSession,
         principal: Principal,
     ) -> Result<Self, LocalPeerError> {
+        Self::spawn_sessions_authenticated_inner(socket_path, sessions, principal, None).await
+    }
+
+    async fn spawn_sessions_authenticated_inner(
+        socket_path: impl AsRef<Path>,
+        sessions: FederatedSession,
+        principal: Principal,
+        probe: Option<LocalServerProbe>,
+    ) -> Result<Self, LocalPeerError> {
         let socket_path = socket_path.as_ref().to_path_buf();
         prepare_socket_path(&socket_path).await?;
         let listener = UnixListener::bind(&socket_path)?;
@@ -122,7 +200,7 @@ impl LocalNodeServer {
             "local Myko transport listening"
         );
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let task = tokio::spawn(serve(listener, sessions, principal, shutdown_rx));
+        let task = tokio::spawn(serve(listener, sessions, principal, shutdown_rx, probe));
         Ok(Self {
             socket_path,
             shutdown,
@@ -146,6 +224,66 @@ impl LocalNodeServer {
     }
 }
 
+/// One shared multiplexed connection to an owner-local Myko node.
+#[derive(Debug, Clone)]
+pub struct LocalClientSession {
+    session: Arc<LocalMultiplexedSession>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct LocalRoute {
+    destination: Option<NodeId>,
+    authority: Option<AuthorityPresentation>,
+    forwarding_provenance: Vec<ProvenanceHop>,
+}
+
+impl LocalClientSession {
+    /// Creates a shared client session for one protected local Myko socket.
+    #[must_use]
+    pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        Self {
+            session: Arc::new(LocalMultiplexedSession::new(
+                socket_path.as_ref().to_path_buf(),
+                ReconnectPolicy::default(),
+            )),
+        }
+    }
+
+    /// Overrides reconnect timing for the shared socket.
+    #[must_use]
+    pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.session = Arc::new(LocalMultiplexedSession::new(
+            self.session.socket_path().to_path_buf(),
+            policy,
+        ));
+        self
+    }
+
+    /// Creates a node client on this session.
+    #[must_use]
+    pub fn node_client(&self) -> LocalNodeClient {
+        LocalNodeClient::from_session(Arc::clone(&self.session))
+    }
+
+    /// Creates a command client on this session.
+    #[must_use]
+    pub fn command_client(&self) -> LocalCommandClient {
+        LocalCommandClient::from_session(Arc::clone(&self.session))
+    }
+
+    /// Creates a typed item client on this session.
+    #[must_use]
+    pub fn item_client(&self) -> LocalItemClient {
+        LocalItemClient::from_session(Arc::clone(&self.session))
+    }
+
+    /// Creates a durable handler connector on this session.
+    #[must_use]
+    pub fn handler_connector(&self) -> LocalHandlerConnector {
+        LocalHandlerConnector::from_session(Arc::clone(&self.session))
+    }
+}
+
 /// Transport-level client for one owner-local Myko node.
 ///
 /// Application commands, items, and handlers retain their specialized typed
@@ -155,59 +293,61 @@ impl LocalNodeServer {
 /// pending operation is cancelled.
 #[derive(Debug, Clone)]
 pub struct LocalNodeClient {
-    socket_path: PathBuf,
-    destination: Option<NodeId>,
-    reconnect_policy: ReconnectPolicy,
-    authority: Option<AuthorityPresentation>,
-    forwarding_provenance: Vec<ProvenanceHop>,
+    session: Arc<LocalMultiplexedSession>,
+    route: LocalRoute,
 }
 
 impl LocalNodeClient {
     /// Creates a client for one protected local Myko socket.
     #[must_use]
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        LocalClientSession::new(socket_path).node_client()
+    }
+
+    fn from_session(session: Arc<LocalMultiplexedSession>) -> Self {
         Self {
-            socket_path: socket_path.as_ref().to_path_buf(),
-            destination: None,
-            reconnect_policy: ReconnectPolicy::default(),
-            authority: None,
-            forwarding_provenance: Vec::new(),
+            session,
+            route: LocalRoute::default(),
         }
     }
 
     /// Addresses subsequent requests to one node through the connected node.
     #[must_use]
     pub const fn at(mut self, destination: NodeId) -> Self {
-        self.destination = Some(destination);
+        self.route.destination = Some(destination);
         self
     }
 
     /// Overrides reconnect timing for subsequent local requests and streams.
     #[must_use]
-    pub const fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
-        self.reconnect_policy = policy;
+    pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.session = Arc::new(LocalMultiplexedSession::new(
+            self.session.socket_path().to_path_buf(),
+            policy,
+        ));
         self
     }
 
     #[must_use]
     pub fn with_authority(mut self, authority: AuthorityPresentation) -> Self {
-        self.authority = Some(authority);
+        self.route.authority = Some(authority);
         self
     }
 
     #[must_use]
     pub fn with_forwarding_hop(mut self, hop: ProvenanceHop) -> Self {
-        self.forwarding_provenance.push(hop);
+        self.route.forwarding_provenance.push(hop);
         self
     }
 
-    fn envelope(&self, request: PeerRequest) -> Envelope<NodeRequestEnvelope> {
+    fn envelope(&self, request: PeerRequest) -> NodeRequestEnvelope {
         authorized_request_envelope(
-            self.destination,
-            self.authority.clone(),
-            &self.forwarding_provenance,
+            self.route.destination,
+            self.route.authority.clone(),
+            &self.route.forwarding_provenance,
             request,
         )
+        .body
     }
 
     /// Returns the stable identity of the serving Myko node.
@@ -217,9 +357,9 @@ impl LocalNodeClient {
     /// Waits through transient socket unavailability. Returns an error if an
     /// established connection violates the canonical identify exchange.
     pub async fn identify(&self) -> Result<NodeId, LocalPeerError> {
-        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
-        write_frame(&mut stream, &self.envelope(PeerRequest::Identify)).await?;
-        match read_authorized_peer_frame(&mut stream).await? {
+        let mut subscription =
+            open_local(&self.session, self.envelope(PeerRequest::Identify)).await?;
+        match read_authorized_mux_frame(&mut subscription).await? {
             PeerFrame::Hello { source_node } => Ok(source_node),
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
             _ => Err(LocalPeerError::Protocol(
@@ -241,13 +381,12 @@ impl LocalNodeClient {
         &self,
         topics: Vec<String>,
     ) -> Result<LocalLiveEventSubscription, LocalPeerError> {
-        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
-        write_frame(
-            &mut stream,
-            &self.envelope(PeerRequest::FollowLive { topics }),
+        let mut subscription = open_local(
+            &self.session,
+            self.envelope(PeerRequest::FollowLive { topics }),
         )
         .await?;
-        let source_node = match read_authorized_peer_frame(&mut stream).await? {
+        let source_node = match read_authorized_mux_frame(&mut subscription).await? {
             PeerFrame::Hello { source_node } => source_node,
             PeerFrame::Error { message } => return Err(LocalPeerError::Protocol(message)),
             _ => {
@@ -257,7 +396,7 @@ impl LocalNodeClient {
             }
         };
         Ok(LocalLiveEventSubscription {
-            stream,
+            subscription,
             source_node,
         })
     }
@@ -270,51 +409,52 @@ impl LocalNodeClient {
 /// [`MykoClient`].
 #[derive(Debug, Clone)]
 pub struct LocalHandlerConnector {
-    socket_path: PathBuf,
-    destination: Option<NodeId>,
-    reconnect_policy: ReconnectPolicy,
-    authority: Option<AuthorityPresentation>,
-    forwarding_provenance: Vec<ProvenanceHop>,
+    session: Arc<LocalMultiplexedSession>,
+    route: LocalRoute,
 }
 
 impl LocalHandlerConnector {
     /// Creates a connector for one protected local Myko socket.
     #[must_use]
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        LocalClientSession::new(socket_path).handler_connector()
+    }
+
+    fn from_session(session: Arc<LocalMultiplexedSession>) -> Self {
         Self {
-            socket_path: socket_path.as_ref().to_path_buf(),
-            destination: None,
-            reconnect_policy: ReconnectPolicy::default(),
-            authority: None,
-            forwarding_provenance: Vec::new(),
+            session,
+            route: LocalRoute::default(),
         }
     }
 
     /// Addresses subsequent requests to one node through the connected node.
     #[must_use]
     pub const fn at(mut self, destination: NodeId) -> Self {
-        self.destination = Some(destination);
+        self.route.destination = Some(destination);
         self
     }
 
     /// Overrides reconnect timing for durable handler streams.
     #[must_use]
-    pub const fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
-        self.reconnect_policy = policy;
+    pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.session = Arc::new(LocalMultiplexedSession::new(
+            self.session.socket_path().to_path_buf(),
+            policy,
+        ));
         self
     }
 
     /// Attaches the original principal and validated delegation presentation.
     #[must_use]
     pub fn with_authority(mut self, authority: AuthorityPresentation) -> Self {
-        self.authority = Some(authority);
+        self.route.authority = Some(authority);
         self
     }
 
     /// Reserves the next store-backed node-forward delegation in the route.
     #[must_use]
     pub fn with_forwarding_hop(mut self, hop: ProvenanceHop) -> Self {
-        self.forwarding_provenance.push(hop);
+        self.route.forwarding_provenance.push(hop);
         self
     }
 
@@ -324,44 +464,46 @@ impl LocalHandlerConnector {
         MykoClient::with_handler_connector(Arc::new(self))
     }
 
-    fn envelope(&self, request: PeerRequest) -> Envelope<NodeRequestEnvelope> {
+    fn envelope(&self, request: PeerRequest) -> NodeRequestEnvelope {
         authorized_request_envelope(
-            self.destination,
-            self.authority.clone(),
-            &self.forwarding_provenance,
+            self.route.destination,
+            self.route.authority.clone(),
+            &self.route.forwarding_provenance,
             request,
         )
+        .body
     }
 }
 
 struct LocalHandlerConnection {
-    stream: UnixStream,
+    subscription: MuxSubscription,
 }
 
 #[async_trait::async_trait]
 impl HandlerConnection for LocalHandlerConnection {
     async fn recv(&mut self) -> Result<HandlerFrame, HandlerClientError> {
-        read_authorized_peer_frame(&mut self.stream)
-            .await
-            .map_err(local_handler_error)
-            .and_then(local_handler_frame)
+        match self.subscription.recv_authorized_event().await? {
+            MuxRouteEvent::Frame(frame) => local_handler_frame(frame),
+            MuxRouteEvent::Reconnecting { reason } => Ok(HandlerFrame::Resynchronizing {
+                reason: reason.to_string(),
+            }),
+        }
     }
 }
 
 #[async_trait::async_trait]
 impl HandlerConnector for LocalHandlerConnector {
     async fn target_node(&self) -> Result<NodeId, HandlerClientError> {
-        if let Some(destination) = self.destination {
+        if let Some(destination) = self.route.destination {
             return Ok(destination);
         }
-        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
-        write_frame(&mut stream, &self.envelope(PeerRequest::Identify))
+        let mut subscription = self
+            .session
+            .mux()
             .await
-            .map_err(local_handler_error)?;
-        match read_authorized_peer_frame(&mut stream)
-            .await
-            .map_err(local_handler_error)?
-        {
+            .open(self.envelope(PeerRequest::Identify))
+            .await?;
+        match subscription.recv_authorized().await? {
             PeerFrame::Hello { source_node } => Ok(source_node),
             PeerFrame::Error { message } => Err(HandlerClientError::Protocol(message)),
             frame => Err(HandlerClientError::Protocol(format!(
@@ -375,26 +517,30 @@ impl HandlerConnector for LocalHandlerConnector {
         &self,
         request: HandlerRequest,
     ) -> Result<(HandlerFrame, Box<dyn HandlerConnection>), HandlerClientError> {
-        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
-        write_frame(
-            &mut stream,
-            &self.envelope(PeerRequest::FollowHandler { request }),
-        )
-        .await
-        .map_err(local_handler_error)?;
-        let initial = read_authorized_peer_frame(&mut stream)
+        let mut subscription = self
+            .session
+            .mux()
             .await
-            .map_err(local_handler_error)
+            .open(self.envelope(PeerRequest::FollowHandler { request }))
+            .await?;
+        let initial = subscription
+            .recv_authorized()
+            .await
             .and_then(local_handler_frame)?;
-        Ok((initial, Box::new(LocalHandlerConnection { stream })))
+        Ok((initial, Box::new(LocalHandlerConnection { subscription })))
     }
 
     fn at(&self, destination: NodeId) -> Arc<dyn HandlerConnector> {
-        Arc::new(self.clone().at(destination))
+        let mut route = self.route.clone();
+        route.destination = Some(destination);
+        Arc::new(Self {
+            session: Arc::clone(&self.session),
+            route,
+        })
     }
 
     fn reconnect_policy(&self) -> ReconnectPolicy {
-        self.reconnect_policy
+        self.session.reconnect_policy()
     }
 }
 
@@ -410,28 +556,16 @@ fn local_handler_frame(frame: PeerFrame) -> Result<HandlerFrame, HandlerClientEr
         }),
         PeerFrame::Error { message } => Err(HandlerClientError::Protocol(message)),
         frame => Err(HandlerClientError::Protocol(format!(
-            "local handler stream returned {}",
+            "local session stream returned {}",
             frame.kind()
         ))),
-    }
-}
-
-fn local_handler_error(error: LocalPeerError) -> HandlerClientError {
-    match error {
-        LocalPeerError::Io(error) => HandlerClientError::Transport(error.to_string()),
-        LocalPeerError::Json(error) => HandlerClientError::Decode(error),
-        LocalPeerError::Protocol(message) => HandlerClientError::Protocol(message),
-        LocalPeerError::Authorization(decision) => {
-            HandlerClientError::Protocol(decision.public_message())
-        }
-        LocalPeerError::Node(error) => HandlerClientError::Transport(error.to_string()),
     }
 }
 
 /// One best-effort canonical live-event stream over the local Unix transport.
 #[derive(Debug)]
 pub struct LocalLiveEventSubscription {
-    stream: UnixStream,
+    subscription: MuxSubscription,
     source_node: NodeId,
 }
 
@@ -448,7 +582,7 @@ impl LocalLiveEventSubscription {
     ///
     /// Returns an error if the stream closes or changes frame type.
     pub async fn recv(&mut self) -> Result<LiveEvent, LocalPeerError> {
-        match read_authorized_peer_frame(&mut self.stream).await? {
+        match read_authorized_mux_frame(&mut self.subscription).await? {
             PeerFrame::Live { event } => Ok(*event),
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
             _ => Err(LocalPeerError::Protocol(
@@ -464,59 +598,61 @@ impl LocalLiveEventSubscription {
 /// pending operation is cancelled.
 #[derive(Debug, Clone)]
 pub struct LocalItemClient {
-    socket_path: PathBuf,
-    destination: Option<NodeId>,
-    reconnect_policy: ReconnectPolicy,
-    authority: Option<AuthorityPresentation>,
-    forwarding_provenance: Vec<ProvenanceHop>,
+    session: Arc<LocalMultiplexedSession>,
+    route: LocalRoute,
 }
 
 impl LocalItemClient {
     /// Creates a local typed-state client.
     #[must_use]
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        LocalClientSession::new(socket_path).item_client()
+    }
+
+    fn from_session(session: Arc<LocalMultiplexedSession>) -> Self {
         Self {
-            socket_path: socket_path.as_ref().to_path_buf(),
-            destination: None,
-            reconnect_policy: ReconnectPolicy::default(),
-            authority: None,
-            forwarding_provenance: Vec::new(),
+            session,
+            route: LocalRoute::default(),
         }
     }
 
     /// Addresses subsequent requests to one node through the connected node.
     #[must_use]
     pub const fn at(mut self, destination: NodeId) -> Self {
-        self.destination = Some(destination);
+        self.route.destination = Some(destination);
         self
     }
 
     /// Overrides reconnect timing for subsequent requests and streams.
     #[must_use]
-    pub const fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
-        self.reconnect_policy = policy;
+    pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.session = Arc::new(LocalMultiplexedSession::new(
+            self.session.socket_path().to_path_buf(),
+            policy,
+        ));
         self
     }
 
     #[must_use]
     pub fn with_authority(mut self, authority: AuthorityPresentation) -> Self {
-        self.authority = Some(authority);
+        self.route.authority = Some(authority);
         self
     }
 
     #[must_use]
     pub fn with_forwarding_hop(mut self, hop: ProvenanceHop) -> Self {
-        self.forwarding_provenance.push(hop);
+        self.route.forwarding_provenance.push(hop);
         self
     }
 
-    fn envelope(&self, request: PeerRequest) -> Envelope<NodeRequestEnvelope> {
+    fn envelope(&self, request: PeerRequest) -> NodeRequestEnvelope {
         authorized_request_envelope(
-            self.destination,
-            self.authority.clone(),
-            &self.forwarding_provenance,
+            self.route.destination,
+            self.route.authority.clone(),
+            &self.route.forwarding_provenance,
             request,
         )
+        .body
     }
 
     /// Reads and follows an explicit source already materialized by the peer.
@@ -630,14 +766,8 @@ impl LocalItemClient {
         Q: ItemQuery + Send + 'static,
         ItemQueryResult<Q>: hyphae::CellValue,
     {
-        let (initial, subscription) = self.watch_request(request.clone(), query.clone()).await?;
-        Ok(drive_reactive(
-            self.clone(),
-            request,
-            query,
-            initial,
-            subscription,
-        ))
+        let (initial, subscription) = self.watch_request(request, query).await?;
+        Ok(drive_reactive(initial, subscription))
     }
 
     async fn watch_request<Q>(
@@ -657,11 +787,10 @@ impl LocalItemClient {
         let snapshot = self.item_state(request).await?;
         let (initial, stream) = ItemQueryStream::from_snapshot(&snapshot, query)?;
         let subscription = LocalItemQuerySubscription::connect(
-            &self.socket_path,
-            self.destination,
-            self.reconnect_policy,
-            self.authority.clone(),
-            self.forwarding_provenance.clone(),
+            &self.session,
+            self.envelope(PeerRequest::FollowItems {
+                request: stream.request().clone(),
+            }),
             stream,
         )
         .await?;
@@ -674,13 +803,12 @@ impl ItemClient for LocalItemClient {
 
     fn item_state_page(&self, request: ItemStateRequest) -> ItemStatePageFuture<'_, Self::Error> {
         Box::pin(async move {
-            let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
-            write_frame(
-                &mut stream,
-                &self.envelope(PeerRequest::ItemState { request }),
+            let mut subscription = open_local(
+                &self.session,
+                self.envelope(PeerRequest::ItemState { request }),
             )
             .await?;
-            match read_authorized_peer_frame(&mut stream).await? {
+            match read_authorized_mux_frame(&mut subscription).await? {
                 PeerFrame::ItemState { page } => Ok(*page),
                 PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
                 _ => Err(LocalPeerError::Protocol(
@@ -697,37 +825,38 @@ impl ItemClient for LocalItemClient {
 /// pending operation is cancelled.
 #[derive(Debug, Clone)]
 pub struct LocalCommandClient {
-    socket_path: PathBuf,
-    destination: Option<NodeId>,
-    reconnect_policy: ReconnectPolicy,
-    authority: Option<AuthorityPresentation>,
-    forwarding_provenance: Vec<ProvenanceHop>,
+    session: Arc<LocalMultiplexedSession>,
+    route: LocalRoute,
 }
 
 impl LocalCommandClient {
     /// Creates a local command client.
     #[must_use]
     pub fn new(socket_path: impl AsRef<Path>) -> Self {
+        LocalClientSession::new(socket_path).command_client()
+    }
+
+    fn from_session(session: Arc<LocalMultiplexedSession>) -> Self {
         Self {
-            socket_path: socket_path.as_ref().to_path_buf(),
-            destination: None,
-            reconnect_policy: ReconnectPolicy::default(),
-            authority: None,
-            forwarding_provenance: Vec::new(),
+            session,
+            route: LocalRoute::default(),
         }
     }
 
     /// Addresses subsequent requests to one node through the connected node.
     #[must_use]
     pub const fn at(mut self, destination: NodeId) -> Self {
-        self.destination = Some(destination);
+        self.route.destination = Some(destination);
         self
     }
 
     /// Overrides reconnect timing for subsequent local requests and streams.
     #[must_use]
-    pub const fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
-        self.reconnect_policy = policy;
+    pub fn with_reconnect_policy(mut self, policy: ReconnectPolicy) -> Self {
+        self.session = Arc::new(LocalMultiplexedSession::new(
+            self.session.socket_path().to_path_buf(),
+            policy,
+        ));
         self
     }
 
@@ -737,24 +866,25 @@ impl LocalCommandClient {
     /// transport identity and the destination validates every stored fact.
     #[must_use]
     pub fn with_authority(mut self, authority: AuthorityPresentation) -> Self {
-        self.authority = Some(authority);
+        self.route.authority = Some(authority);
         self
     }
 
     /// Reserves the next store-backed node-forward delegation in the route.
     #[must_use]
     pub fn with_forwarding_hop(mut self, hop: ProvenanceHop) -> Self {
-        self.forwarding_provenance.push(hop);
+        self.route.forwarding_provenance.push(hop);
         self
     }
 
-    fn envelope(&self, request: PeerRequest) -> Envelope<NodeRequestEnvelope> {
+    fn envelope(&self, request: PeerRequest) -> NodeRequestEnvelope {
         authorized_request_envelope(
-            self.destination,
-            self.authority.clone(),
-            &self.forwarding_provenance,
+            self.route.destination,
+            self.route.authority.clone(),
+            &self.route.forwarding_provenance,
             request,
         )
+        .body
     }
 
     /// Reads one command and watches its lifecycle without polling.
@@ -775,13 +905,12 @@ impl LocalCommandClient {
         command_id: CommandId,
         request: PeerRequest,
     ) -> Result<(CommandResponse, LocalCommandSubscription), LocalPeerError> {
-        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
-        write_frame(&mut stream, &self.envelope(request)).await?;
-        match read_authorized_peer_frame(&mut stream).await? {
+        let mut subscription = open_local(&self.session, self.envelope(request)).await?;
+        match read_authorized_mux_frame(&mut subscription).await? {
             PeerFrame::Command { response } if response.command.is_some() => Ok((
                 (*response).clone(),
                 LocalCommandSubscription {
-                    stream,
+                    subscription,
                     source_node: response.source_node,
                     command_id,
                     current: response.command.clone().ok_or_else(|| {
@@ -800,9 +929,8 @@ impl LocalCommandClient {
     }
 
     async fn request(&self, request: PeerRequest) -> Result<CommandResponse, LocalPeerError> {
-        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
-        write_frame(&mut stream, &self.envelope(request)).await?;
-        match read_authorized_peer_frame(&mut stream).await? {
+        let mut subscription = open_local(&self.session, self.envelope(request)).await?;
+        match read_authorized_mux_frame(&mut subscription).await? {
             PeerFrame::Command { response } => Ok(*response),
             PeerFrame::Authorization { decision } => Err(LocalPeerError::Authorization(decision)),
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
@@ -823,16 +951,15 @@ impl LocalCommandClient {
         challenge_id: ChallengeId,
         approved: bool,
     ) -> Result<ApprovalDecision, LocalPeerError> {
-        let mut stream = connect_local_peer(&self.socket_path, self.reconnect_policy).await;
-        write_frame(
-            &mut stream,
-            &self.envelope(PeerRequest::ApproveAuthority {
+        let mut subscription = open_local(
+            &self.session,
+            self.envelope(PeerRequest::ApproveAuthority {
                 challenge_id,
                 approved,
             }),
         )
         .await?;
-        match read_authorized_peer_frame(&mut stream).await? {
+        match read_authorized_mux_frame(&mut subscription).await? {
             PeerFrame::Approval { decision } => Ok(*decision),
             PeerFrame::Authorization { decision } => Err(LocalPeerError::Authorization(decision)),
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
@@ -909,7 +1036,7 @@ impl CommandWatchingClient for LocalCommandClient {
 
 /// Current-then-live command lifecycle over an owner-local socket.
 pub struct LocalCommandSubscription {
-    stream: UnixStream,
+    subscription: MuxSubscription,
     source_node: myko_federation::NodeId,
     command_id: CommandId,
     current: CommandSnapshot,
@@ -934,7 +1061,7 @@ impl LocalCommandSubscription {
     ///
     /// Returns an error if the stream closes or changes command identity.
     pub async fn recv(&mut self) -> Result<CommandSnapshot, LocalPeerError> {
-        match read_authorized_peer_frame(&mut self.stream).await? {
+        match read_authorized_mux_frame(&mut self.subscription).await? {
             PeerFrame::Command { response }
                 if response.source_node == self.source_node
                     && response
@@ -957,35 +1084,23 @@ impl LocalCommandSubscription {
 
 /// Lossless typed query stream over an owner-local socket.
 pub struct LocalItemQuerySubscription<Q: ItemQuery> {
-    stream: UnixStream,
+    subscription: MuxSubscription,
     query: ItemQueryStream<Q>,
 }
 
 impl<Q: ItemQuery> LocalItemQuerySubscription<Q> {
     async fn connect(
-        socket_path: &Path,
-        destination: Option<NodeId>,
-        reconnect_policy: ReconnectPolicy,
-        authority: Option<AuthorityPresentation>,
-        forwarding_provenance: Vec<ProvenanceHop>,
+        session: &LocalMultiplexedSession,
+        request: NodeRequestEnvelope,
         query: ItemQueryStream<Q>,
     ) -> Result<Self, LocalPeerError> {
-        let mut stream = connect_local_peer(socket_path, reconnect_policy).await;
-        write_frame(
-            &mut stream,
-            &authorized_request_envelope(
-                destination,
-                authority,
-                &forwarding_provenance,
-                PeerRequest::FollowItems {
-                    request: query.request().clone(),
-                },
-            ),
-        )
-        .await?;
-        match read_authorized_peer_frame(&mut stream).await? {
+        let mut subscription = open_local(session, request).await?;
+        match read_authorized_mux_frame(&mut subscription).await? {
             PeerFrame::ItemFollowReady { request } if request.as_ref() == query.request() => {
-                Ok(Self { stream, query })
+                Ok(Self {
+                    subscription,
+                    query,
+                })
             }
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
             _ => Err(LocalPeerError::Protocol(
@@ -1006,14 +1121,41 @@ impl<Q: ItemQuery> LocalItemQuerySubscription<Q> {
     ///
     /// Returns an error if the stream closes or violates its typed contract.
     pub async fn recv(&mut self) -> Result<ItemQueryUpdate<ItemQueryResult<Q>>, LocalPeerError> {
-        match read_authorized_peer_frame(&mut self.stream).await? {
-            PeerFrame::ItemUpdate { update } => Ok(self.query.apply(&update)?),
-            PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
-            _ => Err(LocalPeerError::Protocol(
-                "local peer sent a non-item frame on a typed item stream".to_owned(),
-            )),
+        loop {
+            if let LocalItemQueryEvent::Update(update) = self.recv_event().await? {
+                return Ok(update);
+            }
         }
     }
+
+    async fn recv_event(
+        &mut self,
+    ) -> Result<LocalItemQueryEvent<ItemQueryResult<Q>>, LocalPeerError> {
+        match self
+            .subscription
+            .recv_authorized_event()
+            .await
+            .map_err(local_mux_error)?
+        {
+            MuxRouteEvent::Frame(PeerFrame::ItemUpdate { update }) => {
+                Ok(LocalItemQueryEvent::Update(self.query.apply(&update)?))
+            }
+            MuxRouteEvent::Frame(PeerFrame::Error { message }) => {
+                Err(LocalPeerError::Protocol(message))
+            }
+            MuxRouteEvent::Frame(_) => Err(LocalPeerError::Protocol(
+                "local peer sent a non-item frame on a typed item stream".to_owned(),
+            )),
+            MuxRouteEvent::Reconnecting { reason } => {
+                Ok(LocalItemQueryEvent::Resynchronizing { reason })
+            }
+        }
+    }
+}
+
+enum LocalItemQueryEvent<T> {
+    Update(ItemQueryUpdate<T>),
+    Resynchronizing { reason: Arc<str> },
 }
 
 /// Runtime owner for a local Hyphae item subscription.
@@ -1048,9 +1190,6 @@ where
 }
 
 fn drive_reactive<Q>(
-    client: LocalItemClient,
-    request: ItemStateRequest,
-    query: Q,
     initial: ItemQuerySnapshot<ItemQueryResult<Q>>,
     mut subscription: LocalItemQuerySubscription<Q>,
 ) -> LocalReactiveItemSubscription<ItemQueryResult<Q>>
@@ -1066,37 +1205,16 @@ where
     let task_writer = writer.clone();
     let task = tokio::spawn(async move {
         loop {
-            match subscription.recv().await {
-                Ok(update) => {
+            match subscription.recv_event().await {
+                Ok(LocalItemQueryEvent::Update(update)) => {
                     task_writer.publish(update.value, Some(update.position));
-                    continue;
                 }
-                Err(error) if local_subscription_error_is_recoverable(&error) => {
-                    task_writer.resynchronizing(error.to_string());
+                Ok(LocalItemQueryEvent::Resynchronizing { reason }) => {
+                    task_writer.resynchronizing(reason.to_string());
                 }
                 Err(error) => {
                     task_writer.invalidate(error.to_string());
                     return;
-                }
-            }
-            let mut delay = client.reconnect_policy.initial_delay();
-            loop {
-                tokio::time::sleep(delay).await;
-                match client.watch_request(request.clone(), query.clone()).await {
-                    Ok((snapshot, next)) => {
-                        task_writer.publish(snapshot.value, snapshot.through);
-                        subscription = next;
-                        break;
-                    }
-                    Err(error) => {
-                        if local_subscription_error_is_recoverable(&error) {
-                            task_writer.resynchronizing(error.to_string());
-                            delay = client.reconnect_policy.next_delay(delay);
-                        } else {
-                            task_writer.invalidate(error.to_string());
-                            return;
-                        }
-                    }
                 }
             }
         }
@@ -1104,11 +1222,7 @@ where
     LocalReactiveItemSubscription { live, writer, task }
 }
 
-const fn local_subscription_error_is_recoverable(error: &LocalPeerError) -> bool {
-    matches!(error, LocalPeerError::Io(_) | LocalPeerError::Protocol(_))
-}
-
-async fn connect_local_peer(socket_path: &Path, policy: ReconnectPolicy) -> UnixStream {
+pub async fn connect_local_peer(socket_path: &Path, policy: ReconnectPolicy) -> UnixStream {
     let mut delay = policy.initial_delay();
     let mut attempts = 0_u64;
     loop {
@@ -1142,6 +1256,7 @@ async fn serve(
     sessions: FederatedSession,
     principal: Principal,
     mut shutdown: watch::Receiver<bool>,
+    probe: Option<LocalServerProbe>,
 ) -> Result<(), LocalPeerError> {
     let permits = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     let mut connections = JoinSet::new();
@@ -1154,6 +1269,9 @@ async fn serve(
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted?;
+                let connection_guard = probe
+                    .as_ref()
+                    .map(LocalServerProbe::connection_started);
                 let connection_id = NEXT_LOCAL_CONNECTION_ID.fetch_add(1, Ordering::Relaxed);
                 let Ok(permit) = permits.clone().try_acquire_owned() else {
                     tracing::warn!(connection_id, "local connection limit reached; rejecting peer");
@@ -1177,6 +1295,7 @@ async fn serve(
                         principal.clone(),
                         shutdown.clone(),
                         permit,
+                        connection_guard,
                     )
                     .instrument(span),
                 );
@@ -1201,20 +1320,45 @@ async fn handle_connection(
     principal: Principal,
     shutdown: watch::Receiver<bool>,
     _permit: tokio::sync::OwnedSemaphorePermit,
+    _connection_guard: Option<LocalServerConnectionGuard>,
 ) {
-    let result = async {
-        let request: Envelope<NodeRequestEnvelope> = read_frame(&mut stream).await?;
-        let request = request
+    let initial = async {
+        let request: Envelope<LocalInitialBody> = read_frame(&mut stream).await?;
+        request
             .into_current()
-            .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
-        tracing::debug!(
-            request = request.request.kind(),
-            destination = ?request.destination,
-            "received local Myko request"
-        );
-        serve_session_request(&mut stream, &sessions, principal, shutdown, request).await
+            .map_err(|error| LocalPeerError::Protocol(error.to_string()))
     }
     .await;
+    let initial = match initial {
+        Ok(initial) => initial,
+        Err(error) => {
+            tracing::warn!(error = %error, "local Myko connection failed");
+            let _ignored = write_frame(
+                &mut stream,
+                &Envelope::new(PeerFrame::Error {
+                    message: error.to_string(),
+                }),
+            )
+            .await;
+            return;
+        }
+    };
+    let request = match initial {
+        LocalInitialBody::Mux(hello) => {
+            match serve_session_mux(stream, sessions, principal, shutdown, hello).await {
+                Ok(()) => tracing::debug!("local Myko handler mux closed"),
+                Err(error) => tracing::warn!(error = %error, "local Myko handler mux failed"),
+            }
+            return;
+        }
+        LocalInitialBody::Single(request) => *request,
+    };
+    tracing::debug!(
+        request = request.request.kind(),
+        destination = ?request.destination,
+        "received local Myko request"
+    );
+    let result = serve_session_request(&mut stream, &sessions, principal, shutdown, request).await;
     if let Err(error) = result {
         tracing::warn!(error = %error, "local Myko connection failed");
         let _ignored = write_frame(
@@ -1237,15 +1381,30 @@ async fn serve_session_request(
     request: NodeRequestEnvelope,
 ) -> Result<(), LocalPeerError> {
     let mut frames = sessions.open_authenticated(principal, request).await;
+    let (mut reader, mut writer) = stream.split();
+    let mut peer_data = [0_u8; 1];
     loop {
         tokio::select! {
+            read = reader.read(&mut peer_data) => {
+                match read? {
+                    0 => {
+                        tracing::debug!("local Myko client closed connection");
+                        return Ok(());
+                    }
+                    _ => {
+                        return Err(LocalPeerError::Protocol(
+                            "client sent data after its session request".to_owned(),
+                        ));
+                    }
+                }
+            }
             frame = frames.recv() => {
                 let Some(frame) = frame else {
                     tracing::debug!("session frame stream closed");
                     return Ok(());
                 };
                 tracing::trace!(frame = frame.kind(), "writing local Myko frame");
-                write_frame(stream, &Envelope::new(frame)).await?;
+                write_frame(&mut writer, &Envelope::new(frame)).await?;
             }
             changed = shutdown.changed() => {
                 if changed.is_err() || *shutdown.borrow() {
@@ -1257,35 +1416,54 @@ async fn serve_session_request(
     }
 }
 
-async fn read_peer_frame(stream: &mut UnixStream) -> Result<PeerFrame, LocalPeerError> {
-    let envelope: Envelope<PeerFrame> = read_frame(stream).await?;
-    envelope
-        .into_current()
-        .map_err(|error| LocalPeerError::Protocol(error.to_string()))
+async fn open_local(
+    session: &LocalMultiplexedSession,
+    request: NodeRequestEnvelope,
+) -> Result<MuxSubscription, LocalPeerError> {
+    session
+        .mux()
+        .await
+        .open(request)
+        .await
+        .map_err(local_mux_error)
 }
 
-async fn read_authorized_peer_frame(stream: &mut UnixStream) -> Result<PeerFrame, LocalPeerError> {
+async fn read_authorized_mux_frame(
+    subscription: &mut MuxSubscription,
+) -> Result<PeerFrame, LocalPeerError> {
     loop {
-        match read_peer_frame(stream).await? {
+        match subscription.recv_frame().await.map_err(local_mux_error)? {
             PeerFrame::Authorization { decision }
                 if matches!(decision.as_ref(), AuthorizationDecision::Permit(_)) =>
             {
-                tracing::debug!("local Myko request authorized");
+                tracing::debug!("local multiplexed Myko request authorized");
             }
             PeerFrame::Authorization { decision } => {
-                tracing::warn!(decision = ?decision, "local Myko request authorization failed");
+                tracing::warn!(decision = ?decision, "local multiplexed Myko request authorization failed");
                 return Err(LocalPeerError::Authorization(decision));
             }
             frame => {
-                tracing::trace!(frame = frame.kind(), "read local Myko frame");
+                tracing::trace!(frame = frame.kind(), "read local multiplexed Myko frame");
                 return Ok(frame);
             }
         }
     }
 }
 
-async fn write_frame<T: Serialize + Sync>(
-    stream: &mut UnixStream,
+fn local_mux_error(error: HandlerClientError) -> LocalPeerError {
+    match error {
+        HandlerClientError::Decode(error) => LocalPeerError::Json(error),
+        HandlerClientError::MissingConnector => {
+            LocalPeerError::Protocol("local Myko session has no connector".to_owned())
+        }
+        HandlerClientError::Protocol(message) | HandlerClientError::Transport(message) => {
+            LocalPeerError::Protocol(message)
+        }
+    }
+}
+
+pub async fn write_frame<T: Serialize + Sync, W: AsyncWrite + Unpin>(
+    stream: &mut W,
     value: &T,
 ) -> Result<(), LocalPeerError> {
     let encoded = serde_json::to_vec(value)?;
@@ -1302,7 +1480,9 @@ async fn write_frame<T: Serialize + Sync>(
     Ok(())
 }
 
-async fn read_frame<T: DeserializeOwned>(stream: &mut UnixStream) -> Result<T, LocalPeerError> {
+pub async fn read_frame<T: DeserializeOwned, R: AsyncRead + Unpin>(
+    stream: &mut R,
+) -> Result<T, LocalPeerError> {
     let length = stream.read_u32().await?;
     let length = usize::try_from(length).map_err(|error| {
         LocalPeerError::Protocol(format!("local peer frame length is invalid: {error}"))
