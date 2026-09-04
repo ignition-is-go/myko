@@ -1,0 +1,221 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Myko 7 — Reactive Authority & Observable Federation",
+    "output": "myko-7-federation-observability.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/ignition-is-go/myko",
+      "revision": "fb36256c5bfbcfdc558967e6092c166308cb7b49"
+    },
+    "viewBox": [1240, 650],
+    "views": [
+      {
+        "id": "request-path",
+        "label": "Primary request path",
+        "focus": ["local-client", "local-transport", "session-service", "application-node", "federation-node", "redb-journal"],
+        "note": "Follow an authenticated local request from transport to durable event-sourced state."
+      },
+      {
+        "id": "peer-routing",
+        "label": "Federated peer routing",
+        "focus": ["remote-peer", "iroh-transport", "request-router", "session-service"],
+        "note": "See how Iroh ingress and destination-aware outbound routing share the session layer."
+      },
+      {
+        "id": "reactive-authority",
+        "label": "Reactive authority",
+        "focus": ["session-service", "authority-policy", "authority-facts", "federation-node", "application-node"],
+        "note": "Authority revisions now wake live sessions from a coherent local facts projection."
+      }
+    ]
+  },
+  "components": [
+    {
+      "id": "local-client",
+      "type": "external",
+      "label": "Local / Swift Client",
+      "sublabel": "Handler and node requests",
+      "pos": [30, 365],
+      "size": [150, 72],
+      "sources": [
+        { "path": "libs/myko/local/src/lib.rs", "line": 1000, "label": "Local client" },
+        { "path": "libs/myko/swift/src/native_ffi/federation.rs", "line": 135, "label": "Swift FFI" }
+      ]
+    },
+    {
+      "id": "remote-peer",
+      "type": "external",
+      "label": "Remote Myko Peer",
+      "sublabel": "Endpoint-bound principal",
+      "pos": [30, 105],
+      "size": [150, 72]
+    },
+    {
+      "id": "local-transport",
+      "type": "backend",
+      "label": "Local Transport",
+      "sublabel": "Unix socket · mode 0600",
+      "tag": "connection spans",
+      "pos": [210, 365],
+      "size": [160, 72],
+      "sources": [
+        { "path": "libs/myko/local/src/lib.rs", "line": 167, "label": "Listener" },
+        { "path": "libs/myko/local/src/lib.rs", "line": 1718, "label": "Connection loop" }
+      ]
+    },
+    {
+      "id": "iroh-transport",
+      "type": "cloud",
+      "label": "Iroh Transport",
+      "sublabel": "Bidirectional peer streams",
+      "tag": "request + frame kinds",
+      "pos": [210, 105],
+      "size": [160, 72],
+      "sources": [
+        { "path": "libs/myko/iroh/src/lib.rs", "line": 4266, "label": "Peer ingress" },
+        { "path": "libs/myko/iroh/src/lib.rs", "line": 2928, "label": "Routed request" }
+      ]
+    },
+    {
+      "id": "request-router",
+      "type": "backend",
+      "label": "Federation Router",
+      "sublabel": "Destination / service lookup",
+      "pos": [400, 105],
+      "size": [170, 72],
+      "sources": [
+        { "path": "libs/myko/session/src/lib.rs", "line": 587, "label": "Service routing" },
+        { "path": "libs/myko/session/src/lib.rs", "line": 611, "label": "Remote dispatch" }
+      ]
+    },
+    {
+      "id": "session-service",
+      "type": "backend",
+      "label": "NodeSessionService",
+      "sublabel": "Authenticate · authorize · stream",
+      "tag": "myko.session.request",
+      "pos": [400, 365],
+      "size": [170, 72],
+      "sources": [
+        { "path": "libs/myko/session/src/lib.rs", "line": 469, "label": "Open request" },
+        { "path": "libs/myko/session/src/lib.rs", "line": 1455, "label": "Follow handler" },
+        { "path": "libs/myko/session/src/lib.rs", "line": 211, "label": "Emit frames" }
+      ]
+    },
+    {
+      "id": "authority-policy",
+      "type": "security",
+      "label": "AuthorityPolicy",
+      "sublabel": "Admission + continuation",
+      "tag": "fail closed",
+      "pos": [600, 105],
+      "size": [170, 72],
+      "sources": [
+        { "path": "libs/myko/authority/src/lib.rs", "line": 1705, "label": "Reactive policy" },
+        { "path": "libs/myko/authority/src/lib.rs", "line": 2013, "label": "Evaluation path" }
+      ]
+    },
+    {
+      "id": "application-node",
+      "type": "backend",
+      "label": "ApplicationNode",
+      "sublabel": "Commands + reactive handlers",
+      "tag": "declared claims",
+      "pos": [600, 365],
+      "size": [170, 72],
+      "sources": [
+        { "path": "libs/myko/app/src/lib.rs", "line": 4220, "label": "Resolve claims" },
+        { "path": "libs/myko/app/src/lib.rs", "line": 4271, "label": "Open handler" }
+      ]
+    },
+    {
+      "id": "authority-facts",
+      "type": "messagebus",
+      "label": "AuthorityFactsReport",
+      "sublabel": "Coherent live projection",
+      "tag": "revision signal",
+      "pos": [800, 105],
+      "size": [180, 72],
+      "sources": [
+        { "path": "libs/myko/authority/src/lib.rs", "line": 955, "label": "Report" },
+        { "path": "libs/myko/authority/src/lib.rs", "line": 969, "label": "Coherent joins" }
+      ]
+    },
+    {
+      "id": "federation-node",
+      "type": "messagebus",
+      "label": "Federation Node",
+      "sublabel": "Journal projection + live hub",
+      "tag": "scoped state",
+      "pos": [800, 365],
+      "size": [180, 72],
+      "sources": [
+        { "path": "libs/myko/federation/src/lib.rs", "line": 3943, "label": "Node core" },
+        { "path": "libs/myko/federation/src/lib.rs", "line": 7309, "label": "Journal restore" }
+      ]
+    },
+    {
+      "id": "redb-journal",
+      "type": "database",
+      "label": "RedbJournal",
+      "sublabel": "Immutable durable events",
+      "tag": "replay timing + bytes",
+      "pos": [1030, 365],
+      "size": [160, 72],
+      "sources": [
+        { "path": "libs/myko/redb/src/lib.rs", "line": 43, "label": "Open database" },
+        { "path": "libs/myko/redb/src/lib.rs", "line": 89, "label": "Replay events" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Myko node runtime",
+      "wraps": ["local-transport", "iroh-transport", "request-router", "session-service", "authority-policy", "application-node", "authority-facts", "federation-node", "redb-journal"],
+      "pad": 24
+    }
+  ],
+  "connections": [
+    { "id": "local-request", "from": "local-client", "to": "local-transport", "label": "NodeRequestEnvelope", "variant": "emphasis", "labelAt": [195, 451] },
+    { "id": "local-principal", "from": "local-transport", "to": "session-service", "label": "trusted local principal", "variant": "security", "labelAt": [385, 451] },
+    { "id": "peer-stream", "from": "remote-peer", "to": "iroh-transport", "label": "Iroh bi-stream", "variant": "emphasis", "labelAt": [195, 191] },
+    { "id": "endpoint-principal", "from": "iroh-transport", "to": "session-service", "label": "endpoint principal", "variant": "security" },
+    { "id": "local-dispatch", "from": "session-service", "to": "application-node", "label": "authorized dispatch ↔ NodeFrame stream", "variant": "emphasis", "labelAt": [585, 451] },
+    { "id": "application-events", "from": "application-node", "to": "federation-node", "label": "commands + handler watches", "labelAt": [785, 451] },
+    { "id": "durable-journal", "from": "federation-node", "to": "redb-journal", "label": "append / replay", "variant": "emphasis", "labelAt": [1005, 451] },
+    { "id": "authorize-session", "from": "session-service", "to": "authority-policy", "label": "admission + continuation", "variant": "security" },
+    { "id": "live-authority", "from": "authority-policy", "to": "authority-facts", "label": "watch report + revisions", "variant": "security", "labelAt": [785, 191] },
+    { "id": "facts-query", "from": "authority-facts", "to": "federation-node", "label": "realm-scoped coherent queries", "variant": "security", "labelAt": [890, 191] },
+    { "id": "route-selection", "from": "session-service", "to": "request-router", "label": "destination / service" },
+    { "id": "route-to-iroh", "from": "request-router", "to": "iroh-transport", "label": "remote request", "variant": "dashed", "labelAt": [310, 218] }
+  ],
+  "cards": [
+    {
+      "dot": "rose",
+      "title": "Reactive authority",
+      "items": [
+        "A coherent live report joins the local realm with grants, uses, approvals, and leases.",
+        "Authority revisions replace 50 ms polling; denials, leases, approvals, and bounded use remain durable."
+      ]
+    },
+    {
+      "dot": "cyan",
+      "title": "Handler delivery",
+      "items": [
+        "Transport identity is bound before admission; declared claims add ReadState, Subscribe, and FollowHandler.",
+        "Initial state or delta frames drain immediately; data or authority revisions trigger continuation checks."
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Operational visibility",
+      "items": [
+        "Stable request and frame kinds span startup, routing, authorization, handlers, transports, and shutdown.",
+        "Redb replay and LAN roster metrics expose latency and disappearance without protocol changes."
+      ]
+    }
+  ]
+}
