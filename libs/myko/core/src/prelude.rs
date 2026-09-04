@@ -7,6 +7,10 @@ pub use hyphae::{
     MapExt, MapQuery, Materialize, Mutable, Pipeline, ProjectCellExt, SelectCellExt, SelectExt,
     Watchable,
 };
+pub use myko_items::{
+    BelongsTo, GeneratedItemQuery, ItemId, ItemProjection, ItemQuery, ItemScope, MykoCommand,
+    MykoCommandContract, MykoItem, MykoOperation, MykoService, ServiceTypeId,
+};
 pub use myko_macros::*;
 pub use uuid::Uuid;
 
@@ -28,6 +32,7 @@ pub use crate::core::capability::{PeerAccess, Replaying, Viewing};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::query::FilteredCellMap;
 pub use crate::{
+    application::{MykoApplication, MykoApplicationBuilder},
     cache::{
         CacheKey, serde_content_hash, write_hash_cache_key, write_serde_cache_key, write_str_key,
     },
@@ -85,6 +90,8 @@ pub use crate::{
     },
 };
 // Server-only re-exports (tokio-free types only; MykoServer lives in myko-server)
+#[cfg(not(target_arch = "wasm32"))]
+pub use crate::server::{SourcedItem, SourcedItemKey, SourcedItemMap};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::{
     query::{

@@ -272,9 +272,9 @@ struct MessageContext<'a> {
     subscribe_started_by_tx: &'a SharedTxTimes,
     command_started_by_tx: &'a SharedTxTimes,
     outbound_commands_by_tx: &'a SharedOutboundCommands,
-    command_tx: &'a mpsc::UnboundedSender<CommandJob>,
-    query_window_tx: &'a mpsc::UnboundedSender<QueryWindowJob>,
-    subscribe_tx: &'a mpsc::UnboundedSender<SubscriptionReady>,
+    command_tx: &'a mpsc::Sender<CommandJob>,
+    query_window_tx: &'a mpsc::Sender<QueryWindowJob>,
+    subscribe_tx: &'a mpsc::Sender<SubscriptionReady>,
 }
 
 struct ReadLoopState {
@@ -288,9 +288,9 @@ struct ReadLoopState {
     subscribe_started_by_tx: SharedTxTimes,
     command_started_by_tx: SharedTxTimes,
     outbound_commands_by_tx: SharedOutboundCommands,
-    command_tx: mpsc::UnboundedSender<CommandJob>,
-    query_window_tx: mpsc::UnboundedSender<QueryWindowJob>,
-    subscribe_tx: mpsc::UnboundedSender<SubscriptionReady>,
+    command_tx: mpsc::Sender<CommandJob>,
+    query_window_tx: mpsc::Sender<QueryWindowJob>,
+    subscribe_tx: mpsc::Sender<SubscriptionReady>,
     overload_rx: watch::Receiver<bool>,
 }
 
@@ -460,7 +460,7 @@ impl WsHandler {
     async fn run_read_loop<W: SessionSink>(
         mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
         session: &mut ClientSession<W>,
-        mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionReady>,
+        mut subscribe_rx: mpsc::Receiver<SubscriptionReady>,
         state: ReadLoopState,
     ) {
         let mut outbound_ttl_interval = interval(Duration::from_secs(10));
@@ -540,7 +540,7 @@ impl WsHandler {
     }
 
     async fn run_command_worker(
-        mut command_rx: mpsc::UnboundedReceiver<CommandJob>,
+        mut command_rx: mpsc::Receiver<CommandJob>,
         command_ctx: Arc<MykoServerContext>,
         command_deferred_tx: mpsc::Sender<DeferredOutbound>,
         command_priority_tx: mpsc::Sender<MykoMessage>,
@@ -581,7 +581,7 @@ impl WsHandler {
         }
     }
 
-    async fn run_query_window_worker(mut query_window_rx: mpsc::UnboundedReceiver<QueryWindowJob>) {
+    async fn run_query_window_worker(mut query_window_rx: mpsc::Receiver<QueryWindowJob>) {
         while let Some(job) = query_window_rx.recv().await {
             let tx_id = job.tx_id.clone();
             if let Err(error) = WS_SUBSCRIPTION_BLOCKING
@@ -595,11 +595,8 @@ impl WsHandler {
         }
     }
 
-    fn spawn_query_window_worker() -> (
-        mpsc::UnboundedSender<QueryWindowJob>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let (tx, rx) = mpsc::unbounded_channel();
+    fn spawn_query_window_worker() -> (mpsc::Sender<QueryWindowJob>, tokio::task::JoinHandle<()>) {
+        let (tx, rx) = mpsc::channel(256);
         let task = tokio::spawn(Self::run_query_window_worker(rx));
         (tx, task)
     }
@@ -870,9 +867,9 @@ impl WsHandler {
         let (tx, rx) = mpsc::channel::<OutboundMessage>(10_000);
         let (deferred_tx, deferred_rx) = mpsc::channel::<DeferredOutbound>(10_000);
         let (priority_tx, priority_rx) = mpsc::channel::<MykoMessage>(1_000);
-        let (command_tx, command_rx) = mpsc::unbounded_channel::<CommandJob>();
+        let (command_tx, command_rx) = mpsc::channel::<CommandJob>(256);
         let (query_window_tx, query_window_task) = Self::spawn_query_window_worker();
-        let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel::<SubscriptionReady>();
+        let (subscribe_tx, subscribe_rx) = mpsc::channel::<SubscriptionReady>(256);
         let (overload_tx, overload_rx) = watch::channel(false);
         // Outgoing format for this session: defaults to JSON, sticky-promotes
         // to CBOR on the first received binary frame. Never demotes.
@@ -1028,11 +1025,12 @@ impl WsHandler {
                                 initial_window,
                             ) {
                                 Ok(Some(source)) => {
-                                    let _ = sender.send(SubscriptionReady::WindowedQuery {
-                                        tx_id,
-                                        query_id,
-                                        source,
-                                    });
+                                    let _ =
+                                        sender.blocking_send(SubscriptionReady::WindowedQuery {
+                                            tx_id,
+                                            query_id,
+                                            source,
+                                        });
                                     return;
                                 }
                                 Ok(None) => {}
@@ -1046,9 +1044,9 @@ impl WsHandler {
                                 }
                             }
                         }
-                        match factory(query, registry, request, Some(ctx)) {
+                        match factory(query, registry, request, Some(ctx), None) {
                             Ok(cellmap) => {
-                                let _ = sender.send(SubscriptionReady::Query {
+                                let _ = sender.blocking_send(SubscriptionReady::Query {
                                     tx_id,
                                     query_id,
                                     cellmap,
@@ -1126,9 +1124,9 @@ impl WsHandler {
                 let priority = message_context.priority_tx.clone();
                 let logger = message_context.drop_logger.clone();
                 WS_SUBSCRIPTION_BLOCKING.spawn("view-subscription", move || {
-                    match factory(view, registry, request, ctx) {
+                    match factory(view, registry, request, ctx, None) {
                         Ok(cellmap) => {
-                            let _ = sender.send(SubscriptionReady::View {
+                            let _ = sender.blocking_send(SubscriptionReady::View {
                                 tx_id,
                                 view_id,
                                 cellmap,
@@ -1253,7 +1251,7 @@ impl WsHandler {
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
                 let tx_id: Arc<str> = tx.into();
                 if let Some((source, window)) = session.prepare_query_window_update(&tx_id, window)
-                    && let Err(error) = message_context.query_window_tx.send(QueryWindowJob {
+                    && let Err(error) = message_context.query_window_tx.try_send(QueryWindowJob {
                         tx_id: tx_id.clone(),
                         source,
                         window,
@@ -1315,9 +1313,9 @@ impl WsHandler {
                         let sender = message_context.subscribe_tx.clone();
                         WS_SUBSCRIPTION_BLOCKING.spawn(
                             "report-subscription",
-                            move || match factory(report, request, ctx) {
+                            move || match factory(report, request, ctx, None) {
                                 Ok(cell) => {
-                                    let _ = sender.send(SubscriptionReady::Report {
+                                    let _ = sender.blocking_send(SubscriptionReady::Report {
                                         tx_id: tx,
                                         report_id: report_id.into(),
                                         cell,
@@ -1386,7 +1384,7 @@ impl WsHandler {
                     map.insert(tx_id.clone(), received_at);
                 }
                 let command_id = wrapped.command_id;
-                if let Err(error) = message_context.command_tx.send(CommandJob {
+                if let Err(error) = message_context.command_tx.try_send(CommandJob {
                     tx_id: tx_id.clone(),
                     command_id: command_id.clone(),
                     command: wrapped.command,
@@ -1696,7 +1694,7 @@ mod tests {
                     .push(window.offset);
             }
         });
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(2);
         let worker = tokio::spawn(WsHandler::run_query_window_worker(rx));
 
         for offset in [24, 48] {
@@ -1706,6 +1704,7 @@ mod tests {
                     source: source.clone(),
                     window: Some(QueryWindow { offset, limit: 24 }),
                 })
+                .await
                 .is_ok()
             );
         }

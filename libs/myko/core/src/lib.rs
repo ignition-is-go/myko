@@ -79,6 +79,7 @@
 extern crate self as myko;
 
 // Main module structure
+pub mod application;
 pub mod cache;
 pub mod client;
 #[cfg(all(not(target_arch = "wasm32"), feature = "codegen-ts"))]
@@ -97,6 +98,9 @@ pub mod typegen_typescript;
 pub mod utils;
 pub mod wire;
 
+#[cfg(test)]
+mod federated_authoring_tests;
+
 pub mod prelude;
 
 #[cfg(feature = "bench")]
@@ -107,6 +111,7 @@ pub const WS_MAX_MESSAGE_SIZE_BYTES: usize = 64 * 1024 * 1024;
 pub const WS_MAX_FRAME_SIZE_BYTES: usize = 64 * 1024 * 1024;
 
 // Re-export core modules at top level for backwards compatibility
+pub use command::{CommandContext, CommandError, CommandHandler};
 #[cfg(not(target_arch = "wasm32"))]
 pub use core::saga;
 pub use core::{
@@ -128,14 +133,92 @@ pub use myko_macros::TsNoop as TS;
 // Re-export all attribute/derive macros so downstream crates can consume them
 // as `myko::myko_item`, `myko::myko_subtype`, etc. without adding a separate
 // `myko-macros` dependency.
+#[cfg(not(target_arch = "wasm32"))]
+pub use application::{
+    AccessTarget, ApplicationHost, HistorySelection, PreparedEnvelope, PreparedRequest,
+};
+pub use application::{
+    AppError, ApplicationResources, CommandDispatchGuard, MykoApplication, MykoApplicationBuilder,
+};
+pub use myko_items::{
+    BelongsTo, EntityRef as FederatedEntityRef, GeneratedItemQuery, ItemId, ItemProjection,
+    ItemQuery, ItemScope, MykoCommand, MykoCommandContract, MykoItem, MykoOperation, MykoService,
+    ServiceTypeId,
+};
 pub use myko_macros::*;
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
+#[cfg(not(target_arch = "wasm32"))]
+pub use server::{SourcedItem, SourcedItemKey, SourcedItemMap};
 pub use tracing; // For proc macro generated tracing::debug!/warn! in typed sagas
 #[cfg(feature = "codegen-ts")]
 pub use ts_rs::{self, TS};
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko::TS)]
+
+/// Attach an item declared by the low-level federation schema macros to the
+/// retained Myko item registry and reactive map runtime.
+///
+/// New application code should use [`myko_item`] directly. This adapter exists
+/// for the focused federation crates while their durable command declarations
+/// continue to use the transport-neutral schema layer.
+#[macro_export]
+macro_rules! register_federated_item {
+    ($item:ty) => {
+        impl $crate::item::Eventable for $item {
+            const ENTITY_NAME_STATIC: &'static str = <$item as $crate::MykoItem>::ITEM_TYPE;
+        }
+
+        impl $crate::item::AnyItem for $item {
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+
+            fn entity_type(&self) -> &'static str {
+                <$item as $crate::MykoItem>::ITEM_TYPE
+            }
+
+            fn equals(&self, other: &dyn $crate::item::AnyItem) -> bool {
+                other
+                    .as_any()
+                    .downcast_ref::<Self>()
+                    .is_some_and(|typed| self == typed)
+            }
+        }
+
+        impl $crate::common::with_id::WithId for $item {
+            fn id(&self) -> std::sync::Arc<str> {
+                std::sync::Arc::from($crate::MykoItem::item_id(self).as_ref())
+            }
+        }
+
+        impl $crate::common::with_id::WithTypedId for $item {
+            type Id = <$item as $crate::MykoItem>::Id;
+
+            fn typed_id(&self) -> Self::Id {
+                $crate::MykoItem::item_id(self).clone()
+            }
+        }
+
+        $crate::submit! {
+            $crate::item::ItemRegistration {
+                entity_type: <$item as $crate::MykoItem>::ITEM_TYPE,
+                service_id: Some(<$item as $crate::MykoItem>::SERVICE_ID),
+                crate_name: module_path!(),
+                parse: <$item as $crate::item::Eventable>::parse,
+                parse_bytes: <$item as $crate::item::Eventable>::parse_bytes,
+                serialize_json: |any| {
+                    let typed = any.as_any().downcast_ref::<$item>().ok_or_else(|| {
+                        $crate::serde_json::Error::io(std::io::Error::other(
+                            "federated item registration type mismatch",
+                        ))
+                    })?;
+                    $crate::serde_json::value::to_raw_value(typed)
+                },
+            }
+        }
+    };
+}
 
 /// Register a Rust type for generated-language export.
 ///
@@ -390,9 +473,30 @@ pub(crate) mod test_util {
     //! the first line of any test asserting on reactive state at an instant
     //! (same fix as `tests/query_cache_leak_test.rs`, which is a separate
     //! process and doesn't need to share this lock).
-    pub fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
-        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        LOCK.lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    static SCHEDULER_TEST_LOCK: std::sync::atomic::AtomicBool =
+        std::sync::atomic::AtomicBool::new(false);
+
+    /// Sendable permit that serializes tests using the process-wide scheduler.
+    pub struct SchedulerTestPermit;
+
+    impl Drop for SchedulerTestPermit {
+        fn drop(&mut self) {
+            SCHEDULER_TEST_LOCK.store(false, std::sync::atomic::Ordering::Release);
+        }
+    }
+
+    pub fn scheduler_test_serial() -> SchedulerTestPermit {
+        while SCHEDULER_TEST_LOCK
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::Acquire,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_err()
+        {
+            std::thread::yield_now();
+        }
+        SchedulerTestPermit
     }
 }

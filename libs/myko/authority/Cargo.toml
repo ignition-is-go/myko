@@ -11,7 +11,8 @@ workspace = true
 [dependencies]
 chrono.workspace = true
 flume.workspace = true
-myko-app.workspace = true
+hyphae.workspace = true
+myko.workspace = true
 myko-federation.workspace = true
 myko-items.workspace = true
 serde.workspace = true
@@ -21,7 +22,6 @@ uuid.workspace = true
 
 [dev-dependencies]
 myko-redb.workspace = true
-myko-session.workspace = true
 myko-wire.workspace = true
 tempfile = "3"
 tokio.workspace = true

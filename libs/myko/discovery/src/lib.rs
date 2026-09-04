@@ -215,6 +215,13 @@ impl LanDiscovery {
         reason = "the discovery driver owns its complete startup configuration"
     )]
     pub fn start(advertisement: LanAdvertisement) -> Result<Self, String> {
+        tracing::info!(
+            node_id = %advertisement.descriptor.node_id,
+            endpoint_id = %advertisement.descriptor.endpoint.id,
+            display_name = %advertisement.display_name,
+            participant_kind = ?advertisement.kind,
+            "starting Myko LAN discovery"
+        );
         Self::start_with_timing(&advertisement, DEFAULT_ANNOUNCE_INTERVAL, DEFAULT_EXPIRY)
     }
 
@@ -253,6 +260,7 @@ impl LanDiscovery {
 
     /// Stops the local discovery driver.
     pub async fn shutdown(&self) {
+        tracing::info!("shutting down Myko LAN discovery");
         self.shutdown.send_replace(true);
         let task = self.task.lock().ok().and_then(|mut task| task.take());
         if let Some(mut task) = task
@@ -263,6 +271,7 @@ impl LanDiscovery {
             task.abort();
             let _finished = task.await;
         }
+        tracing::info!("Myko LAN discovery stopped");
     }
 }
 
@@ -271,6 +280,10 @@ fn publish_roster(roster: &Mutex<LanRoster>, updates: &watch::Sender<Vec<Discove
         .lock()
         .map(|roster| roster.snapshot())
         .unwrap_or_default();
+    tracing::debug!(
+        nearby_nodes = snapshot.len(),
+        "LAN discovery roster changed"
+    );
     updates.send_replace(snapshot);
 }
 

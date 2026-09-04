@@ -168,6 +168,7 @@ mod liveness_tests {
     use hyphae::Gettable;
 
     use crate::server::client_session::SessionSink;
+    use crate::test_util::scheduler_test_serial;
     use crate::wire::message::MykoMessage;
 
     struct NullWriter;
@@ -184,6 +185,7 @@ mod liveness_tests {
 
     #[test]
     fn cellmap_liveness_reflects_registered_writers() {
+        let _serial = scheduler_test_serial();
         let registry = ClientRegistry::new();
         let client_id = Arc::<str>::from("a");
         let connected = registry.watch_connected(&client_id);

@@ -1,23 +1,29 @@
 //! Framework-owned live projection of native peer status.
 
+#![allow(clippy::expect_used)] // Infallible handler builders rely on validated host wiring.
+
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
 
-use myko_app::capability::{CollectionBuilding as _, ResourceScoped as _};
-use myko_app::{AppError, ViewContext, ViewHandler, myko_view};
-use myko_federation::{NodeId, ReplicationSelection, ResourceClaim, ResourceClaimKind, ScopeId};
+use hyphae::{CellImmutable, CellMap, CellMutable};
+use myko::{
+    myko_view, myko_view_item,
+    view::{ViewBuildArgs, ViewHandler},
+};
+use myko_federation::{NodeId, ReplicationSelection};
 use myko_iroh::{EndpointId, NativeNodeDescriptor, PeerSupervisor, PeerSyncStatus};
-use myko_items::myko_subtype;
 use tokio::sync::watch;
 
-use crate::{ConfiguredPeer, Peer, live_state::RuntimeFeed, node_status_capability_id};
+use crate::{ConfiguredPeer, Peer, node_status_capability_id, peer::peer_scope};
 
 /// One node identity and its directional replication status.
-#[myko_subtype(derive(Eq))]
+#[myko_view_item]
+#[derive(Eq)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct NodeStatus {
+    pub id: Arc<str>,
     pub source_node: Option<NodeId>,
     pub endpoint_id: EndpointId,
     pub local: bool,
@@ -30,7 +36,8 @@ pub struct NodeStatus {
 
 #[derive(Clone)]
 pub struct NodeStatusViewState {
-    nodes: RuntimeFeed<NodeStatus>,
+    writer: CellMap<Arc<str>, Arc<NodeStatus>, CellMutable>,
+    nodes: CellMap<Arc<str>, Arc<NodeStatus>, CellImmutable>,
 }
 
 impl std::fmt::Debug for NodeStatusViewState {
@@ -43,49 +50,60 @@ impl std::fmt::Debug for NodeStatusViewState {
 
 impl NodeStatusViewState {
     pub fn new(nodes: Vec<NodeStatus>) -> Self {
-        Self {
-            nodes: RuntimeFeed::new(nodes),
-        }
+        let writer = CellMap::new();
+        writer.replace_all(
+            nodes
+                .into_iter()
+                .map(|node| (Arc::clone(&node.id), Arc::new(node)))
+                .collect(),
+        );
+        let nodes = writer.clone().lock();
+        Self { writer, nodes }
     }
 
     pub fn publish(&self, nodes: Vec<NodeStatus>) {
-        self.nodes.publish(nodes);
+        self.writer.replace_all(
+            nodes
+                .into_iter()
+                .map(|node| (Arc::clone(&node.id), Arc::new(node)))
+                .collect(),
+        );
     }
 
     pub fn invalidate(&self, reason: impl Into<String>) {
-        self.nodes.invalidate(reason);
+        tracing::warn!(reason = %reason.into(), "node status projection invalidated");
+        self.writer.replace_all(Vec::new());
     }
 }
 
 /// Live identity and replication state for the local node and configured peers.
 #[myko_view(NodeStatus, item = Peer)]
 #[derive(Copy, PartialEq, Eq)]
-pub struct NodeStatusView;
+pub struct NodeStatusView {
+    pub source_node: NodeId,
+}
 
 impl ViewHandler for NodeStatusView {
-    type Item = NodeStatus;
-    type Cursor = u64;
-
-    fn authority_claims(&self) -> Vec<ResourceClaim> {
-        vec![
-            ResourceClaim::scope(
-                ScopeId::new(format!("myko.handler:view:{}", Self::VIEW_ID)),
-                ResourceClaimKind::Referenced,
-            )
-            .requiring_capability(node_status_capability_id()),
-        ]
+    fn source_node(&self, _local_node: NodeId) -> Option<NodeId> {
+        Some(self.source_node)
     }
 
-    fn item_key(item: &Self::Item) -> Arc<str> {
-        Arc::from(item.endpoint_id.to_string())
+    fn scope_id(&self, _local_node: NodeId) -> Option<myko_federation::ScopeId> {
+        Some(peer_scope(self.source_node))
     }
 
-    fn build(
-        &self,
-        context: &ViewContext,
-    ) -> Result<myko_federation::LiveCollection<Self::Item, u64>, AppError> {
-        let state = context.resource::<NodeStatusViewState>()?;
-        context.collection_from_subscription(&state.nodes.live, Self::item_key)
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        vec![node_status_capability_id()]
+    }
+
+    fn build_cell(
+        context: ViewBuildArgs<Self>,
+    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+        context
+            .resource::<NodeStatusViewState>()
+            .expect("node status resource is installed")
+            .nodes
+            .clone()
     }
 }
 
@@ -99,6 +117,7 @@ pub fn project_node_statuses(
         .map(|status| (status.peer.id, status))
         .collect::<BTreeMap<_, _>>();
     let mut nodes = vec![NodeStatus {
+        id: Arc::from(descriptor.endpoint.id.to_string()),
         source_node: Some(descriptor.node_id),
         endpoint_id: descriptor.endpoint.id,
         local: true,
@@ -111,6 +130,7 @@ pub fn project_node_statuses(
     nodes.extend(peers.values().map(|peer| {
         let status = statuses.get(&peer.endpoint.id);
         NodeStatus {
+            id: Arc::from(peer.endpoint.id.to_string()),
             source_node: peer.source_node,
             endpoint_id: peer.endpoint.id,
             local: false,

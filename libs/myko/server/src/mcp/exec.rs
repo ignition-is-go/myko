@@ -398,6 +398,7 @@ fn in_process_execute_query(
         ctx.registry.clone(),
         request_context,
         Some(ctx.clone()),
+        None,
     )
     .map_err(|e| format!("Failed to build query cell: {e}"))?;
 
@@ -446,9 +447,14 @@ fn in_process_execute_view(
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 
-    let cellmap =
-        (view_data.cell_factory)(parsed, ctx.registry.clone(), request_context, ctx.clone())
-            .map_err(|e| format!("Failed to build view cell: {e}"))?;
+    let cellmap = (view_data.cell_factory)(
+        parsed,
+        ctx.registry.clone(),
+        request_context,
+        ctx.clone(),
+        None,
+    )
+    .map_err(|e| format!("Failed to build view cell: {e}"))?;
 
     let items: Vec<Value> = cellmap
         .snapshot()
@@ -491,7 +497,7 @@ async fn in_process_execute_report(
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 
-    let cell = (report_data.cell_factory)(parsed, request_context, ctx)
+    let cell = (report_data.cell_factory)(parsed, request_context, ctx, None)
         .map_err(|e| format!("Failed to build report cell: {e}"))?;
 
     // Subscribe to drive reactive evaluation; capture the first emission.

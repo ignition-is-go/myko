@@ -63,6 +63,12 @@ pub fn start(
     let browser = daemon
         .browse(&service_type)
         .map_err(|error| format!("could not browse DNS-SD services: {error}"))?;
+    tracing::debug!(
+        node_id = %advertisement.descriptor.node_id,
+        endpoint_id = %local_endpoint,
+        service_type,
+        "portable DNS-SD advertisement and browser started"
+    );
 
     let roster = Arc::new(Mutex::new(LanRoster::default()));
     let (updates, _) = watch::channel(Vec::new());
@@ -99,6 +105,7 @@ pub fn start(
         if let Ok(stopped) = daemon.shutdown() {
             let _status = tokio::time::timeout(Duration::from_secs(1), stopped.recv_async()).await;
         }
+        tracing::debug!("portable DNS-SD driver stopped");
     });
 
     Ok(LanDiscovery {
@@ -126,6 +133,10 @@ fn observe_event(
                 fields.insert(property.key(), value);
             }
             let Ok(advertisement) = fields.decode() else {
+                tracing::trace!(
+                    fullname = service.get_fullname(),
+                    "ignored invalid DNS-SD advertisement"
+                );
                 return;
             };
             if advertisement.descriptor.endpoint.id == local_endpoint
@@ -139,6 +150,12 @@ fn observe_event(
                 .is_ok_and(|mut roster| roster.observe(&advertisement, Instant::now()));
             services.insert(service.get_fullname().to_owned(), endpoint);
             if changed {
+                tracing::debug!(
+                    node_id = %advertisement.descriptor.node_id,
+                    endpoint_id = %advertisement.descriptor.endpoint.id,
+                    display_name = %advertisement.display_name,
+                    "discovered LAN node"
+                );
                 publish_roster(roster, updates);
             }
         }
@@ -152,6 +169,7 @@ fn observe_event(
                     .lock()
                     .is_ok_and(|mut roster| roster.remove_endpoint(&endpoint));
             if changed {
+                tracing::debug!(endpoint_id = %endpoint, "LAN node advertisement disappeared");
                 publish_roster(roster, updates);
             }
         }

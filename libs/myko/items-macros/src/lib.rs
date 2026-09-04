@@ -227,26 +227,20 @@ fn expand_command(arguments: CommandArguments, item: &ItemStruct) -> TokenStream
         owner,
         scope,
     } = arguments;
-    let (service, item_type, scope, registration) = match owner {
+    let (service, item_type, scope) = match owner {
         CommandOwner::Item(owner) => (
             quote!(<#owner as ::myko_items::MykoItem>::Service),
             quote!(::std::option::Option::Some(<#owner as ::myko_items::MykoItem>::ITEM_TYPE)),
             quote!(<#owner as ::myko_items::MykoItem>::Scope),
-            quote!(::myko_app::HandlerRegistration::command::<#owner, #name>()),
         ),
-        CommandOwner::Service(owner) => (
-            quote!(#owner),
-            quote!(::std::option::Option::None),
-            {
-                let Some(scope) = scope else {
-                    return quote!(::core::compile_error!(
-                        "service commands must declare `scope = ScopeItem`"
-                    ));
-                };
-                quote!(#scope)
-            },
-            quote!(::myko_app::HandlerRegistration::service_command::<#owner, #name>()),
-        ),
+        CommandOwner::Service(owner) => (quote!(#owner), quote!(::std::option::Option::None), {
+            let Some(scope) = scope else {
+                return quote!(::core::compile_error!(
+                    "service commands must declare `scope = ScopeItem`"
+                ));
+            };
+            quote!(#scope)
+        }),
     };
     quote! {
         #[derive(Clone, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize, Debug)]
@@ -266,14 +260,29 @@ fn expand_command(arguments: CommandArguments, item: &ItemStruct) -> TokenStream
 
         impl ::myko_items::MykoCommand for #name {}
 
+        impl ::myko::command::CommandId for #name {
+            fn command_id(&self) -> ::std::sync::Arc<str> {
+                ::std::sync::Arc::from(stringify!(#name))
+            }
+        }
+
+        impl ::myko::command::CommandIdStatic for #name {
+            const COMMAND_ID: &'static str = stringify!(#name);
+        }
+
+        impl ::myko::command::CommandResultType for #name {
+            type Result = #result;
+        }
+
         const _: fn() = || {
-            fn require_handler<C: ::myko_app::CommandHandler>() {}
+            fn require_handler<C: ::myko::command::CommandHandler>() {}
             require_handler::<#name>();
         };
 
-        ::myko_app::__private::inventory::submit! {
-            #registration
-        }
+        ::myko::register_durable_command_handler!(
+            #name,
+            service_id = <#service as ::myko_items::MykoService>::SERVICE_ID
+        );
     }
 }
 
@@ -408,7 +417,7 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
             const ITEM_TYPE: &'static str = stringify!(#name);
             const SCOPE: ::myko_items::ItemScope = #scope;
 
-            fn id(&self) -> &Self::Id {
+            fn item_id(&self) -> &Self::Id {
                 &self.id
             }
 
@@ -429,42 +438,8 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
     })
 }
 
-fn decode_payload_tokens(parent: Option<&(Path, Ident)>) -> TokenStream2 {
-    parent.map_or_else(
-        || quote!(),
-        |(parent, parent_id)| {
-            let serialized_field = lower_camel_case(&parent_id.to_string());
-            quote! {
-                fn __decode_payload(
-                    payload: &[u8],
-                    containing_scope: ::std::option::Option<&str>,
-                ) -> ::std::result::Result<Self, ::myko_items::ItemError> {
-                    let mut encoded: ::myko_items::serde_json::Value =
-                        ::myko_items::serde_json::from_slice(payload)?;
-                    if let (::std::option::Option::Some(containing_scope),
-                        ::std::option::Option::Some(object)) =
-                        (containing_scope, encoded.as_object_mut())
-                        && !object.contains_key(#serialized_field)
-                    {
-                        let parent_id = ::myko_items::scope_item_id(
-                            containing_scope,
-                            <#parent as ::myko_items::MykoItem>::SERVICE_ID.as_str(),
-                            <#parent as ::myko_items::MykoItem>::ITEM_TYPE,
-                        )
-                        .ok_or_else(|| ::myko_items::ItemError::LegacyParentScopeMismatch {
-                            scope_id: containing_scope.to_owned(),
-                            parent_type: <#parent as ::myko_items::MykoItem>::ITEM_TYPE,
-                        })?;
-                        object.insert(
-                            #serialized_field.to_owned(),
-                            ::myko_items::serde_json::Value::String(parent_id.to_owned()),
-                        );
-                    }
-                    ::myko_items::serde_json::from_value(encoded).map_err(::std::convert::Into::into)
-                }
-            }
-        },
-    )
+fn decode_payload_tokens(_parent: Option<&(Path, Ident)>) -> TokenStream2 {
+    quote!()
 }
 
 fn inject_parent_field(
@@ -575,22 +550,6 @@ fn snake_case(value: &str) -> String {
     output
 }
 
-fn lower_camel_case(value: &str) -> String {
-    let mut output = String::with_capacity(value.len());
-    let mut uppercase_next = false;
-    for character in value.chars() {
-        if character == '_' {
-            uppercase_next = true;
-        } else if uppercase_next {
-            output.extend(character.to_uppercase());
-            uppercase_next = false;
-        } else {
-            output.push(character);
-        }
-    }
-    output
-}
-
 fn generate_id(id: &Ident) -> TokenStream2 {
     quote! {
         #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize, Debug)]
@@ -638,7 +597,7 @@ fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
     let get_many = format_ident!("Get{name}sByIds");
     quote! {
 
-        #[derive(Debug, Clone, Copy, Default, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
         pub struct #get_all;
 
         impl ::myko_items::MykoOperation for #get_all {
@@ -647,14 +606,11 @@ fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
 
         impl ::myko_items::ItemQuery for #get_all {
             type Item = #name;
-            type Output = ::std::vec::Vec<#name>;
-
-            fn execute(self, projection: &::myko_items::ItemProjection<Self::Item>) -> Self::Output {
-                projection.values().cloned().collect()
-            }
         }
 
-        #[derive(Debug, Clone, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
+        impl ::myko_items::GeneratedItemQuery for #get_all {}
+
+        #[derive(Debug, Clone, PartialEq, Eq, Hash, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
         pub struct #get_one {
             pub id: #id,
         }
@@ -665,18 +621,15 @@ fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
 
         impl ::myko_items::ItemQuery for #get_one {
             type Item = #name;
-            type Output = ::std::option::Option<#name>;
 
             fn selected_item_ids(&self) -> ::std::option::Option<::std::vec::Vec<#id>> {
                 ::std::option::Option::Some(::std::vec![self.id.clone()])
             }
-
-            fn execute(self, projection: &::myko_items::ItemProjection<Self::Item>) -> Self::Output {
-                projection.get(&self.id).cloned()
-            }
         }
 
-        #[derive(Debug, Clone, Default, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
+        impl ::myko_items::GeneratedItemQuery for #get_one {}
+
+        #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
         pub struct #get_many {
             pub ids: ::std::vec::Vec<#id>,
         }
@@ -687,18 +640,12 @@ fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
 
         impl ::myko_items::ItemQuery for #get_many {
             type Item = #name;
-            type Output = ::std::vec::Vec<#name>;
 
             fn selected_item_ids(&self) -> ::std::option::Option<::std::vec::Vec<#id>> {
                 ::std::option::Option::Some(self.ids.clone())
             }
-
-            fn execute(self, projection: &::myko_items::ItemProjection<Self::Item>) -> Self::Output {
-                self.ids
-                    .iter()
-                    .filter_map(|id| projection.get(id).cloned())
-                    .collect()
-            }
         }
+
+        impl ::myko_items::GeneratedItemQuery for #get_many {}
     }
 }

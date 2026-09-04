@@ -5,7 +5,6 @@ use quote::quote;
 use syn::{Attribute, Field, ItemStruct, Path};
 
 /// Information about a `belongs_to` relationship on a field
-#[derive(Debug)]
 pub struct BelongsToInfo {
     /// Field name in Rust (`snake_case`)
     pub field_name: String,
@@ -13,6 +12,8 @@ pub struct BelongsToInfo {
     pub field_name_json: String,
     /// Foreign entity type name
     pub foreign_type: String,
+    /// Fully qualified foreign entity path used in generated Rust types.
+    pub foreign_path: Path,
     /// Whether the field type is Option<T>
     pub is_optional: bool,
     /// If true, exclude this child from entity tree exports
@@ -31,7 +32,6 @@ pub struct OwnsManyInfo {
 }
 
 /// Information about a single `ensure_for` dependency on a field
-#[derive(Debug)]
 pub struct EnsureForFieldInfo {
     /// Field name in Rust (`snake_case`)
     pub field_name: String,
@@ -39,6 +39,8 @@ pub struct EnsureForFieldInfo {
     pub field_name_json: String,
     /// Foreign entity type name (the dependency)
     pub foreign_type: String,
+    /// Fully qualified dependency path used in generated Rust types.
+    pub foreign_path: Path,
     /// If true, exclude this child from entity tree exports
     pub exclude_from_tree: bool,
 }
@@ -159,6 +161,7 @@ pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
                 field_name,
                 field_name_json,
                 foreign_type,
+                foreign_path: path,
                 is_optional,
                 exclude_from_tree,
             });
@@ -225,6 +228,7 @@ pub fn parse_ensure_for_field(field: &Field) -> Option<EnsureForFieldInfo> {
                 field_name,
                 field_name_json,
                 foreign_type,
+                foreign_path: path,
                 exclude_from_tree,
             });
         }
@@ -379,7 +383,7 @@ pub fn strip_relationship_attrs(field: &mut Field) {
 }
 
 /// Collected relationship information from an item
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub struct RelationshipInfo {
     pub belongs_to: Vec<BelongsToInfo>,
     pub owns_many: Vec<OwnsManyInfo>,

@@ -99,7 +99,18 @@ impl ItemScope {
 
 /// Stable textual identifier generated for a [`MykoItem`].
 pub trait ItemId:
-    Clone + Debug + Eq + Ord + AsRef<str> + Serialize + DeserializeOwned + Send + Sync + 'static
+    Clone
+    + Debug
+    + Eq
+    + Ord
+    + std::hash::Hash
+    + AsRef<str>
+    + From<String>
+    + Serialize
+    + DeserializeOwned
+    + Send
+    + Sync
+    + 'static
 {
 }
 
@@ -178,11 +189,11 @@ pub trait MykoItem:
     /// service.
     type Scope: MykoItem;
     /// Generated query returning every current item in one scope.
-    type GetAllQuery: ItemQuery<Item = Self, Output = Vec<Self>>;
+    type GetAllQuery: GeneratedItemQuery<Item = Self>;
     /// Generated query returning one item by its typed ID.
-    type GetByIdQuery: ItemQuery<Item = Self, Output = Option<Self>>;
+    type GetByIdQuery: GeneratedItemQuery<Item = Self>;
     /// Generated query returning selected items by typed ID.
-    type GetByIdsQuery: ItemQuery<Item = Self, Output = Vec<Self>>;
+    type GetByIdsQuery: GeneratedItemQuery<Item = Self>;
 
     /// Generated wire identity of the typed owning service.
     const SERVICE_ID: ServiceTypeId = <Self::Service as MykoService>::SERVICE_ID;
@@ -194,7 +205,7 @@ pub trait MykoItem:
     const SCOPE: ItemScope = ItemScope::Unscoped;
 
     /// Returns this item's stable typed identifier.
-    fn id(&self) -> &Self::Id;
+    fn item_id(&self) -> &Self::Id;
 
     /// Returns the concrete scope containing this item's state.
     fn scope_id(&self) -> &<Self::Scope as MykoItem>::Id;
@@ -213,11 +224,7 @@ pub trait MykoItem:
         )
     }
 
-    /// Decodes one stored item payload with its original containing scope.
-    ///
-    /// The generated implementation for scoped items uses the scope only to
-    /// recover foreign keys omitted by Myko 7 journals written before typed
-    /// scope relationships became part of item payloads.
+    /// Decodes one stored item payload under the current typed schema.
     #[doc(hidden)]
     fn __decode_payload(
         payload: &[u8],
@@ -266,8 +273,7 @@ impl EntityRef {
         }
     }
 
-    /// Returns whether this entity is named by either its current
-    /// service-qualified scope ID or Myko 7's earlier unqualified spelling.
+    /// Returns whether this entity is named by a canonical scope ID.
     #[doc(hidden)]
     #[must_use]
     pub fn matches_scope_id(&self, scope_id: &str) -> bool {
@@ -276,10 +282,7 @@ impl EntityRef {
     }
 }
 
-/// Extracts an item ID from either generation of Myko scope identity.
-///
-/// Current IDs are `<service>/<item-type>:<id>`; journals predating
-/// service-qualified scopes contain `<item-type>:<id>`.
+/// Extracts an item ID from a canonical `<service>/<item-type>:<id>` scope.
 #[doc(hidden)]
 #[must_use]
 pub fn scope_item_id<'a>(scope_id: &'a str, service_id: &str, item_type: &str) -> Option<&'a str> {
@@ -287,24 +290,14 @@ pub fn scope_item_id<'a>(scope_id: &'a str, service_id: &str, item_type: &str) -
     let qualified = format!("{service_id}/{item_name}:");
     scope_id
         .strip_prefix(&qualified)
-        .or_else(|| scope_id.strip_prefix(&format!("{item_name}:")))
         .filter(|item_id| !item_id.is_empty())
 }
 
-/// Compares current and legacy scope spellings within one typed scope family.
+/// Compares canonical scope identities within one typed scope family.
 #[doc(hidden)]
 #[must_use]
-pub fn item_scope_ids_match<T: MykoItem>(left: &str, right: &str) -> bool {
-    if left == right {
-        return true;
-    }
-    matches!(
-        (
-            scope_item_id(left, T::SERVICE_ID.as_str(), T::ITEM_TYPE),
-            scope_item_id(right, T::SERVICE_ID.as_str(), T::ITEM_TYPE),
-        ),
-        (Some(left_id), Some(right_id)) if left_id == right_id
-    )
+pub fn item_scope_ids_match(left: &str, right: &str) -> bool {
+    left == right
 }
 
 fn snake_case_type_name(value: &str) -> String {
@@ -330,7 +323,7 @@ fn snake_case_type_name(value: &str) -> String {
 
 impl<T: MykoItem> From<&T> for EntityRef {
     fn from(item: &T) -> Self {
-        Self::new(T::SERVICE_ID, T::ITEM_TYPE, item.id().as_ref())
+        Self::new(T::SERVICE_ID, T::ITEM_TYPE, item.item_id().as_ref())
     }
 }
 
@@ -435,7 +428,7 @@ pub trait MykoCommandContract:
 /// A transport-level typed command declaration.
 ///
 /// Execution is deliberately not defined in this transport-neutral crate.
-/// `myko_app::CommandHandler` adds the application handler contract and its
+/// `myko::CommandHandler` adds the application handler contract and its
 /// sealed, framework-owned capability context.
 pub trait MykoCommand: MykoCommandContract {}
 
@@ -477,7 +470,7 @@ impl ItemMutation {
         Ok(Self {
             service_id: T::SERVICE_ID.as_str().to_owned(),
             item_type: T::ITEM_TYPE.to_owned(),
-            item_id: item.id().as_ref().to_owned(),
+            item_id: item.item_id().as_ref().to_owned(),
             schema_version: T::SCHEMA_VERSION,
             roots_scope: T::SCOPE.is_root(),
             belongs_to: item.belongs_to(),
@@ -548,58 +541,28 @@ impl ItemMutation {
         self.decode_set_in_scope::<T>(None)
     }
 
-    /// Decodes a set mutation with the scope of its original command batch.
-    ///
-    /// The scope is required only for immutable journal entries written before
-    /// typed parent relationships were encoded into item payloads.
+    /// Decodes a set mutation and verifies its typed scope metadata.
     #[doc(hidden)]
     pub fn decode_set_in_scope<T: MykoItem>(
         &self,
-        containing_scope: Option<&str>,
+        _containing_scope: Option<&str>,
     ) -> Result<T, ItemError> {
         self.require_schema::<T>()?;
         if self.operation != MutationOperation::Set {
             return Err(ItemError::UnexpectedOperation(self.operation));
         }
         let payload = self.payload.as_deref().ok_or(ItemError::MissingPayload)?;
-        let legacy_metadata =
-            self.has_legacy_scope_metadata() && (T::SCOPE.is_root() || T::SCOPE.parent().is_some());
-        let legacy_scope = if legacy_metadata {
-            Some(containing_scope.ok_or(ItemError::LegacyContainingScopeRequired)?)
-        } else {
-            None
-        };
-        let item = T::__decode_payload(payload, legacy_scope)?;
-        if item.id().as_ref() != self.item_id {
+        let item = T::__decode_payload(payload, None)?;
+        if item.item_id().as_ref() != self.item_id {
             return Err(ItemError::IdentifierMismatch {
                 envelope: self.item_id.clone(),
-                payload: item.id().as_ref().to_owned(),
+                payload: item.item_id().as_ref().to_owned(),
             });
         }
         if self.roots_scope == T::SCOPE.is_root() && self.belongs_to == item.belongs_to() {
             return Ok(item);
         }
-        if !legacy_metadata {
-            return Err(ItemError::ScopeMetadataMismatch);
-        }
-
-        let containing_scope = containing_scope.ok_or(ItemError::LegacyContainingScopeRequired)?;
-        let valid_legacy_placement = match T::SCOPE {
-            ItemScope::Unscoped => false,
-            ItemScope::Root => EntityRef::new(T::SERVICE_ID, T::ITEM_TYPE, item.id().as_ref())
-                .matches_scope_id(containing_scope),
-            ItemScope::ScopedBy { .. } | ItemScope::RootScopedBy { .. } => item
-                .belongs_to()
-                .is_some_and(|parent| parent.matches_scope_id(containing_scope)),
-        };
-        if !valid_legacy_placement {
-            return Err(ItemError::LegacyContainingScopeMismatch {
-                scope_id: containing_scope.to_owned(),
-                item_type: T::ITEM_TYPE,
-                item_id: self.item_id.clone(),
-            });
-        }
-        Ok(item)
+        Err(ItemError::ScopeMetadataMismatch)
     }
 
     /// Returns whether this mutation affects a typed application scope.
@@ -609,19 +572,8 @@ impl ItemMutation {
         if !self.is::<T>() {
             return false;
         }
-        if self.has_legacy_scope_metadata() && T::SCOPE.is_root() {
-            return EntityRef::new(T::SERVICE_ID, T::ITEM_TYPE, self.item_id.as_str())
-                .matches_scope_id(requested_scope);
-        }
         let placed_scope = self.scope_id.as_deref().unwrap_or(batch_scope);
-        item_scope_ids_match::<T::Scope>(placed_scope, requested_scope)
-    }
-
-    /// Returns whether the mutation predates typed scope-placement metadata.
-    #[doc(hidden)]
-    #[must_use]
-    pub const fn has_legacy_scope_metadata(&self) -> bool {
-        !self.roots_scope && self.belongs_to.is_none() && self.scope_id.is_none()
+        item_scope_ids_match(placed_scope, requested_scope)
     }
 
     fn require_schema<T: MykoItem>(&self) -> Result<(), ItemError> {
@@ -676,36 +628,52 @@ pub enum ItemError {
     IdentifierMismatch { envelope: String, payload: String },
     #[error("item scope metadata does not match its typed payload")]
     ScopeMetadataMismatch,
-    #[error("legacy scoped item mutation requires its containing command scope")]
-    LegacyContainingScopeRequired,
-    #[error(
-        "legacy scope {scope_id} does not contain {item_type} item {item_id} under its current typed schema"
-    )]
-    LegacyContainingScopeMismatch {
-        scope_id: String,
-        item_type: &'static str,
-        item_id: String,
-    },
-    #[error("legacy scope {scope_id} does not identify parent item type {parent_type}")]
-    LegacyParentScopeMismatch {
-        scope_id: String,
-        parent_type: &'static str,
-    },
 }
 
 /// Current typed state reconstructed from immutable item mutations.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemProjection<T: MykoItem> {
-    items: BTreeMap<String, ProjectedItem<T>>,
+    items: BTreeMap<T::Id, ItemState<T>>,
     next_revision: u64,
 }
 
-#[derive(Debug, Clone)]
-struct ProjectedItem<T> {
+/// One current item together with its durable lifecycle metadata.
+///
+/// The metadata belongs to Myko's projection, not the application schema.
+/// Query and view handlers can use it for stable ordering without decoding
+/// event envelopes or copying cursors into domain values.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemState<T> {
     value: T,
     first_changed_at: u64,
     last_changed_at: u64,
     change_index: u32,
+}
+
+impl<T> ItemState<T> {
+    /// Returns the current typed application value.
+    #[must_use]
+    pub const fn value(&self) -> &T {
+        &self.value
+    }
+
+    /// Returns the revision that first created this current item.
+    #[must_use]
+    pub const fn first_changed_at(&self) -> u64 {
+        self.first_changed_at
+    }
+
+    /// Returns the latest revision that changed this current item.
+    #[must_use]
+    pub const fn last_changed_at(&self) -> u64 {
+        self.last_changed_at
+    }
+
+    /// Returns the item's position within its latest atomic batch.
+    #[must_use]
+    pub const fn change_index(&self) -> u32 {
+        self.change_index
+    }
 }
 
 impl<T: MykoItem> Default for ItemProjection<T> {
@@ -772,13 +740,14 @@ impl<T: MykoItem> ItemProjection<T> {
         match mutation.operation {
             MutationOperation::Set => {
                 let item = mutation.decode_set_in_scope::<T>(containing_scope)?;
+                let item_id = item.item_id().clone();
                 let first_changed_at = self
                     .items
-                    .get(&mutation.item_id)
+                    .get(&item_id)
                     .map_or(revision, |existing| existing.first_changed_at);
                 self.items.insert(
-                    mutation.item_id.clone(),
-                    ProjectedItem {
+                    item_id,
+                    ItemState {
                         value: item,
                         first_changed_at,
                         last_changed_at: revision,
@@ -790,7 +759,7 @@ impl<T: MykoItem> ItemProjection<T> {
                 if mutation.payload.is_some() {
                     return Err(ItemError::UnexpectedPayload);
                 }
-                self.items.remove(&mutation.item_id);
+                self.items.remove(&T::Id::from(mutation.item_id.clone()));
             }
         }
         self.next_revision = self.next_revision.max(revision.saturating_add(1));
@@ -800,7 +769,32 @@ impl<T: MykoItem> ItemProjection<T> {
     /// Gets one current item by typed ID.
     #[must_use]
     pub fn get(&self, id: &T::Id) -> Option<&T> {
-        self.items.get(id.as_ref()).map(|item| &item.value)
+        self.items.get(id).map(|item| &item.value)
+    }
+
+    /// Looks up one item by its persisted textual ID.
+    ///
+    /// This is internal projection plumbing used while translating durable
+    /// mutations into typed reactive map diffs. Application code should keep
+    /// using [`Self::get`] with the generated ID type.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn get_by_stored_id(&self, id: &str) -> Option<&T> {
+        self.items
+            .get(&T::Id::from(id.to_owned()))
+            .map(|item| &item.value)
+    }
+
+    /// Looks up one item's value and durable lifecycle metadata by persisted ID.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn state_by_stored_id(&self, id: &str) -> Option<&ItemState<T>> {
+        self.items.get(&T::Id::from(id.to_owned()))
+    }
+
+    /// Iterates current item states in stable item-ID order.
+    pub fn states(&self) -> impl Iterator<Item = &ItemState<T>> {
+        self.items.values()
     }
 
     /// Iterates current items in stable ID order.
@@ -853,23 +847,13 @@ impl<T: MykoItem> ItemProjection<T> {
     /// Returns the authoritative revision that first created one current item.
     #[must_use]
     pub fn first_changed_at(&self, id: &T::Id) -> Option<u64> {
-        self.items
-            .get(id.as_ref())
-            .map(|item| item.first_changed_at)
+        self.items.get(id).map(|item| item.first_changed_at)
     }
 
     /// Returns the authoritative revision that last changed one current item.
     #[must_use]
     pub fn last_changed_at(&self, id: &T::Id) -> Option<u64> {
-        self.items.get(id.as_ref()).map(|item| item.last_changed_at)
-    }
-
-    /// Executes a generated typed item query.
-    pub fn query<Q>(&self, query: Q) -> Q::Output
-    where
-        Q: ItemQuery<Item = T>,
-    {
-        query.execute(self)
+        self.items.get(id).map(|item| item.last_changed_at)
     }
 
     /// Returns current items whose generated foreign key names `parent_id`.
@@ -890,13 +874,22 @@ impl<T: MykoItem> ItemProjection<T> {
 ///
 /// The stable ID and serializable parameters let a Myko node register this
 /// handler once and expose it through any compatible peer transport. The
-/// output bounds also make the result directly usable as a Hyphae cell value
-/// without making this schema crate depend on Hyphae itself.
+/// Every query returns keyed rows of its declared item type. Derived row types
+/// belong to views; scalar results belong to reports.
 pub trait ItemQuery:
-    MykoOperation + Clone + Debug + Serialize + DeserializeOwned + Send + Sync + 'static
+    MykoOperation
+    + Clone
+    + Debug
+    + PartialEq
+    + Eq
+    + std::hash::Hash
+    + Serialize
+    + DeserializeOwned
+    + Send
+    + Sync
+    + 'static
 {
     type Item: MykoItem;
-    type Output: Clone + Debug + PartialEq + Serialize + DeserializeOwned + Send + Sync + 'static;
 
     /// Stable application wire identity for this query handler.
     const QUERY_ID: &'static str = Self::OPERATION_ID;
@@ -911,8 +904,39 @@ pub trait ItemQuery:
     fn selected_item_ids(&self) -> Option<Vec<<Self::Item as MykoItem>::Id>> {
         None
     }
+}
 
-    fn execute(self, projection: &ItemProjection<Self::Item>) -> Self::Output;
+/// Marker implemented only by item-macro-generated projection queries.
+///
+/// Application runtimes use it to supply the standard keyed-row handler while
+/// custom query declarations must still implement their own handler.
+#[doc(hidden)]
+pub trait GeneratedItemQuery: ItemQuery {}
+
+/// Point-in-time result shape used by command capabilities and lower-level
+/// durability checks. Long-lived application queries use keyed collections.
+#[doc(hidden)]
+pub type ItemQueryResult<Q> = Vec<<Q as ItemQuery>::Item>;
+
+/// Evaluates generated query selection metadata against one durable snapshot.
+///
+/// Application code reaches this only through command query capabilities.
+#[doc(hidden)]
+pub fn __snapshot_item_query<Q>(
+    query: &Q,
+    projection: &ItemProjection<Q::Item>,
+) -> ItemQueryResult<Q>
+where
+    Q: ItemQuery,
+{
+    query.selected_item_ids().map_or_else(
+        || projection.values().cloned().collect(),
+        |ids| {
+            ids.iter()
+                .filter_map(|id| projection.get(id).cloned())
+                .collect()
+        },
+    )
 }
 
 #[cfg(test)]
@@ -977,7 +1001,10 @@ mod tests {
             mutation.and_then(|mutation| projection.apply(&mutation)),
             Ok(true)
         ));
-        assert_eq!(projection.query(GetAllProjects), vec![project.clone()]);
+        assert_eq!(
+            __snapshot_item_query(&GetAllProjects, &projection),
+            vec![project.clone()]
+        );
         let get_project = GetProjectById {
             id: ProjectId::from("project-1"),
         };
@@ -985,7 +1012,10 @@ mod tests {
             get_project.selected_item_ids(),
             Some(vec![ProjectId::from("project-1")])
         );
-        assert_eq!(projection.query(get_project), Some(project));
+        assert_eq!(
+            __snapshot_item_query(&get_project, &projection),
+            vec![project]
+        );
     }
 
     #[test]
@@ -1048,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_scope_envelopes_restore_typed_relationships_without_rewriting_history() {
+    fn incomplete_scope_envelopes_are_rejected() {
         let legacy_task = ItemMutation {
             service_id: Task::SERVICE_ID.as_str().to_owned(),
             item_type: Task::ITEM_TYPE.to_owned(),
@@ -1067,12 +1097,9 @@ mod tests {
         let legacy_project_scope = "project:project-1";
         let current_project_scope = format!("{}/project:project-1", Project::SERVICE_ID.as_str());
         assert!(legacy_task.decode_set::<Task>().is_err());
-        assert!(legacy_task.affects_scope::<Task>(legacy_project_scope, &current_project_scope));
+        assert!(!legacy_task.affects_scope::<Task>(legacy_project_scope, &current_project_scope));
         let decoded_task = legacy_task.decode_set_in_scope::<Task>(Some(legacy_project_scope));
-        assert!(matches!(
-            decoded_task,
-            Ok(task) if task.project_id == ProjectId::from("project-1")
-        ));
+        assert!(decoded_task.is_err());
 
         let legacy_scene = ItemMutation {
             service_id: Scene::SERVICE_ID.as_str().to_owned(),
@@ -1090,16 +1117,14 @@ mod tests {
             .ok(),
         };
         let current_scene_scope = format!("{}/scene:scene-1", Scene::SERVICE_ID.as_str());
-        assert!(legacy_scene.affects_scope::<Scene>(legacy_project_scope, &current_scene_scope));
+        assert!(!legacy_scene.affects_scope::<Scene>(legacy_project_scope, &current_scene_scope));
         let decoded_scene = legacy_scene.decode_set_in_scope::<Scene>(Some(legacy_project_scope));
-        assert!(matches!(
-            decoded_scene,
-            Ok(scene) if scene.project_id == ProjectId::from("project-1")
-        ));
-        assert!(matches!(
-            legacy_scene.decode_set_in_scope::<Scene>(Some("project:wrong")),
-            Ok(scene) if scene.project_id == ProjectId::from("wrong")
-        ));
+        assert!(decoded_scene.is_err());
+        assert!(
+            legacy_scene
+                .decode_set_in_scope::<Scene>(Some("project:wrong"))
+                .is_err()
+        );
 
         let legacy_project = ItemMutation {
             service_id: Project::SERVICE_ID.as_str().to_owned(),
@@ -1117,12 +1142,12 @@ mod tests {
             .ok(),
         };
         assert!(
-            legacy_project.affects_scope::<Project>(legacy_project_scope, &current_project_scope)
+            !legacy_project.affects_scope::<Project>(legacy_project_scope, &current_project_scope)
         );
         assert!(
             legacy_project
                 .decode_set_in_scope::<Project>(Some(legacy_project_scope))
-                .is_ok()
+                .is_err()
         );
         assert!(
             legacy_project

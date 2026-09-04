@@ -218,10 +218,12 @@ mod indexed_join_tests {
     use hyphae::{CellMap, LeftJoinExt, MapQuery};
 
     use super::*;
+    use crate::test_util::scheduler_test_serial;
 
     #[test]
     #[allow(clippy::similar_names)]
     fn generated_relation_indexes_arc_backed_query_rows() {
+        let _serial = scheduler_test_serial();
         let servers = CellMap::<Arc<str>, Arc<Server>>::new();
         let clients = CellMap::<Arc<str>, Arc<Client>>::new();
         let joined = servers

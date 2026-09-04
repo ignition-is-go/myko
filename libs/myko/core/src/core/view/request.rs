@@ -98,6 +98,8 @@ impl<V: ViewHandler + Clone + Send + Sync + 'static> ViewHandler for ViewRequest
         V::build_cell(ViewBuildArgs {
             view: Arc::new(ctx.view.view.clone()),
             view_context: ctx.view_context,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated: ctx.federated,
         })
     }
 }

@@ -1,28 +1,24 @@
 //! Framework-owned LAN discovery configuration and live nearby-node view.
 
+#![allow(clippy::expect_used)] // Infallible handler builders rely on validated host wiring.
+
 use std::sync::Arc;
 
-use hyphae::{Signal, Watchable as _};
-use myko_app::capability::{
-    CollectionBuilding as _, EventPublishing as _, NodeScoped as _, Querying as _,
-    ResourceScoped as _,
-};
-use myko_app::{
-    AppError, ApplicationNode, CommandContext, CommandError, CommandHandler, HandlerSubscription,
-    ReportContext, ReportHandler, ViewContext, ViewHandler, myko_report, myko_view,
+use hyphae::{CellImmutable, CellMap, CellMutable, MapExt as _};
+use myko::{
+    ApplicationHost, CommandContext, CommandError, CommandHandler, myko_report, myko_view,
+    myko_view_item,
+    report::{ReportContext, ReportHandler},
+    view::{ViewBuildArgs, ViewHandler},
 };
 use myko_discovery::{DiscoveredNode, LanAdvertisement, LanDiscovery};
-use myko_federation::{
-    LiveCollection, LiveSubscription, LogPosition, NodeId, ResourceClaim, ResourceClaimKind,
-    ScopeId, SubscriptionLiveness,
-};
+use myko_federation::NodeId;
 use myko_iroh::NativeNodeDescriptor;
 use myko_items::{myko_command, myko_item};
 use tokio::sync::{mpsc, watch};
 
 use crate::{
     FederationService, discovery_capability_id,
-    live_state::RuntimeFeed,
     peer::{PeerRoster, PeerRosterId, peer_scope},
 };
 
@@ -32,6 +28,8 @@ pub struct DiscoverySettings {
     pub display_name: String,
     pub enabled: bool,
 }
+
+myko::register_federated_item!(DiscoverySettings);
 
 /// Changes how this node advertises itself and discovers peers on its LAN.
 #[myko_command(DiscoverySettings, item = DiscoverySettings)]
@@ -45,10 +43,7 @@ impl CommandHandler for ConfigureLanDiscovery {
         PeerRosterId::from(node_id.to_string())
     }
 
-    fn execute(
-        self,
-        context: CommandContext<FederationService, PeerRoster>,
-    ) -> Result<Self::Output, CommandError> {
+    fn execute(self, context: CommandContext) -> Result<Self::Result, CommandError> {
         let display_name = self.display_name.trim().to_owned();
         if display_name.is_empty() {
             return Err(CommandError::reject(
@@ -68,34 +63,49 @@ impl CommandHandler for ConfigureLanDiscovery {
 
 /// Live LAN-discovery configuration for one authoritative node.
 #[myko_report(Option<DiscoverySettings>, item = DiscoverySettings)]
-#[derive(PartialEq, Eq)]
+#[derive(Copy, PartialEq, Eq)]
 pub struct DiscoverySettingsReport {
     pub source_node: NodeId,
 }
 
 impl ReportHandler for DiscoverySettingsReport {
     type Output = Option<DiscoverySettings>;
-    type Cursor = LogPosition;
 
-    fn access_scope(&self) -> Option<ScopeId> {
+    fn source_node(&self, _local_node: NodeId) -> Option<NodeId> {
+        Some(self.source_node)
+    }
+
+    fn scope_id(&self, _local_node: NodeId) -> Option<myko_federation::ScopeId> {
         Some(peer_scope(self.source_node))
     }
 
-    fn build(&self, context: &ReportContext) -> Result<LiveSubscription<Self::Output>, AppError> {
+    fn compute(
+        &self,
+        context: ReportContext,
+    ) -> impl hyphae::Materialize<Arc<Self::Output>, hyphae::Definite> {
         let id = DiscoverySettingsId::from(self.source_node.to_string());
-        Ok(context
-            .query(
-                self.source_node,
-                peer_scope(self.source_node),
-                GetDiscoverySettingsById { id },
-            )?
-            .map_value(Clone::clone))
+        myko::item::typed_map_arc_from_any_item::<DiscoverySettings>(
+            context
+                .federated_items::<DiscoverySettings>()
+                .expect("validated discovery-settings federation source"),
+            "DiscoverySettingsReport",
+        )
+        .entries()
+        .map(move |settings| {
+            Arc::new(
+                settings
+                    .iter()
+                    .find(|(_, setting)| setting.id == id)
+                    .map(|(_, setting)| setting.as_ref().clone()),
+            )
+        })
     }
 }
 
 #[derive(Clone)]
 pub struct DiscoveryViewState {
-    nearby: RuntimeFeed<DiscoveredNode>,
+    writer: CellMap<Arc<str>, Arc<DiscoveredNodeRow>, CellMutable>,
+    nearby: CellMap<Arc<str>, Arc<DiscoveredNodeRow>, CellImmutable>,
 }
 
 impl std::fmt::Debug for DiscoveryViewState {
@@ -108,63 +118,69 @@ impl std::fmt::Debug for DiscoveryViewState {
 
 impl DiscoveryViewState {
     pub fn new() -> Self {
-        Self {
-            nearby: RuntimeFeed::new(Vec::new()),
-        }
+        let writer = CellMap::new();
+        let nearby = writer.clone().lock();
+        Self { writer, nearby }
     }
 
     pub fn publish(&self, nodes: Vec<DiscoveredNode>) {
-        self.nearby.publish(nodes);
+        self.writer.replace_all(
+            nodes
+                .into_iter()
+                .map(|node| {
+                    let id = Arc::from(node.endpoint_id().to_string());
+                    (Arc::clone(&id), Arc::new(DiscoveredNodeRow { id, node }))
+                })
+                .collect(),
+        );
     }
 
     pub(crate) fn descriptor_for(&self, node_id: NodeId) -> Result<NativeNodeDescriptor, String> {
-        let state = self.nearby.live.current();
-        match state.liveness {
-            SubscriptionLiveness::Current => state
-                .value
-                .ok_or_else(|| "current LAN discovery state omitted its value".to_owned())?
-                .iter()
-                .find(|node| node.node_id() == node_id)
-                .map(|node| node.descriptor.clone())
-                .ok_or_else(|| {
-                    "the selected node is no longer visible through discovery".to_owned()
-                }),
-            SubscriptionLiveness::Connecting | SubscriptionLiveness::Resynchronizing { .. } => {
-                Err("LAN discovery is not current".to_owned())
-            }
-            SubscriptionLiveness::Invalid { reason } => {
-                Err(format!("LAN discovery is invalid: {reason}"))
-            }
-        }
+        self.nearby
+            .snapshot()
+            .into_iter()
+            .map(|(_, row)| row)
+            .find(|row| row.node.node_id() == node_id)
+            .map(|row| row.node.descriptor.clone())
+            .ok_or_else(|| "the selected node is no longer visible through discovery".to_owned())
     }
 }
 
+#[myko_view_item]
+#[derive(Eq)]
+pub struct DiscoveredNodeRow {
+    pub id: Arc<str>,
+    pub node: DiscoveredNode,
+}
+
 /// Live untrusted LAN advertisements visible to this node.
-#[myko_view(DiscoveredNode, item = PeerRoster)]
-#[derive(Copy, PartialEq, Eq)]
-pub struct NearbyNodesView;
+#[myko_view(DiscoveredNodeRow, item = PeerRoster)]
+#[derive(PartialEq, Eq)]
+pub struct NearbyNodesView {
+    pub source_node: NodeId,
+}
 
 impl ViewHandler for NearbyNodesView {
-    type Item = DiscoveredNode;
-    type Cursor = u64;
-
-    fn authority_claims(&self) -> Vec<ResourceClaim> {
-        vec![
-            ResourceClaim::scope(
-                ScopeId::new(format!("myko.handler:view:{}", Self::VIEW_ID)),
-                ResourceClaimKind::Referenced,
-            )
-            .requiring_capability(discovery_capability_id()),
-        ]
+    fn source_node(&self, _local_node: NodeId) -> Option<NodeId> {
+        Some(self.source_node)
     }
 
-    fn item_key(item: &Self::Item) -> Arc<str> {
-        Arc::from(item.endpoint_id().to_string())
+    fn scope_id(&self, _local_node: NodeId) -> Option<myko_federation::ScopeId> {
+        Some(peer_scope(self.source_node))
     }
 
-    fn build(&self, context: &ViewContext) -> Result<LiveCollection<Self::Item, u64>, AppError> {
-        let state = context.resource::<DiscoveryViewState>()?;
-        context.collection_from_subscription(&state.nearby.live, Self::item_key)
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        vec![discovery_capability_id()]
+    }
+
+    fn build_cell(
+        context: ViewBuildArgs<Self>,
+    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+        context
+            .resource::<DiscoveryViewState>()
+            .expect("discovery view resource is installed")
+            .nearby
+            .clone()
     }
 }
 
@@ -177,20 +193,15 @@ pub struct DiscoverySupervisor {
 
 impl DiscoverySupervisor {
     pub fn start(
-        application: &ApplicationNode,
+        application: &ApplicationHost,
         descriptor: NativeNodeDescriptor,
         state: DiscoveryViewState,
         network_enabled: bool,
     ) -> Result<Self, String> {
-        let settings = application
-            .watch_query(
-                application.node().node_id(),
-                peer_scope(application.node().node_id()),
-                GetDiscoverySettingsById {
-                    id: DiscoverySettingsId::from(application.node().node_id().to_string()),
-                },
-            )
-            .map_err(|error| error.to_string())?;
+        let settings = application.watch_items::<DiscoverySettings>(
+            Some(application.node().node_id()),
+            Some(peer_scope(application.node().node_id())),
+        )?;
         let (stopping, stop) = watch::channel(false);
         let task = tokio::spawn(run_discovery(
             descriptor,
@@ -226,19 +237,17 @@ impl Drop for DiscoverySupervisor {
 async fn run_discovery(
     descriptor: NativeNodeDescriptor,
     state: DiscoveryViewState,
-    settings: HandlerSubscription<Option<DiscoverySettings>>,
+    settings: myko::view::TypedViewCellMap<DiscoverySettings>,
     network_enabled: bool,
     mut stopping: watch::Receiver<bool>,
 ) -> Result<(), String> {
-    let (change_sender, mut change_receiver) = mpsc::unbounded_channel();
+    let (change_sender, mut change_receiver) = mpsc::channel(1);
     change_sender
-        .send(())
+        .try_send(())
         .map_err(|_| "LAN discovery settings could not publish initial state".to_owned())?;
     let updates = change_sender.clone();
-    let changes_guard = settings.live().state().subscribe(move |signal| {
-        if let Signal::Value(_) = signal {
-            let _sent = updates.send(());
-        }
+    let changes_guard = settings.subscribe_diffs(move |_| {
+        let _sent = updates.try_send(());
     });
     let mut current = None;
     let mut discovery: Option<LanDiscovery> = None;
@@ -252,12 +261,11 @@ async fn run_discovery(
             }
             update = change_receiver.recv() => {
                 update.ok_or_else(|| "LAN discovery settings subscription closed".to_owned())?;
-                let settings_state = settings.live().current();
-                match settings_state.liveness {
-                    SubscriptionLiveness::Current => {
-                        let next = settings_state.value.ok_or_else(|| {
-                            "current LAN discovery settings report omitted its value".to_owned()
-                        })?;
+                        let next = settings
+                            .snapshot()
+                            .into_iter()
+                            .next()
+                            .map(|(_, settings)| settings.as_ref().clone());
                         if current != next {
                             if let Some(running) = discovery.take() {
                                 running.shutdown().await;
@@ -278,13 +286,6 @@ async fn run_discovery(
                             }
                             current = next;
                         }
-                    }
-                    SubscriptionLiveness::Connecting
-                    | SubscriptionLiveness::Resynchronizing { .. } => {}
-                    SubscriptionLiveness::Invalid { reason } => {
-                        return Err(format!("LAN discovery settings became invalid: {reason}"));
-                    }
-                }
             }
             changed = wait_for_discovery(&mut discovery_updates) => {
                 changed?;
@@ -298,7 +299,7 @@ async fn run_discovery(
         running.shutdown().await;
     }
     drop(changes_guard);
-    settings.shutdown().await;
+    drop(settings);
     Ok(())
 }
 

@@ -24,6 +24,8 @@ pub type ReportStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 pub use export_tree::{EntityTreeExport, ExportEntityTree, ExportedEntity};
 pub use handler::{ReportContext, ReportHandler};
 // Re-export registration types (server-only)
+#[cfg(not(target_arch = "wasm32"))]
+pub use registration::ReportAuthorityFactory;
 pub use registration::{
     AnyOutput, ReportCellFactory, ReportFactory, ReportParseFn, ReportRegistration,
 };

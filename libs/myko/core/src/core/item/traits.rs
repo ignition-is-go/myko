@@ -79,6 +79,8 @@ pub type ItemSerializeJsonFn = fn(&dyn AnyItem) -> Result<Box<RawValue>, serde_j
 /// Collected via inventory for automatic discovery.
 pub struct ItemRegistration {
     pub entity_type: &'static str,
+    /// Typed service owner used by application activation.
+    pub service_id: Option<crate::ServiceTypeId>,
     /// Crate where this entity is defined (for `type_gen` filtering)
     pub crate_name: &'static str,
     /// Parse function that deserializes JSON into the typed item

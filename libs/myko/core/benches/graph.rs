@@ -432,6 +432,7 @@ fn bench_watch_initialization(c: &mut Criterion) {
                 context.registry.clone(),
                 request.clone(),
                 Some(server.clone()),
+                None,
             )
             .expect("generated graph query");
             black_box(watched.snapshot().len())
@@ -747,6 +748,7 @@ fn bench_high_degree_window_initialization(c: &mut Criterion) {
                 context.registry.clone(),
                 request.clone(),
                 Some(server.clone()),
+                None,
             )
             .expect("materialized graph query");
             black_box(watched.snapshot().len())
@@ -852,6 +854,7 @@ fn bench_high_degree_exact_edge_initialization(c: &mut Criterion) {
                 context.registry.clone(),
                 request.clone(),
                 Some(server.clone()),
+                None,
             )
             .expect("materialized endpoint query");
             black_box(watched.snapshot().len())
@@ -864,6 +867,7 @@ fn bench_high_degree_exact_edge_initialization(c: &mut Criterion) {
                 context.registry.clone(),
                 request.clone(),
                 Some(server.clone()),
+                None,
             )
             .expect("direct-key graph query");
             black_box(watched.snapshot().len())
@@ -876,6 +880,7 @@ fn bench_high_degree_exact_edge_initialization(c: &mut Criterion) {
                 context.registry.clone(),
                 request.clone(),
                 Some(server.clone()),
+                None,
             )
             .expect("direct-key graph batch query");
             black_box(watched.snapshot().len())

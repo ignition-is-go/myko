@@ -1,6 +1,6 @@
 use std::{
     any::Any,
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU8, Ordering},
@@ -8,6 +8,8 @@ use std::{
 };
 
 mod cbor_json;
+#[cfg(not(target_arch = "wasm32"))]
+mod durable_handler;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
 mod map_response;
@@ -17,6 +19,11 @@ mod view_map;
 pub use autosocket::SocketConnectionStatus as ConnectionStatus;
 use autosocket::{CallbackGuard, SocketTransport, WsFrame};
 use dashmap::DashMap;
+#[cfg(not(target_arch = "wasm32"))]
+pub use durable_handler::{
+    HandlerClientError, HandlerConnection, HandlerConnector, HandlerFrame, NodeHandlerSubscription,
+    ReactiveHandlerSubscription, ReactiveViewSubscription,
+};
 use hyphae::{
     Cell, CellImmutable, CellMap, CellMutable, CellValue, Gettable, MapExt, Materialize, Mutable,
     SubscriptionGuard, Watchable, WeakCellMap,
@@ -42,6 +49,21 @@ use crate::{
         wrap_view,
     },
 };
+
+const MAX_DISCONNECTED_SENDS: usize = 1_024;
+
+fn enqueue_disconnected_frame(
+    pending: &mut VecDeque<WsFrame>,
+    frame: WsFrame,
+) -> Result<usize, String> {
+    if pending.len() >= MAX_DISCONNECTED_SENDS {
+        return Err(format!(
+            "disconnected send queue reached its {MAX_DISCONNECTED_SENDS}-frame limit"
+        ));
+    }
+    pending.push_back(frame);
+    Ok(pending.len())
+}
 
 /// Wire protocol for encoding messages.
 /// Defaults to JSON; clients opt into CBOR by calling `set_protocol`.
@@ -213,8 +235,7 @@ impl<T: CellValue> WindowedQueryWatch<T> {
             .cursor_window
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        self.client.send_or_queue(frame);
-        Ok(())
+        self.client.send_or_queue(frame)
     }
 
     /// Move this live subscription to an exclusive ID-keyset page.
@@ -233,8 +254,7 @@ impl<T: CellValue> WindowedQueryWatch<T> {
             .cursor_window
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(window);
-        self.client.send_or_queue(frame);
-        Ok(())
+        self.client.send_or_queue(frame)
     }
 
     /// Request the first keyset page.
@@ -732,6 +752,8 @@ impl<T: CellValue> ClientMapWatchCacheEntryDyn for ClientMapWatchCacheEntry<T> {
 #[derive(Clone)]
 pub struct MykoClient {
     inner: Arc<MykoClientInner>,
+    #[cfg(not(target_arch = "wasm32"))]
+    handler_connector: Option<Arc<dyn HandlerConnector>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -780,22 +802,14 @@ struct MykoClientInner {
     map_watch_cache: DashMap<String, Box<dyn ClientMapWatchCacheEntryDyn>>,
     map_watch_cache_gate: Mutex<()>,
 
-    // Frames queued while disconnected
-    pending_sends: Mutex<Vec<WsFrame>>,
+    // Lossless frames queued while disconnected, capped at an explicit
+    // admission boundary.
+    pending_sends: Mutex<VecDeque<WsFrame>>,
 
-    // Report-response dispatch: the WS read thread hands incoming
-    // `report-response` payloads off to a dedicated worker so the hot
-    // reactive fan-out (Cell::set → notify chain → arc_swap CAS →
-    // subscriber map closures) runs off the WS read path. Without this,
-    // a slow subscriber tree back-pressures frame decoding and incoming
-    // report frames pile up in the TCP buffer.
-    //
-    // Order is preserved: a single worker drains this channel FIFO, so
-    // report responses execute in the exact order they arrived from the
-    // server — including responses for the same tx. Other frame types
-    // (query/command/ping) stay synchronous in `handle_frame`; they're
-    // low-rate and often depend on synchronous completion semantics.
-    report_dispatch_tx: flume::Sender<(Arc<str>, serde_json::Value)>,
+    // One pending report value per subscription. A capacity-one wake channel
+    // coalesces bursts without allowing response memory to grow per frame.
+    report_dispatch_pending: Mutex<HashMap<Arc<str>, serde_json::Value>>,
+    report_dispatch_tx: flume::Sender<()>,
 
     // Guards that keep subscriptions alive
     _read_guard: CallbackGuard,
@@ -997,7 +1011,7 @@ impl MykoClient {
 
     fn build_report_dispatch_guard(
         weak: &std::sync::Weak<MykoClientInner>,
-        receiver: &flume::Receiver<(Arc<str>, serde_json::Value)>,
+        receiver: &flume::Receiver<()>,
     ) -> CallbackGuard {
         let weak = weak.clone();
         let rx = receiver.clone();
@@ -1011,11 +1025,9 @@ impl MykoClient {
                         break;
                     }
                     match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                        Ok((tx, response)) => {
+                        Ok(()) => {
                             let Some(inner) = weak.upgrade() else { break };
-                            if let Some(handler) = inner.report_handlers.get(&tx) {
-                                handler(response);
-                            }
+                            Self::dispatch_pending_reports(&inner);
                         }
                         Err(flume::RecvTimeoutError::Timeout) => {}
                         Err(flume::RecvTimeoutError::Disconnected) => break,
@@ -1031,11 +1043,9 @@ impl MykoClient {
         {
             wasm_bindgen_futures::spawn_local(async move {
                 loop {
-                    while let Ok((tx, response)) = rx.try_recv() {
+                    while let Ok(()) = rx.try_recv() {
                         let Some(inner) = weak.upgrade() else { return };
-                        if let Some(handler) = inner.report_handlers.get(&tx) {
-                            handler(response);
-                        }
+                        Self::dispatch_pending_reports(&inner);
                     }
                     if rx.is_disconnected() {
                         break;
@@ -1044,6 +1054,21 @@ impl MykoClient {
                 }
             });
             CallbackGuard::noop()
+        }
+    }
+
+    fn dispatch_pending_reports(inner: &MykoClientInner) {
+        let pending = {
+            let mut pending = inner
+                .report_dispatch_pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            std::mem::take(&mut *pending)
+        };
+        for (tx, response) in pending {
+            if let Some(handler) = inner.report_handlers.get(&tx) {
+                handler(response);
+            }
         }
     }
 
@@ -1060,13 +1085,10 @@ impl MykoClient {
         let command_response_handlers: Mutex<HashMap<String, CommandResponseHandler>> =
             Mutex::new(HashMap::new());
         let command_request_handlers: DashMap<Arc<str>, CommandRequestHandler> = DashMap::new();
-        let pending_sends: Mutex<Vec<WsFrame>> = Mutex::new(Vec::new());
+        let pending_sends = Mutex::new(VecDeque::with_capacity(MAX_DISCONNECTED_SENDS));
 
-        // Report-response dispatch channel. Unbounded, single-consumer.
-        // See the field comment on `report_dispatch_tx` for rationale —
-        // the WS read thread must not run the reactive fan-out inline.
-        let (report_dispatch_tx, report_dispatch_rx) =
-            flume::unbounded::<(Arc<str>, serde_json::Value)>();
+        let report_dispatch_pending = Mutex::new(HashMap::new());
+        let (report_dispatch_tx, report_dispatch_rx) = flume::bounded::<()>(1);
 
         // We need to set up the callbacks, but they reference the inner struct.
         // Use a two-step initialization: create with noop guards, then replace.
@@ -1130,6 +1152,7 @@ impl MykoClient {
                 map_watch_cache: DashMap::new(),
                 map_watch_cache_gate: Mutex::new(()),
                 pending_sends,
+                report_dispatch_pending,
                 report_dispatch_tx,
                 _read_guard: read_guard,
                 _report_dispatch_guard: report_dispatch_guard,
@@ -1137,7 +1160,11 @@ impl MykoClient {
             }
         });
 
-        let client = Self { inner };
+        let client = Self {
+            inner,
+            #[cfg(not(target_arch = "wasm32"))]
+            handler_connector: None,
+        };
 
         if options.app_ping {
             Self::spawn_ping_loop(Arc::downgrade(&client.inner));
@@ -1349,15 +1376,16 @@ impl MykoClient {
             "ws:m:report-response" => {
                 if let Ok(response) = serde_json::from_value::<crate::wire::ReportResponse>(data())
                 {
-                    // Dispatch off the WS read thread — the handler runs
-                    // the full reactive fan-out (Cell::set → notify →
-                    // subscriber map closures), which can be many ms.
-                    // Keeping that off this loop lets the decoder keep
-                    // pulling frames and avoids TCP backpressure.
-                    // Order is preserved: the worker drains the channel
-                    // FIFO, so same-tx responses execute in send order.
                     let tx: Arc<str> = response.tx.clone().into();
-                    let _ = inner.report_dispatch_tx.send((tx, response.response));
+                    if !inner.report_handlers.contains_key(&tx) {
+                        return;
+                    }
+                    inner
+                        .report_dispatch_pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .insert(tx, response.response);
+                    let _ = inner.report_dispatch_tx.try_send(());
                 }
             }
             "ws:m:command-response" => {
@@ -1602,9 +1630,9 @@ impl MykoClient {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Send a frame, or queue it if disconnected.
-    fn send_or_queue(&self, frame: WsFrame) {
+    fn send_or_queue(&self, frame: WsFrame) -> Result<(), String> {
         if let ConnectionStatus::Connected(_) = self.inner.socket.actual_connection_state().get() {
-            let _ = self.inner.socket.send(frame);
+            self.inner.socket.send(frame)
         } else {
             let len = {
                 let mut pending = self
@@ -1612,15 +1640,15 @@ impl MykoClient {
                     .pending_sends
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pending.push(frame);
-                pending.len()
+                enqueue_disconnected_frame(&mut pending, frame)?
             };
-            if len == 1 || len.is_multiple_of(10_000) {
+            if len == 1 {
                 warn!(
                     "MykoClient queued frame while disconnected; pending_sends={}",
                     len
                 );
             }
+            Ok(())
         }
     }
 
@@ -1631,8 +1659,7 @@ impl MykoClient {
     pub fn send_event(&self, event: MEvent) -> Result<(), String> {
         let myko_msg = MykoMessage::Event(event);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     ///
@@ -1645,8 +1672,7 @@ impl MykoClient {
         }
         let myko_msg = MykoMessage::EventBatch(events);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     ///
@@ -1656,8 +1682,7 @@ impl MykoClient {
     pub fn send_query(&self, query: WrappedQuery) -> Result<(), String> {
         let myko_msg = MykoMessage::Query(query);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     /// Send a raw wrapped command (for federation forwarding)
@@ -1668,8 +1693,7 @@ impl MykoClient {
     pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
         let myko_msg = MykoMessage::Command(command);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     /// Send a raw wrapped report (for federation forwarding)
@@ -1680,8 +1704,7 @@ impl MykoClient {
     pub fn send_report_raw(&self, report: crate::report::WrappedReport) -> Result<(), String> {
         let myko_msg = MykoMessage::Report(report);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2272,7 +2295,9 @@ impl MykoClient {
             );
         }
 
-        self.send_or_queue(frame);
+        if let Err(error) = self.send_or_queue(frame) {
+            cell.set(Some(Err(error)));
+        }
 
         cell.lock()
     }
@@ -2557,7 +2582,9 @@ impl MykoClient {
         }
 
         if let Ok(frame) = self.encode_message(&MykoMessage::Command(command)) {
-            self.send_or_queue(frame);
+            if let Err(error) = self.send_or_queue(frame) {
+                cell.set(Some(Err(error)));
+            }
         } else {
             cell.set(Some(Err("Could not serialize command".to_string())));
         }
@@ -2611,9 +2638,11 @@ fn address_has_explicit_port(addr: &str) -> bool {
 
 #[cfg(test)]
 mod message_capture_tests {
+    use std::collections::VecDeque;
+
     use hyphae::Gettable;
 
-    use super::{MykoClient, WsFrame};
+    use super::{MAX_DISCONNECTED_SENDS, MykoClient, WsFrame, enqueue_disconnected_frame};
     use crate::wire::{MykoMessage, PingData};
 
     fn ping_frame(id: &str) -> Result<WsFrame, serde_json::Error> {
@@ -2650,6 +2679,21 @@ mod message_capture_tests {
         MykoClient::handle_frame(&client.inner, &uncaptured_frame);
         assert!(client.messages().get().is_none());
         assert!(client.ping_ms_sync().is_some());
+    }
+
+    #[test]
+    fn disconnected_frame_admission_is_bounded_and_lossless() {
+        let mut pending = VecDeque::new();
+        for index in 0..MAX_DISCONNECTED_SENDS {
+            assert!(
+                enqueue_disconnected_frame(&mut pending, WsFrame::Text(index.to_string())).is_ok()
+            );
+        }
+        assert!(
+            enqueue_disconnected_frame(&mut pending, WsFrame::Text("overflow".into())).is_err()
+        );
+        assert_eq!(pending.len(), MAX_DISCONNECTED_SENDS);
+        assert!(matches!(pending.front(), Some(WsFrame::Text(value)) if value == "0"));
     }
 }
 

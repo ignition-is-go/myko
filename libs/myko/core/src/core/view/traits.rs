@@ -24,6 +24,108 @@ pub trait ViewItemType {
 pub struct ViewBuildArgs<TView: ViewItemType> {
     pub view: Arc<TView>,
     pub view_context: ViewBuildContext,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub federated: Option<crate::server::federated_source::FederatedRequest>,
+}
+
+impl<TView: ViewItemType> ViewBuildArgs<TView> {
+    /// Resolve one process-local resource installed by the application host.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resource is not installed or its registry is
+    /// unavailable.
+    pub fn resource<T>(&self) -> Result<Arc<T>, crate::AppError>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.view_context
+            .view_context
+            .server_ctx
+            .application_resource::<T>()
+    }
+
+    /// Open the request's durable item source through the retained map runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not a federated request or the source
+    /// projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items<T>(&self) -> Result<crate::query::FilteredCellMap, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        let request = self
+            .federated
+            .as_ref()
+            .ok_or_else(|| "view was not opened from a federation request".to_owned())?;
+        let runtime = self
+            .view_context
+            .view_context
+            .server_ctx
+            .federated()
+            .ok_or_else(|| "server has no federation runtime".to_owned())?;
+        runtime
+            .items::<T>(request.source_node, request.scope_id.clone())
+            .map(|source| source.rows())
+    }
+
+    /// Open this request's scope across every authoritative source while
+    /// retaining source identity and revision metadata on every row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not a scoped federated request or the
+    /// multi-source projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items_across_sources<T>(
+        &self,
+    ) -> Result<crate::server::SourcedItemMap<T>, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        let request = self
+            .federated
+            .as_ref()
+            .ok_or_else(|| "view was not opened from a federation request".to_owned())?;
+        let scope_id = request
+            .scope_id
+            .clone()
+            .ok_or_else(|| "multi-source view requires a concrete scope".to_owned())?;
+        self.view_context
+            .view_context
+            .server_ctx
+            .federated()
+            .ok_or_else(|| "server has no federation runtime".to_owned())?
+            .items_across_sources::<T>(scope_id)
+    }
+
+    /// Open an explicit exact scope or subtree across authoritative sources.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not a federated request or the selected
+    /// projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items_across_sources_selected<T>(
+        &self,
+        selection: myko_federation::ScopeSelection,
+    ) -> Result<crate::server::SourcedItemMap<T>, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        let _request = self
+            .federated
+            .as_ref()
+            .ok_or_else(|| "view was not opened from a federation request".to_owned())?;
+        self.view_context
+            .view_context
+            .server_ctx
+            .federated()
+            .ok_or_else(|| "server has no federation runtime".to_owned())?
+            .items_across_sources_selected::<T>(selection)
+    }
 }
 
 /// Build the reactive `CellMap` for a view.
@@ -36,6 +138,29 @@ pub struct ViewBuildArgs<TView: ViewItemType> {
 /// `format!("{sort_field}\x1F{unique_id}")` where `\x1F` (Unit Separator) sorts
 /// before all printable characters.
 pub trait ViewHandler: ViewItemType + Sized {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source_node(&self, local_node: myko_federation::NodeId) -> Option<myko_federation::NodeId> {
+        Some(local_node)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scope_id(&self, _local_node: myko_federation::NodeId) -> Option<myko_federation::ScopeId> {
+        None
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authority_claims(
+        &self,
+        _local_node: myko_federation::NodeId,
+    ) -> Vec<myko_federation::ResourceClaim> {
+        Vec::new()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        Vec::new()
+    }
+
     /// Build a reactive map plan for this view.
     ///
     /// Returns `impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>` so impls can chain

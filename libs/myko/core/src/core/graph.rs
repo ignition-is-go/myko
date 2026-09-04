@@ -5578,6 +5578,15 @@ mod tests {
         )
     }
 
+    fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        while counter.load(Ordering::SeqCst) < expected && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn macros_emit_separate_graph_registrations() {
         fn accepts_target<T: InCategory<TagTarget>>() {}
@@ -6370,6 +6379,7 @@ mod tests {
             context.registry.clone(),
             from_request,
             Some(Arc::new(context.clone())),
+            None,
         )
         .expect("dispatch generated graph query");
         let to = context.query_map_by_str(
@@ -6530,6 +6540,7 @@ mod tests {
             ..article_a.clone()
         };
         assert!(context.set(&article_a_update).is_ok());
+        wait_for_count(&diffs, 1);
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
         assert!(targets.get_value(&article_a.id()).is_some_and(|item| {
             item.as_any()
@@ -6837,6 +6848,12 @@ mod tests {
         });
 
         assert!(context.set(&edge).is_ok());
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        while !deleted.load(Ordering::SeqCst) && std::time::Instant::now() < deadline {
+            std::thread::yield_now();
+        }
         assert!(fired.load(Ordering::SeqCst));
         assert!(deleted.load(Ordering::SeqCst));
         assert!(targets.snapshot().is_empty());
@@ -8067,6 +8084,17 @@ mod tests {
             ..assignment.clone()
         };
         assert!(context.set(&moved).is_ok());
+        let deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        while (!watched.snapshot().is_empty()
+            || !watched_pair.snapshot().is_empty()
+            || watched_pair_count.get() != 0
+            || watched_moved_pair.snapshot().len() != 1)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
         assert!(watched.snapshot().is_empty());
         assert!(watched_pair.snapshot().is_empty());
         assert_eq!(watched_pair_count.get(), 0);

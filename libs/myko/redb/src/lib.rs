@@ -12,7 +12,8 @@ use myko_federation::{
     EventEnvelope, EventJournal, Node, NodeError, NodeId, ReplicationCheckpoint,
     ReplicationCursorKey, ReplicationCursorStore,
 };
-use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition};
+use rayon::prelude::*;
+use redb::{Database, Durability, ReadableDatabase, ReadableTable, TableDefinition, TableError};
 
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("myko_meta");
 const EVENTS: TableDefinition<u64, &[u8]> = TableDefinition::new("myko_events");
@@ -43,8 +44,21 @@ impl RedbJournal {
     ///
     /// Returns an error when the database cannot be opened, initialized, or read.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, NodeError> {
+        let path = path.as_ref();
+        let started = std::time::Instant::now();
         let database = Arc::new(Database::create(path).map_err(backend_error)?);
+        tracing::debug!(
+            path = %path.display(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "redb database opened"
+        );
+        let initialized = std::time::Instant::now();
         let node_id = initialize(&database)?;
+        tracing::debug!(
+            path = %path.display(),
+            elapsed_ms = initialized.elapsed().as_millis(),
+            "redb journal metadata initialized"
+        );
         Ok(Self { database, node_id })
     }
 
@@ -76,14 +90,31 @@ impl EventJournal for RedbJournal {
     }
 
     fn replay(&self) -> Result<Vec<EventEnvelope>, NodeError> {
+        let started = std::time::Instant::now();
         let read = self.database.begin_read().map_err(backend_error)?;
         let table = read.open_table(EVENTS).map_err(backend_error)?;
-        let mut events = Vec::new();
+        let mut encoded_events = Vec::new();
+        let mut encoded_bytes = 0_u64;
         for entry in table.iter().map_err(backend_error)? {
             let (_, encoded) = entry.map_err(backend_error)?;
-            let envelope = serde_json::from_slice(encoded.value()).map_err(backend_error)?;
-            events.push(envelope);
+            encoded_bytes = encoded_bytes
+                .saturating_add(u64::try_from(encoded.value().len()).unwrap_or(u64::MAX));
+            encoded_events.push(encoded.value().to_vec());
         }
+        let read_elapsed = started.elapsed();
+        let decode_started = std::time::Instant::now();
+        let events = encoded_events
+            .par_iter()
+            .map(|encoded| serde_json::from_slice(encoded).map_err(backend_error))
+            .collect::<Result<Vec<EventEnvelope>, NodeError>>()?;
+        tracing::debug!(
+            events = events.len(),
+            encoded_bytes,
+            read_ms = read_elapsed.as_millis(),
+            decode_ms = decode_started.elapsed().as_millis(),
+            elapsed_ms = started.elapsed().as_millis(),
+            "redb journal replay decoded"
+        );
         Ok(events)
     }
 
@@ -195,6 +226,10 @@ impl ReplicationCursorStore for RedbJournal {
 }
 
 fn initialize(database: &Database) -> Result<NodeId, NodeError> {
+    if let Some(node_id) = read_existing_node_id(database)? {
+        return Ok(node_id);
+    }
+
     let mut write = database.begin_write().map_err(backend_error)?;
     write
         .set_durability(Durability::Immediate)
@@ -224,6 +259,19 @@ fn initialize(database: &Database) -> Result<NodeId, NodeError> {
     );
     write.commit().map_err(backend_error)?;
     Ok(node_id)
+}
+
+fn read_existing_node_id(database: &Database) -> Result<Option<NodeId>, NodeError> {
+    let read = database.begin_read().map_err(backend_error)?;
+    let meta = match read.open_table(META) {
+        Ok(meta) => meta,
+        Err(TableError::TableDoesNotExist(_)) => return Ok(None),
+        Err(error) => return Err(backend_error(error)),
+    };
+    meta.get(NODE_ID_KEY)
+        .map_err(backend_error)?
+        .map(|encoded| serde_json::from_slice(encoded.value()).map_err(backend_error))
+        .transpose()
 }
 
 fn backend_error(error: impl fmt::Display) -> NodeError {

@@ -316,6 +316,7 @@ pub struct MykoServerContext {
     pub registry: Arc<StoreRegistry>,
     /// Handler registry for item parsers
     pub handler_registry: Arc<HandlerRegistry>,
+    application_resources: crate::ApplicationResources,
     /// Relationship manager - handles cascades
     relationship_manager: Arc<RelationshipManager>,
     /// Persister routing (default + per-entity overrides)
@@ -348,6 +349,8 @@ pub struct MykoServerContext {
     graph_index: Option<Arc<GraphIndex>>,
     causal_limits: Arc<RwLock<CausalLimits>>,
     causal_counters: Arc<CausalCounters>,
+    #[cfg(not(target_arch = "wasm32"))]
+    federated: Option<Arc<crate::server::federated_source::FederatedRuntime>>,
 }
 
 pub struct MykoServerRuntime {
@@ -357,6 +360,32 @@ pub struct MykoServerRuntime {
 }
 
 impl MykoServerContext {
+    /// Build the retained server context around one durable application node.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the joined durable-source executor cannot start.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn for_federated_application(
+        node: myko_federation::Node,
+        handlers: Arc<HandlerRegistry>,
+    ) -> Result<Self, String> {
+        Self::new(
+            Uuid::new_v4(),
+            Arc::new(StoreRegistry::new()),
+            handlers,
+            Arc::new(RelationshipManager::new()),
+            Arc::new(PersisterRouter::default()),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        )
+        .with_federation(node)
+    }
+
     /// Create a new server context.
     #[must_use]
     pub fn new(
@@ -384,6 +413,7 @@ impl MykoServerContext {
             host_id_str: Arc::from(host_id.to_string()),
             registry,
             handler_registry,
+            application_resources: crate::ApplicationResources::default(),
             relationship_manager,
             persisters,
             search_index,
@@ -399,6 +429,53 @@ impl MykoServerContext {
             graph_index,
             causal_limits: Arc::new(RwLock::new(CausalLimits::default())),
             causal_counters: Arc::new(CausalCounters::default()),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated: None,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn with_application_resources(
+        mut self,
+        resources: crate::ApplicationResources,
+    ) -> Self {
+        self.application_resources = resources;
+        self
+    }
+
+    pub(crate) fn application_resource<T>(&self) -> Result<Arc<T>, crate::AppError>
+    where
+        T: Send + Sync + 'static,
+    {
+        self.application_resources.get::<T>()
+    }
+
+    /// Attach the one node-owned durable source runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when its joined executor cannot start.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn with_federation(mut self, node: myko_federation::Node) -> Result<Self, String> {
+        self.federated = Some(Arc::new(
+            crate::server::federated_source::FederatedRuntime::new(node)?,
+        ));
+        Ok(self)
+    }
+
+    /// Return the node-owned durable source runtime, when configured.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) const fn federated(
+        &self,
+    ) -> Option<&Arc<crate::server::federated_source::FederatedRuntime>> {
+        self.federated.as_ref()
+    }
+
+    /// Stop and join every durable projection owned by this context.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub async fn shutdown_federation(&self) {
+        if let Some(runtime) = self.federated.as_ref() {
+            runtime.shutdown().await;
         }
     }
 
@@ -410,6 +487,17 @@ impl MykoServerContext {
     ) -> String {
         let payload_hash = params.cache_key_hash();
         format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn append_federated_cache_key(
+        key: &mut String,
+        federated: Option<&crate::server::federated_source::FederatedRequest>,
+    ) {
+        if let Some(route) = federated {
+            use std::fmt::Write as _;
+            let _written = write!(key, ":federated:{route:?}");
+        }
     }
 
     /// Get the search index.
@@ -2314,9 +2402,44 @@ impl MykoServerContext {
             + Sync
             + 'static,
     {
-        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        self.query_map_routed(
+            query,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    pub(crate) fn query_map_routed<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    where
+        Q: QueryParams + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
+    {
+        let mut key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::append_federated_cache_key(&mut key, federated.as_ref());
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
-        let untyped = self.query_map_untyped(query, request);
+        let untyped = self.query_map_untyped_routed(
+            query,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        );
         Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
             typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
         })
@@ -2358,8 +2481,36 @@ impl MykoServerContext {
         Q::Item:
             Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        let untyped = self.query_map_untyped(query, request);
+        self.query_map_by_str_routed(
+            query,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    pub(crate) fn query_map_by_str_routed<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
+    where
+        Q: QueryParams + 'static,
+        Q::Item:
+            Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let mut key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::append_federated_cache_key(&mut key, federated.as_ref());
+        let untyped = self.query_map_untyped_routed(
+            query,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        );
         Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
             typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
         })
@@ -2388,7 +2539,29 @@ impl MykoServerContext {
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        self.query_map_untyped_routed(
+            query,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    pub(crate) fn query_map_untyped_routed<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> FilteredCellMap
+    where
+        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let mut key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::append_federated_cache_key(&mut key, federated.as_ref());
         self.compute_or_cache(&key, &self.query_cache, || {
             let query_req = QueryRequest::with_tx(query, request.tx.clone());
             let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
@@ -2397,6 +2570,8 @@ impl MykoServerContext {
                 self.registry.clone(),
                 request,
                 Some(Arc::new(self.clone())),
+                #[cfg(not(target_arch = "wasm32"))]
+                federated,
             )
             .unwrap_or_else(|error| {
                 tracing::error!(
@@ -2509,7 +2684,29 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        self.view_map_untyped_routed(
+            view,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    pub(crate) fn view_map_untyped_routed<V>(
+        &self,
+        view: V,
+        request: Arc<RequestContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> FilteredViewCellMap
+    where
+        V: ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let mut key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::append_federated_cache_key(&mut key, federated.as_ref());
         self.compute_or_cache(&key, &self.view_cache, || {
             let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
             let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
@@ -2518,6 +2715,8 @@ impl MykoServerContext {
                 self.registry.clone(),
                 request,
                 Arc::new(self.clone()),
+                #[cfg(not(target_arch = "wasm32"))]
+                federated,
             )
             .unwrap_or_else(|error| {
                 tracing::error!(
@@ -2536,8 +2735,35 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
-        let untyped = self.view_map_untyped(view, request);
+        self.view_routed(
+            view,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    pub(crate) fn view_routed<V>(
+        &self,
+        view: V,
+        request: Arc<RequestContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> TypedViewCellMap<V::Item>
+    where
+        V: ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let mut key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        #[cfg(not(target_arch = "wasm32"))]
+        Self::append_federated_cache_key(&mut key, federated.as_ref());
+        let untyped = self.view_map_untyped_routed(
+            view,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        );
         if let Some(entry) = self.view_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_arc_from_any_item(source, "MykoServerContext::view")
@@ -2596,7 +2822,31 @@ impl MykoServerContext {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
-        let key = Self::cache_key("report", report.report_id().as_ref(), &report, &request);
+        self.report_routed(
+            report,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    pub(crate) fn report_routed<R>(
+        &self,
+        report: R,
+        request: Arc<RequestContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> Cell<Arc<R::Output>, CellImmutable>
+    where
+        R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
+    {
+        let mut key = Self::cache_key("report", report.report_id().as_ref(), &report, &request);
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(route) = federated.as_ref() {
+            use std::fmt::Write as _;
+            let _written = write!(&mut key, ":federated:{route:?}");
+        }
         let report_id = report.report_id();
 
         // Fast path: cache hit with live cell.
@@ -2654,7 +2904,12 @@ impl MykoServerContext {
         // cache-miss materialization, not a per-subscriber-update hot path.
         let _span = tracing::trace_span!("myko.report", report = report_id.as_ref()).entered();
         crate::server::dispatch_metrics::record_report(report_id.as_ref(), request.origin());
-        let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
+        let nested_ctx = ReportContext::new_routed(
+            request,
+            Arc::new(self.clone()),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        );
         // The trait returns `impl Pipeline<...>`; materialize once here so the
         // cache and downstream consumers get a concrete `Cell`. This is the only
         // materialization per report, regardless of how deep the inner chain is.
@@ -2783,6 +3038,7 @@ mod tests {
     inventory::submit! {
         ItemRegistration {
             entity_type: "BufferedTestItem",
+            service_id: None,
             crate_name: env!("CARGO_PKG_NAME"),
             parse: BufferedTestItem::parse,
             parse_bytes: BufferedTestItem::parse_bytes,
@@ -2838,6 +3094,7 @@ mod tests {
     inventory::submit! {
         ItemRegistration {
             entity_type: "ImmediateTestItem",
+            service_id: None,
             crate_name: env!("CARGO_PKG_NAME"),
             parse: ImmediateTestItem::parse,
             parse_bytes: ImmediateTestItem::parse_bytes,

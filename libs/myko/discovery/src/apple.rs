@@ -72,11 +72,20 @@ pub fn start(
         let Ok(registration) =
             async_dnssd::register_extended(MYKO_BONJOUR_SERVICE_TYPE, port, register_data)
         else {
+            tracing::error!("could not register Apple Bonjour advertisement");
             return;
         };
         let Ok((_registration, _registered)) = registration.await else {
+            tracing::error!("Apple Bonjour advertisement registration failed");
             return;
         };
+
+        tracing::debug!(
+            %service_name,
+            endpoint_id = %local_endpoint,
+            service_type = MYKO_BONJOUR_SERVICE_TYPE,
+            "Apple Bonjour advertisement and browser started"
+        );
 
         let mut browser = async_dnssd::browse(MYKO_BONJOUR_SERVICE_TYPE);
         let mut services = BTreeMap::<ServiceKey, String>::new();
@@ -90,7 +99,10 @@ pub fn start(
                         let Ok(Some(Ok(resolved))) = tokio::time::timeout(
                             Duration::from_secs(3),
                             resolution.next(),
-                        ).await else { continue };
+                        ).await else {
+                            tracing::trace!(service = %result.service_name, "Bonjour service resolution failed or timed out");
+                            continue;
+                        };
                         let Some(txt) = TxtRecord::parse(&resolved.txt) else { continue };
                         let mut fields = BonjourTxt::default();
                         for (key, value) in &txt {
@@ -109,6 +121,12 @@ pub fn start(
                         });
                         services.insert(key, endpoint);
                         if changed {
+                            tracing::debug!(
+                                node_id = %advertisement.descriptor.node_id,
+                                endpoint_id = %advertisement.descriptor.endpoint.id,
+                                display_name = %advertisement.display_name,
+                                "discovered LAN node"
+                            );
                             publish_roster(&task_roster, &task_updates);
                         }
                     } else if let Some(endpoint) = services.remove(&key) {
@@ -117,6 +135,7 @@ pub fn start(
                             roster.remove_endpoint(&endpoint)
                         });
                         if changed {
+                            tracing::debug!(endpoint_id = %endpoint, "LAN node advertisement disappeared");
                             publish_roster(&task_roster, &task_updates);
                         }
                     }
@@ -128,6 +147,7 @@ pub fn start(
                 }
             }
         }
+        tracing::debug!("Apple Bonjour driver stopped");
     });
 
     Ok(LanDiscovery {

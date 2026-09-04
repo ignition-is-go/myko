@@ -3,7 +3,7 @@ use std::collections::{BTreeSet, HashMap};
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{
-    ExprPath, Field, FieldsNamed, ItemStruct, LitInt, Result, Token,
+    ExprPath, Field, FieldsNamed, ItemStruct, LitBool, LitInt, Path, Result, Token,
     parse::{Parse, ParseStream},
 };
 
@@ -13,6 +13,11 @@ use crate::{DeriveCtx, relationship, setter};
 pub struct ItemArgs {
     pub ingest_buffer_ms: Option<u64>,
     pub post_deserialize: Option<ExprPath>,
+    pub service: Option<Path>,
+    pub scope_root: bool,
+    pub scoped_by: Option<Path>,
+    pub filters: Option<bool>,
+    pub deletes: Option<bool>,
 }
 
 impl Parse for ItemArgs {
@@ -21,14 +26,43 @@ impl Parse for ItemArgs {
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
-            input.parse::<Token![=]>()?;
-
             if ident == "ingest_buffer_ms" {
+                input.parse::<Token![=]>()?;
                 let value: LitInt = input.parse()?;
                 args.ingest_buffer_ms = Some(value.base10_parse()?);
             } else if ident == "post_deserialize" {
+                input.parse::<Token![=]>()?;
                 let value: ExprPath = input.parse()?;
                 args.post_deserialize = Some(value);
+            } else if ident == "service" {
+                input.parse::<Token![=]>()?;
+                if args.service.is_some() {
+                    return Err(syn::Error::new(ident.span(), "duplicate `service`"));
+                }
+                args.service = Some(input.parse()?);
+            } else if ident == "scope_root" {
+                if args.scope_root {
+                    return Err(syn::Error::new(ident.span(), "duplicate `scope_root`"));
+                }
+                args.scope_root = true;
+            } else if ident == "scoped_by" {
+                input.parse::<Token![=]>()?;
+                if args.scoped_by.is_some() {
+                    return Err(syn::Error::new(ident.span(), "duplicate `scoped_by`"));
+                }
+                args.scoped_by = Some(input.parse()?);
+            } else if ident == "filters" {
+                input.parse::<Token![=]>()?;
+                if args.filters.is_some() {
+                    return Err(syn::Error::new(ident.span(), "duplicate `filters`"));
+                }
+                args.filters = Some(input.parse::<LitBool>()?.value);
+            } else if ident == "deletes" {
+                input.parse::<Token![=]>()?;
+                if args.deletes.is_some() {
+                    return Err(syn::Error::new(ident.span(), "duplicate `deletes`"));
+                }
+                args.deletes = Some(input.parse::<LitBool>()?.value);
             } else {
                 return Err(syn::Error::new(
                     ident.span(),
@@ -89,7 +123,8 @@ fn generate_get_all_query(
     krate: &syn::Path,
 ) -> TokenStream {
     quote! {
-        #[#krate::myko_query(#name)]
+        #[derive(PartialEq, Eq)]
+        #[#krate::myko_query(#name, service = #name)]
         pub struct #query_ident {}
 
         impl #krate::prelude::QueryHandler for #query_ident {
@@ -107,6 +142,7 @@ fn generate_get_all_query(
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                use #krate::prelude::RegistryScoped as _;
                 // Registry stores are already partitioned by entity type, so returning
                 // the raw map avoids installing a no-op `select(|_| true)` runtime.
                 Some(
@@ -130,7 +166,8 @@ fn generate_get_by_ids_query(
     krate: &syn::Path,
 ) -> TokenStream {
     quote! {
-        #[#krate::myko_query(#name)]
+        #[derive(PartialEq, Eq)]
+        #[#krate::myko_query(#name, service = #name)]
         pub struct #query_ident {
             pub ids: Vec<#id_type_ident>,
         }
@@ -150,6 +187,7 @@ fn generate_get_by_ids_query(
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                use #krate::prelude::RegistryScoped as _;
                 let ids: Vec<std::sync::Arc<str>> = ctx.query.ids.iter()
                     .map(|id| std::sync::Arc::<str>::from(id.clone()))
                     .collect();
@@ -348,7 +386,7 @@ fn generate_filter_query(
     quote! {
         #[#krate::myko_non_hash_cache_key]
         #[#krate::myko_manual_cache_key]
-        #[#krate::myko_query(#name)]
+        #[#krate::myko_query(#name, service = #name)]
         pub struct #query_ident(pub #filter_ident);
 
         impl #krate::prelude::CacheKey for #query_ident {
@@ -370,6 +408,7 @@ fn generate_filter_query(
                 >>
             where Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                use #krate::prelude::RegistryScoped as _;
                 let source = match ctx.query.0.query_route()? {
                     #krate::query::QueryRoute::Ids(ids) => {
                         let store = ctx.query_context.registry().get_or_create(#name_str);
@@ -392,6 +431,7 @@ fn generate_filter_query(
 }
 
 fn generate_count_all_report(
+    name: &syn::Ident,
     query_ident: &syn::Ident,
     result_ident: &syn::Ident,
     report_ident: &syn::Ident,
@@ -401,7 +441,7 @@ fn generate_count_all_report(
         #[#krate::myko_report_output]
         pub struct #result_ident { pub count: usize }
 
-        #[#krate::myko_report(#result_ident)]
+        #[#krate::myko_report(#result_ident, item = #name)]
         pub struct #report_ident {}
 
         impl #krate::prelude::ReportHandler for #report_ident {
@@ -409,7 +449,7 @@ fn generate_count_all_report(
             fn compute(&self, ctx: #krate::prelude::ReportContext)
                 -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
             {
-                use #krate::prelude::MapExt;
+                use #krate::prelude::{MapExt as _, Querying as _};
                 let query = #query_ident {};
                 let source = ctx.query_map_by_str(query);
                 source.size().map(move |count| {
@@ -421,6 +461,7 @@ fn generate_count_all_report(
 }
 
 fn generate_count_report(
+    name: &syn::Ident,
     filter_ident: &syn::Ident,
     query_ident: &syn::Ident,
     result_ident: &syn::Ident,
@@ -430,7 +471,7 @@ fn generate_count_report(
     quote! {
         #[#krate::myko_non_hash_cache_key]
         #[#krate::myko_manual_cache_key]
-        #[#krate::myko_report(#result_ident)]
+        #[#krate::myko_report(#result_ident, item = #name)]
         pub struct #report_ident(pub #filter_ident);
 
         impl #krate::prelude::CacheKey for #report_ident {
@@ -444,7 +485,7 @@ fn generate_count_report(
             fn compute(&self, ctx: #krate::prelude::ReportContext)
                 -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
             {
-                use #krate::prelude::MapExt;
+                use #krate::prelude::{MapExt as _, Querying as _};
                 let source = ctx.query_map_by_str(#query_ident(self.0.clone()));
                 source.size().map(move |count| {
                     std::sync::Arc::new(#result_ident { count: *count })
@@ -461,7 +502,7 @@ fn generate_get_by_id_report(
     krate: &syn::Path,
 ) -> TokenStream {
     quote! {
-        #[#krate::myko_report(Option<std::sync::Arc<#name>>)]
+        #[#krate::myko_report(Option<std::sync::Arc<#name>>, item = #name)]
         pub struct #report_ident { pub id: #id_type_ident }
 
         impl #krate::prelude::ReportHandler for #report_ident {
@@ -469,7 +510,7 @@ fn generate_get_by_id_report(
             fn compute(&self, ctx: #krate::prelude::ReportContext)
                 -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
             {
-                use #krate::prelude::{Eventable, MapExt};
+                use #krate::prelude::{Eventable as _, MapExt as _, RegistryScoped as _};
                 let id: std::sync::Arc<str> = self.id.clone().into();
                 let store = ctx.registry().get_or_create(#name::ENTITY_NAME_STATIC);
                 store.get(&id).map(move |item| std::sync::Arc::new(
@@ -512,6 +553,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
         pub struct #delete_ident { pub id: #id }
         impl #krate::command::CommandHandler for #delete_ident {
             fn execute(self, ctx: #krate::prelude::CommandContext) -> Result<#delete_result, #krate::prelude::CommandError> {
+                use #krate::prelude::{EventPublishing as _, RequestScoped as _};
                 match ctx.exec_report(#get_one { id: self.id.clone() })? {
                     Some(entity) => { ctx.emit_del(entity)?; Ok(#delete_result { deleted: true }) }
                     None => Err(#krate::prelude::CommandError::new(
@@ -531,6 +573,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
         pub struct #delete_many_ident { pub ids: Vec<#id> }
         impl #krate::command::CommandHandler for #delete_many_ident {
             fn execute(self, ctx: #krate::prelude::CommandContext) -> Result<#delete_many_result, #krate::prelude::CommandError> {
+                use #krate::prelude::EventPublishing as _;
                 let entities = ctx.exec_query(#get_many { ids: self.ids.clone() })?;
                 let deleted_count = entities.len();
                 ctx.emit_del_batch(entities.iter().map(|entity| entity.as_ref()))?;
@@ -555,15 +598,45 @@ struct PreparedItem {
     ingest_registration: Option<TokenStream>,
 }
 
-fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
-    let relationships = relationship::collect_relationships(&input_struct);
-    let setters = setter::collect_setter_fields(&input_struct);
+// Preparation deliberately centralizes mutations to the parsed struct before
+// any expansion reads it, so relationship and generated-field metadata agree.
+#[allow(clippy::too_many_lines)]
+fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> Result<PreparedItem> {
     let name = input_struct.ident.clone();
     let name_str = name.to_string();
     let id_type_ident = format_ident!("{}Id", name_str);
     let ctx = DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
+    if let Some(parent) = &args.scoped_by {
+        let syn::Fields::Named(FieldsNamed { named, .. }) = &mut input_struct.fields else {
+            return Err(syn::Error::new_spanned(
+                &name,
+                "scoped Myko items require named fields",
+            ));
+        };
+        let parent_name = parent
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+            .ok_or_else(|| syn::Error::new_spanned(parent, "scoped parent type is empty"))?;
+        let parent_id = format_ident!("{}_id", snake_case(&parent_name));
+        if named
+            .iter()
+            .any(|field| field.ident.as_ref() == Some(&parent_id))
+        {
+            return Err(syn::Error::new_spanned(
+                parent_id,
+                "the scoped parent ID field is generated by `scoped_by`",
+            ));
+        }
+        named.push(syn::parse_quote! {
+            #[belongs_to(#parent)]
+            pub #parent_id: <#parent as #krate::MykoItem>::Id
+        });
+    }
+    let relationships = relationship::collect_relationships(&input_struct);
+    let setters = setter::collect_setter_fields(&input_struct);
     let ingest_registration = args.ingest_buffer_ms.map(|window_ms| quote! {
         #krate::submit! {
             #krate::prelude::IngestBufferRegistration {
@@ -582,10 +655,28 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
             }
             let id_field: Field = syn::parse_quote! { pub id: #id_type_ident };
             named.push(id_field);
-            named
-                .iter()
-                .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
-                .collect()
+            if args.filters.unwrap_or(true) {
+                named
+                    .iter()
+                    .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
+                    .collect()
+            } else {
+                let parent_id = args.scoped_by.as_ref().and_then(|parent| {
+                    parent.segments.last().map(|segment| {
+                        format_ident!("{}_id", snake_case(&segment.ident.to_string()))
+                    })
+                });
+                named
+                    .iter()
+                    .filter(|field| {
+                        field
+                            .ident
+                            .as_ref()
+                            .is_some_and(|ident| ident == "id" || parent_id.as_ref() == Some(ident))
+                    })
+                    .filter_map(|field| Some((field.ident.clone()?, field.ty.clone())))
+                    .collect()
+            }
         } else {
             Vec::new()
         };
@@ -641,7 +732,7 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
             }
         }
     });
-    PreparedItem {
+    Ok(PreparedItem {
         input_struct,
         relationships,
         setters,
@@ -654,7 +745,26 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
         partial_eq_impl,
         post_deserialize,
         ingest_registration,
+    })
+}
+
+fn snake_case(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    let mut characters = value.chars().peekable();
+    let mut previous = None;
+    while let Some(character) = characters.next() {
+        let next_is_lower = characters.peek().is_some_and(char::is_ascii_lowercase);
+        let starts_word = previous.is_some_and(|previous: char| {
+            character.is_ascii_uppercase()
+                && (previous.is_ascii_lowercase() || previous.is_ascii_digit() || next_is_lower)
+        });
+        if starts_word {
+            output.push('_');
+        }
+        output.extend(character.to_lowercase());
+        previous = Some(character);
     }
+    output
 }
 
 fn generate_foreign_key_impls(
@@ -673,22 +783,21 @@ fn generate_foreign_key_impls(
     let fields = relationships
         .belongs_to
         .iter()
-        .map(|item| (&item.field_name, &item.foreign_type))
+        .map(|item| (&item.field_name, &item.foreign_type, &item.foreign_path))
         .chain(
             relationships
                 .ensure_for_fields
                 .iter()
-                .map(|item| (&item.field_name, &item.foreign_type)),
+                .map(|item| (&item.field_name, &item.foreign_type, &item.foreign_path)),
         );
     let mut relations = BTreeSet::new();
     fields
-        .filter_map(|(field_name, foreign_type)| {
+        .filter_map(|(field_name, foreign_type, foreign_path)| {
             if !relations.insert((field_name.clone(), foreign_type.clone())) {
                 return None;
             }
             let field_ty = field_types.get(field_name)?;
             let field_ident = format_ident!("{field_name}");
-            let foreign_ident = format_ident!("{foreign_type}");
             let field_pascal = to_pascal_case(field_name);
             let relation_ident = format_ident!("{name}{field_pascal}Relation");
             let (foreign_key_ty, foreign_key) = option_inner_type(field_ty).map_or_else(
@@ -699,9 +808,9 @@ fn generate_foreign_key_impls(
                 pub struct #relation_ident;
 
                 impl #krate::hyphae::ForeignKeyRelation for #relation_ident
-                where #foreign_key_ty: #krate::hyphae::IdFor<#foreign_ident>,
+                where #foreign_key_ty: #krate::hyphae::IdFor<#foreign_path>,
                 {
-                    type Parent = #foreign_ident;
+                    type Parent = #foreign_path;
                     type Child = std::sync::Arc<#name>;
                     type ForeignKey = #foreign_key_ty;
 
@@ -722,6 +831,10 @@ fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> Toke
         #[ts(crate = "myko::ts_rs")]
         #[ts(type = "string")]
         pub struct #id(pub std::sync::Arc<str>);
+        impl #id {
+            #[must_use]
+            pub fn new(value: impl Into<std::sync::Arc<str>>) -> Self { Self(value.into()) }
+        }
         impl std::ops::Deref for #id { type Target = str; fn deref(&self) -> &str { self.0.as_ref() } }
         impl std::fmt::Display for #id {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { std::fmt::Display::fmt(self.0.as_ref(), f) }
@@ -736,6 +849,7 @@ fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> Toke
             fn map_key(&self) -> Self::MapKey { self.0.clone() }
         }
         impl #krate::hyphae::IdType for #id { type Parent = #name; }
+        impl #krate::ItemId for #id {}
         impl #krate::query::Filterable for #id { type Filter = #krate::query::IdFilter<#id>; }
     }
 }
@@ -753,6 +867,7 @@ struct ItemExpansion {
     item_registration: TokenStream,
     server_owned_impls: TokenStream,
     foreign_key_impls: Vec<TokenStream>,
+    federated_item_impls: TokenStream,
     generated_items: Vec<TokenStream>,
 }
 
@@ -770,13 +885,14 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
         item_registration,
         server_owned_impls,
         foreign_key_impls,
+        federated_item_impls,
         generated_items,
     } = input;
     let krate = &ctx.krate;
     let id_type = generate_id_type(&name, &id_type_ident, &ctx);
     quote! {
-        use #krate::prelude::Query;
-        use #krate::hyphae::MapExt as _HyphaMapExt;
+        use #krate::prelude::Query as _;
+        use #krate::hyphae::MapExt as _;
         #id_type
         #derives
         #input_struct
@@ -804,8 +920,139 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
             type Id = #id_type_ident;
             fn typed_id(&self) -> Self::Id { self.id.clone().into() }
         }
+        #federated_item_impls
         #(#foreign_key_impls)*
         #(#generated_items)*
+    }
+}
+
+// The item contract is emitted as one block so its service, scope, queries,
+// and parent relationship cannot drift across separate expansion branches.
+#[allow(clippy::too_many_lines)]
+fn generate_federated_item_impls(
+    args: &ItemArgs,
+    name: &syn::Ident,
+    name_str: &str,
+    id: &syn::Ident,
+    get_all: &syn::Ident,
+    get_by_ids: &syn::Ident,
+    krate: &syn::Path,
+) -> TokenStream {
+    let (service, service_impl) = args.service.as_ref().map_or_else(
+        || {
+            (
+                quote!(#name),
+                quote! {
+                    impl #krate::MykoService for #name {
+                        type Items = (#name,);
+                        const SERVICE_ID: #krate::ServiceTypeId = #krate::ServiceTypeId::new(
+                            concat!(module_path!(), "::", stringify!(#name)),
+                        );
+                    }
+                },
+            )
+        },
+        |service| (quote!(#service), quote!()),
+    );
+    let (scope_type, scope, scope_id, belongs_to_method, belongs_to_impl) =
+        args.scoped_by.as_ref().map_or_else(
+            || {
+                let scope = if args.scope_root {
+                    quote!(#krate::ItemScope::Root)
+                } else {
+                    quote!(#krate::ItemScope::Unscoped)
+                };
+                (quote!(#name), scope, quote!(&self.id), quote!(), quote!())
+            },
+            |parent| {
+                let parent_name = parent
+                    .segments
+                    .last()
+                    .map(|segment| segment.ident.to_string())
+                    .unwrap_or_default();
+                let parent_id = format_ident!("{}_id", snake_case(&parent_name));
+                let belongs_to_method = quote! {
+                    fn belongs_to(&self) -> Option<#krate::FederatedEntityRef> {
+                        Some(<Self as #krate::BelongsTo>::parent_ref(self))
+                    }
+                };
+                let belongs_to_impl = quote! {
+                    impl #krate::BelongsTo for #name {
+                        type Parent = #parent;
+
+                        fn parent_id(&self) -> &<#parent as #krate::MykoItem>::Id {
+                            &self.#parent_id
+                        }
+                    }
+                };
+                if args.scope_root {
+                    (
+                        quote!(#name),
+                        quote!(#krate::ItemScope::RootScopedBy {
+                            service_id: <#parent as #krate::MykoItem>::SERVICE_ID,
+                            item_type: <#parent as #krate::MykoItem>::ITEM_TYPE,
+                        }),
+                        quote!(&self.id),
+                        belongs_to_method,
+                        belongs_to_impl,
+                    )
+                } else {
+                    (
+                        quote!(#parent),
+                        quote!(#krate::ItemScope::ScopedBy {
+                            service_id: <#parent as #krate::MykoItem>::SERVICE_ID,
+                            item_type: <#parent as #krate::MykoItem>::ITEM_TYPE,
+                        }),
+                        quote!(&self.#parent_id),
+                        belongs_to_method,
+                        belongs_to_impl,
+                    )
+                }
+            },
+        );
+
+    quote! {
+        #service_impl
+
+        impl #krate::ItemQuery for #get_all {
+            type Item = #name;
+        }
+
+        impl #krate::GeneratedItemQuery for #get_all {}
+
+        impl #krate::ItemQuery for #get_by_ids {
+            type Item = #name;
+
+            fn selected_item_ids(&self) -> Option<Vec<#id>> {
+                Some(self.ids.clone())
+            }
+        }
+
+        impl #krate::GeneratedItemQuery for #get_by_ids {}
+
+        impl #krate::MykoItem for #name {
+            type Id = #id;
+            type Service = #service;
+            type Scope = #scope_type;
+            type GetAllQuery = #get_all;
+            type GetByIdQuery = #get_by_ids;
+            type GetByIdsQuery = #get_by_ids;
+
+            const ITEM_TYPE: &'static str = #name_str;
+            const SCOPE: #krate::ItemScope = #scope;
+
+            fn item_id(&self) -> &Self::Id {
+                &self.id
+            }
+
+            fn scope_id(&self) -> &<Self::Scope as #krate::MykoItem>::Id {
+                #scope_id
+            }
+
+            #belongs_to_method
+        }
+
+        #belongs_to_impl
     }
 }
 
@@ -813,6 +1060,7 @@ fn generate_item_registration(name: &syn::Ident, name_str: &str, krate: &syn::Pa
     quote! {
         #krate::prelude::ItemRegistration {
             entity_type: #name_str,
+            service_id: Some(<#name as #krate::MykoItem>::SERVICE_ID),
             crate_name: module_path!(),
             parse: <#name as #krate::item::Eventable>::parse,
             parse_bytes: <#name as #krate::item::Eventable>::parse_bytes,
@@ -858,7 +1106,10 @@ fn required_belongs_to(
         .collect()
 }
 
-pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream {
+// This is the single assembly point for the established item macro fragments;
+// splitting it would add indirection without reducing generated complexity.
+#[allow(clippy::too_many_lines)]
+pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> Result<TokenStream> {
     let PreparedItem {
         input_struct,
         relationships: rel_info,
@@ -872,7 +1123,7 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
         partial_eq_impl,
         post_deserialize: post_deserialize_impl,
         ingest_registration: ingest_buffer_registration,
-    } = prepare_item(args, input_struct);
+    } = prepare_item(args, input_struct)?;
     let name = &name;
     let krate = &ctx.krate;
 
@@ -963,6 +1214,7 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
 
     let count_all_report_ident = format_ident!("CountAll{}s", name_str);
     let count_all_report = generate_count_all_report(
+        name,
         &get_all_query_ident,
         &count_result_ident,
         &count_all_report_ident,
@@ -973,6 +1225,7 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
     let count_report_ident = format_ident!("Count{}s", name_str);
 
     let count_report = generate_count_report(
+        name,
         &filter_ident,
         &get_by_filter_ident,
         &count_result_ident,
@@ -985,13 +1238,17 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
 
     let get_by_id_report =
         generate_get_by_id_report(name, &id_type_ident, &get_by_id_report_ident, krate);
-    let delete_commands = generate_delete_commands(&DeleteGeneration {
-        name_str: &name_str,
-        id_type_ident: &id_type_ident,
-        get_by_id_ident: &get_by_id_report_ident,
-        get_by_ids_ident: &get_by_ids_query_ident,
-        ctx: &ctx,
-    });
+    let delete_commands = if args.deletes.unwrap_or(true) {
+        generate_delete_commands(&DeleteGeneration {
+            name_str: &name_str,
+            id_type_ident: &id_type_ident,
+            get_by_id_ident: &get_by_id_report_ident,
+            get_by_ids_ident: &get_by_ids_query_ident,
+            ctx: &ctx,
+        })
+    } else {
+        TokenStream::new()
+    };
 
     let item_registration = generate_item_registration(name, &name_str, krate);
 
@@ -1004,7 +1261,16 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
     let setter_commands = setter::generate_setter_commands(&name_str, &setter_fields);
 
     let server_owned_impls = generate_server_owned_impls(&rel_info, krate);
-    expand_item(ItemExpansion {
+    let federated_item_impls = generate_federated_item_impls(
+        args,
+        name,
+        &name_str,
+        &id_type_ident,
+        &get_all_query_ident,
+        &get_by_ids_query_ident,
+        krate,
+    );
+    Ok(expand_item(ItemExpansion {
         name: name.clone(),
         name_str,
         id_type_ident,
@@ -1017,6 +1283,7 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
         item_registration,
         server_owned_impls,
         foreign_key_impls: has_foreign_key_impls,
+        federated_item_impls,
         generated_items: vec![
             get_all_query,
             get_by_ids_query,
@@ -1030,5 +1297,5 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
             setter_commands,
             relationship_registrations,
         ],
-    })
+    }))
 }

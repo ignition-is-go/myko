@@ -16,6 +16,8 @@ pub use filter::{
     Filterable, ID_ROUTE_FIELD_NAMES, IdFilter, LiveFilterQuery, NumericFilter, QueryRoute,
     StringFilter, Unfilterable, in_matches,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use registration::QueryAuthorityFactory;
 pub use registration::{
     QueryCellFactory, QueryFactory, QueryParseFn, QueryRegistration, QueryRuntimeMetrics,
     QueryRuntimePerIdMetrics, QueryWindowCellFactory, UNION_KEYS_WARN_THRESHOLD,

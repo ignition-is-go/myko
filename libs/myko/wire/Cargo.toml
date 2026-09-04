@@ -9,9 +9,6 @@ license = "AGPL-3.0-or-later"
 workspace = true
 
 [dependencies]
-myko-app.workspace = true
 myko-federation.workspace = true
 serde.workspace = true
-
-[dev-dependencies]
 serde_json.workspace = true

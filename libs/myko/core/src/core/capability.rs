@@ -100,6 +100,21 @@ pub trait RegistryScoped: sealed::Sealed {
 pub trait ServerScoped: RequestScoped {
     #[doc(hidden)]
     fn __server_ctx(&self) -> &Arc<crate::server::MykoServerContext>;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[doc(hidden)]
+    fn __federated_request(&self) -> Option<&crate::server::federated_source::FederatedRequest> {
+        None
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[doc(hidden)]
+    fn __federated_local_node(&self) -> Option<myko_federation::NodeId> {
+        self.__federated_request()?;
+        self.__server_ctx()
+            .federated()
+            .map(|runtime| runtime.node_id())
+    }
 }
 
 use hyphae::{Cell, CellImmutable, CellMap, CellValue};
@@ -138,8 +153,19 @@ pub trait Querying: ServerScoped {
             + CellValue
             + 'static,
     {
-        self.__server_ctx()
-            .query_map(query, self.__request().clone())
+        #[cfg(not(target_arch = "wasm32"))]
+        let federated = self.__federated_local_node().map(|local_node| {
+            crate::server::federated_source::FederatedRequest {
+                source_node: <Q as crate::query::QueryHandler>::source_node(&query, local_node),
+                scope_id: <Q as crate::query::QueryHandler>::scope_id(&query, local_node),
+            }
+        });
+        self.__server_ctx().query_map_routed(
+            query,
+            self.__request().clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        )
     }
 
     /// Subscribe to a query keyed by canonical `Arc<str>` ids.
@@ -157,8 +183,19 @@ pub trait Querying: ServerScoped {
             + CellValue
             + 'static,
     {
-        self.__server_ctx()
-            .query_map_by_str(query, self.__request().clone())
+        #[cfg(not(target_arch = "wasm32"))]
+        let federated = self.__federated_local_node().map(|local_node| {
+            crate::server::federated_source::FederatedRequest {
+                source_node: <Q as crate::query::QueryHandler>::source_node(&query, local_node),
+                scope_id: <Q as crate::query::QueryHandler>::scope_id(&query, local_node),
+            }
+        });
+        self.__server_ctx().query_map_by_str_routed(
+            query,
+            self.__request().clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        )
     }
 
     /// Subscribe to a query and get an untyped (erased `AnyItem`) reactive map.
@@ -173,8 +210,19 @@ pub trait Querying: ServerScoped {
             + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        self.__server_ctx()
-            .query_map_untyped(query, self.__request().clone())
+        #[cfg(not(target_arch = "wasm32"))]
+        let federated = self.__federated_local_node().map(|local_node| {
+            crate::server::federated_source::FederatedRequest {
+                source_node: <Q as crate::query::QueryHandler>::source_node(&query, local_node),
+                scope_id: <Q as crate::query::QueryHandler>::scope_id(&query, local_node),
+            }
+        });
+        self.__server_ctx().query_map_untyped_routed(
+            query,
+            self.__request().clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        )
     }
 
     /// Subscribe to a query and get its incremental `MapDiff` stream.
@@ -248,7 +296,19 @@ pub trait Reporting: ServerScoped {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + Serialize + 'static,
     {
-        self.__server_ctx().report(report, self.__request().clone())
+        #[cfg(not(target_arch = "wasm32"))]
+        let federated = self.__federated_local_node().map(|local_node| {
+            crate::server::federated_source::FederatedRequest {
+                source_node: <R as crate::report::ReportHandler>::source_node(&report, local_node),
+                scope_id: <R as crate::report::ReportHandler>::scope_id(&report, local_node),
+            }
+        });
+        self.__server_ctx().report_routed(
+            report,
+            self.__request().clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        )
     }
 }
 
@@ -440,7 +500,19 @@ pub trait Viewing: ServerScoped {
         V: crate::core::view::ViewFactory + Clone,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug,
     {
-        self.__server_ctx().view(view, self.__request().clone())
+        #[cfg(not(target_arch = "wasm32"))]
+        let federated = self.__federated_local_node().map(|local_node| {
+            crate::server::federated_source::FederatedRequest {
+                source_node: <V as crate::view::ViewHandler>::source_node(&view, local_node),
+                scope_id: <V as crate::view::ViewHandler>::scope_id(&view, local_node),
+            }
+        });
+        self.__server_ctx().view_routed(
+            view,
+            self.__request().clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        )
     }
 
     /// Subscribe to a view and get an untyped (erased) reactive map.
@@ -449,8 +521,19 @@ pub trait Viewing: ServerScoped {
         V: crate::core::view::ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        self.__server_ctx()
-            .view_map_untyped(view, self.__request().clone())
+        #[cfg(not(target_arch = "wasm32"))]
+        let federated = self.__federated_local_node().map(|local_node| {
+            crate::server::federated_source::FederatedRequest {
+                source_node: <V as crate::view::ViewHandler>::source_node(&view, local_node),
+                scope_id: <V as crate::view::ViewHandler>::scope_id(&view, local_node),
+            }
+        });
+        self.__server_ctx().view_map_untyped_routed(
+            view,
+            self.__request().clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        )
     }
 }
 

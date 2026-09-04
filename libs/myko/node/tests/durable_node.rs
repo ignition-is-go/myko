@@ -1,28 +1,27 @@
+#![allow(clippy::implicit_clone, clippy::redundant_clone)]
+
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use myko_app::capability::NodeScoped as _;
-use myko_app::{
-    CommandClient as _, CommandContext, CommandError, CommandHandler, MykoApplication,
-    QueryHandler, myko_query,
-};
+use hyphae::Gettable as _;
+use myko::{CommandContext, CommandError, CommandHandler, MykoApplication};
 use myko_federation::{
-    AccessOperation, AccessPolicy, AccessRequest, AllowAllAccessPolicy, AuthorityPresentation,
+    AccessAttempt, AccessOperation, AccessPolicy, AllowAllAccessPolicy, AuthorityPresentation,
     BatchId, ChangeBatch, CommandClient as _, CommandId, CommandRequest, CommandState,
-    DelegationId, MykoItem, MykoService, Node as FederationNode, NodeId, Principal, PrincipalId,
-    ProvenanceHop, ProvenanceOperation, ReplicationSelection, ScopeId, ServiceId,
-    SubscriptionLiveness,
+    CommandWatchingClient as _, DelegationId, MykoService, Node as FederationNode, NodeId,
+    Principal, PrincipalId, ProvenanceHop, ProvenanceOperation, ReplicationSelection, ScopeId,
+    ServiceId, SubscriptionLiveness,
 };
 use myko_iroh::{IrohReplicator, SecretKey, endpoint_principal_id};
-use myko_items::{ItemMutation, ItemProjection, ItemQuery, myko_command, myko_item, myko_service};
+use myko_items::{ItemMutation, myko_command, myko_item, myko_service};
 use myko_local::{LocalCommandClient, LocalNodeClient, LocalNodeServer};
 use myko_node::{
     AddPeer, AdvertisedServicesView, ConfigureLanDiscovery, ConfirmPairing,
     DiscoverySettingsReport, FederationService, InitiatePairing, IssuePairingInvitation,
-    NativeNodeDescriptor, NativePeerReference, Node, NodeStatus, NodeStatusView,
-    PairingInitiationPhase, PairingInitiationReport, PairingInvitation, PairingReceipt,
+    NativeNodeDescriptor, Node, NodeStatus, NodeStatusView, PairingInitiationPhase,
+    PairingInitiationReport, PairingInvitation, PairingReceipt, PairingReceiptRow,
     PairingReceiptsView, PairingRedemptionPhase, PairingRedemptionReport, Peer, PeerReport,
     PeersView, RedeemPairingInvitation, RemovePeer, ServiceCapabilityReport, SetPeerReplication,
     SetPeerReplicationSelection, peer_id,
@@ -38,7 +37,7 @@ async fn open_loopback_allow(
     .await
 }
 
-fn watch_peers(node: &Node) -> Result<myko_app::ViewSubscription<Peer>, String> {
+fn watch_peers(node: &Node) -> Result<myko::view::TypedViewCellMap<Peer>, String> {
     node.application()
         .watch_view(&PeersView {
             source_node: node.node().node_id(),
@@ -46,17 +45,19 @@ fn watch_peers(node: &Node) -> Result<myko_app::ViewSubscription<Peer>, String> 
         .map_err(|error| error.to_string())
 }
 
-fn watch_node_statuses(node: &Node) -> Result<myko_app::ViewSubscription<NodeStatus, u64>, String> {
+fn watch_node_statuses(node: &Node) -> Result<myko::view::TypedViewCellMap<NodeStatus>, String> {
     node.application()
-        .watch_view(&NodeStatusView)
+        .watch_view(&NodeStatusView {
+            source_node: node.node().node_id(),
+        })
         .map_err(|error| error.to_string())
 }
 
 async fn add_pinned_peer(node: &Node, descriptor: NativeNodeDescriptor) -> Result<Peer, String> {
-    myko_app::CommandClient::exec_command(
+    myko_federation::CommandWatchingClient::exec_typed_command(
         node.application(),
         AddPeer {
-            reference: NativePeerReference::Descriptor(descriptor),
+            reference: descriptor.into(),
         },
     )
     .await
@@ -64,7 +65,7 @@ async fn add_pinned_peer(node: &Node, descriptor: NativeNodeDescriptor) -> Resul
 }
 
 async fn remove_peer(node: &Node, endpoint_id: myko_iroh::EndpointId) -> Result<(), String> {
-    myko_app::CommandClient::exec_command(
+    myko_federation::CommandWatchingClient::exec_typed_command(
         node.application(),
         RemovePeer {
             peer_id: peer_id(endpoint_id),
@@ -82,6 +83,8 @@ pub struct ReactiveRecord {
     value: String,
 }
 
+myko::register_federated_item!(ReactiveRecord);
+
 #[myko_command(NodeId, item = ReactiveRecord)]
 struct RemoteLifecycleCommand;
 
@@ -90,123 +93,27 @@ impl CommandHandler for RemoteLifecycleCommand {
         ReactiveRecordId::from("remote-command")
     }
 
-    fn execute(
-        self,
-        context: CommandContext<ReactiveService, ReactiveRecord>,
-    ) -> Result<NodeId, CommandError> {
+    fn execute(self, context: CommandContext) -> Result<NodeId, CommandError> {
         Ok(context.node_id())
     }
-}
-
-#[myko_query(ReactiveRecord)]
-struct AllReactiveRecords;
-
-impl ItemQuery for AllReactiveRecords {
-    type Item = ReactiveRecord;
-    type Output = Vec<ReactiveRecord>;
-    fn execute(self, projection: &ItemProjection<Self::Item>) -> Self::Output {
-        projection.values().cloned().collect()
-    }
-}
-
-impl QueryHandler for AllReactiveRecords {}
-
-#[myko_service(LegacyParent, LegacyChild)]
-pub struct LegacyService;
-
-#[myko_item(service = LegacyService, scope_root)]
-pub struct LegacyParent {
-    label: String,
-}
-
-#[myko_item(service = LegacyService, scope_root, scoped_by = LegacyParent)]
-pub struct LegacyChild {
-    label: String,
-}
-
-#[myko_query(LegacyChild)]
-struct AllLegacyChildren;
-
-impl ItemQuery for AllLegacyChildren {
-    type Item = LegacyChild;
-    type Output = Vec<LegacyChild>;
-
-    fn execute(self, projection: &ItemProjection<Self::Item>) -> Self::Output {
-        projection.values().cloned().collect()
-    }
-}
-
-impl QueryHandler for AllLegacyChildren {}
-
-fn commit_legacy_child(node: &FederationNode) -> Result<(), String> {
-    let scope_id = ScopeId::new("legacy_parent:parent-1");
-    let request = CommandRequest {
-        id: CommandId::new(),
-        service_id: ServiceId::new(LegacyService::SERVICE_ID),
-        scope_id: scope_id.clone(),
-        principal_id: PrincipalId::new("node:test"),
-        authority: AuthorityPresentation::direct_node(PrincipalId::new("node:test")),
-        resource_claims: vec![myko_federation::ResourceClaim::scope(
-            scope_id,
-            myko_federation::ResourceClaimKind::Primary,
-        )],
-        application_capabilities: Vec::new(),
-        arguments_digest: None,
-        command_type: "legacy.child.set".to_owned(),
-        payload: Vec::new(),
-    };
-    let admission = node
-        .admit(request.clone())
-        .map_err(|error| error.to_string())?;
-    let mutation = ItemMutation {
-        service_id: LegacyChild::SERVICE_ID.as_str().to_owned(),
-        item_type: LegacyChild::ITEM_TYPE.to_owned(),
-        item_id: "child-1".to_owned(),
-        schema_version: LegacyChild::SCHEMA_VERSION,
-        roots_scope: false,
-        belongs_to: None,
-        scope_id: None,
-        operation: myko_federation::MutationOperation::Set,
-        payload: Some(
-            serde_json::to_vec(&serde_json::json!({
-                "id": "child-1",
-                "label": "from the legacy journal",
-            }))
-            .map_err(|error| error.to_string())?,
-        ),
-    };
-    node.commit(
-        request.id,
-        ChangeBatch {
-            id: BatchId::new(),
-            command_id: request.id,
-            service_id: request.service_id,
-            scope_id: request.scope_id,
-            causal_parents: vec![admission.snapshot().updated_at],
-            changes: vec![mutation],
-        },
-        Vec::new(),
-    )
-    .map(|_| ())
-    .map_err(|error| error.to_string())
 }
 
 #[derive(Debug)]
 struct DenyAllPolicy;
 
 impl AccessPolicy for DenyAllPolicy {
-    fn authorize(&self, _request: &AccessRequest) -> Result<(), String> {
+    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
         Err("test policy denies native access".to_owned())
     }
 }
 
 #[derive(Debug, Clone, Default)]
 struct RecordingAllowPolicy {
-    requests: Arc<Mutex<Vec<AccessRequest>>>,
+    requests: Arc<Mutex<Vec<AccessAttempt>>>,
 }
 
 impl AccessPolicy for RecordingAllowPolicy {
-    fn authorize(&self, request: &AccessRequest) -> Result<(), String> {
+    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
         self.requests
             .lock()
             .map_err(|_| "recording-policy lock is poisoned".to_owned())?
@@ -340,7 +247,11 @@ async fn typed_item_watch_drives_a_hyphae_cell_without_polling() -> Result<(), S
         .map_err(|error| error.to_string())?;
     let scope_id = ScopeId::new("reactive");
     let watch = node
-        .watch_items_reactive_in(node.node().node_id(), scope_id.clone(), AllReactiveRecords)
+        .watch_items_reactive_in(
+            node.node().node_id(),
+            scope_id.clone(),
+            GetAllReactiveRecords,
+        )
         .map_err(|error| error.to_string())?;
     let (updates_tx, updates_rx) = flume::unbounded();
     let _guard = watch.live().state().subscribe(move |signal| {
@@ -468,88 +379,6 @@ async fn restored_policy_is_installed_before_the_router_serves() -> Result<(), S
 }
 
 #[tokio::test]
-async fn native_restart_restores_pre_topology_item_history_before_serving() -> Result<(), String> {
-    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let retry_interval = Duration::from_millis(20);
-    let initial = Node::open_loopback(directory.path(), retry_interval)
-        .await
-        .map_err(|error| error.to_string())?;
-    commit_legacy_child(initial.node())?;
-    initial
-        .shutdown()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let open_current = || {
-        let application = MykoApplication::builder()
-            .service::<LegacyService>()
-            .map_err(|error| error.to_string())?
-            .build();
-        Ok::<_, String>(Node::open_loopback_application_with_policy(
-            directory.path(),
-            retry_interval,
-            application,
-            |_| Ok(Arc::new(AllowAllAccessPolicy)),
-        ))
-    };
-    let reopened = open_current()?.await.map_err(|error| error.to_string())?;
-    let child_id = LegacyChildId::from("child-1");
-    let child_scope = ScopeId::for_item::<LegacyChild>(&child_id);
-    let children = reopened
-        .application()
-        .watch_query(
-            reopened.node().node_id(),
-            child_scope.clone(),
-            AllLegacyChildren,
-        )
-        .map_err(|error| error.to_string())?;
-    if children
-        .live()
-        .current()
-        .value
-        .as_ref()
-        .is_none_or(|items| {
-            items.len() != 1
-                || items.first().is_none_or(|item| {
-                    item.id != child_id || item.legacy_parent_id != LegacyParentId::from("parent-1")
-                })
-        })
-    {
-        return Err("legacy child was not restored into its current typed scope".to_owned());
-    }
-    let parent_scope = ScopeId::for_item::<LegacyParent>(&LegacyParentId::from("parent-1"));
-    if reopened
-        .node()
-        .scope_topology()
-        .map_err(|error| error.to_string())?
-        .parent(&child_scope)
-        != Some(&parent_scope)
-    {
-        return Err("legacy nested scope topology was not restored before serving".to_owned());
-    }
-    drop(children);
-    reopened
-        .shutdown()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    let reopened_again = open_current()?.await.map_err(|error| error.to_string())?;
-    if reopened_again
-        .node()
-        .scope_topology()
-        .map_err(|error| error.to_string())?
-        .parent(&child_scope)
-        != Some(&parent_scope)
-    {
-        return Err("legacy topology restoration was not restart-idempotent".to_owned());
-    }
-    reopened_again
-        .shutdown()
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tokio::test]
 #[allow(clippy::too_many_lines)]
 async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), String> {
     let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
@@ -562,7 +391,6 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
     .map_err(|error| format!("open local: {error}"))?;
     let remote_application = MykoApplication::builder()
         .service::<ReactiveService>()
-        .map_err(|error| error.to_string())?
         .build();
     let remote_policy = RecordingAllowPolicy::default();
     let remote = Node::open_loopback_application_with_policy(
@@ -597,7 +425,7 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
 
     if LocalCommandClient::new(&socket)
         .at(remote.node().node_id())
-        .submit_command(RemoteLifecycleCommand)
+        .submit_typed_command(RemoteLifecycleCommand)
         .await
         .is_ok()
     {
@@ -610,7 +438,7 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
         forwarding_node.clone(),
         local.node().node_id(),
     )
-    .submit_command(RemoteLifecycleCommand)
+    .submit_typed_command(RemoteLifecycleCommand)
     .await
     .is_ok()
     {
@@ -624,7 +452,7 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
         wrong_delegate,
         local.node().node_id(),
     )
-    .submit_command(RemoteLifecycleCommand)
+    .submit_typed_command(RemoteLifecycleCommand)
     .await
     .is_ok()
     {
@@ -636,7 +464,7 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
         .with_authority(AuthorityPresentation::direct(owner.clone()))
         .with_forwarding_hop(forwarding_hop.clone());
     let submitted = commands
-        .submit_command(RemoteLifecycleCommand)
+        .submit_typed_command(RemoteLifecycleCommand)
         .await
         .map_err(|error| format!("valid routed submit: {error}"))?;
     if submitted.source_node != remote.node().node_id()
@@ -716,97 +544,6 @@ async fn durable_node_routes_generic_remote_command_lifecycles() -> Result<(), S
 }
 
 #[tokio::test]
-async fn source_addressed_application_client_is_transport_independent() -> Result<(), String> {
-    let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let retry_interval = Duration::from_millis(20);
-    let application = || {
-        MykoApplication::builder()
-            .service::<ReactiveService>()
-            .map(myko_app::MykoApplicationBuilder::build)
-            .map_err(|error| error.to_string())
-    };
-    let local = Node::open_loopback_application_with_policy(
-        local_directory.path(),
-        retry_interval,
-        application()?,
-        |_| Ok(Arc::new(AllowAllAccessPolicy)),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    let remote = Node::open_loopback_application_with_policy(
-        remote_directory.path(),
-        retry_interval,
-        application()?,
-        |_| Ok(Arc::new(AllowAllAccessPolicy)),
-    )
-    .await
-    .map_err(|error| error.to_string())?;
-    let local_node = local.node().node_id();
-    let remote_node = remote.node().node_id();
-    let _peer = add_pinned_peer(&local, remote.descriptor()).await?;
-    let local_client = local.application_at(local_node);
-    let remote_client = local.application_at(remote_node);
-
-    let local_execution = local_client
-        .exec_command(RemoteLifecycleCommand)
-        .await
-        .map_err(|error| error.to_string())?;
-    let remote_execution = remote_client
-        .exec_command(RemoteLifecycleCommand)
-        .await
-        .map_err(|error| error.to_string())?;
-    if local_execution != local_node || remote_execution != remote_node {
-        return Err(format!(
-            "typed command routed to unexpected nodes: local={local_execution}, remote={remote_execution}"
-        ));
-    }
-
-    let local_report = local_client
-        .watch_report(&ServiceCapabilityReport::for_service::<ReactiveService>(
-            local_node,
-        ))
-        .await
-        .map_err(|error| error.to_string())?;
-    let remote_report = remote_client
-        .watch_report(&ServiceCapabilityReport::for_service::<ReactiveService>(
-            remote_node,
-        ))
-        .await
-        .map_err(|error| error.to_string())?;
-    if local_report.live().current().value != Some(true)
-        || remote_report.live().current().value != Some(true)
-    {
-        return Err("typed reports diverged between local and remote sources".to_owned());
-    }
-
-    let local_view = local_client
-        .watch_view(&PeersView {
-            source_node: local_node,
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    let remote_view = remote_client
-        .watch_view(&PeersView {
-            source_node: remote_node,
-        })
-        .await
-        .map_err(|error| error.to_string())?;
-    if local_view.live().rows().snapshot().len() != 1
-        || !remote_view.live().rows().snapshot().is_empty()
-    {
-        return Err("typed views diverged between local and remote sources".to_owned());
-    }
-
-    local_view.shutdown().await;
-    remote_view.shutdown().await;
-    local_report.shutdown().await;
-    remote_report.shutdown().await;
-    local.shutdown().await.map_err(|error| error.to_string())?;
-    remote.shutdown().await.map_err(|error| error.to_string())
-}
-
-#[tokio::test]
 async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), String> {
     let local_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
     let remote_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
@@ -816,7 +553,6 @@ async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), Str
         .map_err(|error| error.to_string())?;
     let remote_application = MykoApplication::builder()
         .service::<ReactiveService>()
-        .map_err(|error| error.to_string())?
         .build();
     let remote = Node::open_loopback_application_with_policy(
         remote_directory.path(),
@@ -833,7 +569,7 @@ async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), Str
             source_node: remote_node,
         })
         .map_err(|error| error.to_string())?;
-    let advertised = services.live().rows().snapshot();
+    let advertised = services.snapshot();
     if !advertised
         .iter()
         .any(|(_, service)| service.is::<ReactiveService>())
@@ -852,7 +588,7 @@ async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), Str
         ))
         .map_err(|error| error.to_string())?;
     wait_for("peer service catalog was not replicated", || {
-        capability.live().current().value == Some(true)
+        *capability.get()
     })
     .await?;
 
@@ -876,7 +612,7 @@ async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), Str
                 node_id: local.node().node_id().to_string(),
             },
         })
-        .exec_command(RemoteLifecycleCommand)
+        .exec_typed_command(RemoteLifecycleCommand)
         .await
         .map_err(|error| error.to_string())?;
     if executed_by != remote_node {
@@ -886,8 +622,6 @@ async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), Str
     }
 
     server.shutdown().await.map_err(|error| error.to_string())?;
-    capability.shutdown().await;
-    services.shutdown().await;
     local.shutdown().await.map_err(|error| error.to_string())?;
     remote.shutdown().await.map_err(|error| error.to_string())
 }
@@ -981,10 +715,10 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
         })
         .map_err(|error| error.to_string())?;
 
-    let added = myko_app::CommandClient::exec_command(
+    let added = myko_federation::CommandWatchingClient::exec_typed_command(
         application,
         AddPeer {
-            reference: NativePeerReference::Descriptor(descriptor),
+            reference: descriptor.into(),
         },
     )
     .await
@@ -995,23 +729,19 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
     wait_for(
         "typed peer live surfaces did not observe the added peer",
         || {
-            view.live()
-                .rows()
-                .snapshot()
+            view.snapshot()
                 .iter()
                 .any(|(_, peer)| peer.id == configured_peer_id && peer.replication_enabled)
                 && report
-                    .live()
-                    .current()
-                    .value
+                    .get()
                     .as_ref()
-                    .and_then(Option::as_ref)
+                    .as_ref()
                     .is_some_and(|peer| peer.id == configured_peer_id && peer.replication_enabled)
         },
     )
     .await?;
 
-    let paused = myko_app::CommandClient::exec_command(
+    let paused = myko_federation::CommandWatchingClient::exec_typed_command(
         application,
         SetPeerReplication {
             peer_id: configured_peer_id.clone(),
@@ -1027,17 +757,15 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
         "peer report did not observe the paused relationship",
         || {
             report
-                .live()
-                .current()
-                .value
+                .get()
                 .as_ref()
-                .and_then(Option::as_ref)
+                .as_ref()
                 .is_some_and(|peer| !peer.replication_enabled)
         },
     )
     .await?;
 
-    myko_app::CommandClient::exec_command(
+    myko_federation::CommandWatchingClient::exec_typed_command(
         application,
         RemovePeer {
             peer_id: configured_peer_id,
@@ -1046,18 +774,9 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
     .await
     .map_err(|error| error.to_string())?;
     wait_for("typed peer live surfaces did not observe removal", || {
-        view.live().rows().snapshot().is_empty()
-            && report
-                .live()
-                .current()
-                .value
-                .as_ref()
-                .is_some_and(Option::is_none)
+        view.snapshot().is_empty() && report.get().as_ref().as_ref().is_none()
     })
     .await?;
-
-    view.shutdown().await;
-    report.shutdown().await;
     target.shutdown().await.map_err(|error| error.to_string())?;
     source.shutdown().await.map_err(|error| error.to_string())
 }
@@ -1078,7 +797,7 @@ async fn peer_replication_selection_survives_restart() -> Result<(), String> {
         return Err("new peer did not default to full replication".to_owned());
     }
     let selection = ReplicationSelection::Service(ServiceId::new(ReactiveService::SERVICE_ID));
-    let selected = myko_app::CommandClient::exec_command(
+    let selected = myko_federation::CommandWatchingClient::exec_typed_command(
         target.application(),
         SetPeerReplicationSelection {
             peer_id: peer.id.clone(),
@@ -1097,15 +816,12 @@ async fn peer_replication_selection_survives_restart() -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let peers = watch_peers(&reopened)?;
     if !peers
-        .live()
-        .rows()
         .snapshot()
         .iter()
         .any(|(_, peer)| peer.replication_selection == selection)
     {
         return Err("replication selection did not survive restart".to_owned());
     }
-    peers.shutdown().await;
     reopened
         .shutdown()
         .await
@@ -1126,7 +842,7 @@ async fn discovery_configuration_is_a_durable_live_framework_report() -> Result<
             source_node: node.node().node_id(),
         })
         .map_err(|error| error.to_string())?;
-    let configured = myko_app::CommandClient::exec_command(
+    let configured = myko_federation::CommandWatchingClient::exec_typed_command(
         node.application(),
         ConfigureLanDiscovery {
             display_name: "phone-sized-fern".to_owned(),
@@ -1142,15 +858,12 @@ async fn discovery_configuration_is_a_durable_live_framework_report() -> Result<
     }
     wait_for("LAN discovery report did not observe configuration", || {
         report
-            .live()
-            .current()
-            .value
+            .get()
             .as_ref()
-            .and_then(Option::as_ref)
+            .as_ref()
             .is_some_and(|settings| settings == &configured)
     })
     .await?;
-    report.shutdown().await;
     let node_id = node.node().node_id();
     node.shutdown().await.map_err(|error| error.to_string())?;
 
@@ -1163,17 +876,9 @@ async fn discovery_configuration_is_a_durable_live_framework_report() -> Result<
             source_node: node_id,
         })
         .map_err(|error| error.to_string())?;
-    if restored
-        .live()
-        .current()
-        .value
-        .as_ref()
-        .and_then(Option::as_ref)
-        != Some(&configured)
-    {
+    if restored.get().as_ref().as_ref() != Some(&configured) {
         return Err("LAN discovery settings did not survive restart".to_owned());
     }
-    restored.shutdown().await;
     reopened.shutdown().await.map_err(|error| error.to_string())
 }
 
@@ -1181,7 +886,7 @@ async fn complete_pairing_redemption(
     target: &Node,
     invitation: PairingInvitation,
 ) -> Result<PairingReceipt, String> {
-    let redemption = myko_app::CommandClient::exec_command(
+    let redemption = myko_federation::CommandWatchingClient::exec_typed_command(
         target.application(),
         RedeemPairingInvitation { invitation },
     )
@@ -1196,43 +901,36 @@ async fn complete_pairing_redemption(
         .map_err(|error| error.to_string())?;
     wait_for("pairing redemption report did not become terminal", || {
         redemption_report
-            .live()
-            .current()
-            .value
+            .get()
             .as_ref()
-            .and_then(Option::as_ref)
+            .as_ref()
             .is_some_and(|redemption| redemption.phase.is_terminal())
     })
     .await?;
-    let result = match redemption_report
-        .live()
-        .current()
-        .value
-        .and_then(|redemption| redemption)
-        .map(|redemption| redemption.phase)
+    match redemption_report
+        .get()
+        .as_ref()
+        .as_ref()
+        .map(|redemption| redemption.phase.clone())
     {
         Some(PairingRedemptionPhase::Completed { receipt }) => Ok(receipt),
         Some(PairingRedemptionPhase::Failed { reason }) => Err(reason),
         phase => Err(format!("unexpected pairing redemption phase: {phase:?}")),
-    };
-    redemption_report.shutdown().await;
-    result
+    }
 }
 
 async fn receive_pairing_receipt(
-    inbound: &myko_app::ViewSubscription<PairingReceipt>,
+    inbound: &myko::view::TypedViewCellMap<PairingReceiptRow>,
     expected: &PairingReceipt,
 ) -> Result<PairingReceipt, String> {
     wait_for("source did not observe the pairing receipt view", || {
-        !inbound.live().rows().snapshot().is_empty()
+        !inbound.snapshot().is_empty()
     })
     .await?;
     let receipts = inbound
-        .live()
-        .rows()
         .snapshot()
         .into_iter()
-        .map(|(_, receipt)| receipt.as_ref().clone())
+        .map(|(_, row)| row.receipt.clone())
         .collect::<Vec<_>>();
     let [received] = receipts.as_slice() else {
         return Err(format!("source observed wrong receipts: {receipts:?}"));
@@ -1244,7 +942,7 @@ async fn receive_pairing_receipt(
 }
 
 async fn confirm_pairing(node: &Node, receipt: PairingReceipt) -> Result<Peer, String> {
-    myko_app::CommandClient::exec_command(
+    myko_federation::CommandWatchingClient::exec_typed_command(
         node.application(),
         ConfirmPairing {
             comparison_code: receipt.comparison_code.clone(),
@@ -1259,7 +957,7 @@ async fn complete_pairing_initiation(
     source: &Node,
     peer: NativeNodeDescriptor,
 ) -> Result<PairingReceipt, String> {
-    let initiation = myko_app::CommandClient::exec_command(
+    let initiation = myko_federation::CommandWatchingClient::exec_typed_command(
         source.application(),
         InitiatePairing {
             peer,
@@ -1277,36 +975,31 @@ async fn complete_pairing_initiation(
         .map_err(|error| error.to_string())?;
     wait_for("pairing initiation report did not become terminal", || {
         report
-            .live()
-            .current()
-            .value
+            .get()
             .as_ref()
-            .and_then(Option::as_ref)
+            .as_ref()
             .is_some_and(|initiation| initiation.phase.is_terminal())
     })
     .await?;
-    let result = match report
-        .live()
-        .current()
-        .value
-        .and_then(|initiation| initiation)
-        .map(|initiation| initiation.phase)
+    match report
+        .get()
+        .as_ref()
+        .as_ref()
+        .map(|initiation| initiation.phase.clone())
     {
         Some(PairingInitiationPhase::Completed { receipt }) => Ok(receipt),
         Some(PairingInitiationPhase::Failed { reason }) => Err(reason),
         phase => Err(format!("unexpected pairing initiation phase: {phase:?}")),
-    };
-    report.shutdown().await;
-    result
+    }
 }
 
 fn require_peer_state(
-    peers: &myko_app::ViewSubscription<Peer>,
+    peers: &myko::view::TypedViewCellMap<Peer>,
     source_node: NodeId,
     replication_enabled: bool,
     error: &str,
 ) -> Result<(), String> {
-    let snapshot = peers.live().rows().snapshot();
+    let snapshot = peers.snapshot();
     let valid = snapshot.first().is_some_and(|(_, peer)| {
         peer.source_node == Some(source_node) && peer.replication_enabled == replication_enabled
     });
@@ -1326,9 +1019,9 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
         .map_err(|error| error.to_string())?;
     let inbound = source
         .application()
-        .watch_view(&PairingReceiptsView)
+        .watch_view(&PairingReceiptsView {})
         .map_err(|error| error.to_string())?;
-    let invitation = myko_app::CommandClient::exec_command(
+    let invitation = myko_federation::CommandWatchingClient::exec_typed_command(
         source.application(),
         IssuePairingInvitation { ttl_seconds: 60 },
     )
@@ -1336,7 +1029,7 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
     .map_err(|error| error.to_string())?;
     let outbound = complete_pairing_redemption(&target, invitation).await?;
     let received = receive_pairing_receipt(&inbound, &outbound).await?;
-    if myko_app::CommandClient::exec_command(
+    if myko_federation::CommandWatchingClient::exec_typed_command(
         target.application(),
         ConfirmPairing {
             receipt: outbound.clone(),
@@ -1358,7 +1051,7 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
         false,
         "confirmed target did not remember a paused pinned source",
     )?;
-    let enabled = myko_app::CommandClient::exec_command(
+    let enabled = myko_federation::CommandWatchingClient::exec_typed_command(
         target.application(),
         SetPeerReplication {
             peer_id: peer_id(source_descriptor.endpoint.id),
@@ -1370,8 +1063,6 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
     if !enabled.replication_enabled {
         return Err("remembered pairing did not enable replication".to_owned());
     }
-
-    target_peers.shutdown().await;
     target
         .shutdown()
         .await
@@ -1386,12 +1077,10 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
         true,
         "enabled pairing relationship did not survive target restart",
     )?;
-    reopened_peers.shutdown().await;
     reopened
         .shutdown()
         .await
         .map_err(|error| format!("shutdown reopened pairing target: {error}"))?;
-    inbound.shutdown().await;
     source
         .shutdown()
         .await
@@ -1411,18 +1100,17 @@ async fn typed_pairing_initiation_is_live_and_requires_mutual_confirmation() -> 
         .map_err(|error| error.to_string())?;
     let source_receipts = source
         .application()
-        .watch_view(&PairingReceiptsView)
+        .watch_view(&PairingReceiptsView {})
         .map_err(|error| error.to_string())?;
     let target_receipts = target
         .application()
-        .watch_view(&PairingReceiptsView)
+        .watch_view(&PairingReceiptsView {})
         .map_err(|error| error.to_string())?;
 
     let receipt = complete_pairing_initiation(&source, target.descriptor()).await?;
     let source_receipt = receive_pairing_receipt(&source_receipts, &receipt).await?;
     let target_receipt = receive_pairing_receipt(&target_receipts, &receipt).await?;
-    if !watch_peers(&source)?.live().rows().snapshot().is_empty()
-        || !watch_peers(&target)?.live().rows().snapshot().is_empty()
+    if !watch_peers(&source)?.snapshot().is_empty() || !watch_peers(&target)?.snapshot().is_empty()
     {
         return Err("pairing initiation implicitly trusted a peer".to_owned());
     }
@@ -1443,11 +1131,6 @@ async fn typed_pairing_initiation_is_live_and_requires_mutual_confirmation() -> 
         false,
         "target did not remember the confirmed source",
     )?;
-
-    source_peers.shutdown().await;
-    target_peers.shutdown().await;
-    source_receipts.shutdown().await;
-    target_receipts.shutdown().await;
     target.shutdown().await.map_err(|error| error.to_string())?;
     source.shutdown().await.map_err(|error| error.to_string())
 }
@@ -1465,12 +1148,11 @@ async fn pending_pairing_receipt_survives_recipient_restart() -> Result<(), Stri
         .map_err(|error| error.to_string())?;
     let target_receipts = target
         .application()
-        .watch_view(&PairingReceiptsView)
+        .watch_view(&PairingReceiptsView {})
         .map_err(|error| error.to_string())?;
 
     let receipt = complete_pairing_initiation(&source, target.descriptor()).await?;
     let _received = receive_pairing_receipt(&target_receipts, &receipt).await?;
-    target_receipts.shutdown().await;
     target.shutdown().await.map_err(|error| error.to_string())?;
 
     let reopened = open_loopback_allow(target_directory.path(), retry_interval)
@@ -1478,17 +1160,15 @@ async fn pending_pairing_receipt_survives_recipient_restart() -> Result<(), Stri
         .map_err(|error| error.to_string())?;
     let reopened_receipts = reopened
         .application()
-        .watch_view(&PairingReceiptsView)
+        .watch_view(&PairingReceiptsView {})
         .map_err(|error| error.to_string())?;
     let restored = receive_pairing_receipt(&reopened_receipts, &receipt).await?;
     if restored != receipt {
         return Err("recipient restart restored the wrong pairing receipt".to_owned());
     }
-    if !watch_peers(&reopened)?.live().rows().snapshot().is_empty() {
+    if !watch_peers(&reopened)?.snapshot().is_empty() {
         return Err("recipient restart implicitly trusted the pending peer".to_owned());
     }
-
-    reopened_receipts.shutdown().await;
     reopened
         .shutdown()
         .await
@@ -1526,8 +1206,8 @@ async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), St
     }
     let reopened_peers = watch_peers(&reopened)?;
     let reopened_statuses = watch_node_statuses(&reopened)?;
-    let peer_rows = reopened_peers.live().rows().snapshot();
-    let status_rows = reopened_statuses.live().rows().snapshot();
+    let peer_rows = reopened_peers.snapshot();
+    let status_rows = reopened_statuses.snapshot();
     if !matches!(
         peer_rows
             .iter()
@@ -1548,8 +1228,6 @@ async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), St
     wait_for_committed(reopened.node(), second_command).await?;
 
     remove_peer(&reopened, source_address.id).await?;
-    reopened_peers.shutdown().await;
-    reopened_statuses.shutdown().await;
     reopened
         .shutdown()
         .await
@@ -1559,10 +1237,8 @@ async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), St
         .map_err(|error| error.to_string())?;
     let remaining_peers = watch_peers(&after_removal)?;
     let remaining_statuses = watch_node_statuses(&after_removal)?;
-    if !remaining_peers.live().rows().snapshot().is_empty()
+    if !remaining_peers.snapshot().is_empty()
         || remaining_statuses
-            .live()
-            .rows()
             .snapshot()
             .iter()
             .any(|(_, status)| !status.local)
@@ -1585,9 +1261,6 @@ async fn restart_restores_identities_peers_and_durable_cursor() -> Result<(), St
             ));
         }
     }
-
-    remaining_peers.shutdown().await;
-    remaining_statuses.shutdown().await;
     after_removal
         .shutdown()
         .await
@@ -1618,7 +1291,7 @@ async fn pinned_peer_rejects_an_endpoint_serving_another_myko_history() -> Resul
 
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
-            let statuses = status_view.live().rows().snapshot();
+            let statuses = status_view.snapshot();
             if statuses.iter().any(|(_, status)| {
                 status.source_node == Some(expected_source)
                     && status.last_error.as_deref().is_some_and(|error| {
@@ -1642,44 +1315,6 @@ async fn pinned_peer_rejects_an_endpoint_serving_another_myko_history() -> Resul
     }
 
     remove_peer(&target, source_address.id).await?;
-    status_view.shutdown().await;
-    target.shutdown().await.map_err(|error| error.to_string())?;
-    source.shutdown().await.map_err(|error| error.to_string())
-}
-
-#[tokio::test]
-async fn legacy_endpoint_only_peer_files_remain_loadable() -> Result<(), String> {
-    let source_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let target_directory = tempfile::tempdir().map_err(|error| error.to_string())?;
-    let retry_interval = Duration::from_millis(20);
-    let source = open_loopback_allow(source_directory.path(), retry_interval)
-        .await
-        .map_err(|error| error.to_string())?;
-    let source_address = source.address();
-    let encoded = serde_json::to_vec_pretty(&serde_json::json!({
-        "version": 1,
-        "peers": [source_address.clone()],
-    }))
-    .map_err(|error| error.to_string())?;
-    std::fs::write(target_directory.path().join("peers.json"), encoded)
-        .map_err(|error| error.to_string())?;
-
-    let target = open_loopback_allow(target_directory.path(), retry_interval)
-        .await
-        .map_err(|error| error.to_string())?;
-    let peers = watch_peers(&target)?;
-    let bindings = peers.live().rows().snapshot();
-    if !matches!(
-        bindings
-            .iter()
-            .map(|(_, peer)| peer.as_ref())
-            .collect::<Vec<_>>()
-            .as_slice(),
-        [binding] if binding.endpoint == source_address && binding.source_node.is_none()
-    ) {
-        return Err("legacy peer configuration did not load as an unpinned binding".to_owned());
-    }
-    peers.shutdown().await;
     target.shutdown().await.map_err(|error| error.to_string())?;
     source.shutdown().await.map_err(|error| error.to_string())
 }

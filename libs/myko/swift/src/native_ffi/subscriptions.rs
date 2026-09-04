@@ -1,9 +1,10 @@
 //! Generated records and live-subscription projection for native federation.
 
-use myko_discovery::{DiscoveredNode, ParticipantCapability, ParticipantKind};
+use myko_discovery::{ParticipantCapability, ParticipantKind};
 use myko_federation::{LiveSubscriptionState, LogPosition, ReplicationSelection, ScopeSelection};
 use myko_node::{
-    PairingInitiation, PairingInitiationPhase, PairingReceipt, Peer, endpoint_principal_id,
+    DiscoveredNodeRow, PairingInitiation, PairingInitiationPhase, PairingReceiptRow, Peer,
+    endpoint_principal_id,
 };
 
 use crate::{BlockingCollectionSubscription, BlockingSubscription};
@@ -93,7 +94,7 @@ pub struct MykoPairingInitiationUpdate {
 /// Long-lived inviter-side receipt subscription.
 #[derive(uniffi::Object)]
 pub struct MykoPairingReceiptsSubscription {
-    pub(super) subscription: BlockingCollectionSubscription<PairingReceipt, LogPosition>,
+    pub(super) subscription: BlockingCollectionSubscription<PairingReceiptRow, LogPosition>,
     pub(super) local_endpoint_id: String,
 }
 
@@ -106,7 +107,7 @@ pub struct MykoPairedNodesSubscription {
 /// Long-lived local LAN-discovery subscription.
 #[derive(uniffi::Object)]
 pub struct MykoNearbyNodesSubscription {
-    pub(super) subscription: BlockingCollectionSubscription<DiscoveredNode, u64>,
+    pub(super) subscription: BlockingCollectionSubscription<DiscoveredNodeRow, LogPosition>,
 }
 
 /// Live report for one durable discovered-node pairing attempt.
@@ -210,14 +211,15 @@ fn scope_selection_list(scopes: &[ScopeSelection]) -> String {
 }
 
 fn nearby_nodes_update(
-    state: LiveSubscriptionState<Vec<DiscoveredNode>, u64>,
+    state: LiveSubscriptionState<Vec<DiscoveredNodeRow>, LogPosition>,
 ) -> MykoNearbyNodesUpdate {
     let (lifecycle, reason) = crate::project_subscription_liveness(&state.liveness);
     let mut nodes = state
         .value
         .unwrap_or_default()
         .into_iter()
-        .map(|node| {
+        .map(|row| {
+            let node = row.node;
             let kind = match node.kind {
                 ParticipantKind::FullNode => "full node",
                 ParticipantKind::ForegroundEdge => "foreground edge",
@@ -268,7 +270,7 @@ fn nearby_nodes_update(
 }
 
 fn pairing_receipts_update(
-    state: LiveSubscriptionState<Vec<PairingReceipt>, LogPosition>,
+    state: LiveSubscriptionState<Vec<PairingReceiptRow>, LogPosition>,
     local_endpoint_id: &str,
 ) -> Result<MykoPairingReceiptsUpdate, MykoFederationError> {
     let (lifecycle, reason) = crate::project_subscription_liveness(&state.liveness);
@@ -276,7 +278,8 @@ fn pairing_receipts_update(
         .value
         .unwrap_or_default()
         .into_iter()
-        .map(|receipt| {
+        .map(|row| {
+            let receipt = row.receipt;
             let server_endpoint_id = receipt.server.endpoint.id.to_string();
             let client_endpoint_id = receipt.client.endpoint.id.to_string();
             let peer_endpoint_id = if server_endpoint_id == local_endpoint_id {

@@ -1,10 +1,10 @@
 //! Typed native-language contracts for an embedded Myko node.
 //!
-//! Application bridges provide access to their composed [`ApplicationNode`].
+//! Application bridges provide access to their composed [`ApplicationHost`].
 //! Myko owns the reusable discovery, pairing, peer, replication, and live
 //! subscription surface exposed to Swift through `UniFFI`.
 
-use myko_app::ApplicationNode;
+use myko::ApplicationHost;
 use myko_authority::AuthorityPolicy;
 use myko_federation::{AuthorityPresentation, AuthorityRealmId, Principal};
 use myko_node::EndpointId;
@@ -87,7 +87,7 @@ pub trait NativeApplicationAccess: Send + Sync + 'static {
     /// # Errors
     ///
     /// Returns an error while the application node is inactive or unavailable.
-    fn application(&self) -> Result<ApplicationNode, MykoFederationError>;
+    fn application(&self) -> Result<ApplicationHost, MykoFederationError>;
 
     /// Returns the stable native endpoint identity for receipt projection.
     fn endpoint_id(&self) -> EndpointId;
@@ -139,7 +139,7 @@ pub trait NativeAuthorityAccess: NativeApplicationAccess {
 /// wrapper or transport-specific forwarding implementation.
 pub trait EmbeddedApplicationRuntime: Send + 'static {
     /// Returns the composed typed application node.
-    fn application(&self) -> &ApplicationNode;
+    fn application(&self) -> &ApplicationHost;
 }
 
 /// Authority state exposed by an active embedded native application.
@@ -177,7 +177,7 @@ impl<Active> NativeApplicationAccess for EmbeddedApplicationHost<Active>
 where
     Active: EmbeddedApplicationRuntime,
 {
-    fn application(&self) -> Result<ApplicationNode, MykoFederationError> {
+    fn application(&self) -> Result<ApplicationHost, MykoFederationError> {
         self.host
             .with_active(MykoFederationError::from, |active, _runtime| {
                 Ok(active.application().clone())

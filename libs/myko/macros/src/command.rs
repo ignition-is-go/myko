@@ -1,10 +1,16 @@
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
-use syn::{ItemStruct, Path};
+use syn::{ItemStruct, Path, Type};
+
+pub enum CommandOwner {
+    Item(Path),
+    Service { service: Path, scope: Path },
+}
 
 pub struct CommandOptions {
-    pub result_type: Option<Path>,
+    pub result_type: Option<Type>,
     pub custom_serialize: bool,
+    pub owner: Option<CommandOwner>,
 }
 
 fn make_args_struct(
@@ -26,10 +32,14 @@ fn make_args_struct(
 }
 
 /// Generates command trait implementations and registers the command handler.
+// Keeping the emitted command contract in one expansion makes the generated
+// API easier to audit than splitting one quote across several stateful helpers.
+#[allow(clippy::too_many_lines)]
 pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) -> TokenStream {
     let CommandOptions {
         result_type,
         custom_serialize,
+        owner,
     } = options;
     let struct_name = &input_struct.ident;
     let args_struct_name = format_ident!("{}Args", struct_name);
@@ -68,6 +78,55 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let result_type_str = result_type
         .as_ref()
         .map_or_else(|| "()".to_string(), |path| quote!(#path).to_string());
+
+    let (service_id, typed_contract, handler_registration) = owner.map_or_else(
+        || {
+            (
+                quote!(None),
+                quote!(),
+                quote!(#krate::register_command_handler!(#struct_name, service_id = None);),
+            )
+        },
+        |owner| {
+            let (service, scope, item_type, service_id) = match owner {
+                CommandOwner::Item(item) => (
+                    quote!(<#item as #krate::MykoItem>::Service),
+                    quote!(<#item as #krate::MykoItem>::Scope),
+                    quote!(Some(<#item as #krate::MykoItem>::ITEM_TYPE)),
+                    quote!(<#item as #krate::MykoItem>::SERVICE_ID),
+                ),
+                CommandOwner::Service { service, scope } => (
+                    quote!(#service),
+                    quote!(#scope),
+                    quote!(None),
+                    quote!(<#service as #krate::MykoService>::SERVICE_ID),
+                ),
+            };
+            (
+                quote!(Some(#service_id)),
+                quote! {
+                    impl #krate::MykoOperation for #struct_name {
+                        const OPERATION_ID: &'static str = stringify!(#struct_name);
+                    }
+
+                    impl #krate::MykoCommandContract for #struct_name {
+                        type Output = #result_type_tokens;
+                        type Service = #service;
+                        type Scope = #scope;
+                        const ITEM_TYPE: Option<&'static str> = #item_type;
+                    }
+
+                    impl #krate::MykoCommand for #struct_name {}
+                },
+                quote!(
+                    #krate::register_durable_command_handler!(
+                        #struct_name,
+                        service_id = #service_id
+                    );
+                ),
+            )
+        },
+    );
 
     let derives = if custom_serialize {
         quote! {
@@ -118,6 +177,8 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
             type Result = #result_type_tokens;
         }
 
+        #typed_contract
+
         impl #struct_name {
             pub fn new(args: #args_struct_name) -> Self {
                 Self {
@@ -138,6 +199,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
         #krate::submit! {
             #krate::command::CommandRegistration {
                 command_id: stringify!(#struct_name),
+                service_id: #service_id,
                 result_type: #result_type_str,
                 result_type_crate: module_path!(),
                 crate_name: module_path!(),
@@ -148,7 +210,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
 
         // Register command handler for runtime dispatch (server-only)
         #[cfg(not(target_arch = "wasm32"))]
-        #krate::register_command_handler!(#struct_name);
+        #handler_registration
 
         // Register for ts-rs export
         #krate::register_typegen_type!(#struct_name, #args_struct_name);

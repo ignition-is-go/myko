@@ -1,12 +1,13 @@
 use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{
-    ItemStruct, Path,
+    Ident, ItemStruct, Path, Token,
     parse::{Parse, ParseStream},
 };
 
 pub struct ViewArgs {
     pub item_type: Path,
+    pub service_item: Option<Path>,
 }
 
 struct ViewExpansion<'a> {
@@ -76,7 +77,29 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
 impl Parse for ViewArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let item_type: Path = input.parse()?;
-        Ok(Self { item_type })
+        let mut service_item = None;
+
+        while !input.is_empty() {
+            input.parse::<Token![,]>()?;
+            if input.is_empty() {
+                break;
+            }
+
+            let key: Ident = input.parse()?;
+            input.parse::<Token![=]>()?;
+            if key != "item" {
+                return Err(syn::Error::new_spanned(key, "expected `item`"));
+            }
+            if service_item.is_some() {
+                return Err(syn::Error::new_spanned(key, "duplicate `item` owner"));
+            }
+            service_item = Some(input.parse()?);
+        }
+
+        Ok(Self {
+            item_type,
+            service_item,
+        })
     }
 }
 
@@ -148,6 +171,10 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let service_id = args.service_item.map_or_else(
+        || quote!(None),
+        |service_item| quote!(Some(<#service_item as #krate::MykoItem>::SERVICE_ID)),
+    );
 
     // Reflection metadata for the MCP `search()` operation index — see
     // `myko::reflection` and the matching comment in `query.rs`.
@@ -192,10 +219,13 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let view_registration = quote! {
         #krate::prelude::ViewRegistration {
             view_id: stringify!(#struct_name),
+            service_id: #service_id,
             view_item_type: stringify!(#item_type),
             crate_name: module_path!(),
             parse: <#struct_name as #krate::view::ViewFactory>::parse,
             cell_factory: <#struct_name as #krate::view::ViewFactory>::cell_factory,
+            #[cfg(not(target_arch = "wasm32"))]
+            authority: <#struct_name as #krate::view::ViewFactory>::authority,
             args: #args_tokens,
             description: #description_tokens,
         }

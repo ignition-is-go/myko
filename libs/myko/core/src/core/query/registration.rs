@@ -40,6 +40,10 @@ use crate::{
 /// Type alias for query parse function.
 pub type QueryParseFn = fn(Value) -> Result<Arc<dyn AnyQuery>, anyhow::Error>;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub type QueryAuthorityFactory =
+    fn(Value, myko_federation::NodeId) -> Result<crate::server::HandlerAuthority, String>;
+
 /// Type-erased cell factory for queries.
 /// Takes a typed query, registry, and `host_id`, returns a `FilteredCellMap`.
 pub type QueryCellFactory = fn(
@@ -47,6 +51,7 @@ pub type QueryCellFactory = fn(
     Arc<StoreRegistry>,
     Arc<RequestContext>,
     Option<Arc<MykoServerContext>>,
+    Option<crate::server::federated_source::FederatedRequest>,
 ) -> Result<FilteredCellMap, String>;
 
 /// Type-erased factory for a query that can push a requested window into its
@@ -1387,6 +1392,8 @@ pub struct QueryRegistration {
     pub query_id: &'static str,
     /// Entity type this query returns (e.g., "Target")
     pub query_item_type: &'static str,
+    /// Typed service owner used by application activation.
+    pub service_id: Option<crate::ServiceTypeId>,
     /// Crate where this query is defined (for `type_gen` filtering)
     pub crate_name: &'static str,
     /// Parse function for deserializing query from JSON
@@ -1395,6 +1402,8 @@ pub struct QueryRegistration {
     pub cell_factory: QueryCellFactory,
     /// Factory for an optional source-level bounded query window.
     pub window_cell_factory: QueryWindowCellFactory,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub authority: QueryAuthorityFactory,
     /// Query struct's own fields, captured at macro-expansion time. Backs
     /// the MCP `search()` tool's operation index — see `crate::reflection`.
     pub args: &'static [crate::reflection::OperationArgField],
@@ -1420,6 +1429,17 @@ pub trait QueryFactory: QueryParams {
     /// Returns an error when the requested operation cannot be completed.
     fn parse(value: Value) -> Result<Arc<dyn AnyQuery>, anyhow::Error>;
 
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Resolve typed source, scope, claims, and capabilities before opening.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the serialized query parameters are invalid.
+    fn authority(
+        value: Value,
+        local_node: myko_federation::NodeId,
+    ) -> Result<crate::server::HandlerAuthority, String>;
+
     /// Create a reactive cell for this query.
     ///
     /// # Errors
@@ -1430,6 +1450,9 @@ pub trait QueryFactory: QueryParams {
         registry: Arc<StoreRegistry>,
         request_ctx: Arc<RequestContext>,
         server_ctx: Option<Arc<MykoServerContext>>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
     ) -> Result<FilteredCellMap, String>;
 
     /// Create a source-level bounded query window when the handler supports
@@ -1453,6 +1476,20 @@ where
     Q::Item:
         Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authority(
+        value: Value,
+        local_node: myko_federation::NodeId,
+    ) -> Result<crate::server::HandlerAuthority, String> {
+        let query: Q = serde_json::from_value(value).map_err(|error| error.to_string())?;
+        Ok(crate::server::HandlerAuthority {
+            source_node: query.source_node(local_node),
+            scope_id: query.scope_id(local_node),
+            resource_claims: query.authority_claims(local_node),
+            application_capabilities: query.required_capabilities(),
+        })
+    }
+
     fn parse(value: Value) -> Result<Arc<dyn AnyQuery>, anyhow::Error> {
         let query = serde_json::from_value::<QueryRequest<Q>>(value)?;
         Ok(Arc::new(query))
@@ -1463,6 +1500,9 @@ where
         registry: Arc<StoreRegistry>,
         request_ctx: Arc<RequestContext>,
         server_ctx: Option<Arc<MykoServerContext>>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
     ) -> Result<FilteredCellMap, String> {
         QUERY_CELL_FACTORIES_CREATED.fetch_add(1, Ordering::Relaxed);
         let query_id = Q::query_id_static();
@@ -1478,12 +1518,19 @@ where
         let query: Arc<Q> = Arc::new(request.query);
 
         let query_ctx = Arc::new(QueryContext { req: request_ctx });
-        let query_cell_ctx =
-            QueryBuildContext::new(query_ctx.clone(), registry.clone(), server_ctx);
+        let query_cell_ctx = QueryBuildContext::new_routed(
+            query_ctx.clone(),
+            registry.clone(),
+            server_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated.clone(),
+        );
 
         if let Some(built) = Q::build_view(QueryBuildArgs {
             query: query.clone(),
             query_context: query_cell_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
         }) {
             return Ok(hyphae::MapQuery::materialize(built));
         }
@@ -1531,7 +1578,7 @@ mod belongs_to_source_index_tests {
     use serde::Serialize;
 
     use super::*;
-    use crate::common::with_id::WithId;
+    use crate::{common::with_id::WithId, test_util::scheduler_test_serial};
 
     #[derive(Debug, Clone, PartialEq, Serialize)]
     struct TestChild {
@@ -1581,6 +1628,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn dropped_subscriptions_do_not_leak_across_many_distinct_parents() {
+        let _serial = scheduler_test_serial();
         // Reproduces the leak: every distinct foreign id ever subscribed to
         // used to leave a permanent bucket behind. With weak-ref buckets,
         // dropping every subscriber and sweeping must bring the count to 0
@@ -1604,6 +1652,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn live_subscription_survives_going_empty_then_repopulating() {
+        let _serial = scheduler_test_serial();
         // The naive fix (remove a bucket the moment it goes empty) breaks
         // this: a still-live subscriber would get orphaned from a bucket
         // that later gets silently replaced. Weak-ref buckets avoid this —
@@ -1638,6 +1687,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn resubscribing_after_reap_backfills_current_children() {
+        let _serial = scheduler_test_serial();
         // The bug a naive weak-ref swap alone would introduce: once a
         // bucket is reaped, apply_diff never creates buckets nobody's
         // watching, so a fresh subscription must explicitly backfill from
@@ -1672,6 +1722,7 @@ mod belongs_to_source_index_tests {
     #[test]
     fn concurrent_bucket_for_calls_for_the_same_key_never_orphan_a_bucket() {
         const N: usize = 16;
+        let _serial = scheduler_test_serial();
 
         // The layer-2 mechanism bright-eagle's investigation converged on:
         // bucket_for used to check-then-act (route_to_live_bucket, then a
@@ -1731,6 +1782,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn concurrent_first_subscription_and_insert_cannot_lose_the_insert() {
+        let _serial = scheduler_test_serial();
         // Exercise the publication/backfill boundary repeatedly. The index
         // mutation gate makes the insert callback fall wholly before or
         // after bucket construction, so either ordering must converge on
@@ -1777,6 +1829,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn bucket_diff_fanout_can_reenter_bucket_creation() {
+        let _serial = scheduler_test_serial();
         let store = new_store();
         let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
         let bucket = index.bucket_for(
@@ -1815,6 +1868,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn global_registry_does_not_retain_an_unused_index() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(crate::store::StoreRegistry::new());
         let host_id = Uuid::new_v4();
         let registry_key = format!("{host_id}:TestChild:parent_id");
@@ -1915,6 +1969,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn compound_key_separates_watchers_sharing_one_field_but_not_the_other() {
+        let _serial = scheduler_test_serial();
         // Two cursors in the SAME session but for DIFFERENT nodes. Before
         // compound routing, both watchers would collapse onto one
         // session-keyed bucket (single-field routing on whichever field
@@ -1982,6 +2037,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn compound_and_single_field_routing_never_share_a_bucket() {
+        let _serial = scheduler_test_serial();
         // A query pinning only node_id (single-field key) and a query
         // pinning (node_id, session_id) (compound key) for the same node
         // must land in different BelongsToSourceIndex instances entirely —
@@ -2008,6 +2064,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn cartesian_product_expands_multi_field_value_sets() {
+        let _serial = scheduler_test_serial();
         let sets = vec![
             vec![Arc::from("node-A"), Arc::from("node-B")],
             vec![Arc::from("session-PROD")],
@@ -2025,6 +2082,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn cartesian_product_empty_set_yields_no_keys() {
+        let _serial = scheduler_test_serial();
         // In([]) on any one field means no key any item could satisfy
         // exists — matches "In([]) matches nothing" (spec §1).
         let sets = vec![vec![Arc::from("node-A")], vec![]];
@@ -2033,6 +2091,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn union_source_map_unions_k_buckets_and_stays_reactive() {
+        let _serial = scheduler_test_serial();
         // The mechanism build_view routes an `In` filter through: N
         // compound keys, each backed by its own BelongsToSourceIndex
         // bucket, unioned into one reactive result. Proves both the
@@ -2090,6 +2149,7 @@ mod belongs_to_source_index_tests {
 
     #[test]
     fn compound_union_with_residual_filter_propagates_batch_delete() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(crate::store::StoreRegistry::new());
         let store = registry.get_or_create("TestCursor");
         let (matched_id, matched) =

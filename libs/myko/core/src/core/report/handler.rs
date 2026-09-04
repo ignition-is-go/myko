@@ -29,17 +29,86 @@ pub struct ReportContext {
     /// from [`RegistryScoped`].
     pub(crate) store_registry: Arc<StoreRegistry>,
     server_ctx: Arc<MykoServerContext>,
+    #[cfg(not(target_arch = "wasm32"))]
+    federated: Option<crate::server::federated_source::FederatedRequest>,
 }
 
 impl ReportContext {
     #[must_use]
     pub fn new(req: Arc<RequestContext>, server_ctx: Arc<MykoServerContext>) -> Self {
+        Self::new_routed(
+            req,
+            server_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    pub(crate) fn new_routed(
+        req: Arc<RequestContext>,
+        server_ctx: Arc<MykoServerContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> Self {
         let store_registry = server_ctx.registry.clone();
         Self {
             req,
             store_registry,
             server_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
         }
+    }
+
+    /// Open this report request's durable item source through the retained map runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not a federated request or the source
+    /// projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items<T>(&self) -> Result<crate::query::FilteredCellMap, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        let request = self
+            .federated
+            .as_ref()
+            .ok_or_else(|| "report was not opened from a federation request".to_owned())?;
+        self.server_ctx
+            .federated()
+            .ok_or_else(|| "server has no federation runtime".to_owned())?
+            .items::<T>(request.source_node, request.scope_id.clone())
+            .map(|source| source.rows())
+    }
+
+    /// Open this report's scope across every authoritative source while
+    /// retaining source identity and revision metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not a scoped federated report or the
+    /// multi-source projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items_across_sources<T>(
+        &self,
+    ) -> Result<crate::server::SourcedItemMap<T>, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        let request = self
+            .federated
+            .as_ref()
+            .ok_or_else(|| "report was not opened from a federation request".to_owned())?;
+        let scope_id = request
+            .scope_id
+            .clone()
+            .ok_or_else(|| "multi-source report requires a concrete scope".to_owned())?;
+        self.server_ctx
+            .federated()
+            .ok_or_else(|| "server has no federation runtime".to_owned())?
+            .items_across_sources::<T>(scope_id)
     }
 }
 
@@ -62,6 +131,11 @@ impl RegistryScoped for ReportContext {
 impl ServerScoped for ReportContext {
     fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.server_ctx
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn __federated_request(&self) -> Option<&crate::server::federated_source::FederatedRequest> {
+        self.federated.as_ref()
     }
 }
 // Cross-platform: authored once, compiled for wasm too (where the bodies are
@@ -137,6 +211,29 @@ pub trait ReportHandler: Sized {
         + Sync
         + ToValue
         + 'static;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source_node(&self, local_node: myko_federation::NodeId) -> Option<myko_federation::NodeId> {
+        Some(local_node)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scope_id(&self, _local_node: myko_federation::NodeId) -> Option<myko_federation::ScopeId> {
+        None
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authority_claims(
+        &self,
+        _local_node: myko_federation::NodeId,
+    ) -> Vec<myko_federation::ResourceClaim> {
+        Vec::new()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        Vec::new()
+    }
 
     /// Compute the report output as a reactive pipeline.
     ///

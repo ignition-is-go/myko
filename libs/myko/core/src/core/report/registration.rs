@@ -49,12 +49,17 @@ impl PartialEq for dyn AnyOutput {
 /// Type alias for report parse function.
 pub type ReportParseFn = fn(Value) -> Result<Arc<dyn AnyReport>, anyhow::Error>;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub type ReportAuthorityFactory =
+    fn(Value, myko_federation::NodeId) -> Result<crate::server::HandlerAuthority, String>;
+
 /// Type-erased cell factory for reports.
 /// Takes a typed report, registry, and `host_id`, returns a cell of type-erased output.
 pub type ReportCellFactory = fn(
     Arc<dyn AnyReport>,
     Arc<RequestContext>,
     Arc<MykoServerContext>,
+    Option<crate::server::federated_source::FederatedRequest>,
 ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -68,6 +73,8 @@ inventory::collect!(ReportRegistration);
 pub struct ReportRegistration {
     /// Report identifier (e.g., "`ServerStats`")
     pub report_id: &'static str,
+    /// Typed service owner used by application activation.
+    pub service_id: Option<crate::ServiceTypeId>,
     /// Crate where this report is defined (for `type_gen` filtering)
     pub crate_name: &'static str,
     /// Output type name (e.g., "`ServerStatsOutput`")
@@ -78,6 +85,8 @@ pub struct ReportRegistration {
     pub parse: ReportParseFn,
     /// Factory for creating reactive cell from report
     pub cell_factory: ReportCellFactory,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub authority: ReportAuthorityFactory,
     /// Report struct's own fields, captured at macro-expansion time. Backs
     /// the MCP `search()` tool's operation index — see `crate::reflection`.
     pub args: &'static [crate::reflection::OperationArgField],
@@ -110,10 +119,38 @@ pub trait ReportFactory: ReportParams {
         report: Arc<dyn AnyReport>,
         request_ctx: Arc<RequestContext>,
         server_ctx: Arc<MykoServerContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Resolve typed source, scope, claims, and capabilities before opening.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the serialized report parameters are invalid.
+    fn authority(
+        value: Value,
+        local_node: myko_federation::NodeId,
+    ) -> Result<crate::server::HandlerAuthority, String>;
 }
 
 impl<R: ReportParams> ReportFactory for R {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authority(
+        value: Value,
+        local_node: myko_federation::NodeId,
+    ) -> Result<crate::server::HandlerAuthority, String> {
+        let report: R = serde_json::from_value(value).map_err(|error| error.to_string())?;
+        Ok(crate::server::HandlerAuthority {
+            source_node: report.source_node(local_node),
+            scope_id: report.scope_id(local_node),
+            resource_claims: report.authority_claims(local_node),
+            application_capabilities: report.required_capabilities(),
+        })
+    }
+
     fn parse(value: Value) -> Result<Arc<dyn AnyReport>, anyhow::Error> {
         let report = serde_json::from_value::<ReportRequest<R>>(value)?;
         Ok(Arc::new(report))
@@ -123,6 +160,9 @@ impl<R: ReportParams> ReportFactory for R {
         any_report: Arc<dyn AnyReport>,
         request_ctx: Arc<RequestContext>,
         server_ctx: Arc<MykoServerContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
     ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
         // Downcast to the ReportRequest wrapper
         let any_ref: &dyn Any = any_report.as_ref();
@@ -138,7 +178,12 @@ impl<R: ReportParams> ReportFactory for R {
         // that go through `ReportContext::report`). Previously this called
         // `<R as ReportHandler>::compute()` directly, bypassing the cache and
         // producing a fresh cell graph for every WS subscribe.
-        let cell = server_ctx.report(request.report, request_ctx);
+        let cell = server_ctx.report_routed(
+            request.report,
+            request_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        );
 
         // Map to type-erased output for the WS/report subscription layer.
         let report_name = format!("report:{report_id}");

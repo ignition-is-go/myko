@@ -5221,7 +5221,10 @@ dependencies = [
  "hyphae",
  "inventory",
  "js-sys",
+ "myko-federation",
+ "myko-items",
  "myko-macros",
+ "myko-wire",
  "nucleo-matcher",
  "num-traits",
  "opentelemetry",
@@ -5232,9 +5235,12 @@ dependencies = [
  "roaring",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "smallvec",
  "strsim",
+ "thiserror 2.0.20",
  "thread_local",
+ "tokio",
  "tracing",
  "ts-rs",
  "url",
@@ -5244,41 +5250,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "myko-app"
-version = "7.0.0-alpha.1"
-dependencies = [
- "flume 0.11.1",
- "hyphae",
- "inventory",
- "myko-app-macros",
- "myko-federation",
- "myko-items",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
-]
-
-[[package]]
-name = "myko-app-macros"
-version = "7.0.0-alpha.1"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.119",
-]
-
-[[package]]
 name = "myko-authority"
 version = "7.0.0-alpha.1"
 dependencies = [
  "chrono",
  "flume 0.11.1",
- "myko-app",
+ "hyphae",
+ "myko",
  "myko-federation",
  "myko-items",
  "myko-redb",
- "myko-session",
  "myko-wire",
  "serde",
  "serde_json",
@@ -5300,6 +5281,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -5322,6 +5304,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.20",
+ "tracing",
  "uuid",
 ]
 
@@ -5343,6 +5326,7 @@ dependencies = [
 name = "myko-iroh"
 version = "7.0.0-alpha.1"
 dependencies = [
+ "async-trait",
  "chrono",
  "flume 0.11.1",
  "getrandom 0.3.4",
@@ -5350,11 +5334,10 @@ dependencies = [
  "hmac 0.12.1",
  "hyphae",
  "iroh",
- "myko-app",
+ "myko",
  "myko-federation",
  "myko-items",
  "myko-redb",
- "myko-session",
  "myko-wire",
  "serde",
  "serde_json",
@@ -5362,6 +5345,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -5398,19 +5382,20 @@ dependencies = [
 name = "myko-local"
 version = "7.0.0-alpha.1"
 dependencies = [
+ "async-trait",
  "chrono",
  "flume 0.11.1",
  "hyphae",
- "myko-app",
+ "myko",
  "myko-federation",
  "myko-items",
- "myko-session",
  "myko-wire",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -5426,22 +5411,23 @@ dependencies = [
 name = "myko-node"
 version = "7.0.0-alpha.1"
 dependencies = [
+ "async-trait",
  "flume 0.11.1",
  "hyphae",
- "myko-app",
+ "myko",
  "myko-discovery",
  "myko-federation",
  "myko-iroh",
  "myko-items",
  "myko-local",
  "myko-redb",
- "myko-session",
  "myko-wire",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
  "tokio",
+ "tracing",
  "uuid",
 ]
 
@@ -5459,9 +5445,11 @@ name = "myko-redb"
 version = "7.0.0-alpha.1"
 dependencies = [
  "myko-federation",
+ "rayon",
  "redb",
  "serde_json",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]
@@ -5498,27 +5486,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "myko-session"
-version = "7.0.0-alpha.1"
-dependencies = [
- "chrono",
- "flume 0.11.1",
- "myko-app",
- "myko-federation",
- "myko-wire",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
-]
-
-[[package]]
 name = "myko-swift"
 version = "7.0.0-alpha.1"
 dependencies = [
  "chrono",
  "flume 0.11.1",
  "hyphae",
- "myko-app",
+ "myko",
  "myko-authority",
  "myko-discovery",
  "myko-federation",
@@ -5532,29 +5506,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "myko-websocket-gateway"
-version = "7.0.0-alpha.1"
-dependencies = [
- "flume 0.11.1",
- "futures-util",
- "hyphae",
- "myko-app",
- "myko-federation",
- "myko-items",
- "myko-session",
- "myko-wire",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "tokio-tungstenite",
-]
-
-[[package]]
 name = "myko-wire"
 version = "7.0.0-alpha.1"
 dependencies = [
- "myko-app",
  "myko-federation",
  "serde",
  "serde_json",

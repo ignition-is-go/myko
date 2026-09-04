@@ -41,8 +41,13 @@ fn query_derive_tokens(
     }
 }
 
+// Query expansion remains one linear block so registration, type generation,
+// and the typed runtime contract are visibly emitted together.
+#[allow(clippy::too_many_lines)]
 pub fn myko_query_impl(
     query_item_type: &Path,
+    service_item_type: Option<&Path>,
+    implement_item_query: bool,
     include_in_typegen: bool,
     mut input_struct: ItemStruct,
 ) -> TokenStream {
@@ -72,14 +77,41 @@ pub fn myko_query_impl(
     let derives = query_derive_tokens(&ctx, is_empty, non_hash_cache_key, include_in_typegen);
 
     // Generate query registration using QueryFactory trait
+    let service_id = service_item_type.map_or_else(
+        || quote!(None),
+        |item| quote!(Some(<#item as #krate::MykoItem>::SERVICE_ID)),
+    );
+    let typed_query = service_item_type.map_or_else(
+        || quote!(),
+        |_| {
+            let item_query = if implement_item_query {
+                quote! {
+                    impl #krate::ItemQuery for #struct_name {
+                        type Item = #query_item_type;
+                    }
+                }
+            } else {
+                quote!()
+            };
+            quote! {
+                impl #krate::MykoOperation for #struct_name {
+                    const OPERATION_ID: &'static str = stringify!(#struct_name);
+                }
+
+                #item_query
+            }
+        },
+    );
     let query_registration = quote! {
         #krate::prelude::QueryRegistration {
             query_id: stringify!(#struct_name),
             query_item_type: stringify!(#query_item_type),
+            service_id: #service_id,
             crate_name: module_path!(),
             parse: <#struct_name as #krate::query::QueryFactory>::parse,
             cell_factory: <#struct_name as #krate::query::QueryFactory>::cell_factory,
             window_cell_factory: <#struct_name as #krate::query::QueryFactory>::window_cell_factory,
+            authority: <#struct_name as #krate::query::QueryFactory>::authority,
             args: #args_tokens,
             description: #description_tokens,
             include_in_typegen: #include_in_typegen,
@@ -150,6 +182,8 @@ pub fn myko_query_impl(
             }
         }
 
+        #typed_query
+
         #cache_key_impl
     }
 }
@@ -162,6 +196,8 @@ mod tests {
     fn disabled_export_keeps_runtime_registration_out_of_typegen() {
         let output = myko_query_impl(
             &syn::parse_quote!(HistoryRow),
+            None,
+            false,
             false,
             syn::parse_quote! {
                 pub struct EntityHistory {
@@ -180,6 +216,8 @@ mod tests {
     fn queries_export_by_default() {
         let output = myko_query_impl(
             &syn::parse_quote!(HistoryRow),
+            None,
+            false,
             true,
             syn::parse_quote! {
                 pub struct EntityHistory {

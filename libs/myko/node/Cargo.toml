@@ -9,20 +9,21 @@ license = "AGPL-3.0-or-later"
 workspace = true
 
 [dependencies]
+async-trait.workspace = true
 flume.workspace = true
-myko-app.workspace = true
+myko.workspace = true
 myko-discovery.workspace = true
 myko-federation.workspace = true
 myko-iroh.workspace = true
 myko-items.workspace = true
 myko-redb.workspace = true
-myko-session.workspace = true
 myko-wire.workspace = true
 hyphae.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

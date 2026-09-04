@@ -290,6 +290,7 @@ mod tests {
             HandlerRegistry, MykoServerContext, MykoServerRuntime, PersisterRouter,
             RelationshipManager,
         },
+        test_util::scheduler_test_serial,
         wire::MEventType,
     };
 
@@ -426,6 +427,7 @@ mod tests {
 
     #[test]
     fn history_window_pages_at_the_provider_and_refreshes_matching_commits() {
+        let _serial = scheduler_test_serial();
         let provider = Arc::new(TestHistoryProvider::new(vec![
             history_event(3),
             history_event(2),

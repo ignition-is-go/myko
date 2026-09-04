@@ -1143,10 +1143,12 @@ mod tests {
     use crate::{
         client::MykoClient,
         entities::client::GetAllClients,
+        test_util::scheduler_test_serial,
         wire::{QueryWindow, QueryWindowUpdate},
     };
 
     struct MockTransport {
+        _serial: crate::test_util::SchedulerTestPermit,
         status: Cell<SocketConnectionStatus, CellMutable>,
         sent: Mutex<Vec<WsFrame>>,
         incoming_rx: flume::Receiver<WsFrame>,
@@ -1154,8 +1156,9 @@ mod tests {
 
     impl MockTransport {
         fn new() -> Self {
-            let (_incoming_tx, incoming_rx) = flume::unbounded();
+            let (_incoming_tx, incoming_rx) = flume::bounded(16);
             Self {
+                _serial: scheduler_test_serial(),
                 status: Cell::new(SocketConnectionStatus::Idle),
                 sent: Mutex::new(Vec::new()),
                 incoming_rx,
@@ -1171,6 +1174,27 @@ mod tests {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .clone()
+        }
+
+        fn wait_for_sent_frames(
+            &self,
+            expected: usize,
+            predicate: impl Fn(&WsFrame) -> bool,
+        ) -> Vec<WsFrame> {
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_secs(1))
+                .unwrap_or_else(std::time::Instant::now);
+            loop {
+                let frames = self
+                    .sent_frames()
+                    .into_iter()
+                    .filter(&predicate)
+                    .collect::<Vec<_>>();
+                if frames.len() >= expected || std::time::Instant::now() >= deadline {
+                    return frames;
+                }
+                thread::yield_now();
+            }
         }
     }
 
@@ -1228,11 +1252,10 @@ mod tests {
         let watch = client.watch_query_map_state(GetAllClients {});
 
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
-        let first_frames = transport
-            .sent_frames()
-            .into_iter()
-            .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query")))
-            .collect::<Vec<_>>();
+        let first_frames = transport.wait_for_sent_frames(
+            1,
+            |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query")),
+        );
         assert_eq!(first_frames.len(), 1);
         let Some(WsFrame::Text(first_frame)) = first_frames.first() else {
             return;
@@ -1951,7 +1974,10 @@ mod tests {
         let client = MykoClient::with_transport(transport.clone());
         let watch = client.watch_query_map_state(GetAllClients {});
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
-        let frames = transport.sent_frames();
+        let frames = transport.wait_for_sent_frames(
+            1,
+            |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query")),
+        );
         assert!(matches!(frames.first(), Some(WsFrame::Text(_))));
         let Some(WsFrame::Text(frame)) = frames.first() else {
             return;
@@ -2084,12 +2110,10 @@ mod tests {
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
         assert_eq!(
             transport
-                .sent_frames()
-                .iter()
-                .filter(
-                    |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\""))
-                )
-                .count(),
+                .wait_for_sent_frames(1, |frame| {
+                    matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\""))
+                })
+                .len(),
             1
         );
         drop(watches);

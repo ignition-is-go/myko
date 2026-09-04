@@ -38,6 +38,10 @@ mod client_session;
 mod context;
 pub mod dispatch_metrics;
 pub mod entity_set_stats;
+#[cfg(not(target_arch = "wasm32"))]
+mod federated_session;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod federated_source;
 mod handler_registry;
 pub mod history_replay;
 pub mod persister;
@@ -46,12 +50,17 @@ mod relationship_manager;
 pub mod report_cache_stats;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
-/// Compatibility alias for the pre-7.0 WebSocket-shaped sink name.
-#[deprecated(note = "use SessionSink; delivery is transport-neutral")]
-pub use client_session::SessionSink as WsWriter;
 pub use client_session::{ClientSession, PendingQueryResponse, SessionSink};
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
+#[cfg(not(target_arch = "wasm32"))]
+pub use federated_session::{
+    FederatedSession, NodeFrameStream, NodeRequestRouter, NodeRouteFuture,
+};
+#[cfg(not(target_arch = "wasm32"))]
+pub use federated_source::{SourcedItem, SourcedItemKey, SourcedItemMap};
+#[cfg(not(target_arch = "wasm32"))]
+pub use handler_registry::HandlerAuthority;
 pub use handler_registry::HandlerRegistry;
 pub use history_replay::{
     CommittedHistoryEvent, EntityHistory, HistoryEntityKey, HistoryEvent, HistoryPage,

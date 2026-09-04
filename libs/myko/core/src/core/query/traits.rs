@@ -49,6 +49,29 @@ pub trait QueryItemType {
 ///
 /// Any deduplication of changes to this query are handled upstream in the handler logic.
 pub trait QueryHandler: QueryItemType + Sized {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn source_node(&self, local_node: myko_federation::NodeId) -> Option<myko_federation::NodeId> {
+        Some(local_node)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn scope_id(&self, _local_node: myko_federation::NodeId) -> Option<myko_federation::ScopeId> {
+        None
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authority_claims(
+        &self,
+        _local_node: myko_federation::NodeId,
+    ) -> Vec<myko_federation::ResourceClaim> {
+        Vec::new()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        Vec::new()
+    }
+
     /// Per-entity membership predicate.
     ///
     /// Return `true` when an item should be included in the query result.
@@ -132,6 +155,57 @@ impl<TQuery: QueryItemType> QueryTestContext<TQuery> {
 pub struct QueryBuildArgs<TQuery: QueryItemType> {
     pub query: Arc<TQuery>,
     pub query_context: QueryBuildContext,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub federated: Option<crate::server::federated_source::FederatedRequest>,
+}
+
+impl<TQuery: QueryItemType> QueryBuildArgs<TQuery> {
+    /// Open the request's durable item source through the retained map runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not a federated request or the source
+    /// projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items<T>(&self) -> Result<super::FilteredCellMap, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        let request = self
+            .federated
+            .as_ref()
+            .ok_or_else(|| "query was not opened from a federation request".to_owned())?;
+        self.query_context
+            .federated_items::<T>(request.source_node, request.scope_id.clone())
+    }
+
+    /// Open this query's scope across every authoritative source while
+    /// retaining source identity and revision metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not a scoped federated query or the
+    /// multi-source projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items_across_sources<T>(
+        &self,
+    ) -> Result<crate::server::SourcedItemMap<T>, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        let request = self
+            .federated
+            .as_ref()
+            .ok_or_else(|| "query was not opened from a federation request".to_owned())?;
+        let scope_id = request
+            .scope_id
+            .clone()
+            .ok_or_else(|| "multi-source query requires a concrete scope".to_owned())?;
+        self.query_context
+            .federated_items_across_sources_selected::<T>(myko_federation::ScopeSelection::Exact(
+                scope_id,
+            ))
+    }
 }
 
 /// Inputs for a query-specific pushed-down window source.

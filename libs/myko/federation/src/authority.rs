@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    AccessOperation, AccessRequest, FederationPermission, NodeId, PrincipalId, ScopeId,
+    AccessAttempt, AccessOperation, FederationPermission, NodeId, PrincipalId, ScopeId,
     ScopeSelection, ScopeTopology, ServiceId,
 };
 
@@ -185,7 +185,7 @@ pub enum ResourceClaimKind {
 }
 
 /// A conjunctive claim. Requirements are local to this resource, while
-/// `AccessRequest::application_capabilities` remains truly request-global.
+/// `AccessAttempt::application_capabilities` remains truly request-global.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ResourceClaim {
     pub selection: ScopeSelection,
@@ -311,17 +311,15 @@ pub struct AuthorityConstraints {
 
 impl AuthorityConstraints {
     #[must_use]
-    pub fn permits(&self, request: &AccessRequest) -> bool {
+    pub fn permits(&self, request: &AccessAttempt) -> bool {
         (self.services.is_empty()
             || request
-                .service_id
-                .as_ref()
+                .service_id()
                 .is_some_and(|service| self.services.contains(service)))
             && (self.commands.is_empty()
                 || request
-                    .command_type
-                    .as_ref()
-                    .is_some_and(|command| self.commands.contains(command)))
+                    .command_type()
+                    .is_some_and(|command| self.commands.iter().any(|allowed| allowed == command)))
             && (self.item_types.is_empty()
                 || (!request.resource_claims.is_empty()
                     && request.resource_claims.iter().all(|claim| {
@@ -471,15 +469,15 @@ pub struct AuthorizationBinding {
 
 impl AuthorizationBinding {
     #[must_use]
-    pub fn from_request(request: &AccessRequest) -> Self {
+    pub fn from_request(request: &AccessAttempt) -> Self {
         Self {
             principal: request.presentation.principal.clone(),
             executor: request.presentation.executor.clone(),
             provenance: request.presentation.provenance.clone(),
             operation: request.operation,
-            service_id: request.service_id.clone(),
-            command_id: request.command_id,
-            command_type: request.command_type.clone(),
+            service_id: request.service_id().cloned(),
+            command_id: request.command_id(),
+            command_type: request.command_type().map(ToOwned::to_owned),
             resources: request.resource_claims.clone(),
             capabilities: request.application_capabilities.clone(),
             arguments_digest: request.arguments_digest.clone(),
@@ -489,7 +487,7 @@ impl AuthorizationBinding {
                     .topology
                     .as_ref()
                     .map_or_else(ScopeTopology::default, |topology| {
-                        topology.proof_for(&request.scope_selections)
+                        topology.proof_for(&request.scope_selections())
                     })
             } else {
                 ScopeTopology::default()
@@ -570,6 +568,21 @@ pub struct SelectedQueryResult<T> {
     pub authorization: Option<AuthorizationDecision>,
     #[serde(default)]
     pub included_scopes: Vec<ScopeId>,
+}
+
+impl<T> SelectedQueryResult<T> {
+    pub(crate) fn map<U>(self, map: impl FnOnce(T) -> U) -> SelectedQueryResult<U> {
+        SelectedQueryResult {
+            value: self.value.map(map),
+            visibility: self.visibility,
+            coverage: self.coverage,
+            through: self.through,
+            complete: self.complete,
+            requested_fully_authorized: self.requested_fully_authorized,
+            authorization: self.authorization,
+            included_scopes: self.included_scopes,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

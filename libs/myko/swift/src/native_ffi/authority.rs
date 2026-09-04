@@ -179,14 +179,13 @@ impl MykoAuthority {
         let subscription = self
             .application
             .application()?
-            .watch_view(&AuthorityGrantsView {
+            .watch_view_live(&AuthorityGrantsView {
                 source_node,
                 realm_id,
             })
             .map_err(|error| authority_error(&error))?;
-        let live = subscription.live().clone();
         Ok(Arc::new(MykoAuthorityGrantsSubscription {
-            subscription: BlockingCollectionSubscription::new(subscription, &live),
+            subscription: BlockingCollectionSubscription::new(subscription.clone(), &subscription),
         }))
     }
 }

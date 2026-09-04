@@ -11,7 +11,8 @@ use std::sync::Arc;
 
 use hyphae::{Cell, CellImmutable, CellMap, SubscriptionGuard, Watchable as _};
 use myko_federation::{
-    LiveCollection, LiveCollectionState, LiveSubscription, LiveSubscriptionState,
+    LiveCollection, LiveCollectionHandle, LiveCollectionState, LiveSubscription,
+    LiveSubscriptionHandle, LiveSubscriptionState,
 };
 
 /// Coalescing redraw notifications retained for a terminal view's lifetime.
@@ -83,6 +84,7 @@ where
 {
     subscription: LiveSubscription<T, C>,
     rerenders: RerenderSubscriptions,
+    owner: Option<Box<dyn Send + Sync>>,
 }
 
 impl<T, C> LiveBinding<T, C>
@@ -98,7 +100,21 @@ where
         Self {
             subscription,
             rerenders,
+            owner: None,
         }
+    }
+
+    /// Retains any local, remote, or embedded Myko driver behind the same
+    /// domain-typed Ratatui binding.
+    #[must_use]
+    pub fn from_subscription<S>(subscription: S) -> Self
+    where
+        S: LiveSubscriptionHandle<T, C>,
+    {
+        let live = subscription.live_subscription().clone();
+        let mut binding = Self::new(live);
+        binding.owner = Some(Box::new(subscription));
+        binding
     }
 
     /// Reads the newest coherent value/cursor/liveness state for rendering.
@@ -135,6 +151,7 @@ where
 {
     collection: LiveCollection<T, C>,
     rerenders: RerenderSubscriptions,
+    owner: Option<Box<dyn Send + Sync>>,
 }
 
 impl<T, C> CollectionBinding<T, C>
@@ -150,7 +167,21 @@ where
         Self {
             collection,
             rerenders,
+            owner: None,
         }
+    }
+
+    /// Retains any local, remote, or embedded Myko driver behind the same
+    /// domain-typed Ratatui collection binding.
+    #[must_use]
+    pub fn from_subscription<S>(subscription: S) -> Self
+    where
+        S: LiveCollectionHandle<T, C>,
+    {
+        let live = subscription.live_collection().clone();
+        let mut binding = Self::new(live);
+        binding.owner = Some(Box::new(subscription));
+        binding
     }
 
     /// Returns the authoritative keyed rows used directly by rendering code.

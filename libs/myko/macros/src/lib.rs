@@ -7,7 +7,6 @@ use syn::{
     parse::{Parse, ParseStream},
     parse_macro_input,
     punctuated::Punctuated,
-    spanned::Spanned,
 };
 
 mod command;
@@ -18,6 +17,7 @@ mod query;
 mod relationship;
 mod report;
 mod saga;
+mod service;
 mod setter;
 mod view;
 
@@ -396,8 +396,15 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 ///
 /// # Struct Modifications
 ///
-/// Adds two required fields automatically:
-/// - `pub id: Arc<str>` - Unique identifier for the entity
+/// Adds the required `pub id: {Entity}Id` field automatically.
+/// `scoped_by = Parent` also adds `pub parent_id: ParentId`.
+///
+/// # Options
+///
+/// - `filters = false` limits `{Entity}Query` to identity and scope fields. Use it
+///   when payload fields have no meaningful query filter.
+/// - `deletes = false` omits generated delete commands. Use it when the
+///   application owns deletion policy or authority checks.
 ///
 /// # Derives
 ///
@@ -413,14 +420,14 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 /// | Query | Description |
 /// |-------|-------------|
 /// | `GetAll{Entity}s` | Returns all entities of this type |
-/// | `Get{Entity}sByIds { ids: Vec<Arc<str>> }` | Returns entities matching the given IDs |
+/// | `Get{Entity}sByIds { ids: Vec<{Entity}Id> }` | Returns entities matching the given IDs |
 /// | `Get{Entity}sByQuery({Entity}Query)` | Returns entities matching the query — every field is `Option<<FieldType as Filterable>::Filter>` (`Eq`/`In`/`Range`/`Contains` depending on the field's type), not a flat value |
 ///
 /// # Generated Reports
 ///
 /// | Report | Output Type | Description |
 /// |--------|-------------|-------------|
-/// | `Get{Entity}ById { id: Arc<str> }` | `Option<{Entity}>` | Returns a single entity by ID |
+/// | `Get{Entity}ById { id: {Entity}Id }` | `Option<{Entity}>` | Returns a single entity by ID |
 /// | `CountAll{Entity}s` | `{Entity}Count` | Returns total count of all entities |
 /// | `Count{Entity}s({Entity}Query)` | `{Entity}Count` | Returns count matching the query |
 ///
@@ -428,8 +435,8 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 ///
 /// | Command | Result Type | Description |
 /// |---------|-------------|-------------|
-/// | `Delete{Entity} { id: Arc<str> }` | `Delete{Entity}Result` | Deletes a single entity |
-/// | `Delete{Entity}s { ids: Vec<Arc<str>> }` | `Delete{Entity}sResult` | Deletes multiple entities |
+/// | `Delete{Entity} { id: {Entity}Id }` | `Delete{Entity}Result` | Deletes a single entity |
+/// | `Delete{Entity}s { ids: Vec<{Entity}Id> }` | `Delete{Entity}sResult` | Deletes multiple entities |
 ///
 /// # Generated Types
 ///
@@ -547,7 +554,19 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 pub fn myko_item(attr: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as item::ItemArgs);
     let input = parse_macro_input!(input as syn::ItemStruct);
-    item::myko_item_impl(&args, input).into()
+    item::myko_item_impl(&args, input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
+}
+
+/// Declare a typed application service and the retained Myko items it owns.
+#[proc_macro_attribute]
+pub fn myko_service(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let args = parse_macro_input!(attr as service::ServiceArgs);
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    service::expand(args, input)
+        .unwrap_or_else(syn::Error::into_compile_error)
+        .into()
 }
 
 #[proc_macro_attribute]
@@ -559,11 +578,20 @@ pub fn myko_item(attr: TokenStream, input: TokenStream) -> TokenStream {
 pub fn myko_query(attr: TokenStream, input: TokenStream) -> TokenStream {
     let args = parse_macro_input!(attr as QueryArgs);
     let input = parse_macro_input!(input as syn::ItemStruct);
-    query::myko_query_impl(&args.item_type, args.export, input).into()
+    query::myko_query_impl(
+        &args.item_type,
+        args.service_item.as_ref(),
+        args.implement_item_query,
+        args.export,
+        input,
+    )
+    .into()
 }
 
 struct QueryArgs {
     item_type: syn::Path,
+    service_item: Option<syn::Path>,
+    implement_item_query: bool,
     export: bool,
 }
 
@@ -573,21 +601,45 @@ impl Parse for QueryArgs {
         if input.is_empty() {
             return Ok(Self {
                 item_type,
+                service_item: None,
+                implement_item_query: false,
                 export: true,
             });
         }
 
-        input.parse::<Token![,]>()?;
-        let option = syn::Ident::parse_any(input)?;
-        if option != "export" {
-            return Err(syn::Error::new_spanned(option, "expected `export = false`"));
+        let mut service_item = None;
+        let mut implement_item_query = false;
+        let mut export = true;
+        while !input.is_empty() {
+            input.parse::<Token![,]>()?;
+            let option = syn::Ident::parse_any(input)?;
+            input.parse::<Token![=]>()?;
+            if option == "export" {
+                export = input.parse::<syn::LitBool>()?.value;
+            } else if option == "service" {
+                if service_item.is_some() {
+                    return Err(syn::Error::new_spanned(option, "duplicate `service`"));
+                }
+                service_item = Some(input.parse()?);
+            } else if option == "item" {
+                if service_item.is_some() {
+                    return Err(syn::Error::new_spanned(option, "duplicate handler owner"));
+                }
+                service_item = Some(input.parse()?);
+                implement_item_query = true;
+            } else {
+                return Err(syn::Error::new_spanned(
+                    option,
+                    "expected `export = false`, `item = ItemType`, or internal `service = ItemType`",
+                ));
+            }
         }
-        input.parse::<Token![=]>()?;
-        let export = input.parse::<syn::LitBool>()?.value;
-        if !input.is_empty() {
-            return Err(input.error("unexpected query options"));
-        }
-        Ok(Self { item_type, export })
+        Ok(Self {
+            item_type,
+            service_item,
+            implement_item_query,
+            export,
+        })
     }
 }
 
@@ -668,9 +720,9 @@ pub fn myko_view_item(_attr: TokenStream, input: TokenStream) -> TokenStream {
 /// ```
 #[proc_macro_attribute]
 pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
-    let report_output_type = parse_macro_input!(attr as syn::Path);
+    let args = parse_macro_input!(attr as report::ReportArgs);
     let input = parse_macro_input!(input as syn::ItemStruct);
-    report::myko_report_impl(&report_output_type, input).into()
+    report::myko_report_impl(args, input).into()
 }
 
 /// Generates a command with handler struct and registration.
@@ -706,6 +758,7 @@ pub fn myko_command(attr: TokenStream, input: TokenStream) -> TokenStream {
         command::CommandOptions {
             result_type: None,
             custom_serialize: false,
+            owner: None,
         }
     } else {
         parse_macro_input!(attr as CommandArgs).into()
@@ -715,8 +768,17 @@ pub fn myko_command(attr: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 struct CommandArgs {
-    result_type: Option<syn::Path>,
+    result_type: Option<syn::Type>,
     custom_serialize: bool,
+    owner: Option<CommandOwnerArgs>,
+}
+
+enum CommandOwnerArgs {
+    Item(syn::Path),
+    Service {
+        service: syn::Path,
+        scope: syn::Path,
+    },
 }
 
 impl From<CommandArgs> for command::CommandOptions {
@@ -724,42 +786,136 @@ impl From<CommandArgs> for command::CommandOptions {
         Self {
             result_type: value.result_type,
             custom_serialize: value.custom_serialize,
+            owner: value.owner.map(|owner| match owner {
+                CommandOwnerArgs::Item(item) => command::CommandOwner::Item(item),
+                CommandOwnerArgs::Service { service, scope } => {
+                    command::CommandOwner::Service { service, scope }
+                }
+            }),
         }
     }
 }
 
 impl Parse for CommandArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
-        let args = Punctuated::<syn::Path, Token![,]>::parse_terminated(input)?;
         let mut result_type = None;
         let mut custom_serialize = false;
+        let mut item = None;
+        let mut service = None;
+        let mut scope = None;
 
-        for path in args {
-            if path.is_ident("custom_serialize") {
+        let begins_with_option = input.fork().parse::<syn::Ident>().is_ok_and(|key| {
+            key == "custom_serialize"
+                || ((key == "item" || key == "service" || key == "scope")
+                    && input.fork().parse::<syn::Ident>().is_ok()
+                    && {
+                        let fork = input.fork();
+                        let _ = fork.parse::<syn::Ident>();
+                        fork.peek(Token![=])
+                    })
+        });
+        if !input.is_empty() && !begins_with_option {
+            result_type = Some(input.parse()?);
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
+            }
+        }
+
+        while !input.is_empty() {
+            let key: syn::Ident = input.parse()?;
+            if key == "custom_serialize" {
                 if custom_serialize {
                     return Err(syn::Error::new(
-                        path.span(),
+                        key.span(),
                         "duplicate custom_serialize flag",
                     ));
                 }
                 custom_serialize = true;
-                continue;
+            } else {
+                input.parse::<Token![=]>()?;
+                if key == "item" {
+                    if item.is_some() || service.is_some() {
+                        return Err(syn::Error::new(
+                            key.span(),
+                            "a command must name at most one `item` or `service` owner",
+                        ));
+                    }
+                    item = Some(input.parse()?);
+                } else if key == "service" {
+                    if item.is_some() || service.is_some() {
+                        return Err(syn::Error::new(
+                            key.span(),
+                            "a command must name at most one `item` or `service` owner",
+                        ));
+                    }
+                    service = Some(input.parse()?);
+                } else if key == "scope" {
+                    if scope.is_some() {
+                        return Err(syn::Error::new(key.span(), "duplicate `scope`"));
+                    }
+                    scope = Some(input.parse()?);
+                } else {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "expected `custom_serialize`, `item`, `service`, or `scope`",
+                    ));
+                }
             }
 
-            if result_type.is_some() {
-                return Err(syn::Error::new(
-                    path.span(),
-                    "expected at most one result type",
-                ));
+            if !input.is_empty() {
+                input.parse::<Token![,]>()?;
             }
-
-            result_type = Some(path);
         }
+
+        let owner = match (item, service, scope) {
+            (Some(item), None, None) => Some(CommandOwnerArgs::Item(item)),
+            (Some(_), None, Some(_)) => {
+                return Err(input.error("`scope` is inferred from the command item"));
+            }
+            (None, Some(service), Some(scope)) => {
+                Some(CommandOwnerArgs::Service { service, scope })
+            }
+            (None, Some(_), None) => {
+                return Err(input.error("service commands must declare `scope = ScopeItem`"));
+            }
+            (None, None, Some(_)) => {
+                return Err(input.error("`scope` requires a `service` owner"));
+            }
+            (None, None, None) => None,
+            (Some(_), Some(_), _) => {
+                return Err(input.error("a command must name only one owner"));
+            }
+        };
 
         Ok(Self {
             result_type,
             custom_serialize,
+            owner,
         })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod command_args_tests {
+    use super::*;
+
+    #[test]
+    fn parses_item_owned_command() {
+        let args: CommandArgs = syn::parse_str("Vec<Record>, item = Record").unwrap();
+        assert!(matches!(args.owner, Some(CommandOwnerArgs::Item(_))));
+        assert!(args.result_type.is_some());
+    }
+
+    #[test]
+    fn parses_service_owned_unit_command() {
+        let args: CommandArgs = syn::parse_str("(), service = Records, scope = Workspace").unwrap();
+        assert!(matches!(args.owner, Some(CommandOwnerArgs::Service { .. })));
+    }
+
+    #[test]
+    fn rejects_service_owner_without_scope() {
+        assert!(syn::parse_str::<CommandArgs>("bool, service = Records").is_err());
     }
 }
 

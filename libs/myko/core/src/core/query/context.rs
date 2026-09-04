@@ -42,6 +42,8 @@ pub struct QueryBuildContext {
     pub query_context: Arc<QueryContext>,
     registry: Arc<StoreRegistry>,
     server_ctx: Option<Arc<MykoServerContext>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    federated: Option<crate::server::federated_source::FederatedRequest>,
 }
 
 impl QueryBuildContext {
@@ -51,10 +53,30 @@ impl QueryBuildContext {
         registry: Arc<StoreRegistry>,
         server_ctx: Option<Arc<MykoServerContext>>,
     ) -> Self {
+        Self::new_routed(
+            query_context,
+            registry,
+            server_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    #[must_use]
+    pub(crate) const fn new_routed(
+        query_context: Arc<QueryContext>,
+        registry: Arc<StoreRegistry>,
+        server_ctx: Option<Arc<MykoServerContext>>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> Self {
         Self {
             query_context,
             registry,
             server_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
         }
     }
 
@@ -80,7 +102,20 @@ impl QueryBuildContext {
             + 'static,
     {
         if let Some(server_ctx) = self.server_ctx.clone() {
-            return Ok(server_ctx.query_map_untyped(query, self.query_context.req.clone()));
+            #[cfg(not(target_arch = "wasm32"))]
+            let federated = self.federated.as_ref().and_then(|_| {
+                let local_node = server_ctx.federated()?.node_id();
+                Some(crate::server::federated_source::FederatedRequest {
+                    source_node: <Q as crate::query::QueryHandler>::source_node(&query, local_node),
+                    scope_id: <Q as crate::query::QueryHandler>::scope_id(&query, local_node),
+                })
+            });
+            return Ok(server_ctx.query_map_untyped_routed(
+                query,
+                self.query_context.req.clone(),
+                #[cfg(not(target_arch = "wasm32"))]
+                federated,
+            ));
         }
 
         // Fallback for test/wasm contexts that don't carry a MykoServerContext.
@@ -92,6 +127,8 @@ impl QueryBuildContext {
             self.registry.clone(),
             self.query_context.req.clone(),
             self.server_ctx.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
         )
     }
 
@@ -112,13 +149,71 @@ impl QueryBuildContext {
         let Some(server_ctx) = self.server_ctx.clone() else {
             return Err("QueryBuildContext.report requires server context".to_string());
         };
+        #[cfg(not(target_arch = "wasm32"))]
+        let federated = self.federated.as_ref().and_then(|_| {
+            let local_node = server_ctx.federated()?.node_id();
+            Some(crate::server::federated_source::FederatedRequest {
+                source_node: <R as ReportHandler>::source_node(&report, local_node),
+                scope_id: <R as ReportHandler>::scope_id(&report, local_node),
+            })
+        });
 
-        Ok(server_ctx.report(report, self.query_context.req.clone()))
+        Ok(server_ctx.report_routed(
+            report,
+            self.query_context.req.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        ))
     }
 
     #[must_use]
     pub fn registry(&self) -> Arc<StoreRegistry> {
         self.registry.clone()
+    }
+
+    /// Open one durable typed source through the retained map runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this server has no federation node or the source
+    /// projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items<T>(
+        &self,
+        source_node: Option<myko_federation::NodeId>,
+        scope_id: Option<myko_federation::ScopeId>,
+    ) -> Result<FilteredCellMap, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        self.server_ctx
+            .as_ref()
+            .and_then(|server| server.federated())
+            .ok_or_else(|| "query context has no federation source runtime".to_owned())?
+            .items::<T>(source_node, scope_id)
+            .map(|source| source.rows())
+    }
+
+    /// Open an exact scope or subtree across every authoritative source while
+    /// retaining source identity and revision metadata.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no federation runtime exists or the selected
+    /// projection cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn federated_items_across_sources_selected<T>(
+        &self,
+        selection: myko_federation::ScopeSelection,
+    ) -> Result<crate::server::SourcedItemMap<T>, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        self.server_ctx
+            .as_ref()
+            .and_then(|server| server.federated())
+            .ok_or_else(|| "query context has no federation source runtime".to_owned())?
+            .items_across_sources_selected::<T>(selection)
     }
 
     /// Build an index-seeded graph watch for generated edge queries.

@@ -10,6 +10,8 @@ pub use handler::{
     CommandContext, CommandExecutorAdapter, CommandExecutorFactory, CommandHandler,
     CommandHandlerRegistration, DynCommandExecutor,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use handler::{DurableCommandExecutor, durable_command_executor};
 // Re-export registration types (server-only)
 pub use registration::CommandRegistration;
 // Re-export request type

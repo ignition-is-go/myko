@@ -4,6 +4,8 @@
 #[derive(Debug)]
 pub struct CommandRegistration {
     pub command_id: &'static str,
+    /// Typed service owner used by application activation.
+    pub service_id: Option<crate::ServiceTypeId>,
     pub result_type: &'static str,
     pub result_type_crate: &'static str,
     pub crate_name: &'static str,

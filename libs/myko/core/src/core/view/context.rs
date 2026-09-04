@@ -18,6 +18,8 @@ pub struct ViewContext {
     pub req: Arc<RequestContext>,
     pub(crate) registry: Arc<StoreRegistry>,
     pub(crate) server_ctx: Arc<MykoServerContext>,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) federated: Option<crate::server::federated_source::FederatedRequest>,
 }
 
 impl ViewContext {
@@ -27,10 +29,30 @@ impl ViewContext {
         registry: Arc<StoreRegistry>,
         server_ctx: Arc<MykoServerContext>,
     ) -> Self {
+        Self::new_routed(
+            req,
+            registry,
+            server_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            None,
+        )
+    }
+
+    #[must_use]
+    pub(crate) const fn new_routed(
+        req: Arc<RequestContext>,
+        registry: Arc<StoreRegistry>,
+        server_ctx: Arc<MykoServerContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            crate::server::federated_source::FederatedRequest,
+        >,
+    ) -> Self {
         Self {
             req,
             registry,
             server_ctx,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
         }
     }
 }
@@ -49,6 +71,11 @@ impl RegistryScoped for ViewContext {
 impl ServerScoped for ViewContext {
     fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.server_ctx
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn __federated_request(&self) -> Option<&crate::server::federated_source::FederatedRequest> {
+        self.federated.as_ref()
     }
 }
 // The view handler's scope: reactive queries, search, sub-reports, and other
@@ -95,6 +122,11 @@ impl RegistryScoped for ViewBuildContext {
 impl ServerScoped for ViewBuildContext {
     fn __server_ctx(&self) -> &Arc<MykoServerContext> {
         &self.view_context.server_ctx
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn __federated_request(&self) -> Option<&crate::server::federated_source::FederatedRequest> {
+        self.view_context.federated.as_ref()
     }
 }
 // NOTE(ts): this is the context `ViewHandler::build_cell` receives, and

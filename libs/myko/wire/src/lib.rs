@@ -1,14 +1,19 @@
 //! Canonical, transport-independent wire messages for Myko nodes.
 //!
-//! Local sockets, native peer transports, and WebSocket compatibility layers
+//! Local sockets, native peer transports, and WebSocket edges
 //! serialize these same request and response shapes. Each adapter remains
 //! responsible for framing, authentication, and lifecycle supervision.
 
 #![forbid(unsafe_code)]
 
+mod handler;
+
+pub use handler::{
+    ErasedHandlerState, ErasedKeyedValue, ErasedViewDelta, HandlerRequest, HandlerStreamRevision,
+};
+
 use std::fmt;
 
-use myko_app::{ErasedHandlerState, ErasedViewDelta, HandlerRequest};
 use myko_federation::{
     ApprovalDecision, AuthorityPresentation, AuthorizationDecision, ChallengeId, CommandId,
     CommandResponse, CommandStatePage, CommandStateRequest, CommandStateUpdate, CommandSubmission,
@@ -249,6 +254,34 @@ pub enum NodeRequest {
     },
 }
 
+impl NodeRequest {
+    /// Stable operation name suitable for diagnostics and metrics labels.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Identify => "identify",
+            Self::ListScopes { .. } => "list_scopes",
+            Self::Pull { .. } => "pull",
+            Self::PullScope { .. } => "pull_scope",
+            Self::PullSelected { .. } => "pull_selected",
+            Self::Follow { .. } => "follow",
+            Self::FollowScope { .. } => "follow_scope",
+            Self::FollowSelected { .. } => "follow_selected",
+            Self::FollowLive { .. } => "follow_live",
+            Self::Submit { .. } => "submit",
+            Self::Command { .. } => "command",
+            Self::CommandState { .. } => "command_state",
+            Self::WatchCommands { .. } => "watch_commands",
+            Self::WatchCommand { .. } => "watch_command",
+            Self::Cancel { .. } => "cancel",
+            Self::ItemState { .. } => "item_state",
+            Self::FollowItems { .. } => "follow_items",
+            Self::FollowHandler { .. } => "follow_handler",
+            Self::ApproveAuthority { .. } => "approve_authority",
+        }
+    }
+}
+
 /// Frames a Myko node emits in response to a [`NodeRequest`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -280,9 +313,15 @@ pub enum NodeFrame {
     /// Item-state stream update.
     ItemUpdate { update: Box<ItemStateUpdate> },
     /// Reactive application handler lifecycle state.
-    HandlerState { state: Box<ErasedHandlerState> },
+    HandlerState {
+        revision: HandlerStreamRevision,
+        state: Box<ErasedHandlerState>,
+    },
     /// Incremental keyed application-view rows after its initial state.
-    HandlerViewDelta { delta: Box<ErasedViewDelta> },
+    HandlerViewDelta {
+        revision: HandlerStreamRevision,
+        delta: Box<ErasedViewDelta>,
+    },
     /// First-class permit/deny/challenge result for an authority operation.
     Authorization {
         decision: Box<AuthorizationDecision>,
@@ -293,6 +332,33 @@ pub enum NodeFrame {
     Live { event: Box<LiveEvent> },
     /// Operation failure, represented as a portable diagnostic.
     Error { message: String },
+}
+
+impl NodeFrame {
+    /// Stable frame name suitable for diagnostics and metrics labels.
+    #[must_use]
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Hello { .. } => "hello",
+            Self::Batch { .. } => "batch",
+            Self::ScopedBatch { .. } => "scoped_batch",
+            Self::SelectedBatch { .. } => "selected_batch",
+            Self::ScopeCatalog { .. } => "scope_catalog",
+            Self::Command { .. } => "command",
+            Self::CommandState { .. } => "command_state",
+            Self::CommandWatchReady { .. } => "command_watch_ready",
+            Self::CommandUpdate { .. } => "command_update",
+            Self::ItemState { .. } => "item_state",
+            Self::ItemFollowReady { .. } => "item_follow_ready",
+            Self::ItemUpdate { .. } => "item_update",
+            Self::HandlerState { .. } => "handler_state",
+            Self::HandlerViewDelta { .. } => "handler_view_delta",
+            Self::Authorization { .. } => "authorization",
+            Self::Approval { .. } => "approval",
+            Self::Live { .. } => "live",
+            Self::Error { .. } => "error",
+        }
+    }
 }
 
 #[cfg(test)]

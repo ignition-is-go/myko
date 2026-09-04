@@ -461,7 +461,7 @@ impl PostgresProducer {
         validate_ident(&config.channel)?;
 
         let health = Arc::new(PersistHealth::default());
-        let (tx, rx) = flume::unbounded::<ProducerRequest>();
+        let (tx, rx) = flume::bounded::<ProducerRequest>(4096);
         let cfg = config.clone();
         let thread_health = health.clone();
         std::thread::spawn(move || run_producer_loop(&cfg, &rx, &thread_health));

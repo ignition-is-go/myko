@@ -41,6 +41,8 @@ pub struct CommandError {
     pub tx: String,
     pub command_id: String,
     pub message: String,
+    #[serde(skip)]
+    retryable: bool,
 }
 
 impl CommandError {
@@ -53,6 +55,29 @@ impl CommandError {
             tx: tx.into(),
             command_id: command_id.into(),
             message: message.into(),
+            retryable: false,
+        }
+    }
+
+    #[must_use]
+    pub fn reject(message: impl Into<String>) -> Self {
+        Self::new(String::new(), String::new(), message)
+    }
+
+    #[must_use]
+    pub fn retry(message: impl Into<String>) -> Self {
+        Self {
+            retryable: true,
+            ..Self::reject(message)
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn into_federation(self) -> myko_federation::CommandHandlerError {
+        if self.retryable {
+            myko_federation::CommandHandlerError::retry(self.message)
+        } else {
+            myko_federation::CommandHandlerError::reject(self.message)
         }
     }
 }

@@ -5,8 +5,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use crate::{
-    command::CommandError, core::capability::RequestScoped, query::QueryParams,
-    request::RequestContext, server::MykoServerContext,
+    ApplicationResources, command::CommandError, core::capability::RequestScoped,
+    query::QueryParams, request::RequestContext, server::MykoServerContext,
 };
 
 /// Context provided to command handlers for accessing dependencies.
@@ -23,13 +23,18 @@ pub struct CommandContext {
     /// The command ID being executed (for error reporting).
     pub command_id: Arc<str>,
 
-    server_ctx: Arc<MykoServerContext>,
+    server_ctx: Option<Arc<MykoServerContext>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    federation: Option<myko_federation::CommandContext>,
+    resources: ApplicationResources,
+    #[cfg(not(target_arch = "wasm32"))]
+    scope_id: Option<myko_federation::ScopeId>,
 }
 
 impl CommandContext {
     /// Create a new `CommandContext`.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         command_id: Arc<str>,
         req: Arc<RequestContext>,
         server_ctx: Arc<MykoServerContext>,
@@ -37,8 +42,20 @@ impl CommandContext {
         Self {
             req,
             command_id,
-            server_ctx,
+            server_ctx: Some(server_ctx),
+            #[cfg(not(target_arch = "wasm32"))]
+            federation: None,
+            resources: ApplicationResources::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            scope_id: None,
         }
+    }
+
+    #[allow(clippy::expect_used)]
+    const fn server_ctx(&self) -> &Arc<MykoServerContext> {
+        self.server_ctx
+            .as_ref()
+            .expect("retained command context has a server runtime")
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -65,7 +82,7 @@ impl CommandContext {
     {
         {
             Ok(self
-                .server_ctx
+                .server_ctx()
                 .query_snapshot(query, self.req.clone())
                 .into_iter()
                 .next())
@@ -86,11 +103,252 @@ impl CommandContext {
     {
         {
             Ok(self
-                .server_ctx
+                .server_ctx()
                 .query_snapshot(query, self.req.clone())
                 .into_iter()
                 .collect())
         }
+    }
+
+    /// Create a command context over a durable federation command.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[doc(hidden)]
+    #[must_use]
+    pub fn from_federation(
+        inner: myko_federation::CommandContext,
+        resources: ApplicationResources,
+    ) -> Self {
+        let request = inner.request();
+        let req = Arc::new(RequestContext::internal(
+            Arc::from(request.id.to_string()),
+            uuid::Uuid::new_v4(),
+            "durable-command",
+        ));
+        Self {
+            req,
+            command_id: Arc::from(request.command_type.as_str()),
+            server_ctx: None,
+            scope_id: Some(request.scope_id.clone()),
+            federation: Some(inner),
+            resources,
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn federation(&self) -> Result<&myko_federation::CommandContext, CommandError> {
+        self.federation
+            .as_ref()
+            .ok_or_else(|| CommandError::reject("command is not executing in a durable node"))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn durable_scope(&self) -> Result<&myko_federation::ScopeId, CommandError> {
+        self.scope_id
+            .as_ref()
+            .ok_or_else(|| CommandError::reject("command has no durable scope"))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retarget(&self, scope_id: myko_federation::ScopeId) -> Self {
+        let mut context = self.clone();
+        context.scope_id = Some(scope_id);
+        context
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    /// Return the durable node executing this command.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from a legacy store-backed command context. Typed
+    /// durable command handlers are constructed with a federation context.
+    #[allow(clippy::expect_used)]
+    pub fn node_id(&self) -> myko_federation::NodeId {
+        self.federation()
+            .expect("durable command context")
+            .node()
+            .node_id()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    /// Return the authenticated principal executing this durable command.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from a legacy store-backed command context.
+    #[allow(clippy::expect_used)]
+    pub fn principal_id(&self) -> &myko_federation::PrincipalId {
+        &self
+            .federation()
+            .expect("durable command context")
+            .request()
+            .principal_id
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    /// Return the authority principal carried by this durable command.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from a legacy store-backed command context.
+    #[allow(clippy::expect_used)]
+    pub fn authority_principal(&self) -> &myko_federation::Principal {
+        &self
+            .federation()
+            .expect("durable command context")
+            .request()
+            .authority
+            .principal
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Read the authoritative durable scope topology.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error outside durable execution or when topology is unavailable.
+    pub fn scope_topology(&self) -> Result<myko_federation::ScopeTopology, CommandError> {
+        self.federation()?
+            .node()
+            .scope_topology()
+            .map_err(command_capability_error)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Resolve a typed process-local application resource and record its capability use.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the resource is absent, the context is not
+    /// durable, or capability recording fails.
+    pub fn resource<T>(&self) -> Result<Arc<T>, crate::AppError>
+    where
+        T: Send + Sync + 'static,
+    {
+        if let Some(capability) = self.resources.capability::<T>()? {
+            self.federation()
+                .map_err(|error| crate::AppError::State(error.message))?
+                .record_actual_capability(capability)
+                .map_err(crate::AppError::Node)?;
+        }
+        self.resources.get::<T>()
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Execute one typed item query against the active durable command context.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the context is not durable or the query fails.
+    pub fn exec_item_query<Q>(
+        &self,
+        query: Q,
+    ) -> Result<myko_federation::ItemQueryResult<Q>, CommandError>
+    where
+        Q: myko_federation::ItemQuery,
+    {
+        self.federation()?
+            .query(query)
+            .map_err(command_capability_error)
+    }
+
+    /// Execute a typed query over a declared exact scope or nested subtree.
+    ///
+    /// The durable command context records the selected read in its actual
+    /// claim set before projecting local authoritative history.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the selection was not declared, the context is
+    /// not durable, or the typed projection fails.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn exec_selected_query<Q>(
+        &self,
+        selection: myko_federation::ScopeSelection,
+        query: Q,
+    ) -> Result<myko_federation::ItemQueryResult<Q>, CommandError>
+    where
+        Q: myko_federation::ItemQuery,
+    {
+        self.federation()?
+            .query_selected(selection, query)
+            .map_err(command_capability_error)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Emit one typed SET mutation in the active durable scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the item belongs to another scope or emission fails.
+    pub fn emit_set<T>(&self, item: &T) -> Result<(), CommandError>
+    where
+        T: myko_federation::MykoItem,
+    {
+        let scope = self.durable_scope()?;
+        if matches!(
+            T::SCOPE,
+            myko_federation::ItemScope::ScopedBy { .. }
+                | myko_federation::ItemScope::RootScopedBy { .. }
+        ) {
+            let declared = myko_federation::ScopeId::for_entity(&item.scope_ref());
+            if &declared != scope {
+                return Err(CommandError::reject(format!(
+                    "item belongs to scope {declared}; active command scope is {scope}"
+                )));
+            }
+        }
+        self.federation()?
+            .emit_set_in(scope, item)
+            .map_err(command_capability_error)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Emit one typed deletion in the active durable scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the context is not durable or emission fails.
+    pub fn emit_delete<T>(&self, id: &T::Id) -> Result<(), CommandError>
+    where
+        T: myko_federation::MykoItem,
+    {
+        self.federation()?
+            .emit_delete_in::<T>(self.durable_scope()?, id)
+            .map_err(command_capability_error)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    /// Execute a nested typed command under the outer command's declared authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when service, resource, or capability constraints are violated.
+    pub fn exec_command<C>(&self, command: C) -> Result<C::Result, CommandError>
+    where
+        C: CommandHandler + myko_federation::MykoCommandContract<Output = C::Result>,
+    {
+        if self.federation()?.request().service_id.as_str() != C::SERVICE_ID.as_str() {
+            return Err(CommandError::reject(
+                "nested commands must belong to the outer durable service",
+            ));
+        }
+        let scope = command.scope(self.node_id());
+        let scope_id = myko_federation::ScopeId::for_item::<C::Scope>(&scope);
+        for claim in normalized_command_claims(&command, self.node_id(), scope_id.clone()) {
+            self.federation()?
+                .validate_declared_claim(&claim)
+                .map_err(command_capability_error)?;
+        }
+        for capability in command.required_capabilities() {
+            self.federation()?
+                .record_actual_capability(capability)
+                .map_err(command_capability_error)?;
+        }
+        command.execute(self.retarget(scope_id))
     }
 
     /// Execute a report and return the current value.
@@ -110,7 +368,7 @@ impl CommandContext {
         {
             use hyphae::Gettable;
             Ok(self
-                .server_ctx
+                .server_ctx()
                 .report(report, self.req.clone())
                 .get()
                 .as_ref()
@@ -139,7 +397,7 @@ impl CommandContext {
             ));
         }
 
-        let query = self.server_ctx.edges::<E>();
+        let query = self.server_ctx().edges::<E>();
         let result = scope.map_or_else(
             || query.one_between(a, b),
             |scope| query.one_between_in_scope(scope, a, b),
@@ -218,7 +476,7 @@ impl CommandContext {
         use crate::graph::{EdgeEnds, EdgeScope};
 
         let graph = self
-            .server_ctx
+            .server_ctx()
             .graph_index()
             .ok_or_else(|| self.graph_command_error("application has no graph registrations"))?;
         let expected_scope = scope
@@ -267,7 +525,7 @@ impl CommandContext {
             let generation = graph.generation();
             let ids = graph.edge_ids_at(E::ENTITY_NAME_STATIC, position, endpoint);
             let current = self
-                .server_ctx
+                .server_ctx()
                 .registry
                 .get(E::ENTITY_NAME_STATIC)
                 .map_or_else(HashMap::new, |store| {
@@ -320,7 +578,7 @@ impl CommandContext {
                 continue;
             }
             if self
-                .server_ctx
+                .server_ctx()
                 .replace_batch_any_if_graph_generation(upserts, deletes, generation)
                 .map_err(|error| self.graph_command_error(error))?
             {
@@ -346,7 +604,7 @@ impl crate::core::capability::RequestScoped for CommandContext {
 }
 impl crate::core::capability::ServerScoped for CommandContext {
     fn __server_ctx(&self) -> &Arc<MykoServerContext> {
-        &self.server_ctx
+        self.server_ctx()
     }
 }
 impl crate::core::capability::EventPublishing for CommandContext {
@@ -386,6 +644,41 @@ impl crate::core::capability::CommandSending for CommandContext {
 /// register_command_handler!(DeleteMachine);
 /// ```
 pub trait CommandHandler: crate::command::CommandParams {
+    /// Select the concrete durable scope for generated federation commands.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[allow(clippy::unreachable)]
+    fn scope(
+        &self,
+        _node_id: myko_federation::NodeId,
+    ) -> <<Self as myko_federation::MykoCommandContract>::Scope as myko_federation::MykoItem>::Id
+    where
+        Self: myko_federation::MykoCommandContract,
+    {
+        unreachable!("durable command handlers must select a scope")
+    }
+
+    /// Declare durable resources used by this command before execution.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn authority_claims(
+        &self,
+        node_id: myko_federation::NodeId,
+    ) -> Vec<myko_federation::ResourceClaim>
+    where
+        Self: myko_federation::MykoCommandContract,
+    {
+        let scope = self.scope(node_id);
+        vec![myko_federation::ResourceClaim::scope(
+            myko_federation::ScopeId::for_item::<Self::Scope>(&scope),
+            myko_federation::ResourceClaimKind::Primary,
+        )]
+    }
+
+    /// Declare opaque application capabilities used by a durable command.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        Vec::new()
+    }
+
     /// Execute the command synchronously.
     ///
     /// `self` is the deserialized command parameters (owned, consumed by execution).
@@ -397,6 +690,159 @@ pub trait CommandHandler: crate::command::CommandParams {
     fn execute(self, _ctx: CommandContext) -> Result<Self::Result, CommandError> {
         unreachable!("command handlers execute on the server")
     }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn command_capability_error(error: myko_federation::NodeError) -> CommandError {
+    use myko_federation::NodeError;
+    match error {
+        error @ (NodeError::AuthorizationDenied(_)
+        | NodeError::ItemServiceMismatch { .. }
+        | NodeError::InvalidItemMutation(_)
+        | NodeError::CommandSchemaMismatch { .. }) => CommandError::reject(error.to_string()),
+        error => CommandError::retry(error.to_string()),
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn normalized_command_claims<C>(
+    command: &C,
+    node_id: myko_federation::NodeId,
+    scope_id: myko_federation::ScopeId,
+) -> Vec<myko_federation::ResourceClaim>
+where
+    C: CommandHandler + myko_federation::MykoCommandContract,
+{
+    use myko_federation::{AccessOperation, FederationPermission, ResourceClaimKind};
+    let mut claims = command.authority_claims(node_id);
+    if !claims.iter().any(|claim| {
+        claim.kind == ResourceClaimKind::Primary
+            && claim.selection == myko_federation::ScopeSelection::Exact(scope_id.clone())
+    }) {
+        claims.push(myko_federation::ResourceClaim::scope(
+            scope_id,
+            ResourceClaimKind::Primary,
+        ));
+    }
+    for claim in claims
+        .iter_mut()
+        .filter(|claim| claim.kind == ResourceClaimKind::Primary)
+    {
+        claim
+            .service_id
+            .get_or_insert_with(|| myko_federation::ServiceId::new(C::SERVICE_ID));
+        if let Some(item_type) = C::ITEM_TYPE {
+            claim.item_type.get_or_insert_with(|| item_type.to_owned());
+        }
+        if !claim
+            .required_permissions
+            .contains(&FederationPermission::Write)
+        {
+            claim.required_permissions.push(FederationPermission::Write);
+        }
+        if !claim
+            .required_operations
+            .contains(&AccessOperation::SubmitCommand)
+        {
+            claim
+                .required_operations
+                .push(AccessOperation::SubmitCommand);
+        }
+    }
+    claims
+}
+
+/// Type-erased durable command lifecycle selected by an activated service.
+#[cfg(not(target_arch = "wasm32"))]
+pub trait DurableCommandExecutor: Send + Sync + 'static {
+    /// Authenticate and validate an untrusted command submission.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the payload or typed command contract is invalid.
+    fn authenticate(
+        &self,
+        node_id: myko_federation::NodeId,
+        principal_id: myko_federation::PrincipalId,
+        submission: myko_federation::CommandSubmission,
+    ) -> Result<myko_federation::CommandRequest, myko_federation::NodeError>;
+
+    /// Dispatch an admitted command through its typed handler.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when declaration, authorization, execution, or commit fails.
+    fn dispatch(
+        &self,
+        node: &myko_federation::Node,
+        resources: ApplicationResources,
+        command_id: myko_federation::CommandId,
+        trusted_framework: bool,
+    ) -> Result<myko_federation::CommandDispatchResult, crate::AppError>;
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct DurableCommandExecutorAdapter<C>(std::marker::PhantomData<fn() -> C>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl<C> DurableCommandExecutor for DurableCommandExecutorAdapter<C>
+where
+    C: CommandHandler
+        + myko_federation::MykoCommand
+        + myko_federation::MykoCommandContract<Output = C::Result>,
+{
+    fn authenticate(
+        &self,
+        node_id: myko_federation::NodeId,
+        principal_id: myko_federation::PrincipalId,
+        submission: myko_federation::CommandSubmission,
+    ) -> Result<myko_federation::CommandRequest, myko_federation::NodeError> {
+        let command: C = serde_json::from_slice(&submission.payload)
+            .map_err(|error| myko_federation::NodeError::CommandDecoding(error.to_string()))?;
+        let scope = command.scope(node_id);
+        let scope_id = myko_federation::ScopeId::for_item::<C::Scope>(&scope);
+        let mut request = submission.authenticate(scope_id.clone(), principal_id);
+        request.resource_claims = normalized_command_claims(&command, node_id, scope_id);
+        request.application_capabilities = command.required_capabilities();
+        Ok(request)
+    }
+
+    fn dispatch(
+        &self,
+        node: &myko_federation::Node,
+        resources: ApplicationResources,
+        command_id: myko_federation::CommandId,
+        trusted_framework: bool,
+    ) -> Result<myko_federation::CommandDispatchResult, crate::AppError> {
+        let handle = |declared: &mut myko_federation::DeclaredCommandContext<C>| {
+            declared
+                .body()
+                .clone()
+                .execute(CommandContext::from_federation(
+                    declared.command_context().clone(),
+                    resources,
+                ))
+                .map_err(CommandError::into_federation)
+        };
+        if trusted_framework {
+            node.dispatch_trusted_framework_command::<C, _>(command_id, handle)
+        } else {
+            node.dispatch_declared_command::<C, _>(command_id, handle)
+        }
+        .map_err(crate::AppError::Node)
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+#[doc(hidden)]
+#[must_use]
+pub fn durable_command_executor<C>() -> Arc<dyn DurableCommandExecutor>
+where
+    C: CommandHandler
+        + myko_federation::MykoCommand
+        + myko_federation::MykoCommandContract<Output = C::Result>,
+{
+    Arc::new(DurableCommandExecutorAdapter::<C>(std::marker::PhantomData))
 }
 
 /// Type-erased command executor for dynamic dispatch.
@@ -494,7 +940,10 @@ pub type CommandExecutorFactory = fn() -> Box<dyn DynCommandExecutor>;
 /// Registration entry for command handlers
 pub struct CommandHandlerRegistration {
     pub command_id: &'static str,
+    pub service_id: Option<crate::ServiceTypeId>,
     pub factory: CommandExecutorFactory,
+    #[cfg(not(target_arch = "wasm32"))]
+    pub durable_factory: Option<fn() -> Arc<dyn DurableCommandExecutor>>,
 }
 
 inventory::collect!(CommandHandlerRegistration);
@@ -509,10 +958,31 @@ inventory::collect!(CommandHandlerRegistration);
 #[macro_export]
 macro_rules! register_command_handler {
     ($cmd:ty) => {
+        $crate::register_command_handler!($cmd, service_id = None);
+    };
+    ($cmd:ty, service_id = $service_id:expr) => {
         $crate::inventory::submit! {
             $crate::command::CommandHandlerRegistration {
                 command_id: <$cmd as $crate::command::CommandIdStatic>::COMMAND_ID,
+                service_id: $service_id,
                 factory: || Box::new($crate::command::CommandExecutorAdapter::<$cmd>::new()),
+                durable_factory: None,
+            }
+        }
+    };
+}
+
+/// Register a generated durable command on the retained handler catalog.
+#[cfg(not(target_arch = "wasm32"))]
+#[macro_export]
+macro_rules! register_durable_command_handler {
+    ($cmd:ty, service_id = $service_id:expr) => {
+        $crate::inventory::submit! {
+            $crate::command::CommandHandlerRegistration {
+                command_id: <$cmd as $crate::command::CommandIdStatic>::COMMAND_ID,
+                service_id: Some($service_id),
+                factory: || Box::new($crate::command::CommandExecutorAdapter::<$cmd>::new()),
+                durable_factory: Some($crate::command::durable_command_executor::<$cmd>),
             }
         }
     };

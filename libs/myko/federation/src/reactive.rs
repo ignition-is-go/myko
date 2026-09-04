@@ -1,11 +1,18 @@
 //! Hyphae-backed lifecycle state shared by every Myko transport adapter.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable as _, JoinExt as _, MapDiff, MapExt as _,
-    Materialize as _, Mutable as _, ScanExt as _,
+    Cell, CellImmutable, CellMap, CellMutable, DepNode as _, Gettable as _, JoinExt as _, MapDiff,
+    MapExt as _, MapQuery, Materialize as _, Mutable as _, ScanExt as _, Signal, Watchable as _,
 };
+use parking_lot::Mutex;
 
 use crate::LogPosition;
 
@@ -61,35 +68,279 @@ pub struct CompositeFrontier<L, R> {
 /// A revision carries the typed row diff together with the exact cursor and
 /// liveness that cover it. Lifecycle-only transitions use `diff: None`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LiveCollectionRevision<T, C = LogPosition>
+pub struct LiveCollectionRevision<T, C = LogPosition, K = Arc<str>>
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq,
 {
-    pub diff: Option<MapDiff<Arc<str>, Arc<T>>>,
+    pub diff: Option<MapDiff<K, Arc<T>>>,
     pub state: LiveCollectionState<C>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CollectionRevisionFold<T, C, K>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq,
+{
+    last_diff: MapDiff<K, Arc<T>>,
+    revision: LiveCollectionRevision<T, C, K>,
+}
+
+fn fold_collection_revision<T, C, K>(
+    previous: &CollectionRevisionFold<T, C, K>,
+    input: &(MapDiff<K, Arc<T>>, LiveCollectionState<C>),
+) -> CollectionRevisionFold<T, C, K>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq,
+{
+    let diff_changed = previous.last_diff != input.0;
+    let state_changed = previous.revision.state != input.1;
+    let revision = if diff_changed {
+        LiveCollectionRevision {
+            diff: Some(input.0.clone()),
+            state: input.1.clone(),
+        }
+    } else if state_changed {
+        LiveCollectionRevision {
+            diff: None,
+            state: input.1.clone(),
+        }
+    } else {
+        previous.revision.clone()
+    };
+    CollectionRevisionFold {
+        last_diff: input.0.clone(),
+        revision,
+    }
 }
 
 /// Read-only typed reactive collection returned to applications and clients.
 #[derive(Clone)]
-pub struct LiveCollection<T, C = LogPosition>
+pub struct LiveCollection<T, C = LogPosition, K = Arc<str>>
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq,
 {
-    rows: CellMap<Arc<str>, Arc<T>, CellImmutable>,
+    rows: CellMap<K, Arc<T>, CellImmutable>,
+    // Derived from `revision`; this is a convenience view, not a second
+    // mutable lifecycle publication.
     state: Cell<LiveCollectionState<C>, CellImmutable>,
-    revision: Cell<LiveCollectionRevision<T, C>, CellImmutable>,
+    revision: Cell<LiveCollectionRevision<T, C, K>, CellImmutable>,
 }
 
-impl<T, C> LiveCollection<T, C>
+/// A lazy keyed collection projection together with its authoritative lifecycle.
+///
+/// Row operators remain an unmaterialized Hyphae [`MapQuery`] until the Myko
+/// handler factory opens the collection. This keeps application composition
+/// declarative and gives each registered query or view exactly one observable
+/// row-map boundary.
+pub struct MapCollectionPlan<T, C, K, Q>
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq,
+    Q: MapQuery<Key = K, Value = Arc<T>>,
 {
+    rows: Q,
+    state: Cell<LiveCollectionState<C>, CellImmutable>,
+}
+
+/// Lazy union of two keyed collection plans with independent cursor spaces.
+///
+/// Both inputs must use the same row and key types. Keys are the durable row
+/// identity across the union, so a key present on both sides invalidates the
+/// result instead of silently choosing one value.
+pub struct UnionCollectionPlan<L, R> {
+    left: L,
+    right: R,
+}
+
+impl<L, R> UnionCollectionPlan<L, R> {
+    /// Creates a lazy two-source collection union.
+    #[must_use]
+    pub const fn new(left: L, right: R) -> Self {
+        Self { left, right }
+    }
+}
+
+impl<T, C, K, Q> MapCollectionPlan<T, C, K, Q>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+    Q: MapQuery<Key = K, Value = Arc<T>>,
+{
+    /// Combines a lazy row plan with the lifecycle that covers its sources.
+    #[must_use]
+    pub const fn new(rows: Q, state: Cell<LiveCollectionState<C>, CellImmutable>) -> Self {
+        Self { rows, state }
+    }
+
+    /// Returns the lifecycle cell that covers this plan's source rows.
+    #[must_use]
+    pub const fn state(&self) -> &Cell<LiveCollectionState<C>, CellImmutable> {
+        &self.state
+    }
+
+    /// Composes another lazy keyed projection without materializing this plan.
+    #[must_use]
+    pub fn project_rows<U, K2, Q2, F>(self, build: F) -> MapCollectionPlan<U, C, K2, Q2>
+    where
+        U: hyphae::CellValue,
+        K2: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+        Q2: MapQuery<Key = K2, Value = Arc<U>>,
+        F: FnOnce(Q) -> Q2,
+    {
+        MapCollectionPlan::new(build(self.rows), self.state)
+    }
+
+    /// Materializes this plan into a subscribable live collection.
+    ///
+    /// Handler factories own this boundary. Application handlers should
+    /// return the plan instead of calling this method themselves.
+    #[must_use]
+    pub fn materialize(self) -> LiveCollection<T, C, K> {
+        let rows = self.rows.materialize();
+        let state = self.state;
+        let projected_diffs = rows.diffs().materialize();
+        let initial_diff = projected_diffs.get();
+        let initial_state = state.get();
+        let initial = CollectionRevisionFold {
+            last_diff: initial_diff.clone(),
+            revision: LiveCollectionRevision {
+                diff: Some(initial_diff),
+                state: initial_state,
+            },
+        };
+        let revision = projected_diffs
+            .join(state)
+            .scan(initial, fold_collection_revision)
+            .map(|fold| fold.revision.clone())
+            .materialize()
+            .with_name("myko.live_collection.plan.revision");
+        let state = revision
+            .clone()
+            .map(|revision| revision.state.clone())
+            .materialize()
+            .with_name("myko.live_collection.plan.state");
+
+        LiveCollection {
+            rows,
+            state,
+            revision,
+        }
+    }
+}
+
+/// Lazy keyed rows that Myko can materialize as one live collection.
+///
+/// Query and view handlers return this trait instead of a concrete
+/// [`LiveCollection`]. That makes the handler factory the sole row-map
+/// materialization boundary while allowing application code to return any
+/// statically typed Hyphae plan.
+pub trait CollectionPlan: Sized {
+    type Item: hyphae::CellValue;
+    type Cursor: hyphae::CellValue;
+    type Key: hyphae::CellValue + std::hash::Hash + Eq + Ord;
+
+    /// Materializes the plan into its shared, subscribable collection.
+    #[must_use]
+    fn materialize(self) -> LiveCollection<Self::Item, Self::Cursor, Self::Key>;
+
+    /// Folds the complete keyed result into one reactive report value.
+    ///
+    /// This is the explicit collection-to-scalar boundary. Row filtering and
+    /// joins stay lazy before this call; the collection is materialized once
+    /// here so Hyphae can maintain the scalar as keyed diffs arrive.
+    #[must_use]
+    fn project_value<U, F>(self, project: F) -> LiveSubscription<U, Self::Cursor>
+    where
+        U: hyphae::CellValue,
+        F: Fn(&Vec<Self::Item>) -> U + Send + Sync + 'static,
+    {
+        self.materialize().as_subscription().map_value(project)
+    }
+
+    /// Unions two keyed plans while retaining each source's independent
+    /// cursor in a [`CompositeFrontier`].
+    #[must_use]
+    fn union<R>(self, right: R) -> UnionCollectionPlan<Self, R>
+    where
+        R: CollectionPlan<Item = Self::Item, Key = Self::Key>,
+    {
+        UnionCollectionPlan::new(self, right)
+    }
+}
+
+impl<T, C, K, Q> CollectionPlan for MapCollectionPlan<T, C, K, Q>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+    Q: MapQuery<Key = K, Value = Arc<T>>,
+{
+    type Item = T;
+    type Cursor = C;
+    type Key = K;
+
+    fn materialize(self) -> LiveCollection<T, C, K> {
+        Self::materialize(self)
+    }
+}
+
+impl<T, C, K> CollectionPlan for LiveCollection<T, C, K>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    type Item = T;
+    type Cursor = C;
+    type Key = K;
+
+    fn materialize(self) -> Self {
+        self
+    }
+}
+
+impl<L, R> CollectionPlan for UnionCollectionPlan<L, R>
+where
+    L: CollectionPlan,
+    R: CollectionPlan<Item = L::Item, Key = L::Key>,
+{
+    type Item = L::Item;
+    type Cursor = CompositeFrontier<L::Cursor, R::Cursor>;
+    type Key = L::Key;
+
+    fn materialize(self) -> LiveCollection<Self::Item, Self::Cursor, Self::Key> {
+        let left = self.left.materialize();
+        let right = self.right.materialize();
+        union_live_collections(&left, &right)
+    }
+}
+
+impl<T, C, K> LiveCollection<T, C, K>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    /// Reuses this materialized collection as a source plan without copying
+    /// rows or introducing another source subscription.
+    #[must_use]
+    pub fn plan(&self) -> MapCollectionPlan<T, C, K, CellMap<K, Arc<T>, CellImmutable>> {
+        MapCollectionPlan::new(self.rows.clone(), self.state.clone())
+    }
+
     /// Returns the keyed Hyphae collection used for composition and rendering.
     #[must_use]
-    pub const fn rows(&self) -> &CellMap<Arc<str>, Arc<T>, CellImmutable> {
+    pub const fn rows(&self) -> &CellMap<K, Arc<T>, CellImmutable> {
         &self.rows
     }
 
@@ -102,7 +353,7 @@ where
     /// Returns atomic typed row/lifecycle publications for transports and UI
     /// rerender bindings.
     #[must_use]
-    pub const fn revision(&self) -> &Cell<LiveCollectionRevision<T, C>, CellImmutable> {
+    pub const fn revision(&self) -> &Cell<LiveCollectionRevision<T, C, K>, CellImmutable> {
         &self.revision
     }
 
@@ -143,18 +394,354 @@ where
             .with_name("myko.live_collection.as_subscription");
         LiveSubscription::from_state_cell(state)
     }
+
+    /// Builds an incremental Hyphae row plan while retaining this collection's
+    /// authoritative cursor and liveness.
+    ///
+    /// The projection receives the shared source `CellMap`; additions,
+    /// updates, removals, filtering, and re-keying remain fine-grained map
+    /// operations rather than whole-snapshot recomputations.
+    #[must_use]
+    pub fn project_rows<U, K2, Q, F>(&self, build: F) -> MapCollectionPlan<U, C, K2, Q>
+    where
+        U: hyphae::CellValue,
+        K2: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+        Q: MapQuery<Key = K2, Value = Arc<U>>,
+        F: FnOnce(CellMap<K, Arc<T>, CellImmutable>) -> Q,
+    {
+        MapCollectionPlan::new(build(self.rows.clone()), self.state.clone())
+    }
+}
+
+#[derive(Copy, Clone)]
+enum UnionSide {
+    Left,
+    Right,
+}
+
+struct UnionRows<T, K>
+where
+    T: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    left: BTreeMap<K, Arc<T>>,
+    right: BTreeMap<K, Arc<T>>,
+    colliding: bool,
+    left_seed_replayed: bool,
+    right_seed_replayed: bool,
+}
+
+fn union_live_collections<T, L, R, K>(
+    left: &LiveCollection<T, L, K>,
+    right: &LiveCollection<T, R, K>,
+) -> LiveCollection<T, CompositeFrontier<L, R>, K>
+where
+    T: hyphae::CellValue,
+    L: hyphae::CellValue,
+    R: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    let left_rows = left
+        .rows()
+        .snapshot()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let right_rows = right
+        .rows()
+        .snapshot()
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+    let collision = union_collision(&left_rows, &right_rows).cloned();
+    let initial_state = union_collection_state(left.current_state(), right.current_state());
+    let initial_state = if let Some(key) = collision.as_ref() {
+        invalid_union_state(&initial_state, key)
+    } else {
+        initial_state
+    };
+    let initial_rows = if collision.is_some() {
+        Vec::new()
+    } else {
+        merged_union_rows(&left_rows, &right_rows)
+    };
+    let (writer, output) = live_collection(initial_rows, initial_state);
+    let rows = Arc::new(Mutex::new(UnionRows {
+        left: left_rows,
+        right: right_rows,
+        colliding: collision.is_some(),
+        left_seed_replayed: false,
+        right_seed_replayed: false,
+    }));
+
+    let left_for_right = left.clone();
+    let rows_for_right = Arc::clone(&rows);
+    let writer_for_right = writer.clone();
+    let right_guard = right.revision().subscribe(move |signal| {
+        let Signal::Value(revision) = signal else {
+            return;
+        };
+        let state = union_collection_state(left_for_right.current_state(), revision.state.clone());
+        publish_union_revision(
+            &writer_for_right,
+            &rows_for_right,
+            UnionSide::Right,
+            revision.diff.as_ref(),
+            state,
+        );
+    });
+
+    let right_for_left = right.clone();
+    let rows_for_right = rows;
+    let writer_for_left = writer;
+    let left_guard = left.revision().subscribe(move |signal| {
+        let Signal::Value(revision) = signal else {
+            return;
+        };
+        let state = union_collection_state(revision.state.clone(), right_for_left.current_state());
+        publish_union_revision(
+            &writer_for_left,
+            &rows_for_right,
+            UnionSide::Left,
+            revision.diff.as_ref(),
+            state,
+        );
+    });
+    output.revision.own(left_guard);
+    output.revision.own(right_guard);
+    output
+}
+
+fn publish_union_revision<T, C, K>(
+    writer: &LiveCollectionWriter<T, C, K>,
+    rows: &Mutex<UnionRows<T, K>>,
+    side: UnionSide,
+    diff: Option<&MapDiff<K, Arc<T>>>,
+    state: LiveCollectionState<C>,
+) where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    let mut rows = rows.lock();
+    let seed_replayed = match side {
+        UnionSide::Left => &mut rows.left_seed_replayed,
+        UnionSide::Right => &mut rows.right_seed_replayed,
+    };
+    if !*seed_replayed {
+        *seed_replayed = true;
+        return;
+    }
+    if let Some(diff) = diff {
+        let side_rows = match side {
+            UnionSide::Left => &mut rows.left,
+            UnionSide::Right => &mut rows.right,
+        };
+        apply_diff_to_snapshot(side_rows, diff);
+    }
+
+    let mut publish_state = state;
+    let mut publish_diff = diff.cloned();
+    let mut reconcile = None;
+    if let Some(key) = union_collision(&rows.left, &rows.right).cloned() {
+        rows.colliding = true;
+        publish_state = invalid_union_state(&publish_state, &key);
+        publish_diff = None;
+    } else if rows.colliding || matches!(diff, Some(MapDiff::Initial { .. })) {
+        rows.colliding = false;
+        reconcile = Some(merged_union_rows(&rows.left, &rows.right));
+        publish_diff = None;
+    }
+    drop(rows);
+
+    if let Some(rows) = reconcile {
+        writer.reconcile_revision(rows, publish_state);
+    } else {
+        writer.publish_revision(publish_diff, publish_state);
+    }
+}
+
+fn apply_diff_to_snapshot<T, K>(rows: &mut BTreeMap<K, Arc<T>>, diff: &MapDiff<K, Arc<T>>)
+where
+    T: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    match diff {
+        MapDiff::Initial { entries } => {
+            rows.clear();
+            rows.extend(entries.iter().cloned());
+        }
+        MapDiff::Insert { key, value } => {
+            rows.insert(key.clone(), Arc::clone(value));
+        }
+        MapDiff::Remove { key, .. } => {
+            rows.remove(key);
+        }
+        MapDiff::Update { key, new_value, .. } => {
+            rows.insert(key.clone(), Arc::clone(new_value));
+        }
+        MapDiff::Batch { changes } => {
+            for change in changes {
+                apply_diff_to_snapshot(rows, change);
+            }
+        }
+    }
+}
+
+fn union_collision<'a, T, K>(
+    left: &'a BTreeMap<K, Arc<T>>,
+    right: &BTreeMap<K, Arc<T>>,
+) -> Option<&'a K>
+where
+    K: Ord,
+{
+    left.keys().find(|key| right.contains_key(*key))
+}
+
+fn merged_union_rows<T, K>(
+    left: &BTreeMap<K, Arc<T>>,
+    right: &BTreeMap<K, Arc<T>>,
+) -> Vec<(K, Arc<T>)>
+where
+    K: Clone + Ord,
+{
+    left.iter()
+        .chain(right)
+        .map(|(key, value)| (key.clone(), Arc::clone(value)))
+        .collect()
+}
+
+fn invalid_union_state<C, K>(state: &LiveCollectionState<C>, key: &K) -> LiveCollectionState<C>
+where
+    C: Clone,
+    K: std::fmt::Debug,
+{
+    LiveCollectionState {
+        through: state.through.clone(),
+        liveness: SubscriptionLiveness::Invalid {
+            reason: format!("collection union contains duplicate key {key:?}"),
+        },
+    }
+}
+
+fn union_collection_state<L, R>(
+    left: LiveCollectionState<L>,
+    right: LiveCollectionState<R>,
+) -> LiveCollectionState<CompositeFrontier<L, R>>
+where
+    L: Clone,
+    R: Clone,
+{
+    let liveness = match (&left.liveness, &right.liveness) {
+        (SubscriptionLiveness::Invalid { reason }, _) => SubscriptionLiveness::Invalid {
+            reason: format!("left collection is invalid: {reason}"),
+        },
+        (_, SubscriptionLiveness::Invalid { reason }) => SubscriptionLiveness::Invalid {
+            reason: format!("right collection is invalid: {reason}"),
+        },
+        (SubscriptionLiveness::Resynchronizing { reason }, _) => {
+            SubscriptionLiveness::Resynchronizing {
+                reason: format!("left collection is resynchronizing: {reason}"),
+            }
+        }
+        (_, SubscriptionLiveness::Resynchronizing { reason }) => {
+            SubscriptionLiveness::Resynchronizing {
+                reason: format!("right collection is resynchronizing: {reason}"),
+            }
+        }
+        (SubscriptionLiveness::Connecting, _) | (_, SubscriptionLiveness::Connecting) => {
+            SubscriptionLiveness::Connecting
+        }
+        (SubscriptionLiveness::Current, SubscriptionLiveness::Current) => {
+            SubscriptionLiveness::Current
+        }
+    };
+    LiveCollectionState {
+        through: Some(CompositeFrontier {
+            left: left.through,
+            right: right.through,
+        }),
+        liveness,
+    }
 }
 
 /// Adapter-side writer for a [`LiveCollection`].
 #[derive(Clone)]
-pub struct LiveCollectionWriter<T, C = LogPosition>
+pub struct LiveCollectionWriter<T, C = LogPosition, K = Arc<str>>
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq,
 {
-    rows: CellMap<Arc<str>, Arc<T>, CellMutable>,
-    state: Cell<LiveCollectionState<C>, CellMutable>,
-    revision: Cell<LiveCollectionRevision<T, C>, CellMutable>,
+    rows: CellMap<K, Arc<T>, CellMutable>,
+    revision: Cell<LiveCollectionRevision<T, C, K>, CellMutable>,
+}
+
+/// Framework-owned keyed source for process-local state.
+///
+/// Producers may publish complete snapshots when an external API offers no
+/// finer change stream. Myko reconciles those snapshots into stable keyed
+/// diffs before any query, view, transport, or UI observes them.
+#[derive(Clone)]
+pub struct RuntimeCollection<T>
+where
+    T: hyphae::CellValue,
+{
+    revision: Arc<AtomicU64>,
+    key: RuntimeCollectionKey<T>,
+    writer: LiveCollectionWriter<T, u64>,
+    live: LiveCollection<T, u64>,
+}
+
+type RuntimeCollectionKey<T> = Arc<dyn Fn(&T) -> Arc<str> + Send + Sync>;
+
+impl<T> RuntimeCollection<T>
+where
+    T: hyphae::CellValue,
+{
+    /// Creates a current process-local collection from its initial rows.
+    #[must_use]
+    pub fn new(initial: Vec<T>, key: impl Fn(&T) -> Arc<str> + Send + Sync + 'static) -> Self {
+        let key = Arc::new(key);
+        let rows = initial
+            .into_iter()
+            .map(|item| (key(&item), Arc::new(item)))
+            .collect();
+        let (writer, live) = live_collection(
+            rows,
+            LiveCollectionState {
+                through: Some(0),
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        Self {
+            revision: Arc::new(AtomicU64::new(0)),
+            key,
+            writer,
+            live,
+        }
+    }
+
+    /// Returns the keyed live collection exposed to reactive handlers.
+    #[must_use]
+    pub const fn live(&self) -> &LiveCollection<T, u64> {
+        &self.live
+    }
+
+    /// Reconciles a new source snapshot into keyed insert/update/remove diffs.
+    pub fn publish(&self, value: Vec<T>) {
+        let revision = self.revision.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
+        let rows = value
+            .into_iter()
+            .map(|item| ((self.key)(&item), Arc::new(item)))
+            .collect();
+        if let Err(error) = self.writer.reconcile(rows, Some(revision)) {
+            self.writer.invalidate(error.to_string());
+        }
+    }
+
+    /// Invalidates the source and every handler depending on it.
+    pub fn invalidate(&self, reason: impl Into<String>) {
+        self.writer.invalidate(reason.into());
+    }
 }
 
 /// Failure while reconciling a typed collection snapshot.
@@ -164,47 +751,40 @@ pub enum LiveCollectionError {
     DuplicateKey(String),
 }
 
-impl<T, C> LiveCollectionWriter<T, C>
+impl<T, C, K> LiveCollectionWriter<T, C, K>
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
 {
     /// Replaces the authoritative collection and publishes its cursor in one
     /// Hyphae scheduler batch.
-    pub fn replace_all(&self, rows: Vec<(Arc<str>, Arc<T>)>, through: Option<C>) {
+    pub fn replace_all(&self, rows: Vec<(K, Arc<T>)>, through: Option<C>) {
         let state = LiveCollectionState {
             through,
             liveness: SubscriptionLiveness::Current,
         };
-        let revision = LiveCollectionRevision {
-            diff: Some(MapDiff::Initial {
-                entries: rows.clone(),
-            }),
-            state: state.clone(),
-        };
-        hyphae::batch(|| {
-            self.state.set(state);
-            self.rows.replace_all(rows);
-        });
-        self.revision.set(revision);
+        self.publish_revision(Some(MapDiff::Initial { entries: rows }), state);
     }
 
     /// Applies one typed collection diff and publishes its cursor in one
     /// Hyphae scheduler batch.
-    pub fn apply(&self, diff: MapDiff<Arc<str>, Arc<T>>, through: Option<C>) {
+    pub fn apply(&self, diff: MapDiff<K, Arc<T>>, through: Option<C>) {
         let state = LiveCollectionState {
             through,
             liveness: SubscriptionLiveness::Current,
         };
-        let revision = LiveCollectionRevision {
-            diff: Some(diff.clone()),
-            state: state.clone(),
+        self.publish_revision(Some(diff), state);
+    }
+
+    /// Advances lifecycle progress when an authoritative update does not
+    /// change any row in this collection.
+    pub fn advance_through(&self, through: Option<C>) {
+        let state = LiveCollectionState {
+            through,
+            liveness: SubscriptionLiveness::Current,
         };
-        hyphae::batch(|| {
-            self.state.set(state);
-            self.rows.apply_diff_owned(diff);
-        });
-        self.revision.set(revision);
+        self.publish_revision(None, state);
     }
 
     /// Reconciles a typed snapshot into item-level additions, updates, and
@@ -215,15 +795,30 @@ where
     /// Returns an error when the incoming snapshot contains a duplicate key.
     pub fn reconcile(
         &self,
-        rows: Vec<(Arc<str>, Arc<T>)>,
+        rows: Vec<(K, Arc<T>)>,
         through: Option<C>,
     ) -> Result<(), LiveCollectionError> {
         let mut next = BTreeMap::new();
         for (key, value) in rows {
             if next.insert(key.clone(), value).is_some() {
-                return Err(LiveCollectionError::DuplicateKey(key.to_string()));
+                return Err(LiveCollectionError::DuplicateKey(format!("{key:?}")));
             }
         }
+        self.reconcile_map(
+            next,
+            LiveCollectionState {
+                through,
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        Ok(())
+    }
+
+    fn reconcile_revision(&self, rows: Vec<(K, Arc<T>)>, state: LiveCollectionState<C>) {
+        self.reconcile_map(rows.into_iter().collect(), state);
+    }
+
+    fn reconcile_map(&self, next: BTreeMap<K, Arc<T>>, state: LiveCollectionState<C>) {
         let current = self.rows.snapshot().into_iter().collect::<BTreeMap<_, _>>();
         let mut changes = Vec::new();
         for (key, old_value) in &current {
@@ -246,75 +841,78 @@ where
             }
         }
         if changes.is_empty() {
-            let state = LiveCollectionState {
-                through,
-                liveness: SubscriptionLiveness::Current,
-            };
-            self.state.set(state.clone());
-            self.revision
-                .set(LiveCollectionRevision { diff: None, state });
+            self.publish_revision(None, state);
         } else {
-            self.apply(MapDiff::Batch { changes }, through);
+            self.publish_revision(Some(MapDiff::Batch { changes }), state);
         }
-        Ok(())
+    }
+
+    fn publish_revision(&self, diff: Option<MapDiff<K, Arc<T>>>, state: LiveCollectionState<C>) {
+        hyphae::batch(|| {
+            if let Some(diff) = diff.as_ref() {
+                self.rows.apply_diff_owned(diff.clone());
+            }
+            self.revision.set(LiveCollectionRevision { diff, state });
+        });
     }
 
     /// Retains rows while marking the collection stale during recovery.
     pub fn resynchronizing(&self, reason: impl Into<String>) {
-        let previous = self.state.get();
+        let previous = self.revision.get().state;
         let state = LiveCollectionState {
             through: previous.through,
             liveness: SubscriptionLiveness::Resynchronizing {
                 reason: reason.into(),
             },
         };
-        self.state.set(state.clone());
-        self.revision
-            .set(LiveCollectionRevision { diff: None, state });
+        self.publish_revision(None, state);
     }
 
     /// Retains rows while marking the collection unusable.
     pub fn invalidate(&self, reason: impl Into<String>) {
-        let previous = self.state.get();
+        let previous = self.revision.get().state;
         let state = LiveCollectionState {
             through: previous.through,
             liveness: SubscriptionLiveness::Invalid {
                 reason: reason.into(),
             },
         };
-        self.state.set(state.clone());
-        self.revision
-            .set(LiveCollectionRevision { diff: None, state });
+        self.publish_revision(None, state);
     }
 }
 
 /// Creates application and adapter halves of one keyed live collection.
 #[must_use]
-pub fn live_collection<T, C>(
-    rows: Vec<(Arc<str>, Arc<T>)>,
+pub fn live_collection<T, C, K>(
+    rows: Vec<(K, Arc<T>)>,
     state: LiveCollectionState<C>,
-) -> (LiveCollectionWriter<T, C>, LiveCollection<T, C>)
+) -> (LiveCollectionWriter<T, C, K>, LiveCollection<T, C, K>)
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
 {
     let mutable_rows = CellMap::new().with_name("myko.live_collection.rows");
     mutable_rows.replace_all(rows.clone());
-    let mutable_state = Cell::new(state.clone()).with_name("myko.live_collection.state");
     let mutable_revision = Cell::new(LiveCollectionRevision {
         diff: Some(MapDiff::Initial { entries: rows }),
         state,
     })
     .with_name("myko.live_collection.revision");
+    let revision = mutable_revision.clone().lock();
+    let state = revision
+        .clone()
+        .map(|revision| revision.state.clone())
+        .materialize()
+        .with_name("myko.live_collection.state");
     let readable = LiveCollection {
         rows: mutable_rows.clone().lock(),
-        state: mutable_state.clone().lock(),
-        revision: mutable_revision.clone().lock(),
+        state,
+        revision,
     };
     (
         LiveCollectionWriter {
             rows: mutable_rows,
-            state: mutable_state,
             revision: mutable_revision,
         },
         readable,
@@ -331,11 +929,46 @@ where
     state: Cell<LiveSubscriptionState<T, C>, CellImmutable>,
 }
 
+/// A retained driver for one typed reactive value projection.
+///
+/// Transport adapters implement this trait so UI integrations can retain the
+/// subscription lifecycle without naming or inspecting the transport-specific
+/// owner type.
+pub trait LiveSubscriptionHandle<T, C = LogPosition>: Send + Sync + 'static
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+{
+    /// Returns the transport-independent Hyphae projection.
+    fn live_subscription(&self) -> &LiveSubscription<T, C>;
+}
+
+/// A retained driver for one typed reactive collection projection.
+///
+/// The collection remains a keyed Hyphae map; this trait only erases which
+/// local or remote adapter keeps it current.
+pub trait LiveCollectionHandle<T, C = LogPosition, K = Arc<str>>: Send + Sync + 'static
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    /// Returns the transport-independent keyed Hyphae projection.
+    fn live_collection(&self) -> &LiveCollection<T, C, K>;
+}
+
 impl<T, C> LiveSubscription<T, C>
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
 {
+    /// Returns whether two handles observe the exact same materialized Hyphae
+    /// state cell.
+    #[must_use]
+    pub fn shares_state_with(&self, other: &Self) -> bool {
+        self.state.id() == other.state.id()
+    }
+
     /// Returns the Hyphae cell used to compose reports, views, and UI state.
     #[must_use]
     pub const fn state(&self) -> &Cell<LiveSubscriptionState<T, C>, CellImmutable> {
@@ -368,14 +1001,34 @@ where
         U: hyphae::CellValue,
         F: Fn(&T) -> U + Send + Sync + 'static,
     {
+        let initial_source = self.current();
+        let initial_mapped = LiveSubscriptionState {
+            value: initial_source.value.as_ref().map(&transform),
+            through: initial_source.through.clone(),
+            liveness: initial_source.liveness.clone(),
+        };
         let state = self
             .state
             .clone()
-            .map(move |state| LiveSubscriptionState {
-                value: state.value.as_ref().map(&transform),
-                through: state.through.clone(),
-                liveness: state.liveness.clone(),
-            })
+            .scan(
+                (initial_source.value, initial_mapped),
+                move |(previous_source, previous_mapped), source| {
+                    let value = if source.value == *previous_source {
+                        previous_mapped.value.clone()
+                    } else {
+                        source.value.as_ref().map(&transform)
+                    };
+                    (
+                        source.value.clone(),
+                        LiveSubscriptionState {
+                            value,
+                            through: source.through.clone(),
+                            liveness: source.liveness.clone(),
+                        },
+                    )
+                },
+            )
+            .map(|(_, state)| state.clone())
             .materialize()
             .with_name("myko.live_subscription.map_value");
         LiveSubscription::from_state_cell(state)
@@ -579,7 +1232,7 @@ where
 {
     /// Replaces the complete coherent lifecycle revision.
     ///
-    /// This is used by compatibility transports that receive an already
+    /// This is used by transports that receive an already
     /// validated Myko lifecycle state. Native adapters normally prefer the
     /// narrower [`Self::publish`], [`Self::resynchronizing`], and
     /// [`Self::invalidate`] operations.
@@ -653,13 +1306,168 @@ where
 #[cfg(test)]
 mod tests {
     use std::{
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicUsize, Ordering},
+        },
         time::{Duration, Instant},
     };
 
-    use hyphae::{Signal, Watchable as _};
+    use hyphae::{MapValuesExt as _, Signal, Watchable as _};
 
     use super::*;
+
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    struct RuntimeRow {
+        id: &'static str,
+        value: u32,
+    }
+
+    #[test]
+    fn runtime_snapshot_publication_emits_only_changed_rows() {
+        let collection = RuntimeCollection::new(
+            vec![
+                RuntimeRow { id: "a", value: 1 },
+                RuntimeRow { id: "b", value: 1 },
+            ],
+            |row| Arc::from(row.id),
+        );
+
+        collection.publish(vec![
+            RuntimeRow { id: "a", value: 1 },
+            RuntimeRow { id: "b", value: 2 },
+        ]);
+
+        wait_until(|| collection.live().revision().get().state.through == Some(1));
+        let revision = collection.live().revision().get();
+        assert!(matches!(
+            revision.diff,
+            Some(MapDiff::Batch { changes })
+                if matches!(
+                    changes.as_slice(),
+                    [MapDiff::Update { key, new_value, .. }]
+                        if key.as_ref() == "b" && new_value.value == 2
+                )
+        ));
+        assert_eq!(revision.state.through, Some(1));
+        assert_eq!(revision.state.liveness, SubscriptionLiveness::Current);
+    }
+
+    #[test]
+    fn collection_union_preserves_keyed_diffs_and_independent_frontiers() {
+        let left = RuntimeCollection::new(vec![RuntimeRow { id: "a", value: 1 }], |row| {
+            Arc::from(row.id)
+        });
+        let right = RuntimeCollection::new(vec![RuntimeRow { id: "b", value: 2 }], |row| {
+            Arc::from(row.id)
+        });
+        let union = left
+            .live()
+            .clone()
+            .union(right.live().clone())
+            .materialize();
+
+        assert_eq!(
+            union
+                .rows()
+                .snapshot()
+                .into_iter()
+                .collect::<BTreeMap<_, _>>(),
+            BTreeMap::from([
+                (Arc::from("a"), Arc::new(RuntimeRow { id: "a", value: 1 })),
+                (Arc::from("b"), Arc::new(RuntimeRow { id: "b", value: 2 })),
+            ])
+        );
+        assert_eq!(
+            union.current_state().through,
+            Some(CompositeFrontier {
+                left: Some(0),
+                right: Some(0),
+            })
+        );
+
+        left.publish(vec![
+            RuntimeRow { id: "a", value: 1 },
+            RuntimeRow { id: "c", value: 3 },
+        ]);
+        wait_until(|| {
+            union.revision().get().state.through
+                == Some(CompositeFrontier {
+                    left: Some(1),
+                    right: Some(0),
+                })
+        });
+        let revision = union.revision().get();
+        assert!(
+            matches!(
+                revision.diff,
+                Some(MapDiff::Batch { ref changes })
+                    if matches!(
+                        changes.as_slice(),
+                        [MapDiff::Insert { key, value }]
+                            if key.as_ref() == "c" && value.value == 3
+                    )
+            ),
+            "unexpected union revision: {revision:?}"
+        );
+
+        right.publish(vec![RuntimeRow { id: "b", value: 4 }]);
+        wait_until(|| {
+            union.revision().get().state.through
+                == Some(CompositeFrontier {
+                    left: Some(1),
+                    right: Some(1),
+                })
+        });
+        assert!(matches!(
+            union.revision().get().diff,
+            Some(MapDiff::Batch { changes })
+                if matches!(
+                    changes.as_slice(),
+                    [MapDiff::Update { key, new_value, .. }]
+                        if key.as_ref() == "b" && new_value.value == 4
+                )
+        ));
+    }
+
+    #[test]
+    fn collection_union_invalidates_on_duplicate_identity_and_recovers() {
+        let left = RuntimeCollection::new(
+            vec![RuntimeRow {
+                id: "same",
+                value: 1,
+            }],
+            |row| Arc::from(row.id),
+        );
+        let right = RuntimeCollection::new(
+            vec![RuntimeRow {
+                id: "same",
+                value: 2,
+            }],
+            |row| Arc::from(row.id),
+        );
+        let union = left
+            .live()
+            .clone()
+            .union(right.live().clone())
+            .materialize();
+
+        assert!(union.rows().snapshot().is_empty());
+        assert!(matches!(
+            union.current_state().liveness,
+            SubscriptionLiveness::Invalid { reason }
+                if reason.contains("duplicate key")
+        ));
+
+        right.publish(vec![RuntimeRow {
+            id: "other",
+            value: 2,
+        }]);
+        wait_until(|| union.revision().get().state.liveness == SubscriptionLiveness::Current);
+        assert_eq!(union.rows().snapshot().len(), 2);
+        assert!(union.rows().get_value(&Arc::from("same")).is_some());
+        assert!(union.rows().get_value(&Arc::from("other")).is_some());
+    }
 
     fn wait_for_revisions<T>(observed: &Mutex<Vec<T>>, count: usize) {
         let deadline = Instant::now()
@@ -672,6 +1480,15 @@ mod tests {
             {
                 return;
             }
+            std::thread::yield_now();
+        }
+    }
+
+    fn wait_until(mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        while !condition() && Instant::now() < deadline {
             std::thread::yield_now();
         }
     }
@@ -696,13 +1513,23 @@ mod tests {
         writer.publish(vec!["ready".to_owned()], Some(LogPosition::new(7)));
         writer.resynchronizing("peer changed");
         writer.publish(vec!["new".to_owned()], Some(LogPosition::new(9)));
-        wait_for_revisions(&observed, 4);
+        wait_until(|| {
+            observed.lock().is_ok_and(|observed| {
+                observed
+                    .iter()
+                    .any(|state| state.through == Some(LogPosition::new(9)))
+            })
+        });
 
         let current = subscription.current();
         assert_eq!(current.value, Some(vec!["new".to_owned()]));
         assert_eq!(current.through, Some(LogPosition::new(9)));
         assert_eq!(current.liveness, SubscriptionLiveness::Current);
-        assert!(observed.lock().is_ok_and(|observed| observed.len() >= 4));
+        assert!(observed.lock().is_ok_and(|observed| {
+            observed
+                .iter()
+                .any(|state| state.through == Some(LogPosition::new(9)))
+        }));
     }
 
     #[test]
@@ -723,6 +1550,42 @@ mod tests {
                 liveness: SubscriptionLiveness::Current,
             }
         );
+    }
+
+    #[test]
+    fn mapped_subscription_does_not_recompute_for_cursor_or_liveness_only_changes() {
+        let (writer, subscription) = live_subscription(LiveSubscriptionState {
+            value: Some("persisted".to_owned()),
+            through: Some(LogPosition::new(7)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_map = Arc::clone(&calls);
+        let mapped = subscription.map_value(move |value| {
+            calls_for_map.fetch_add(1, Ordering::AcqRel);
+            value.len()
+        });
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        writer.resynchronizing("peer reconnecting");
+        writer.publish("persisted".to_owned(), Some(LogPosition::new(8)));
+        wait_until(|| mapped.current().through == Some(LogPosition::new(8)));
+        assert_eq!(mapped.current().through, Some(LogPosition::new(8)));
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        writer.invalidate("source released");
+        wait_until(|| {
+            matches!(
+                mapped.current().liveness,
+                SubscriptionLiveness::Invalid { .. }
+            )
+        });
+        assert_eq!(calls.load(Ordering::Acquire), 1);
+
+        writer.publish("changed".to_owned(), Some(LogPosition::new(9)));
+        wait_until(|| mapped.current().value == Some(7));
+        assert_eq!(mapped.current().value, Some(7));
+        assert_eq!(calls.load(Ordering::Acquire), 2);
     }
 
     #[test]
@@ -748,6 +1611,12 @@ mod tests {
         );
 
         left_writer.publish("left-2".to_owned(), Some(LogPosition::new(2)));
+        wait_until(|| {
+            matches!(
+                joined.current().liveness,
+                SubscriptionLiveness::Resynchronizing { .. }
+            )
+        });
         let partial = joined.current();
         assert_eq!(
             partial.value,
@@ -760,6 +1629,7 @@ mod tests {
         ));
 
         right_writer.publish("right-2".to_owned(), Some(LogPosition::new(2)));
+        wait_until(|| joined.current().through == Some(LogPosition::new(2)));
         assert_eq!(
             joined.current(),
             LiveSubscriptionState {
@@ -785,11 +1655,18 @@ mod tests {
         let joined = left.join_coherent(&right);
 
         left_writer.publish("left-2".to_owned(), Some(LogPosition::new(2)));
+        wait_until(|| {
+            matches!(
+                joined.current().liveness,
+                SubscriptionLiveness::Resynchronizing { .. }
+            )
+        });
         assert!(matches!(
             joined.current().liveness,
             SubscriptionLiveness::Resynchronizing { .. }
         ));
         right_writer.advance_through(Some(LogPosition::new(2)));
+        wait_until(|| joined.current().through == Some(LogPosition::new(2)));
 
         assert_eq!(
             joined.current(),
@@ -827,6 +1704,14 @@ mod tests {
         );
 
         left_writer.publish("runtime-2".to_owned(), Some(2));
+        wait_until(|| {
+            joined
+                .current()
+                .through
+                .as_ref()
+                .and_then(|value| value.left)
+                == Some(2)
+        });
         assert_eq!(
             joined.current(),
             LiveSubscriptionState {
@@ -840,6 +1725,12 @@ mod tests {
         );
 
         right_writer.resynchronizing("remote reconnect");
+        wait_until(|| {
+            matches!(
+                joined.current().liveness,
+                SubscriptionLiveness::Resynchronizing { .. }
+            )
+        });
         let stale = joined.current();
         assert_eq!(
             stale.value,
@@ -850,6 +1741,14 @@ mod tests {
             SubscriptionLiveness::Resynchronizing { .. }
         ));
         right_writer.publish("history-8".to_owned(), Some(LogPosition::new(8)));
+        wait_until(|| {
+            joined
+                .current()
+                .through
+                .as_ref()
+                .and_then(|value| value.right)
+                == Some(LogPosition::new(8))
+        });
         assert_eq!(
             joined.current().through,
             Some(CompositeFrontier {
@@ -893,6 +1792,54 @@ mod tests {
                 liveness: SubscriptionLiveness::Current,
             }
         );
+    }
+
+    #[test]
+    fn collection_projects_rows_as_fine_grained_hyphae_diffs() {
+        let key = Arc::<str>::from("message-1");
+        let (writer, collection) = live_collection(
+            vec![(Arc::clone(&key), Arc::new(1_u32))],
+            LiveCollectionState {
+                through: Some(1_u64),
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        let projected = collection
+            .project_rows(|rows| rows.map_values(|_, value| Arc::new(format!("value:{value}"))))
+            .materialize();
+
+        writer.apply(
+            MapDiff::Update {
+                key: Arc::clone(&key),
+                old_value: Arc::new(1),
+                new_value: Arc::new(2),
+            },
+            Some(2),
+        );
+
+        let deadline = Instant::now()
+            .checked_add(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now);
+        while (projected
+            .rows()
+            .get_value(&key)
+            .is_none_or(|value| value.as_str() != "value:2")
+            || projected.revision().get().state.through != Some(2))
+            && Instant::now() < deadline
+        {
+            std::thread::yield_now();
+        }
+
+        assert_eq!(
+            projected.rows().get_value(&key).as_deref(),
+            Some(&"value:2".to_owned())
+        );
+        let revision = projected.revision().get();
+        assert_eq!(revision.state.through, Some(2));
+        assert!(matches!(
+            revision.diff,
+            Some(MapDiff::Update { ref key, .. }) if key.as_ref() == "message-1"
+        ));
     }
 
     #[test]

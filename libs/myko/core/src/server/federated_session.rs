@@ -18,50 +18,72 @@ use std::{
     time::Duration,
 };
 
-use myko_app::{ApplicationNode, ErasedHandlerFrame, HandlerRequest};
+use hyphae::{Cell, CellImmutable, SubscriptionGuard, Watchable as _};
 use myko_federation::{
-    AccessOperation, AccessPolicy, AccessRequest, AuthorityPresentation, AuthorizationDecision,
-    AuthorizationExplanation, AuthorizationPhase, AuthorizationReport, CommandId, CommandResponse,
-    CommandSubmission, DenyAllAccessPolicy, DenyDecision, LiveEventHub, LogPosition, Node, NodeId,
-    PermitDecision, Principal, PrincipalId, ReplicationBatch, ReplicationSelection, ResourceClaim,
-    ResourceClaimKind, ResourceVisibility, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
+    AccessAttempt, AccessOperation, AccessPolicy, AccessTarget, AuthorityPresentation,
+    AuthorizationDecision, AuthorizationExplanation, AuthorizationPhase, AuthorizationReport,
+    CommandId, CommandResponse, CommandSubmission, DenyAllAccessPolicy, DenyDecision,
+    FederationPermission, LiveEventHub, LogPosition, Node, NodeId, PermitDecision, Principal,
+    PrincipalId, ReplicationBatch, ReplicationSelection, ResourceClaim, ResourceClaimKind,
+    ResourceVisibility, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
     SelectedReplicationBatch, ServiceId,
 };
-use myko_wire::{NodeFrame, NodeRequest, NodeRequestEnvelope};
+use myko_wire::{HandlerRequest, NodeFrame, NodeRequest, NodeRequestEnvelope};
 use sha2::{Digest, Sha256};
 use tokio::{
     sync::watch,
     task::JoinHandle,
-    time::{Interval, MissedTickBehavior},
+    time::{Instant, Interval, MissedTickBehavior},
 };
+use tracing::Instrument as _;
 
 const MAX_SCOPE_CATALOG_PAGE: usize = 1_024;
 const MAX_LIVE_TOPICS: usize = 256;
 const MAX_LIVE_TOPIC_BYTES: usize = 256;
+const SESSION_FRAME_CAPACITY: usize = 256;
+const SCOPE_CATALOG_SCAN_PAGE: NonZeroUsize = match NonZeroUsize::new(MAX_SCOPE_CATALOG_PAGE) {
+    Some(capacity) => capacity,
+    None => NonZeroUsize::MIN,
+};
 const LIVE_SUBSCRIPTION_CAPACITY: NonZeroUsize = match NonZeroUsize::new(256) {
     Some(capacity) => capacity,
     None => NonZeroUsize::MIN,
 };
 
-struct AccessMetadata {
+struct AccessPreparation {
     operation: AccessOperation,
-    service_id: Option<ServiceId>,
-    scope_id: Option<ScopeId>,
-    command_id: Option<CommandId>,
-    command_type: Option<String>,
-    command_principal_id: Option<PrincipalId>,
-    scope_selections: Vec<myko_federation::ScopeSelection>,
+    target: AccessTarget,
     resource_claims: Vec<ResourceClaim>,
     application_capabilities: Vec<myko_federation::CapabilityId>,
     arguments_digest: Option<String>,
-    live_topics: Vec<String>,
 }
 
 struct AuthorizationPulse {
     policy_revision: watch::Receiver<u64>,
-    authority_revision: Option<flume::Receiver<u64>>,
+    authority_revision: Option<AuthorityRevisionWake>,
     access_policy: Arc<RwLock<Arc<dyn AccessPolicy>>>,
-    deadline: Interval,
+    deadline: Option<Interval>,
+}
+
+struct AuthorityRevisionWake {
+    _revision: Cell<u64, CellImmutable>,
+    changes: flume::Receiver<()>,
+    _guard: SubscriptionGuard,
+}
+
+impl AuthorityRevisionWake {
+    fn new(policy: &dyn AccessPolicy) -> Option<Self> {
+        let revision = policy.revision_cell()?;
+        let (send, changes) = flume::bounded(1);
+        let guard = revision.subscribe(move |_| {
+            let _ = send.try_send(());
+        });
+        Some(Self {
+            _revision: revision,
+            changes,
+            _guard: guard,
+        })
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -77,9 +99,8 @@ impl AuthorizationPulse {
     ) -> Self {
         let authority_revision = access_policy
             .read()
-            .map_or(None, |policy| policy.subscribe_changes());
-        let mut deadline = tokio::time::interval(Duration::from_millis(50));
-        deadline.set_missed_tick_behavior(MissedTickBehavior::Delay);
+            .map_or(None, |policy| AuthorityRevisionWake::new(policy.as_ref()));
+        let deadline = fallback_authorization_deadline(authority_revision.is_none());
         Self {
             policy_revision,
             authority_revision,
@@ -94,23 +115,139 @@ impl AuthorizationPulse {
                 self.authority_revision = self
                     .access_policy
                     .read()
-                    .map_or(None, |policy| policy.subscribe_changes());
+                    .map_or(None, |policy| AuthorityRevisionWake::new(policy.as_ref()));
+                self.deadline = fallback_authorization_deadline(
+                    self.authority_revision.is_none(),
+                );
                 AuthorizationWake::Revision
             }
             () = wait_for_authority_change(self.authority_revision.as_ref()) => {
                 AuthorizationWake::Revision
             }
-            _ = self.deadline.tick() => AuthorizationWake::Deadline,
+            () = wait_for_authorization_deadline(self.deadline.as_mut()) => {
+                AuthorizationWake::Deadline
+            }
         }
     }
 }
 
-async fn wait_for_authority_change(receiver: Option<&flume::Receiver<u64>>) {
-    match receiver {
-        Some(receiver) => {
-            let _changed = receiver.recv_async().await;
+fn fallback_authorization_deadline(enabled: bool) -> Option<Interval> {
+    enabled.then(|| {
+        let period = Duration::from_millis(50);
+        let start = Instant::now()
+            .checked_add(period)
+            .unwrap_or_else(Instant::now);
+        let mut deadline = tokio::time::interval_at(start, period);
+        deadline.set_missed_tick_behavior(MissedTickBehavior::Delay);
+        deadline
+    })
+}
+
+async fn wait_for_authorization_deadline(deadline: Option<&mut Interval>) {
+    match deadline {
+        Some(deadline) => {
+            deadline.tick().await;
         }
         None => std::future::pending::<()>().await,
+    }
+}
+
+async fn wait_for_authority_change(wake: Option<&AuthorityRevisionWake>) {
+    match wake {
+        Some(wake) => {
+            let _changed = wake.changes.recv_async().await;
+        }
+        None => std::future::pending::<()>().await,
+    }
+}
+
+fn trace_authorization_requirements(
+    access: &AccessAttempt,
+    authorization_phase: AuthorizationPhase,
+) {
+    if authorization_phase == AuthorizationPhase::Admission {
+        tracing::debug!(
+            operation = ?access.operation,
+            scope_id = ?access.scope_id(),
+            scope_selections = ?access.scope_selections(),
+            resource_claims = access.resource_claims.len(),
+            capabilities = access.application_capabilities.len(),
+            "evaluating session authority"
+        );
+    } else {
+        tracing::trace!(
+            operation = ?access.operation,
+            authorization_phase = ?authorization_phase,
+            scope_id = ?access.scope_id(),
+            scope_selections = ?access.scope_selections(),
+            resource_claims = access.resource_claims.len(),
+            capabilities = access.application_capabilities.len(),
+            "reevaluating live session authority"
+        );
+    }
+    tracing::trace!(
+        claims = ?access.resource_claims,
+        application_capabilities = ?access.application_capabilities,
+        "session authority requirements"
+    );
+}
+
+fn trace_authorization_decision(
+    operation: AccessOperation,
+    authorization_phase: AuthorizationPhase,
+    decision: &AuthorizationDecision,
+    elapsed: Duration,
+) {
+    if authorization_phase == AuthorizationPhase::Admission {
+        tracing::debug!(
+            operation = ?operation,
+            decision = ?decision,
+            elapsed_ms = elapsed.as_millis(),
+            "session authority evaluated"
+        );
+    } else {
+        tracing::trace!(
+            operation = ?operation,
+            authorization_phase = ?authorization_phase,
+            decision = ?decision,
+            elapsed_ms = elapsed.as_millis(),
+            "live session authority reevaluated"
+        );
+    }
+}
+
+fn debug_initial_handler_progress(
+    handler: &HandlerRequest,
+    stage: &'static str,
+    elapsed: Duration,
+    frame: Option<&'static str>,
+) {
+    tracing::debug!(
+        handler_kind = handler.kind.as_str(),
+        handler_id = %handler.handler_id,
+        stage,
+        elapsed_ms = elapsed.as_millis(),
+        frame,
+        "initial handler stream progress"
+    );
+}
+
+#[derive(Clone)]
+struct NodeFrameSink(flume::Sender<NodeFrame>);
+
+impl crate::server::SessionSink for NodeFrameSink {
+    fn send(&self, _message: crate::wire::MykoMessage) {}
+
+    fn send_serialized_command(
+        &self,
+        _tx: Arc<str>,
+        _command_id: String,
+        _payload: crate::wire::EncodedCommandMessage,
+    ) {
+    }
+
+    fn send_node_frame(&self, frame: NodeFrame) -> Result<(), String> {
+        self.0.send(frame).map_err(|error| error.to_string())
     }
 }
 
@@ -120,7 +257,7 @@ pub type NodeRouteFuture<'a> = Pin<Box<dyn Future<Output = Result<(), String>> +
 /// Routes the same canonical request envelope to another Myko node.
 ///
 /// Transport adapters never select commands or subscriptions themselves. They
-/// authenticate a principal and hand the envelope to [`NodeSessionService`];
+/// authenticate a principal and hand the envelope to [`FederatedSession`];
 /// this router is the one federation seam used regardless of whether that
 /// envelope arrived over a Unix socket, Iroh, or WebSocket.
 pub trait NodeRequestRouter: std::fmt::Debug + Send + Sync + 'static {
@@ -144,19 +281,19 @@ pub trait NodeRequestRouter: std::fmt::Debug + Send + Sync + 'static {
 
 /// Shared semantic endpoint behind every Myko transport adapter.
 #[derive(Clone)]
-pub struct NodeSessionService {
+pub struct FederatedSession {
     node: Node,
-    application: Arc<RwLock<Option<ApplicationNode>>>,
+    application: Arc<RwLock<Option<crate::ApplicationHost>>>,
     live_events: LiveEventHub,
     access_policy: Arc<RwLock<Arc<dyn AccessPolicy>>>,
     policy_revision: watch::Sender<u64>,
     router: Arc<RwLock<Option<Weak<dyn NodeRequestRouter>>>>,
 }
 
-impl std::fmt::Debug for NodeSessionService {
+impl std::fmt::Debug for FederatedSession {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
-            .debug_struct("NodeSessionService")
+            .debug_struct("FederatedSession")
             .field("node_id", &self.node.node_id())
             .field(
                 "application",
@@ -169,7 +306,7 @@ impl std::fmt::Debug for NodeSessionService {
     }
 }
 
-impl NodeSessionService {
+impl FederatedSession {
     /// Creates a session service for a node without application handlers.
     #[must_use]
     pub fn new(node: Node, access_policy: Arc<dyn AccessPolicy>) -> Self {
@@ -179,7 +316,7 @@ impl NodeSessionService {
     /// Creates a session service for a composed Myko application.
     #[must_use]
     pub fn for_application(
-        application: ApplicationNode,
+        application: crate::ApplicationHost,
         access_policy: Arc<dyn AccessPolicy>,
     ) -> Self {
         let node = application.node().clone();
@@ -188,7 +325,7 @@ impl NodeSessionService {
 
     fn new_inner(
         node: Node,
-        application: Option<ApplicationNode>,
+        application: Option<crate::ApplicationHost>,
         access_policy: Arc<dyn AccessPolicy>,
     ) -> Self {
         let _installed = node.set_command_access_policy(Arc::clone(&access_policy));
@@ -231,7 +368,7 @@ impl NodeSessionService {
     /// # Errors
     ///
     /// Returns an error for a different node identity or a poisoned lock.
-    pub fn set_application(&self, application: ApplicationNode) -> Result<(), String> {
+    pub fn set_application(&self, application: crate::ApplicationHost) -> Result<(), String> {
         if application.node().node_id() != self.node.node_id() {
             return Err("application belongs to another Myko node".to_owned());
         }
@@ -332,9 +469,32 @@ impl NodeSessionService {
         authenticated: Principal,
         envelope: NodeRequestEnvelope,
     ) -> NodeFrameStream {
+        let request_kind = envelope.request.kind();
+        let destination = envelope.destination;
+        tracing::debug!(
+            node_id = %self.node.node_id(),
+            principal_id = %authenticated.id,
+            principal_kind = ?authenticated.kind,
+            request = request_kind,
+            destination = ?destination,
+            "session request waiting for node readiness"
+        );
         self.node.wait_until_ready().await;
-        let (send, receive) = flume::unbounded();
+        tracing::debug!(
+            node_id = %self.node.node_id(),
+            principal_id = %authenticated.id,
+            request = request_kind,
+            "node ready; opening session request"
+        );
+        let (send, receive) = flume::bounded(SESSION_FRAME_CAPACITY);
         let service = self.clone();
+        let span = tracing::debug_span!(
+            "myko.session.request",
+            node_id = %self.node.node_id(),
+            principal_id = %authenticated.id,
+            request = request_kind,
+            destination = ?destination,
+        );
         let task = tokio::spawn(async move {
             let principal = authenticated.id.clone();
             let mut envelope = envelope;
@@ -356,6 +516,7 @@ impl NodeSessionService {
                         decision: Box::new(decision),
                     })
                     .await;
+                tracing::warn!("rejected authority executor that did not match transport principal");
                 return;
             }
             if !matches!(request, NodeRequest::Submit { .. })
@@ -371,9 +532,13 @@ impl NodeSessionService {
                                 decision: Box::new(AuthorizationDecision::Permit(permit)),
                             })
                             .await;
+                        tracing::debug!("request admission authorized");
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        tracing::debug!("request does not require an authority decision");
+                    }
                     Err(decision) => {
+                        tracing::warn!(decision = ?decision, "request admission denied");
                         let _ignored = send
                             .send_async(NodeFrame::Authorization {
                                 decision: Box::new(decision),
@@ -420,14 +585,23 @@ impl NodeSessionService {
                                 })
                             });
                         match route {
-                            Ok(destination) => envelope.destination = Some(destination),
+                            Ok(destination) => {
+                                tracing::debug!(
+                                    routed_destination = %destination,
+                                    service_id = %command.service_id,
+                                    "routed command to capable peer"
+                                );
+                                envelope.destination = Some(destination);
+                            }
                             Err(message) => {
+                                tracing::error!(error = %message, "command routing failed");
                                 let _ignored = send.send_async(NodeFrame::Error { message }).await;
                                 return;
                             }
                         }
                     }
                     Err(message) => {
+                        tracing::error!(error = %message, "application routing lookup failed");
                         let _ignored = send.send_async(NodeFrame::Error { message }).await;
                         return;
                     }
@@ -435,6 +609,7 @@ impl NodeSessionService {
             }
             let destination = envelope.destination;
             let local = destination.is_none_or(|node_id| node_id == service.node.node_id());
+            tracing::debug!(local, destination = ?destination, "dispatching session request");
             let result = if local {
                 service.run(principal, presentation, request, &send).await
             } else {
@@ -460,10 +635,15 @@ impl NodeSessionService {
                     None => Err("non-local request omitted its destination".to_owned()),
                 }
             };
-            if let Err(message) = result {
-                let _ignored = send.send_async(NodeFrame::Error { message }).await;
+            match result {
+                Ok(()) => tracing::debug!("session request completed"),
+                Err(message) => {
+                    tracing::error!(error = %message, "session request failed");
+                    let _ignored = send.send_async(NodeFrame::Error { message }).await;
+                }
             }
-        });
+        }
+        .instrument(span));
         NodeFrameStream { receive, task }
     }
 
@@ -822,20 +1002,17 @@ impl NodeSessionService {
         command: &myko_federation::CommandSnapshot,
     ) -> bool {
         let request = &command.request;
-        let access = AccessRequest {
+        let access = AccessAttempt {
             principal_id: principal.clone(),
             presentation: presentation.clone(),
             operation,
-            service_id: Some(request.service_id.clone()),
-            scope_id: Some(request.scope_id.clone()),
-            command_id: Some(request.id),
-            command_type: Some(request.command_type.clone()),
-            command_principal_id: Some(request.principal_id.clone()),
-            scope_selections: request
-                .resource_claims
-                .iter()
-                .map(|claim| claim.selection.clone())
-                .collect(),
+            target: AccessTarget::KnownCommand {
+                command_id: request.id,
+                service_id: request.service_id.clone(),
+                scope_id: request.scope_id.clone(),
+                command_type: request.command_type.clone(),
+                principal_id: request.principal_id.clone(),
+            },
             resource_claims: request.resource_claims.clone(),
             application_capabilities: request.application_capabilities.clone(),
             arguments_digest: request.arguments_digest.clone(),
@@ -843,7 +1020,6 @@ impl NodeSessionService {
             lease: None,
             authorization_phase: AuthorizationPhase::Continuation,
             topology: self.node.scope_topology().ok(),
-            live_topics: Vec::new(),
         };
         self.access_policy
             .read()
@@ -987,30 +1163,39 @@ impl NodeSessionService {
             .read()
             .map_err(|_| "access-policy lock is poisoned".to_owned())?
             .clone();
+        let topology = self
+            .node
+            .scope_topology()
+            .map_err(|error| error.to_string())?;
         let mut scopes = Vec::with_capacity(limit.saturating_add(1));
-        for scope_id in self.node.scope_ids().map_err(|error| error.to_string())? {
-            if after
-                .as_ref()
-                .is_some_and(|cursor| scope_id.as_str() <= cursor.as_str())
-            {
-                continue;
+        let mut scan_after = after;
+        while scopes.len() <= limit {
+            let page = self
+                .node
+                .scope_ids_page(scan_after.as_ref(), SCOPE_CATALOG_SCAN_PAGE)
+                .map_err(|error| error.to_string())?;
+            let page_len = page.len();
+            if page_len == 0 {
+                break;
             }
-            let mut access = AccessRequest::scoped(
-                principal.clone(),
-                presentation.clone(),
-                AccessOperation::ReadHistory,
-                scope_id.clone(),
-            );
-            access.topology = Some(
-                self.node
-                    .scope_topology()
-                    .map_err(|error| error.to_string())?,
-            );
-            if policy.decide(&access).is_permit() {
-                scopes.push(scope_id);
-                if scopes.len() > limit {
-                    break;
+            for scope_id in page {
+                scan_after = Some(scope_id.clone());
+                let mut access = AccessAttempt::scoped(
+                    principal.clone(),
+                    presentation.clone(),
+                    AccessOperation::ReadHistory,
+                    scope_id.clone(),
+                );
+                access.topology = Some(topology.clone());
+                if policy.decide(&access).is_permit() {
+                    scopes.push(scope_id);
+                    if scopes.len() > limit {
+                        break;
+                    }
                 }
+            }
+            if scopes.len() > limit || page_len < SCOPE_CATALOG_SCAN_PAGE.get() {
+                break;
             }
         }
         let has_more = scopes.len() > limit;
@@ -1278,47 +1463,46 @@ impl NodeSessionService {
         handler: HandlerRequest,
         send: &flume::Sender<NodeFrame>,
     ) -> Result<(), String> {
+        tracing::debug!(
+            handler_kind = handler.kind.as_str(),
+            handler_id = %handler.handler_id,
+            source_node = ?handler.source_node,
+            scope_id = ?handler.scope_id,
+            "opening handler subscription"
+        );
         let application = self
             .application
             .read()
             .map_err(|_| "application lock is poisoned".to_owned())?
             .clone()
             .ok_or_else(|| "this node does not expose a Myko application".to_owned())?;
-        let mut subscription = application
-            .watch_handler(&handler)
-            .map_err(|error| error.to_string())?;
-        let (wake_tx, wake_rx) = flume::bounded(1);
-        let _guard = subscription.subscribe(move || {
-            let _ignored = wake_tx.try_send(());
-        });
+        let opened = std::time::Instant::now();
+        let tx: Arc<str> = Arc::from(uuid::Uuid::new_v4().to_string());
+        let mut session = crate::server::ClientSession::new(
+            Arc::from(principal.as_str()),
+            NodeFrameSink(send.clone()),
+        );
+        application.open_handler(&mut session, tx, handler.clone())?;
+        tracing::debug!(
+            handler_kind = handler.kind.as_str(),
+            handler_id = %handler.handler_id,
+            "handler subscription opened"
+        );
+        debug_initial_handler_progress(&handler, "handler_opened", opened.elapsed(), None);
         let mut authorization = self.authorization_pulse();
         loop {
+            let _wake = authorization.changed().await;
+            tracing::trace!("handler subscription woke for authority change");
             if !self
                 .stream_authorized(&principal, &presentation, &request, send)
                 .await?
             {
+                tracing::debug!(
+                    handler_kind = handler.kind.as_str(),
+                    handler_id = %handler.handler_id,
+                    "handler subscription authorization ended"
+                );
                 return Ok(());
-            }
-            while let Some(frame) = subscription
-                .next_frame()
-                .map_err(|error| error.to_string())?
-            {
-                let frame = match frame {
-                    ErasedHandlerFrame::State(state) => NodeFrame::HandlerState {
-                        state: Box::new(state),
-                    },
-                    ErasedHandlerFrame::ViewDelta(delta) => NodeFrame::HandlerViewDelta {
-                        delta: Box::new(delta),
-                    },
-                };
-                emit(send, frame).await?;
-            }
-            tokio::select! {
-                wake = wake_rx.recv_async() => {
-                    if wake.is_err() { return Ok(()); }
-                }
-                _ = authorization.changed() => {
-                }
             }
         }
     }
@@ -1473,11 +1657,14 @@ impl NodeSessionService {
                 .map(|_| None);
         }
         let operation = access.operation;
+        trace_authorization_requirements(&access, authorization_phase);
+        let started = std::time::Instant::now();
         let decision = self
             .access_policy
             .read()
             .map_err(|_| policy_unavailable(principal, presentation, operation))?
             .decide(&access);
+        trace_authorization_decision(operation, authorization_phase, &decision, started.elapsed());
         match decision {
             AuthorizationDecision::Permit(permit) => Ok(Some(permit)),
             _decision
@@ -1503,8 +1690,8 @@ impl NodeSessionService {
         presentation: &AuthorityPresentation,
         request: &NodeRequest,
         authorization_phase: AuthorizationPhase,
-    ) -> Result<AccessRequest, AuthorizationDecision> {
-        let metadata = self.access_metadata(request).map_err(|message| {
+    ) -> Result<AccessAttempt, AuthorizationDecision> {
+        let prepared = self.prepare_access(request).map_err(|message| {
             policy_denial(
                 principal,
                 presentation,
@@ -1512,63 +1699,21 @@ impl NodeSessionService {
                 message,
             )
         })?;
-        let mut access = AccessRequest {
+        let mut access = AccessAttempt {
             principal_id: principal.clone(),
             presentation: presentation.clone(),
-            operation: metadata.operation,
-            service_id: metadata.service_id,
-            scope_id: metadata.scope_id,
-            command_id: metadata.command_id,
-            command_type: metadata.command_type,
-            command_principal_id: metadata.command_principal_id,
-            resource_claims: metadata.resource_claims,
-            scope_selections: metadata.scope_selections,
-            application_capabilities: metadata.application_capabilities,
-            arguments_digest: metadata.arguments_digest,
+            operation: prepared.operation,
+            target: prepared.target,
+            resource_claims: prepared.resource_claims,
+            application_capabilities: prepared.application_capabilities,
+            arguments_digest: prepared.arguments_digest,
             effect_digest: None,
             lease: presentation.requested_lease,
             authorization_phase,
             topology: self.node.scope_topology().ok(),
-            live_topics: metadata.live_topics,
         };
-        if let NodeRequest::FollowHandler { request: handler } = request {
-            let application = self
-                .application
-                .read()
-                .map_err(|_| {
-                    policy_denial(
-                        principal,
-                        presentation,
-                        AccessOperation::FollowHandler,
-                        "application registry is unavailable".to_owned(),
-                    )
-                })?
-                .clone()
-                .ok_or_else(|| {
-                    policy_denial(
-                        principal,
-                        presentation,
-                        AccessOperation::FollowHandler,
-                        "this node does not expose a Myko application".to_owned(),
-                    )
-                })?;
-            let dependencies = application
-                .handler_authority_claims(handler)
-                .map_err(|error| {
-                    policy_denial(
-                        principal,
-                        presentation,
-                        AccessOperation::FollowHandler,
-                        error.to_string(),
-                    )
-                })?;
-            access
-                .scope_selections
-                .extend(dependencies.iter().map(|claim| claim.selection.clone()));
-            access.resource_claims.extend(dependencies);
-        }
         if access.resource_claims.is_empty()
-            && let Some(scope_id) = access.scope_id.clone()
+            && let Some(scope_id) = access.scope_id().cloned()
         {
             access.resource_claims =
                 vec![ResourceClaim::scope(scope_id, ResourceClaimKind::Primary)];
@@ -1599,22 +1744,32 @@ impl NodeSessionService {
             .constrain_replication(&access, selection, &topology)
     }
 
-    fn access_metadata(&self, request: &NodeRequest) -> Result<AccessMetadata, String> {
+    fn prepare_access(&self, request: &NodeRequest) -> Result<AccessPreparation, String> {
         Ok(match request {
             NodeRequest::Identify | NodeRequest::ListScopes { .. } => {
                 return Err("request is authorized outside access metadata".to_owned());
             }
-            NodeRequest::Pull { .. } => metadata(AccessOperation::ReadHistory),
-            NodeRequest::PullScope { scope_id, .. } => {
-                scoped(AccessOperation::ReadHistory, scope_id)
+            NodeRequest::Pull { .. } => {
+                history_access(AccessOperation::ReadHistory, &ReplicationSelection::All)
             }
+            NodeRequest::PullScope { scope_id, .. } => history_access(
+                AccessOperation::ReadHistory,
+                &ReplicationSelection::Scopes(vec![myko_federation::ScopeSelection::Exact(
+                    scope_id.clone(),
+                )]),
+            ),
             NodeRequest::PullSelected { selection, .. } => {
                 selected(AccessOperation::ReadHistory, selection)
             }
-            NodeRequest::Follow { .. } => metadata(AccessOperation::FollowHistory),
-            NodeRequest::FollowScope { scope_id, .. } => {
-                scoped(AccessOperation::FollowHistory, scope_id)
+            NodeRequest::Follow { .. } => {
+                history_access(AccessOperation::FollowHistory, &ReplicationSelection::All)
             }
+            NodeRequest::FollowScope { scope_id, .. } => history_access(
+                AccessOperation::FollowHistory,
+                &ReplicationSelection::Scopes(vec![myko_federation::ScopeSelection::Exact(
+                    scope_id.clone(),
+                )]),
+            ),
             NodeRequest::FollowSelected { selection, .. } => {
                 selected(AccessOperation::FollowHistory, selection)
             }
@@ -1657,9 +1812,9 @@ impl NodeSessionService {
                 &request.scope_id,
                 &request.item_type,
             ),
-            NodeRequest::FollowHandler { request } => handler_access(request),
+            NodeRequest::FollowHandler { request } => self.handler_access(request)?,
             NodeRequest::ApproveAuthority { .. } => {
-                return Err("authority approval is handled outside access metadata".to_owned());
+                return Err("authority approval is handled outside prepared access".to_owned());
             }
         })
     }
@@ -1668,38 +1823,62 @@ impl NodeSessionService {
         &self,
         operation: AccessOperation,
         command_id: CommandId,
-    ) -> Result<AccessMetadata, String> {
+    ) -> Result<AccessPreparation, String> {
         Ok(self
             .node
             .command(command_id)
             .map_err(|error| error.to_string())?
             .map_or_else(
-                || {
-                    let mut metadata = metadata(operation);
-                    metadata.command_id = Some(command_id);
-                    metadata
-                },
+                || preparation(operation, AccessTarget::Command(command_id)),
                 |command| {
                     let request = command.request;
-                    AccessMetadata {
+                    AccessPreparation {
                         operation,
-                        service_id: Some(request.service_id),
-                        scope_id: Some(request.scope_id),
-                        command_id: Some(command_id),
-                        command_type: Some(request.command_type),
-                        command_principal_id: Some(request.principal_id),
-                        scope_selections: request
-                            .resource_claims
-                            .iter()
-                            .map(|claim| claim.selection.clone())
-                            .collect(),
+                        target: AccessTarget::KnownCommand {
+                            command_id,
+                            service_id: request.service_id,
+                            scope_id: request.scope_id,
+                            command_type: request.command_type,
+                            principal_id: request.principal_id,
+                        },
                         resource_claims: request.resource_claims,
                         application_capabilities: request.application_capabilities,
                         arguments_digest: request.arguments_digest,
-                        live_topics: Vec::new(),
                     }
                 },
             ))
+    }
+
+    fn handler_access(&self, request: &HandlerRequest) -> Result<AccessPreparation, String> {
+        let application = self
+            .application
+            .read()
+            .map_err(|_| "application lock is poisoned".to_owned())?
+            .clone()
+            .ok_or_else(|| "this node does not expose a Myko application".to_owned())?;
+        let authority = application.handler_authority(request)?;
+        if authority.source_node != request.source_node || authority.scope_id != request.scope_id {
+            return Err("handler source or scope does not match its typed parameters".to_owned());
+        }
+        let mut prepared = handler_access(request);
+        if let Some(scope_id) = &request.scope_id {
+            prepared
+                .resource_claims
+                .push(handler_subscription_claim(ResourceClaim {
+                    selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
+                    kind: ResourceClaimKind::Primary,
+                    source_node: request.source_node,
+                    service_id: None,
+                    item_type: None,
+                    item_id: None,
+                    required_permissions: Vec::new(),
+                    required_operations: Vec::new(),
+                    required_capabilities: Vec::new(),
+                }));
+        }
+        prepared.resource_claims.extend(authority.resource_claims);
+        prepared.application_capabilities = authority.application_capabilities;
+        Ok(prepared)
     }
 }
 
@@ -1789,72 +1968,58 @@ async fn emit(send: &flume::Sender<NodeFrame>, frame: NodeFrame) -> Result<(), S
         .map_err(|_| "client disconnected".to_owned())
 }
 
-const fn metadata(operation: AccessOperation) -> AccessMetadata {
-    AccessMetadata {
+const fn preparation(operation: AccessOperation, target: AccessTarget) -> AccessPreparation {
+    AccessPreparation {
         operation,
-        service_id: None,
-        scope_id: None,
-        command_id: None,
-        command_type: None,
-        command_principal_id: None,
-        scope_selections: Vec::new(),
+        target,
         resource_claims: Vec::new(),
         application_capabilities: Vec::new(),
         arguments_digest: None,
-        live_topics: Vec::new(),
     }
 }
 
-fn scoped(operation: AccessOperation, scope_id: &ScopeId) -> AccessMetadata {
-    let mut metadata = metadata(operation);
-    metadata.scope_id = Some(scope_id.clone());
-    metadata
+fn history_access(
+    operation: AccessOperation,
+    selection: &ReplicationSelection,
+) -> AccessPreparation {
+    let mut prepared = preparation(operation, AccessTarget::History(selection.clone()));
+    let selections = match selection {
+        ReplicationSelection::ServiceScope { scope_id, .. } => {
+            vec![myko_federation::ScopeSelection::Exact(scope_id.clone())]
+        }
+        ReplicationSelection::Scopes(selections)
+        | ReplicationSelection::Intersection {
+            scopes: selections, ..
+        } => selections.clone(),
+        ReplicationSelection::All | ReplicationSelection::Service(_) => Vec::new(),
+    };
+    prepared.resource_claims = selections
+        .into_iter()
+        .map(|selection| ResourceClaim {
+            selection,
+            kind: ResourceClaimKind::Primary,
+            source_node: None,
+            service_id: None,
+            item_type: None,
+            item_id: None,
+            required_permissions: Vec::new(),
+            required_operations: Vec::new(),
+            required_capabilities: Vec::new(),
+        })
+        .collect();
+    prepared
 }
 
-fn selected(operation: AccessOperation, selection: &ReplicationSelection) -> AccessMetadata {
-    match selection {
-        ReplicationSelection::All => metadata(operation),
-        ReplicationSelection::Service(service_id) => {
-            let mut metadata = metadata(operation);
-            metadata.service_id = Some(service_id.clone());
-            metadata
-        }
-        ReplicationSelection::ServiceScope {
-            service_id,
-            scope_id,
-        } => {
-            let mut metadata = scoped(operation, scope_id);
-            metadata.service_id = Some(service_id.clone());
-            metadata
-        }
-        ReplicationSelection::Scopes(selections) => {
-            let mut metadata = metadata(operation);
-            metadata.scope_selections.clone_from(selections);
-            metadata.resource_claims = selections
-                .iter()
-                .cloned()
-                .map(|selection| ResourceClaim {
-                    selection,
-                    kind: ResourceClaimKind::Primary,
-                    source_node: None,
-                    service_id: None,
-                    item_type: None,
-                    item_id: None,
-                    required_permissions: Vec::new(),
-                    required_operations: Vec::new(),
-                    required_capabilities: Vec::new(),
-                })
-                .collect();
-            metadata
-        }
-        ReplicationSelection::Intersection { requested, .. } => selected(operation, requested),
-    }
+fn selected(operation: AccessOperation, selection: &ReplicationSelection) -> AccessPreparation {
+    history_access(operation, selection)
 }
 
-fn live_access(topics: &[String]) -> AccessMetadata {
-    let mut metadata = metadata(AccessOperation::SubscribeLive);
-    metadata.live_topics = topics.to_vec();
-    metadata.resource_claims = topics
+fn live_access(topics: &[String]) -> AccessPreparation {
+    let mut prepared = preparation(
+        AccessOperation::SubscribeLive,
+        AccessTarget::LiveTopics(topics.to_vec()),
+    );
+    prepared.resource_claims = topics
         .iter()
         .map(|topic| {
             ResourceClaim::scope(
@@ -1863,12 +2028,7 @@ fn live_access(topics: &[String]) -> AccessMetadata {
             )
         })
         .collect();
-    metadata.scope_selections = metadata
-        .resource_claims
-        .iter()
-        .map(|claim| claim.selection.clone())
-        .collect();
-    metadata
+    prepared
 }
 
 fn item_access(
@@ -1877,10 +2037,17 @@ fn item_access(
     service_id: &ServiceId,
     scope_id: &ScopeId,
     item_type: &str,
-) -> AccessMetadata {
-    let mut metadata = scoped(operation, scope_id);
-    metadata.service_id = Some(service_id.clone());
-    metadata.resource_claims = vec![ResourceClaim {
+) -> AccessPreparation {
+    let mut prepared = preparation(
+        operation,
+        AccessTarget::Items {
+            source_node,
+            service_id: service_id.clone(),
+            scope_id: scope_id.clone(),
+            item_type: item_type.to_owned(),
+        },
+    );
+    prepared.resource_claims = vec![ResourceClaim {
         selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
         kind: ResourceClaimKind::Primary,
         source_node,
@@ -1891,21 +2058,52 @@ fn item_access(
         required_operations: Vec::new(),
         required_capabilities: Vec::new(),
     }];
-    metadata
+    prepared
 }
 
-fn handler_access(request: &HandlerRequest) -> AccessMetadata {
-    let topic = format!("handler:{}:{}", request.kind.as_str(), request.handler_id);
-    let scope = request
-        .scope_id
-        .clone()
-        .unwrap_or_else(|| ScopeId::new(format!("myko.{topic}")));
-    let mut metadata = scoped(AccessOperation::FollowHandler, &scope);
-    metadata.live_topics = vec![topic];
-    metadata.resource_claims = vec![ResourceClaim::scope(scope, ResourceClaimKind::Primary)];
+fn handler_access(request: &HandlerRequest) -> AccessPreparation {
+    let mut prepared = preparation(
+        AccessOperation::FollowHandler,
+        AccessTarget::Handler {
+            access: myko_federation::HandlerAccess {
+                kind: request.kind,
+                handler_id: request.handler_id.clone(),
+            },
+            source_node: request.source_node,
+            scope_id: request.scope_id.clone(),
+        },
+    );
     let encoded = serde_json::to_vec(&(request.source_node, &request.params)).unwrap_or_default();
-    metadata.arguments_digest = Some(format!("{:x}", Sha256::digest(encoded)));
-    metadata
+    prepared.arguments_digest = Some(format!("{:x}", Sha256::digest(encoded)));
+    prepared
+}
+
+fn handler_subscription_claim(mut claim: ResourceClaim) -> ResourceClaim {
+    if !claim
+        .required_permissions
+        .contains(&FederationPermission::ReadState)
+    {
+        claim
+            .required_permissions
+            .push(FederationPermission::ReadState);
+    }
+    if !claim
+        .required_permissions
+        .contains(&FederationPermission::Subscribe)
+    {
+        claim
+            .required_permissions
+            .push(FederationPermission::Subscribe);
+    }
+    if !claim
+        .required_operations
+        .contains(&AccessOperation::FollowHandler)
+    {
+        claim
+            .required_operations
+            .push(AccessOperation::FollowHandler);
+    }
+    claim
 }
 
 fn catalog(
@@ -1913,11 +2111,16 @@ fn catalog(
     service_id: &ServiceId,
     scope_id: &ScopeId,
     command_type: &str,
-) -> AccessMetadata {
-    let mut metadata = scoped(operation, scope_id);
-    metadata.service_id = Some(service_id.clone());
-    metadata.command_type = Some(command_type.to_owned());
-    metadata
+) -> AccessPreparation {
+    preparation(
+        operation,
+        AccessTarget::CommandCatalog {
+            source_node: None,
+            service_id: service_id.clone(),
+            scope_id: scope_id.clone(),
+            command_type: command_type.to_owned(),
+        },
+    )
 }
 
 fn validate_live_topics(topics: &[String]) -> Result<(), String> {
@@ -1953,11 +2156,45 @@ mod tests {
 
     use super::*;
 
+    #[crate::myko_view_item]
+    struct ProtectedHandlerRow {
+        id: Arc<str>,
+    }
+
+    #[crate::myko_view(ProtectedHandlerRow)]
+    #[derive(PartialEq, Eq)]
+    struct ProtectedHandlerView {
+        #[ts(type = "string")]
+        source_node: NodeId,
+        #[ts(type = "string")]
+        scope_id: ScopeId,
+    }
+
+    impl crate::view::ViewHandler for ProtectedHandlerView {
+        fn source_node(&self, _local_node: NodeId) -> Option<NodeId> {
+            Some(self.source_node)
+        }
+
+        fn scope_id(&self, _local_node: NodeId) -> Option<ScopeId> {
+            Some(self.scope_id.clone())
+        }
+
+        fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+            vec![myko_federation::CapabilityId::new("test.handler.runtime")]
+        }
+
+        fn build_cell(
+            _context: crate::view::ViewBuildArgs<Self>,
+        ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+            hyphae::CellMap::new().lock()
+        }
+    }
+
     #[derive(Debug)]
     struct CapturingPolicy {
         allow: AtomicBool,
         expected_item_type: Option<&'static str>,
-        seen: Mutex<Vec<AccessRequest>>,
+        seen: Mutex<Vec<AccessAttempt>>,
     }
 
     impl CapturingPolicy {
@@ -1979,7 +2216,7 @@ mod tests {
     }
 
     impl AccessPolicy for CapturingPolicy {
-        fn authorize(&self, request: &AccessRequest) -> Result<(), String> {
+        fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
             self.seen.lock().unwrap().push(request.clone());
             if !self.allow.load(Ordering::Acquire) {
                 return Err("revoked".to_owned());
@@ -2003,9 +2240,9 @@ mod tests {
     }
 
     impl AccessPolicy for CatalogEntryPolicy {
-        fn authorize(&self, request: &AccessRequest) -> Result<(), String> {
+        fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
             if request.operation == AccessOperation::WatchCommands
-                && request.command_id.is_some()
+                && request.command_id().is_some()
                 && (!self.entries_allowed
                     || self
                         .entries_expire_at
@@ -2021,7 +2258,7 @@ mod tests {
     async fn full_principal_kind_is_transport_bound() {
         let authenticated = Principal::new(PrincipalId::new("same-id"), PrincipalKind::Node);
         let asserted = Principal::new(PrincipalId::new("same-id"), PrincipalKind::Person);
-        let session = NodeSessionService::new(Node::in_memory(), Arc::new(AllowAllAccessPolicy));
+        let session = FederatedSession::new(Node::in_memory(), Arc::new(AllowAllAccessPolicy));
         let envelope = NodeRequestEnvelope::connected(NodeRequest::PullScope {
             scope_id: ScopeId::new("scope:a"),
             after: None,
@@ -2039,7 +2276,7 @@ mod tests {
     #[tokio::test]
     async fn live_topics_are_grantable_and_permit_precedes_prompt_revocation() {
         let policy = Arc::new(CapturingPolicy::allow());
-        let session = NodeSessionService::new(Node::in_memory(), policy.clone());
+        let session = FederatedSession::new(Node::in_memory(), policy.clone());
         let principal = PrincipalId::new("node:subscriber");
         let mut frames = session
             .open(
@@ -2078,10 +2315,108 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn handler_identity_is_typed_and_not_an_authority_scope() {
+        let request = HandlerRequest {
+            kind: myko_federation::HandlerKind::View,
+            handler_id: "ForestView".to_owned(),
+            source_node: None,
+            scope_id: None,
+            params: serde_json::Value::Null,
+        };
+        let prepared = handler_access(&request);
+        assert!(prepared.resource_claims.is_empty());
+        assert_eq!(
+            prepared.target,
+            AccessTarget::Handler {
+                access: myko_federation::HandlerAccess {
+                    kind: myko_federation::HandlerKind::View,
+                    handler_id: "ForestView".to_owned(),
+                },
+                source_node: None,
+                scope_id: None,
+            }
+        );
+
+        let scope = ScopeId::new("forest:catalog");
+        let claim = handler_subscription_claim(ResourceClaim::scope(
+            scope.clone(),
+            ResourceClaimKind::Referenced,
+        ));
+        assert_eq!(claim.selection, ScopeSelection::Exact(scope));
+        assert!(
+            claim
+                .required_permissions
+                .contains(&myko_federation::FederationPermission::ReadState)
+        );
+        assert!(
+            claim
+                .required_permissions
+                .contains(&myko_federation::FederationPermission::Subscribe)
+        );
+        assert!(
+            claim
+                .required_operations
+                .contains(&AccessOperation::FollowHandler)
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_authority_includes_typed_scope_and_runtime_capability() {
+        let node = Node::in_memory();
+        let source_node = node.node_id();
+        let scope_id = ScopeId::new("protected:handler");
+        let application = crate::ApplicationHost::new(node, crate::MykoApplication::new()).unwrap();
+        let policy = Arc::new(CapturingPolicy::allow());
+        let session = FederatedSession::for_application(application, policy.clone());
+        let request = NodeRequest::FollowHandler {
+            request: HandlerRequest {
+                kind: myko_federation::HandlerKind::View,
+                handler_id: "ProtectedHandlerView".to_owned(),
+                source_node: Some(source_node),
+                scope_id: Some(scope_id.clone()),
+                params: serde_json::to_value(ProtectedHandlerView {
+                    source_node,
+                    scope_id: scope_id.clone(),
+                })
+                .unwrap(),
+            },
+        };
+        let mut frames = session
+            .open(
+                PrincipalId::new("node:subscriber"),
+                NodeRequestEnvelope::connected(request),
+            )
+            .await;
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::Authorization { decision })
+                if matches!(*decision, AuthorizationDecision::Permit(_))
+        ));
+        let seen = policy.seen.lock().unwrap();
+        let access = seen
+            .iter()
+            .find(|access| access.operation == AccessOperation::FollowHandler)
+            .unwrap();
+        assert!(
+            access
+                .application_capabilities
+                .contains(&myko_federation::CapabilityId::new("test.handler.runtime"))
+        );
+        assert!(access.resource_claims.iter().any(|claim| {
+            claim.selection == ScopeSelection::Exact(scope_id.clone())
+                && claim.source_node == Some(source_node)
+                && claim
+                    .required_permissions
+                    .contains(&FederationPermission::ReadState)
+        }));
+        drop(seen);
+    }
+
     #[tokio::test]
     async fn catalog_watch_closes_when_visible_entry_authority_changes() {
         let node = Node::in_memory();
-        let session = NodeSessionService::new(
+        let session = FederatedSession::new(
             node.clone(),
             Arc::new(CatalogEntryPolicy {
                 entries_allowed: true,
@@ -2176,7 +2511,7 @@ mod tests {
             payload: Vec::new(),
         })
         .unwrap();
-        let session = NodeSessionService::new(
+        let session = FederatedSession::new(
             node.clone(),
             Arc::new(CatalogEntryPolicy {
                 entries_allowed: true,
@@ -2221,7 +2556,7 @@ mod tests {
     async fn item_type_constraints_and_command_existence_are_fail_closed() {
         let node = Node::in_memory();
         let policy = Arc::new(CapturingPolicy::item_type("VisibleItem"));
-        let session = NodeSessionService::new(node.clone(), policy);
+        let session = FederatedSession::new(node.clone(), policy);
         let principal = PrincipalId::new("node:reader");
         let request = |item_type: &str| {
             NodeRequestEnvelope::connected(NodeRequest::ItemState {
@@ -2269,7 +2604,7 @@ mod tests {
             payload: Vec::new(),
         })
         .unwrap();
-        let hidden = NodeSessionService::new(node, Arc::new(DenyAllAccessPolicy));
+        let hidden = FederatedSession::new(node, Arc::new(DenyAllAccessPolicy));
         let mut existing = hidden
             .open(
                 principal.clone(),

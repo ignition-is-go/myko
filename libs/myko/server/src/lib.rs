@@ -299,7 +299,7 @@ impl MykoServer {
         // Initialize the client registry for WebSocket client message dispatch
         init_client_registry();
 
-        let (saga_event_tx, saga_event_rx) = flume::unbounded::<MEvent>();
+        let (saga_event_tx, saga_event_rx) = flume::bounded::<MEvent>(4096);
         let (history_replay, postgres_producer_owner, postgres_producer, postgres_consumer) =
             config.postgres.as_ref().map_or_else(
                 || (None, None, None, None),
@@ -472,14 +472,14 @@ impl MykoServer {
 
         tracing::info!("Starting saga runtime with {} saga(s)", registrations.len());
 
-        // NOTE(ts): One unbounded flume channel per saga, with dispatch-side filtering
+        // One bounded lossless channel per saga, with dispatch-side filtering
         // so sagas only receive events matching their entity type and change type.
         let mut saga_channels: Vec<SagaChannel> = Vec::new();
 
         for registration in registrations {
             let saga = (registration.create)();
             let saga_name = saga.name().to_string();
-            let (saga_tx, saga_rx) = flume::unbounded::<MEvent>();
+            let (saga_tx, saga_rx) = flume::bounded::<MEvent>(1024);
             saga_channels.push(SagaChannel {
                 tx: saga_tx,
                 entity_type: registration.event_entity_type,

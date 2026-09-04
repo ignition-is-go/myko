@@ -67,6 +67,7 @@ mod tests {
     use hyphae::{CellMap, MapDiff, MapQuery as _};
 
     use super::*;
+    use crate::test_util::scheduler_test_serial;
 
     fn task(id: &str, status_id: &str) -> Arc<DemoTask> {
         Arc::new(DemoTask {
@@ -103,6 +104,7 @@ mod tests {
 
     #[test]
     fn status_update_only_updates_referencing_joined_rows() {
+        let _serial = scheduler_test_serial();
         let tasks = CellMap::new();
         let statuses = CellMap::new();
         tasks.insert("task-a".into(), task("task-a", "todo"));
@@ -145,6 +147,7 @@ mod tests {
 
     #[test]
     fn membership_is_joined_but_output_identity_is_the_task_id() {
+        let _serial = scheduler_test_serial();
         let tasks = CellMap::new();
         let statuses = CellMap::new();
         tasks.insert("task-a".into(), task("task-a", "todo"));

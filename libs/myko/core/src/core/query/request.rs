@@ -106,6 +106,8 @@ impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequ
         Q::build_view(QueryBuildArgs {
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated: ctx.federated,
         })
     }
 }

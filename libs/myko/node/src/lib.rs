@@ -8,31 +8,29 @@
 #![forbid(unsafe_code)]
 
 mod discovery;
-mod live_state;
 mod pairing;
 mod peer;
 mod status;
 
 pub use discovery::{
-    ConfigureLanDiscovery, DiscoverySettings, DiscoverySettingsReport, NearbyNodesView,
+    ConfigureLanDiscovery, DiscoveredNodeRow, DiscoverySettings, DiscoverySettingsReport,
+    NearbyNodesView,
 };
 use discovery::{DiscoverySupervisor, DiscoveryViewState};
-pub use live_state::RuntimeFeed;
 use pairing::PairingSupervisor;
 pub use pairing::{
     ConfirmPairing, InitiateDiscoveredPairing, InitiatePairing, IssuePairingInvitation,
     PairingInitiation, PairingInitiationId, PairingInitiationPhase, PairingInitiationReport,
-    PairingReceiptsView, PairingRedemption, PairingRedemptionId, PairingRedemptionPhase,
-    PairingRedemptionReport, PendingPairingReceipt, PendingPairingReceiptId,
-    RedeemPairingInvitation,
+    PairingReceiptRow, PairingReceiptsView, PairingRedemption, PairingRedemptionId,
+    PairingRedemptionPhase, PairingRedemptionReport, PendingPairingReceipt,
+    PendingPairingReceiptId, RedeemPairingInvitation,
 };
 pub use peer::{
     AddPeer, AdvertiseServices, AdvertisedService, AdvertisedServiceId, AdvertisedServicesView,
     FederationService, GetAdvertisedServices, GetPeers, Peer, PeerId, PeerReport, PeersView,
     RememberPeer, RemovePeer, ServiceCapabilityReport, SetPeerReplication,
-    SetPeerReplicationSelection, peer_id,
+    SetPeerReplicationSelection, peer_id, peer_scope,
 };
-use peer::{RestorePeer, peer_scope};
 pub use status::{NodeStatus, NodeStatusView};
 use status::{NodeStatusProjectionGuard, NodeStatusViewState, project_node_statuses};
 
@@ -44,36 +42,37 @@ use std::{
     time::Duration,
 };
 
-use myko_app::{
-    ApplicationNode, CommandDispatchGuard, CommandHandler, HandlerSubscription, MykoApplication,
-    QueryHandler, ReportHandler, ViewHandler, ViewSubscription,
+use myko::{
+    ApplicationHost, CommandDispatchGuard, MykoApplication,
+    client::{HandlerClientError, HandlerConnection, HandlerConnector, HandlerFrame, MykoClient},
+    server::{FederatedSession, NodeFrameStream, NodeRequestRouter, NodeRouteFuture},
 };
 use myko_federation::{
-    AccessPolicy, AllowAllAccessPolicy, ApplicationCapability, AuthorityConstraints, CapabilityId,
-    DenyAllAccessPolicy, ItemQuery, ItemQueryWatch, LiveSubscription, LiveSubscriptionState,
-    Node as FederationNode, NodeError as FederationNodeError, NodeId, NodeStartupGuard, Principal,
-    ProvenanceOperation, ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness,
-    live_subscription,
+    AccessPolicy, AllowAllAccessPolicy, ApplicationCapability, AuthorityConstraints,
+    AuthorityPresentation, CapabilityId, CommandClient, CommandClientFuture, CommandId,
+    CommandSnapshot, CommandSubmission, CommandSubscription, CommandSubscriptionFuture,
+    CommandWatchFuture, CommandWatchingClient, DenyAllAccessPolicy, ItemQuery, ItemQueryResult,
+    ItemQueryWatch, LiveSubscription, LiveSubscriptionState, Node as FederationNode,
+    NodeError as FederationNodeError, NodeId, NodeStartupGuard, Principal, PrincipalId,
+    ProvenanceOperation, ReconnectPolicy, ReplicationSelection, ScopeId, ServiceId,
+    SubscriptionLiveness, live_subscription,
 };
 pub use myko_iroh::{
     EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference, PairingInvitation,
     PairingReceipt, SecretKey, endpoint_principal_id,
 };
-use myko_iroh::{IrohReactiveHandlerSubscription, IrohReactiveViewSubscription};
-use myko_iroh::{IrohReplicationError, IrohReplicator, PeerSupervisor, load_or_create_secret_key};
+use myko_iroh::{
+    IrohCommandClient, IrohCommandSubscription, IrohReplicationError, IrohReplicator,
+    PeerSupervisor, load_or_create_secret_key,
+};
 use myko_redb::RedbJournal;
-use myko_session::{NodeRequestRouter, NodeRouteFuture, NodeSessionService};
-use myko_wire::{NodeFrame, NodeRequestEnvelope};
+use myko_wire::{HandlerRequest, NodeFrame, NodeRequest, NodeRequestEnvelope};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::task::JoinHandle;
 
-const CONFIG_VERSION: u32 = 3;
-const PREVIOUS_CONFIG_VERSION: u32 = 2;
-const LEGACY_CONFIG_VERSION: u32 = 1;
 const JOURNAL_FILE: &str = "node.redb";
 const SECRET_FILE: &str = "iroh-secret.json";
-const PEERS_FILE: &str = "peers.json";
 const IROH_REPLICATOR_CAPABILITY_ID: &str = "myko.node.iroh-replicator";
 const NODE_STATUS_CAPABILITY_ID: &str = "myko.node.status-runtime";
 const DISCOVERY_CAPABILITY_ID: &str = "myko.node.discovery-runtime";
@@ -101,23 +100,6 @@ pub(crate) fn discovery_capability_id() -> CapabilityId {
     CapabilityId::new(DISCOVERY_CAPABILITY_ID)
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct StoredPeerConfig {
-    version: u32,
-    peers: Vec<ConfiguredPeer>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct LegacyStoredPeerConfig {
-    version: u32,
-    peers: Vec<EndpointAddr>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-struct StoredConfigHeader {
-    version: u32,
-}
-
 /// One durable peer binding, optionally pinned to an expected Myko history.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct ConfiguredPeer {
@@ -128,21 +110,10 @@ struct ConfiguredPeer {
     ///
     /// A paired descriptor may be retained with this disabled. That records
     /// authenticated identity knowledge without copying any application data.
-    #[serde(default = "default_peer_replication", alias = "following")]
+    #[serde(default = "default_peer_replication")]
     pub replication_enabled: bool,
     #[serde(default)]
     pub replication_selection: ReplicationSelection,
-}
-
-impl ConfiguredPeer {
-    const fn unpinned(endpoint: EndpointAddr) -> Self {
-        Self {
-            endpoint,
-            source_node: None,
-            replication_enabled: true,
-            replication_selection: ReplicationSelection::All,
-        }
-    }
 }
 
 impl From<&Peer> for ConfiguredPeer {
@@ -171,7 +142,7 @@ enum BindMode {
 pub enum NodeError {
     /// The composed Myko application could not be activated or driven.
     #[error(transparent)]
-    Application(#[from] myko_app::AppError),
+    Application(#[from] myko::AppError),
     /// The event journal could not be opened or replayed.
     #[error(transparent)]
     Federation(#[from] FederationNodeError),
@@ -195,136 +166,15 @@ pub enum NodeError {
     Route(String),
 }
 
-/// Typed application client bound to one source node.
-///
-/// The client resolves the source through the node's authoritative peer
-/// projection. Callers use the same command, report, and view methods for the
-/// local node and for an authenticated Iroh peer; transport selection never
-/// enters application code.
-#[derive(Debug, Clone)]
-pub struct ApplicationClient {
-    application: ApplicationNode,
-    replicator: IrohReplicator,
-    router: Arc<FederationRouter>,
-    source_node: NodeId,
-}
-
-/// A live typed report whose transport-specific owner is retained privately.
-pub struct ApplicationReportSubscription<T, C = myko_federation::LogPosition>
-where
-    T: hyphae::CellValue,
-    C: hyphae::CellValue,
-{
-    live: LiveSubscription<T, C>,
-    owner: ApplicationReportOwner<T, C>,
-}
-
-enum ApplicationReportOwner<T, C>
-where
-    T: hyphae::CellValue,
-    C: hyphae::CellValue,
-{
-    Local(HandlerSubscription<T, C>),
-    Remote(IrohReactiveHandlerSubscription<T, C>),
-}
-
-impl<T, C> ApplicationReportSubscription<T, C>
-where
-    T: hyphae::CellValue,
-    C: hyphae::CellValue,
-{
-    fn local(subscription: HandlerSubscription<T, C>) -> Self {
-        Self {
-            live: subscription.live().clone(),
-            owner: ApplicationReportOwner::Local(subscription),
-        }
-    }
-
-    fn remote(subscription: IrohReactiveHandlerSubscription<T, C>) -> Self {
-        Self {
-            live: subscription.live().clone(),
-            owner: ApplicationReportOwner::Remote(subscription),
-        }
-    }
-
-    /// Returns the transport-independent reactive report cell.
-    #[must_use]
-    pub const fn live(&self) -> &LiveSubscription<T, C> {
-        &self.live
-    }
-
-    /// Stops the report and releases its local or remote driver.
-    pub async fn shutdown(self) {
-        match self.owner {
-            ApplicationReportOwner::Local(subscription) => subscription.shutdown().await,
-            ApplicationReportOwner::Remote(subscription) => drop(subscription),
-        }
-    }
-}
-
-/// A live typed view whose transport-specific owner is retained privately.
-pub struct ApplicationViewSubscription<T, C = myko_federation::LogPosition>
-where
-    T: hyphae::CellValue,
-    C: hyphae::CellValue,
-{
-    live: myko_federation::LiveCollection<T, C>,
-    owner: ApplicationViewOwner<T, C>,
-}
-
-enum ApplicationViewOwner<T, C>
-where
-    T: hyphae::CellValue,
-    C: hyphae::CellValue,
-{
-    Local(ViewSubscription<T, C>),
-    Remote(IrohReactiveViewSubscription<T, C>),
-}
-
-impl<T, C> ApplicationViewSubscription<T, C>
-where
-    T: hyphae::CellValue,
-    C: hyphae::CellValue,
-{
-    fn local(subscription: ViewSubscription<T, C>) -> Self {
-        Self {
-            live: subscription.live().clone(),
-            owner: ApplicationViewOwner::Local(subscription),
-        }
-    }
-
-    fn remote(subscription: IrohReactiveViewSubscription<T, C>) -> Self {
-        Self {
-            live: subscription.live().clone(),
-            owner: ApplicationViewOwner::Remote(subscription),
-        }
-    }
-
-    /// Returns the transport-independent identity-preserving view.
-    #[must_use]
-    pub const fn live(&self) -> &myko_federation::LiveCollection<T, C> {
-        &self.live
-    }
-
-    /// Stops the view and releases its local or remote driver.
-    pub async fn shutdown(self) {
-        match self.owner {
-            ApplicationViewOwner::Local(subscription) => subscription.shutdown().await,
-            ApplicationViewOwner::Remote(subscription) => drop(subscription),
-        }
-    }
-}
-
 /// A restartable native Myko node.
 ///
 /// The data directory is the node's operational identity boundary. Opening the
 /// same directory restores its event identity, transport identity, and every
 /// configured source-aware peer relationship.
-#[derive(Debug)]
 pub struct Node {
     data_dir: PathBuf,
     federation: FederationNode,
-    application: ApplicationNode,
+    application: ApplicationHost,
     journal: Arc<RedbJournal>,
     replicator: IrohReplicator,
     request_router: Arc<FederationRouter>,
@@ -334,6 +184,258 @@ pub struct Node {
     pairing: Option<PairingSupervisor>,
     status_projection: Option<NodeStatusProjectionGuard>,
     discovery: Option<DiscoverySupervisor>,
+}
+
+/// Command facade that keeps node identity routing out of application code.
+#[derive(Clone)]
+pub struct NodeCommandClient {
+    transport: NodeCommandTransport,
+}
+
+#[derive(Clone)]
+enum NodeCommandTransport {
+    Embedded {
+        client: ApplicationHost,
+        authority: Option<AuthorityPresentation>,
+    },
+    Iroh(IrohCommandClient),
+}
+
+/// Current-then-live lifecycle returned by [`NodeCommandClient`].
+pub struct NodeCommandSubscription {
+    transport: NodeCommandSubscriptionTransport,
+}
+
+enum NodeCommandSubscriptionTransport {
+    Embedded(myko_federation::CommandWatch),
+    Iroh(IrohCommandSubscription),
+}
+
+impl CommandClient for NodeCommandClient {
+    type Error = NodeError;
+
+    fn submit_submission(
+        &self,
+        submission: CommandSubmission,
+    ) -> CommandClientFuture<'_, Self::Error> {
+        Box::pin(async move {
+            match &self.transport {
+                NodeCommandTransport::Embedded { client, authority } => {
+                    if let Some(authority) = authority {
+                        client
+                            .submit_authorized_submission(authority.clone(), submission)
+                            .map_err(NodeError::Federation)
+                    } else {
+                        client
+                            .submit_submission(submission)
+                            .await
+                            .map_err(NodeError::Federation)
+                    }
+                }
+                NodeCommandTransport::Iroh(client) => client
+                    .submit_submission(submission)
+                    .await
+                    .map_err(NodeError::Iroh),
+            }
+        })
+    }
+
+    fn command_state(&self, command_id: CommandId) -> CommandClientFuture<'_, Self::Error> {
+        Box::pin(async move {
+            match &self.transport {
+                NodeCommandTransport::Embedded { client, .. } => client
+                    .command_state(command_id)
+                    .await
+                    .map_err(NodeError::Federation),
+                NodeCommandTransport::Iroh(client) => client
+                    .command_state(command_id)
+                    .await
+                    .map_err(NodeError::Iroh),
+            }
+        })
+    }
+
+    fn cancel_command(
+        &self,
+        command_id: CommandId,
+        reason: String,
+    ) -> CommandClientFuture<'_, Self::Error> {
+        Box::pin(async move {
+            match &self.transport {
+                NodeCommandTransport::Embedded { client, .. } => client
+                    .cancel_command(command_id, reason)
+                    .await
+                    .map_err(NodeError::Federation),
+                NodeCommandTransport::Iroh(client) => client
+                    .cancel_command(command_id, reason)
+                    .await
+                    .map_err(NodeError::Iroh),
+            }
+        })
+    }
+}
+
+impl CommandSubscription for NodeCommandSubscription {
+    type Error = NodeError;
+
+    fn current(&self) -> &CommandSnapshot {
+        match &self.transport {
+            NodeCommandSubscriptionTransport::Embedded(subscription) => subscription.current(),
+            NodeCommandSubscriptionTransport::Iroh(subscription) => subscription.current(),
+        }
+    }
+
+    fn recv(&mut self) -> CommandSubscriptionFuture<'_, Self::Error> {
+        Box::pin(async move {
+            match &mut self.transport {
+                NodeCommandSubscriptionTransport::Embedded(subscription) => {
+                    CommandSubscription::recv(subscription)
+                        .await
+                        .map_err(NodeError::Federation)
+                }
+                NodeCommandSubscriptionTransport::Iroh(subscription) => {
+                    CommandSubscription::recv(subscription)
+                        .await
+                        .map_err(NodeError::Iroh)
+                }
+            }
+        })
+    }
+}
+
+impl CommandWatchingClient for NodeCommandClient {
+    type Subscription = NodeCommandSubscription;
+
+    fn watch_command(
+        &self,
+        command_id: CommandId,
+    ) -> CommandWatchFuture<'_, Self::Subscription, Self::Error> {
+        Box::pin(async move {
+            match &self.transport {
+                NodeCommandTransport::Embedded { client, .. } => {
+                    CommandWatchingClient::watch_command(client, command_id)
+                        .await
+                        .map(|subscription| NodeCommandSubscription {
+                            transport: NodeCommandSubscriptionTransport::Embedded(subscription),
+                        })
+                        .map_err(NodeError::Federation)
+                }
+                NodeCommandTransport::Iroh(client) => {
+                    CommandWatchingClient::watch_command(client, command_id)
+                        .await
+                        .map(|subscription| NodeCommandSubscription {
+                            transport: NodeCommandSubscriptionTransport::Iroh(subscription),
+                        })
+                        .map_err(NodeError::Iroh)
+                }
+            }
+        })
+    }
+}
+
+#[derive(Clone)]
+struct EmbeddedHandlerConnector {
+    sessions: FederatedSession,
+    local_node: NodeId,
+    destination: Option<NodeId>,
+    authority: Option<AuthorityPresentation>,
+}
+
+struct EmbeddedHandlerConnection {
+    frames: NodeFrameStream,
+}
+
+#[async_trait::async_trait]
+impl HandlerConnection for EmbeddedHandlerConnection {
+    async fn recv(&mut self) -> Result<HandlerFrame, HandlerClientError> {
+        next_embedded_handler_frame(&mut self.frames).await
+    }
+}
+
+#[async_trait::async_trait]
+impl HandlerConnector for EmbeddedHandlerConnector {
+    async fn target_node(&self) -> Result<NodeId, HandlerClientError> {
+        Ok(self.destination.unwrap_or(self.local_node))
+    }
+
+    async fn connect(
+        &self,
+        request: HandlerRequest,
+    ) -> Result<(HandlerFrame, Box<dyn HandlerConnection>), HandlerClientError> {
+        let mut frames = self
+            .sessions
+            .open_authenticated(
+                self.authority.as_ref().map_or_else(
+                    || Principal::node(PrincipalId::for_node(self.local_node)),
+                    |authority| authority.executor.clone(),
+                ),
+                NodeRequestEnvelope {
+                    destination: self.destination,
+                    authority: self.authority.clone(),
+                    forwarding_provenance: Vec::new(),
+                    request: NodeRequest::FollowHandler { request },
+                },
+            )
+            .await;
+        let initial = next_embedded_handler_frame(&mut frames).await?;
+        Ok((initial, Box::new(EmbeddedHandlerConnection { frames })))
+    }
+
+    fn at(&self, destination: NodeId) -> Arc<dyn HandlerConnector> {
+        Arc::new(Self {
+            sessions: self.sessions.clone(),
+            local_node: self.local_node,
+            destination: Some(destination),
+            authority: self.authority.clone(),
+        })
+    }
+
+    fn reconnect_policy(&self) -> ReconnectPolicy {
+        ReconnectPolicy::default()
+    }
+}
+
+async fn next_embedded_handler_frame(
+    frames: &mut NodeFrameStream,
+) -> Result<HandlerFrame, HandlerClientError> {
+    loop {
+        match frames.recv().await {
+            Some(NodeFrame::Authorization { decision })
+                if matches!(
+                    decision.as_ref(),
+                    myko_federation::AuthorizationDecision::Permit(_)
+                ) => {}
+            Some(NodeFrame::Authorization { decision }) => {
+                return Err(HandlerClientError::Protocol(decision.public_message()));
+            }
+            Some(NodeFrame::HandlerState { revision, state }) => {
+                return Ok(HandlerFrame::State {
+                    revision,
+                    state: *state,
+                });
+            }
+            Some(NodeFrame::HandlerViewDelta { revision, delta }) => {
+                return Ok(HandlerFrame::ViewDelta {
+                    revision,
+                    delta: *delta,
+                });
+            }
+            Some(NodeFrame::Error { message }) => {
+                return Err(HandlerClientError::Protocol(message));
+            }
+            Some(frame) => {
+                return Err(HandlerClientError::Protocol(format!(
+                    "embedded handler stream returned {}",
+                    frame.kind()
+                )));
+            }
+            None => {
+                return Err(HandlerClientError::Transport(
+                    "embedded handler stream ended".to_owned(),
+                ));
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -358,10 +460,12 @@ impl PeerReconcilerGuard {
     ) -> Self {
         let task = tokio::spawn(async move {
             let mut current = current;
+            tracing::debug!(peer_count = current.len(), "peer reconciler started");
             loop {
                 let update = match watch.recv_async().await {
                     Ok(update) => update,
                     Err(error) => {
+                        tracing::error!(%error, "peer configuration subscription failed");
                         context
                             .status
                             .invalidate(format!("peer configuration subscription failed: {error}"));
@@ -369,6 +473,12 @@ impl PeerReconcilerGuard {
                     }
                 };
                 let desired = configured_peer_map(&update.value);
+                tracing::debug!(
+                    current_count = current.len(),
+                    desired_count = desired.len(),
+                    through = ?update.position,
+                    "peer configuration changed"
+                );
                 if let Err(error) = reconcile_peers(
                     &current,
                     &desired,
@@ -379,6 +489,7 @@ impl PeerReconcilerGuard {
                 )
                 .await
                 {
+                    tracing::error!(%error, "peer reconciliation failed");
                     context
                         .status
                         .invalidate(format!("peer reconciliation failed: {error}"));
@@ -426,6 +537,12 @@ async fn start_configured_follower(
     journal: Arc<RedbJournal>,
     retry_interval: Duration,
 ) -> Result<(), NodeError> {
+    tracing::debug!(
+        endpoint_id = %peer.endpoint.id,
+        source_node = ?peer.source_node,
+        selection = ?peer.replication_selection,
+        "starting configured peer follower"
+    );
     if let Some(source_node) = peer.source_node {
         supervisor
             .upsert_persisted_source_selected(
@@ -469,6 +586,7 @@ async fn reconcile_peers(
             .get(peer_id)
             .is_none_or(|peer| !peer.replication_enabled || peer != previous)
         {
+            tracing::debug!(endpoint_id = %peer_id, "stopping removed or changed peer follower");
             supervisor.remove(*peer_id).await?;
         }
     }
@@ -580,133 +698,6 @@ impl NodeRequestRouter for FederationRouter {
     }
 }
 
-impl ApplicationClient {
-    fn remote_endpoint(&self) -> Result<Option<EndpointAddr>, NodeError> {
-        if self.source_node == self.application.node_id() {
-            return Ok(None);
-        }
-        self.router
-            .peer(self.source_node)
-            .map(Some)
-            .map_err(NodeError::Route)
-    }
-
-    /// Returns the source node selected for every operation on this client.
-    #[must_use]
-    pub const fn source_node(&self) -> NodeId {
-        self.source_node
-    }
-
-    /// Executes one bounded typed command on the selected source node.
-    ///
-    /// Myko owns admission, lifecycle observation, result decoding, peer
-    /// resolution, and transport selection. The command is identical whether
-    /// the selected source is local or remote.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no authenticated route exists or the command cannot
-    /// be admitted, executed, or decoded.
-    pub async fn exec_command<C>(&self, command: C) -> Result<C::Output, NodeError>
-    where
-        C: CommandHandler,
-    {
-        let Some(endpoint) = self.remote_endpoint()? else {
-            return myko_app::CommandClient::exec_command(&self.application, command)
-                .await
-                .map_err(NodeError::from);
-        };
-        myko_app::CommandClient::exec_command(&self.replicator.command_client(endpoint), command)
-            .await
-            .map_err(NodeError::from)
-    }
-
-    /// Opens one long-lived typed query in a concrete application scope.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no authenticated route exists or the query cannot
-    /// be built, established, authorized, or decoded.
-    pub async fn watch_query<Q>(
-        &self,
-        scope_id: ScopeId,
-        query: &Q,
-    ) -> Result<ApplicationReportSubscription<Q::Output>, NodeError>
-    where
-        Q: QueryHandler,
-    {
-        let Some(endpoint) = self.remote_endpoint()? else {
-            return self
-                .application
-                .watch_registered_query(self.source_node, scope_id, query)
-                .map(ApplicationReportSubscription::local)
-                .map_err(NodeError::from);
-        };
-        self.replicator
-            .application_client(endpoint)
-            .watch_query_reactive(self.source_node, scope_id, query)
-            .await
-            .map(ApplicationReportSubscription::remote)
-            .map_err(NodeError::from)
-    }
-
-    /// Opens one long-lived typed report on the selected source node.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no authenticated route exists or the report cannot
-    /// be built, established, authorized, or decoded.
-    pub async fn watch_report<R>(
-        &self,
-        report: &R,
-    ) -> Result<ApplicationReportSubscription<R::Output, R::Cursor>, NodeError>
-    where
-        R: ReportHandler,
-    {
-        let Some(endpoint) = self.remote_endpoint()? else {
-            return self
-                .application
-                .watch_report(report)
-                .map(ApplicationReportSubscription::local)
-                .map_err(NodeError::from);
-        };
-        self.replicator
-            .application_client(endpoint)
-            .watch_report_reactive(report)
-            .await
-            .map(ApplicationReportSubscription::remote)
-            .map_err(NodeError::from)
-    }
-
-    /// Opens one long-lived typed view on the selected source node.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if no authenticated route exists or the view cannot be
-    /// built, established, authorized, or decoded.
-    pub async fn watch_view<V>(
-        &self,
-        view: &V,
-    ) -> Result<ApplicationViewSubscription<V::Item, V::Cursor>, NodeError>
-    where
-        V: ViewHandler,
-    {
-        let Some(endpoint) = self.remote_endpoint()? else {
-            return self
-                .application
-                .watch_view(view)
-                .map(ApplicationViewSubscription::local)
-                .map_err(NodeError::from);
-        };
-        self.replicator
-            .application_client(endpoint)
-            .watch_view_reactive(view)
-            .await
-            .map(ApplicationViewSubscription::remote)
-            .map_err(NodeError::from)
-    }
-}
-
 struct FederationRuntimeParts {
     request_router: Arc<FederationRouter>,
     supervisor: Arc<PeerSupervisor>,
@@ -716,31 +707,9 @@ struct FederationRuntimeParts {
     discovery: DiscoveryViewState,
 }
 
-fn restore_legacy_peers(
-    data_dir: &Path,
-    node: &FederationNode,
-    application: &ApplicationNode,
-) -> Result<(), NodeError> {
-    let legacy_peers = load_peers(&data_dir.join(PEERS_FILE))?;
-    let existing_peers =
-        node.query_items_in(node.node_id(), &peer_scope(node.node_id()), GetPeers)?;
-    if !existing_peers.is_empty() {
-        return Ok(());
-    }
-    for peer in legacy_peers.values() {
-        let _restored = application.exec_command(RestorePeer {
-            endpoint: peer.endpoint.clone(),
-            source_node: peer.source_node,
-            replication_enabled: peer.replication_enabled,
-            replication_selection: peer.replication_selection.clone(),
-        })?;
-    }
-    Ok(())
-}
-
 fn ensure_discovery_settings(
     node: &FederationNode,
-    application: &ApplicationNode,
+    application: &ApplicationHost,
 ) -> Result<(), NodeError> {
     let discovery_id = discovery::DiscoverySettingsId::from(node.node_id().to_string());
     let settings = node.query_items_in(
@@ -748,7 +717,7 @@ fn ensure_discovery_settings(
         &peer_scope(node.node_id()),
         discovery::GetDiscoverySettingsById { id: discovery_id },
     )?;
-    if settings.is_none() {
+    if settings.is_empty() {
         let _configured = application.exec_command(ConfigureLanDiscovery {
             display_name: default_node_name(node.node_id()),
             enabled: true,
@@ -759,7 +728,7 @@ fn ensure_discovery_settings(
 
 fn ensure_advertised_services(
     node: &FederationNode,
-    application: &ApplicationNode,
+    application: &ApplicationHost,
     desired: Vec<ServiceId>,
 ) -> Result<(), NodeError> {
     let current = node.query_items_in(
@@ -782,19 +751,23 @@ fn ensure_advertised_services(
 }
 
 async fn initialize_federation_runtime(
-    data_dir: &Path,
     retry_interval: Duration,
     node: &FederationNode,
     journal: &Arc<RedbJournal>,
-    application: &ApplicationNode,
+    application: &ApplicationHost,
     replicator: &IrohReplicator,
 ) -> Result<FederationRuntimeParts, NodeError> {
-    restore_legacy_peers(data_dir, node, application)?;
+    tracing::debug!(node_id = %node.node_id(), "initializing federation runtime");
     ensure_discovery_settings(node, application)?;
 
     let (peer_snapshot, peer_watch) =
         node.watch_items_in(node.node_id(), peer_scope(node.node_id()), GetPeers)?;
     let configured = configured_peer_map(&peer_snapshot.value);
+    tracing::debug!(
+        node_id = %node.node_id(),
+        configured_peers = configured.len(),
+        "loaded durable peer configuration"
+    );
     if configured.contains_key(&replicator.address().id) {
         return Err(NodeError::Configuration(
             "peer configuration contains this node's own Iroh identity".to_owned(),
@@ -844,6 +817,8 @@ async fn initialize_federation_runtime(
             status: node_status.clone(),
         },
     );
+
+    tracing::debug!(node_id = %node.node_id(), "federation runtime initialized");
 
     Ok(FederationRuntimeParts {
         request_router,
@@ -935,7 +910,7 @@ impl Node {
         resolve_policy: F,
     ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
@@ -978,7 +953,7 @@ impl Node {
         resolve_policy: F,
     ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
@@ -1007,7 +982,7 @@ impl Node {
         resolve_policy: F,
     ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
@@ -1036,7 +1011,7 @@ impl Node {
         resolve_policy: F,
     ) -> Result<(Self, NodeStartupGuard), NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         let (node, startup) = Self::open_inner(
             data_dir.as_ref(),
@@ -1073,7 +1048,7 @@ impl Node {
         resolve_policy: F,
     ) -> Result<(Self, NodeStartupGuard), NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         let (node, startup) = Self::open_inner(
             data_dir.as_ref(),
@@ -1104,7 +1079,7 @@ impl Node {
         resolve_policy: F,
     ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
@@ -1136,7 +1111,7 @@ impl Node {
         resolve_policy: F,
     ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
@@ -1165,7 +1140,7 @@ impl Node {
         resolve_policy: F,
     ) -> Result<Self, NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
         Self::open_inner(
             data_dir.as_ref(),
@@ -1191,19 +1166,26 @@ impl Node {
         resolve_policy: F,
     ) -> Result<(Self, Option<NodeStartupGuard>), NodeError>
     where
-        F: FnOnce(&ApplicationNode) -> Result<Arc<dyn AccessPolicy>, NodeError>,
+        F: FnOnce(&ApplicationHost) -> Result<Arc<dyn AccessPolicy>, NodeError>,
     {
+        tracing::info!(
+            data_dir = %data_dir.display(),
+            bind_mode = ?bind_mode,
+            hold_startup,
+            "opening Myko node"
+        );
         fs::create_dir_all(data_dir)?;
         let secret = match identity {
             Some(identity) => identity,
             None => load_or_create_secret_key(data_dir.join(SECRET_FILE))?,
         };
         let (node, journal) = RedbJournal::open_node_with_journal(data_dir.join(JOURNAL_FILE))?;
+        tracing::debug!(node_id = %node.node_id(), "durable journal opened");
         let runtime_startup = node.hold_startup();
         let startup = hold_startup.then(|| node.hold_startup());
         let application = application
             .unwrap_or_default()
-            .with_framework_service::<FederationService>()?
+            .with_framework_service::<FederationService>()
             .with_framework_resource_capability::<IrohReplicator>(runtime_resource_capability(
                 IROH_REPLICATOR_CAPABILITY_ID,
                 "access the authenticated native peer transport",
@@ -1222,10 +1204,15 @@ impl Node {
             )?;
         let advertised_services = application
             .services()
-            .map(|service| ServiceId::new(service.service_id.as_str()))
+            .map(|service| ServiceId::new(service.as_str()))
             .collect::<Vec<_>>();
-        let application = ApplicationNode::attach(node.clone(), application)
-            .map_err(|error| NodeError::Configuration(error.to_string()))?;
+        let application =
+            ApplicationHost::new(node.clone(), application).map_err(NodeError::Configuration)?;
+        tracing::debug!(
+            node_id = %node.node_id(),
+            service_count = advertised_services.len(),
+            "application services attached"
+        );
         // No transport or command driver exists during this bounded bootstrap
         // window. Framework-owned node configuration is written through the
         // ordinary command journal before the externally supplied policy is
@@ -1252,6 +1239,11 @@ impl Node {
                 .await
             }
         }?;
+        tracing::debug!(
+            node_id = %node.node_id(),
+            endpoint_id = %replicator.address().id,
+            "native peer transport bound"
+        );
         node.set_command_access_policy(startup_policy.clone())?;
         let FederationRuntimeParts {
             request_router,
@@ -1261,7 +1253,6 @@ impl Node {
             node_status,
             discovery,
         } = initialize_federation_runtime(
-            data_dir,
             retry_interval,
             &node,
             &journal,
@@ -1287,6 +1278,12 @@ impl Node {
         )
         .map_err(NodeError::State)?;
         runtime_startup.ready();
+        tracing::info!(
+            node_id = %node.node_id(),
+            endpoint_id = %replicator.address().id,
+            externally_held = hold_startup,
+            "Myko node runtime is ready"
+        );
         Ok((
             Self {
                 data_dir: data_dir.to_path_buf(),
@@ -1317,23 +1314,112 @@ impl Node {
     /// Every durable node activates Myko's framework-owned federation service,
     /// even when no user application services were supplied.
     #[must_use]
-    pub const fn application(&self) -> &ApplicationNode {
+    pub const fn application(&self) -> &ApplicationHost {
         &self.application
     }
 
-    /// Returns the typed application surface for one local or paired source.
+    /// Returns the retained application client routed to one node identity.
     ///
-    /// The returned client resolves the current authenticated route for every
-    /// operation, so applications never cache endpoint descriptors or branch
-    /// on transport type.
-    #[must_use]
-    pub fn application_at(&self, source_node: NodeId) -> ApplicationClient {
-        ApplicationClient {
-            application: self.application.clone(),
-            replicator: self.replicator.clone(),
-            router: Arc::clone(&self.request_router),
-            source_node,
+    /// The local identity uses the in-process session boundary. Configured
+    /// peers use their identity-pinned Iroh endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is not this node or a configured peer.
+    pub fn application_client(&self, source_node: NodeId) -> Result<MykoClient, NodeError> {
+        self.application_client_routed(source_node, None)
+    }
+
+    /// Returns a retained application client with an explicit authority presentation.
+    ///
+    /// This is the in-process boundary for application-owned principals such
+    /// as a local human owner. The presentation's executor becomes the
+    /// authenticated embedded principal and must already match a remote Iroh
+    /// transport identity when routing to a peer.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is not this node or a configured peer.
+    pub fn application_client_with_authority(
+        &self,
+        source_node: NodeId,
+        authority: AuthorityPresentation,
+    ) -> Result<MykoClient, NodeError> {
+        self.application_client_routed(source_node, Some(authority))
+    }
+
+    fn application_client_routed(
+        &self,
+        source_node: NodeId,
+        authority: Option<AuthorityPresentation>,
+    ) -> Result<MykoClient, NodeError> {
+        if source_node == self.federation.node_id() {
+            return Ok(MykoClient::with_handler_connector(Arc::new(
+                EmbeddedHandlerConnector {
+                    sessions: self.sessions().clone(),
+                    local_node: source_node,
+                    destination: None,
+                    authority,
+                },
+            )));
         }
+        let peer = self
+            .request_router
+            .peer(source_node)
+            .map_err(NodeError::Route)?;
+        let connector = self.replicator.handler_connector(peer);
+        Ok(match authority {
+            Some(authority) => connector.with_authority(authority).client(),
+            None => connector.client(),
+        })
+    }
+
+    /// Returns a command client routed to one node identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is not this node or a configured peer.
+    pub fn command_client(&self, source_node: NodeId) -> Result<NodeCommandClient, NodeError> {
+        self.command_client_routed(source_node, None)
+    }
+
+    /// Returns a node-routed command client with an explicit authority presentation.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the target is not this node or a configured peer.
+    pub fn command_client_with_authority(
+        &self,
+        source_node: NodeId,
+        authority: AuthorityPresentation,
+    ) -> Result<NodeCommandClient, NodeError> {
+        self.command_client_routed(source_node, Some(authority))
+    }
+
+    fn command_client_routed(
+        &self,
+        source_node: NodeId,
+        authority: Option<AuthorityPresentation>,
+    ) -> Result<NodeCommandClient, NodeError> {
+        if source_node == self.federation.node_id() {
+            return Ok(NodeCommandClient {
+                transport: NodeCommandTransport::Embedded {
+                    client: self.application.clone(),
+                    authority,
+                },
+            });
+        }
+        let peer = self
+            .request_router
+            .peer(source_node)
+            .map_err(NodeError::Route)?;
+        let client = self.replicator.command_client(peer);
+        Ok(NodeCommandClient {
+            transport: NodeCommandTransport::Iroh(match authority {
+                Some(authority) => client.with_authority(authority),
+                None => client,
+            }),
+        })
     }
 
     /// Materializes a gap-free typed query into a first-class Hyphae cell.
@@ -1351,10 +1437,10 @@ impl Node {
         source_node: NodeId,
         scope_id: ScopeId,
         query: Q,
-    ) -> Result<ReactiveItemSubscription<Q::Output>, NodeError>
+    ) -> Result<ReactiveItemSubscription<ItemQueryResult<Q>>, NodeError>
     where
         Q: ItemQuery + Send + 'static,
-        Q::Output: hyphae::CellValue,
+        ItemQueryResult<Q>: hyphae::CellValue,
     {
         let (snapshot, mut watch) = self
             .federation
@@ -1402,7 +1488,7 @@ impl Node {
     /// same endpoint so applications never implement transport-specific
     /// routing or federation semantics.
     #[must_use]
-    pub const fn sessions(&self) -> &NodeSessionService {
+    pub const fn sessions(&self) -> &FederatedSession {
         self.replicator.sessions()
     }
 
@@ -1442,6 +1528,8 @@ impl Node {
     ///
     /// Returns an error if peer replication or the endpoint cannot shut down cleanly.
     pub async fn shutdown(mut self) -> Result<(), NodeError> {
+        let node_id = self.federation.node_id();
+        tracing::info!(%node_id, "shutting down Myko node");
         if let Some(discovery) = self.discovery.take() {
             discovery.shutdown().await.map_err(NodeError::State)?;
         }
@@ -1467,6 +1555,7 @@ impl Node {
             .map_err(NodeError::State)?;
         self.supervisor.shutdown_all().await?;
         self.replicator.shutdown().await?;
+        tracing::info!(%node_id, "Myko node stopped");
         Ok(())
     }
 }
@@ -1474,39 +1563,4 @@ impl Node {
 fn default_node_name(node_id: NodeId) -> String {
     let short_id = node_id.to_string().chars().take(8).collect::<String>();
     format!("myko-{short_id}")
-}
-
-fn load_peers(path: &Path) -> Result<BTreeMap<EndpointId, ConfiguredPeer>, NodeError> {
-    let encoded = match fs::read(path) {
-        Ok(encoded) => encoded,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(BTreeMap::new());
-        }
-        Err(error) => return Err(error.into()),
-    };
-    let header = serde_json::from_slice::<StoredConfigHeader>(&encoded)?;
-    let decoded_peers = match header.version {
-        CONFIG_VERSION | PREVIOUS_CONFIG_VERSION => {
-            serde_json::from_slice::<StoredPeerConfig>(&encoded)?.peers
-        }
-        LEGACY_CONFIG_VERSION => serde_json::from_slice::<LegacyStoredPeerConfig>(&encoded)?
-            .peers
-            .into_iter()
-            .map(ConfiguredPeer::unpinned)
-            .collect(),
-        version => {
-            return Err(NodeError::Configuration(format!(
-                "unsupported peer configuration version {version}"
-            )));
-        }
-    };
-    let mut peers = BTreeMap::new();
-    for peer in decoded_peers {
-        if peers.insert(peer.endpoint.id, peer).is_some() {
-            return Err(NodeError::Configuration(
-                "peer configuration contains a duplicate Iroh identity".to_owned(),
-            ));
-        }
-    }
-    Ok(peers)
 }

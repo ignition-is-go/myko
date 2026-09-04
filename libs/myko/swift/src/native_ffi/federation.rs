@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use myko_app::ApplicationNode;
+use myko::ApplicationHost;
 use myko_federation::{NodeId, SubscriptionLiveness};
 use myko_node::{
     ConfirmPairing, InitiateDiscoveredPairing, IssuePairingInvitation, NearbyNodesView,
@@ -33,7 +33,7 @@ impl MykoFederation {
         Arc::new(Self { application })
     }
 
-    fn active_application(&self) -> Result<ApplicationNode, MykoFederationError> {
+    fn active_application(&self) -> Result<ApplicationHost, MykoFederationError> {
         self.application.application()
     }
 }
@@ -66,11 +66,13 @@ impl MykoFederation {
     ) -> Result<Arc<MykoPairingReceiptsSubscription>, MykoFederationError> {
         let application = self.active_application()?;
         let subscription = application
-            .watch_view(&PairingReceiptsView)
+            .watch_view_live(&PairingReceiptsView {})
             .map_err(|error| transport_error(&error))?;
-        let live = subscription.live().clone();
         Ok(Arc::new(MykoPairingReceiptsSubscription {
-            subscription: crate::BlockingCollectionSubscription::new(subscription, &live),
+            subscription: crate::BlockingCollectionSubscription::new(
+                subscription.clone(),
+                &subscription,
+            ),
             local_endpoint_id: self.application.endpoint_id().to_string(),
         }))
     }
@@ -85,13 +87,15 @@ impl MykoFederation {
     ) -> Result<Arc<MykoPairedNodesSubscription>, MykoFederationError> {
         let application = self.active_application()?;
         let subscription = application
-            .watch_view(&PeersView {
+            .watch_view_live(&PeersView {
                 source_node: application.node_id(),
             })
             .map_err(|error| transport_error(&error))?;
-        let live = subscription.live().clone();
         Ok(Arc::new(MykoPairedNodesSubscription {
-            subscription: crate::BlockingCollectionSubscription::new(subscription, &live),
+            subscription: crate::BlockingCollectionSubscription::new(
+                subscription.clone(),
+                &subscription,
+            ),
         }))
     }
 
@@ -135,13 +139,17 @@ impl MykoFederation {
     pub fn subscribe_nearby_nodes(
         &self,
     ) -> Result<Arc<MykoNearbyNodesSubscription>, MykoFederationError> {
-        let subscription = self
-            .active_application()?
-            .watch_view(&NearbyNodesView)
+        let application = self.active_application()?;
+        let subscription = application
+            .watch_view_live(&NearbyNodesView {
+                source_node: application.node_id(),
+            })
             .map_err(|error| transport_error(&error))?;
-        let live = subscription.live().clone();
         Ok(Arc::new(MykoNearbyNodesSubscription {
-            subscription: crate::BlockingCollectionSubscription::new(subscription, &live),
+            subscription: crate::BlockingCollectionSubscription::new(
+                subscription.clone(),
+                &subscription,
+            ),
         }))
     }
 
@@ -166,14 +174,13 @@ impl MykoFederation {
             })
             .map_err(|error| pairing_error(&error))?;
         let subscription = application
-            .watch_report(&PairingInitiationReport {
+            .watch_report_live(&PairingInitiationReport {
                 source_node: application.node_id(),
                 initiation_id: initiation.id,
             })
             .map_err(|error| transport_error(&error))?;
-        let live = subscription.live().clone();
         Ok(Arc::new(MykoPairingInitiationSubscription {
-            subscription: BlockingSubscription::new(subscription, &live),
+            subscription: BlockingSubscription::new(subscription.clone(), &subscription),
         }))
     }
 
@@ -243,17 +250,16 @@ pub(super) fn parse_node_id(value: &str) -> Result<NodeId, MykoFederationError> 
 }
 
 fn wait_for_pairing_redemption(
-    application: &ApplicationNode,
+    application: &ApplicationHost,
     redemption_id: PairingRedemptionId,
 ) -> Result<myko_node::PairingReceipt, MykoFederationError> {
     let report = application
-        .watch_report(&PairingRedemptionReport {
+        .watch_report_live(&PairingRedemptionReport {
             source_node: application.node_id(),
             redemption_id,
         })
         .map_err(|error| pairing_error(&error))?;
-    let live = report.live().clone();
-    let subscription = BlockingSubscription::new(report, &live);
+    let subscription = BlockingSubscription::new(report.clone(), &report);
     let mut state = subscription.current();
     loop {
         if let SubscriptionLiveness::Invalid { reason } = state.liveness {

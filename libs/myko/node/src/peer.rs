@@ -1,23 +1,22 @@
 //! Framework-owned peer configuration, commands, and live projections.
 
+#![allow(clippy::expect_used)] // Infallible handler builders rely on validated host wiring.
+
 use std::{collections::BTreeSet, sync::Arc};
 
-use myko_app::capability::{
-    CollectionBuilding as _, CommandQuerying as _, EventPublishing as _, NodeScoped as _,
-    Querying as _,
-};
-use myko_app::{
-    AppError, CommandContext, CommandError, CommandHandler, QueryHandler, ReportContext,
-    ReportHandler, ViewContext, ViewHandler, myko_query, myko_report, myko_view,
+use hyphae::{Definite, MapExt as _, Materialize};
+use myko::{
+    CommandContext, CommandError, CommandHandler, myko_query, myko_report, myko_view,
+    query::{QueryBuildArgs, QueryHandler},
+    report::{ReportContext, ReportHandler},
+    view::{ViewBuildArgs, ViewHandler},
 };
 use myko_federation::{
-    AccessOperation, FederationPermission, ItemProjection, ItemQuery, LiveCollection,
-    LiveSubscription, LogPosition, NodeId, ReplicationSelection, ResourceClaim, ResourceClaimKind,
-    ScopeId, ScopeSelection, ServiceId,
+    AccessOperation, FederationPermission, NodeId, ReplicationSelection, ResourceClaim,
+    ResourceClaimKind, ScopeId, ScopeSelection, ServiceId,
 };
 use myko_iroh::{EndpointAddr, EndpointId, NativeNodeDescriptor, NativePeerReference};
-use myko_items::{MykoItem, MykoService};
-use myko_items::{myko_command, myko_item, myko_service};
+use myko_items::{MykoItem, MykoService, myko_command, myko_item, myko_service};
 
 use crate::{DiscoverySettings, PairingInitiation, PairingRedemption, PendingPairingReceipt};
 
@@ -36,6 +35,7 @@ pub struct FederationService;
 /// Durable marker anchoring one node's local peer-configuration scope.
 #[myko_item(service = FederationService, scope_root)]
 pub struct PeerRoster {}
+myko::register_federated_item!(PeerRoster);
 
 /// One desired, node-local native peer relationship.
 ///
@@ -46,30 +46,31 @@ pub struct PeerRoster {}
 pub struct Peer {
     pub endpoint: EndpointAddr,
     pub source_node: Option<NodeId>,
-    #[serde(alias = "following")]
     pub replication_enabled: bool,
     #[serde(default)]
     pub replication_selection: ReplicationSelection,
 }
+myko::register_federated_item!(Peer);
 
 impl Eq for Peer {}
 
 /// One typed application service executable by an authoritative Myko node.
 ///
 /// Nodes publish this framework-owned catalog from their composed
-/// [`myko_app::MykoApplication`]. Followers therefore learn routing
+/// [`myko::MykoApplication`]. Followers therefore learn routing
 /// capabilities through the same durable, reactive federation log as every
 /// other Myko item.
 #[myko_item(service = FederationService, scoped_by = PeerRoster)]
 pub struct AdvertisedService {
     pub service_id: myko_federation::ServiceId,
 }
+myko::register_federated_item!(AdvertisedService);
 
 impl AdvertisedService {
     /// Returns whether this row advertises the given typed service.
     #[must_use]
     pub fn is<S: MykoService>(&self) -> bool {
-        self.service_id.as_str() == S::SERVICE_ID.as_str()
+        self.service_id == S::SERVICE_ID
     }
 }
 
@@ -104,15 +105,6 @@ pub struct SetPeerReplicationSelection {
 #[myko_command(item = Peer)]
 pub struct RemovePeer {
     pub peer_id: PeerId,
-}
-
-#[myko_command(Peer, item = Peer)]
-pub struct RestorePeer {
-    pub endpoint: EndpointAddr,
-    pub source_node: Option<NodeId>,
-    pub replication_enabled: bool,
-    #[serde(default)]
-    pub replication_selection: ReplicationSelection,
 }
 
 /// Reconciles the typed services executable by this node.
@@ -162,10 +154,7 @@ impl CommandHandler for AddPeer {
         peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
-    fn execute(
-        self,
-        context: CommandContext<FederationService, PeerRoster>,
-    ) -> Result<Peer, CommandError> {
+    fn execute(self, context: CommandContext) -> Result<Peer, CommandError> {
         let peer = peer_from_reference(
             self.reference,
             true,
@@ -187,13 +176,15 @@ impl CommandHandler for RememberPeer {
         peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
-    fn execute(
-        self,
-        context: CommandContext<FederationService, PeerRoster>,
-    ) -> Result<Peer, CommandError> {
+    fn execute(self, context: CommandContext) -> Result<Peer, CommandError> {
         self.descriptor.validate().map_err(CommandError::reject)?;
         let id = peer_id(self.descriptor.endpoint.id);
-        let existing = context.exec_query(GetPeerById { id: id.clone() })?;
+        let existing = context
+            .exec_item_query(GetPeersByIds {
+                ids: vec![id.clone()],
+            })?
+            .into_iter()
+            .next();
         let peer = Peer {
             id,
             peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
@@ -221,13 +212,13 @@ impl CommandHandler for SetPeerReplication {
         peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
-    fn execute(
-        self,
-        context: CommandContext<FederationService, PeerRoster>,
-    ) -> Result<Peer, CommandError> {
-        let Some(mut peer) = context.exec_query(GetPeerById {
-            id: self.peer_id.clone(),
-        })?
+    fn execute(self, context: CommandContext) -> Result<Peer, CommandError> {
+        let Some(mut peer) = context
+            .exec_item_query(GetPeersByIds {
+                ids: vec![self.peer_id.clone()],
+            })?
+            .into_iter()
+            .next()
         else {
             return Err(CommandError::reject("peer is not remembered"));
         };
@@ -246,13 +237,13 @@ impl CommandHandler for SetPeerReplicationSelection {
         peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
-    fn execute(
-        self,
-        context: CommandContext<FederationService, PeerRoster>,
-    ) -> Result<Peer, CommandError> {
-        let Some(mut peer) = context.exec_query(GetPeerById {
-            id: self.peer_id.clone(),
-        })?
+    fn execute(self, context: CommandContext) -> Result<Peer, CommandError> {
+        let Some(mut peer) = context
+            .exec_item_query(GetPeersByIds {
+                ids: vec![self.peer_id.clone()],
+            })?
+            .into_iter()
+            .next()
         else {
             return Err(CommandError::reject("peer is not remembered"));
         };
@@ -271,38 +262,8 @@ impl CommandHandler for RemovePeer {
         peer_roster_claims(node_id, Peer::ITEM_TYPE)
     }
 
-    fn execute(
-        self,
-        context: CommandContext<FederationService, PeerRoster>,
-    ) -> Result<(), CommandError> {
+    fn execute(self, context: CommandContext) -> Result<(), CommandError> {
         context.emit_delete::<Peer>(&self.peer_id)
-    }
-}
-
-impl CommandHandler for RestorePeer {
-    fn scope(&self, node_id: NodeId) -> PeerRosterId {
-        PeerRosterId::from(node_id.to_string())
-    }
-
-    fn authority_claims(&self, node_id: NodeId) -> Vec<ResourceClaim> {
-        peer_roster_claims(node_id, Peer::ITEM_TYPE)
-    }
-
-    fn execute(
-        self,
-        context: CommandContext<FederationService, PeerRoster>,
-    ) -> Result<Peer, CommandError> {
-        let peer = Peer {
-            id: peer_id(self.endpoint.id),
-            peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
-            endpoint: self.endpoint,
-            source_node: self.source_node,
-            replication_enabled: self.replication_enabled,
-            replication_selection: self.replication_selection,
-        };
-        reject_self_history(&context, &peer)?;
-        emit_peer(&context, &peer)?;
-        Ok(peer)
     }
 }
 
@@ -315,10 +276,7 @@ impl CommandHandler for AdvertiseServices {
         peer_roster_claims(node_id, AdvertisedService::ITEM_TYPE)
     }
 
-    fn execute(
-        self,
-        context: CommandContext<FederationService, PeerRoster>,
-    ) -> Result<Vec<AdvertisedService>, CommandError> {
+    fn execute(self, context: CommandContext) -> Result<Vec<AdvertisedService>, CommandError> {
         let mut services = self
             .services
             .into_iter()
@@ -329,7 +287,7 @@ impl CommandHandler for AdvertiseServices {
                 "an advertised Myko service ID cannot be empty",
             ));
         }
-        let existing = context.exec_query(GetAdvertisedServices)?;
+        let existing = context.exec_item_query(GetAdvertisedServices)?;
         for service in existing {
             if !services.contains(service.service_id.as_str()) {
                 context.emit_delete::<AdvertisedService>(&service.id)?;
@@ -354,10 +312,7 @@ impl CommandHandler for AdvertiseServices {
     }
 }
 
-fn reject_self_history(
-    context: &CommandContext<FederationService, PeerRoster>,
-    peer: &Peer,
-) -> Result<(), CommandError> {
+fn reject_self_history(context: &CommandContext, peer: &Peer) -> Result<(), CommandError> {
     if peer.source_node == Some(context.node_id()) {
         return Err(CommandError::reject(
             "a node cannot configure its own Myko history as a peer",
@@ -366,10 +321,7 @@ fn reject_self_history(
     Ok(())
 }
 
-fn emit_peer(
-    context: &CommandContext<FederationService, PeerRoster>,
-    peer: &Peer,
-) -> Result<(), CommandError> {
+fn emit_peer(context: &CommandContext, peer: &Peer) -> Result<(), CommandError> {
     context.emit_set(&PeerRoster {
         id: PeerRosterId::from(context.node_id().to_string()),
     })?;
@@ -381,13 +333,10 @@ fn peer_from_reference(
     replication_enabled: bool,
     peer_roster_id: PeerRosterId,
 ) -> Result<Peer, String> {
-    let (endpoint, source_node) = match reference {
-        NativePeerReference::Descriptor(descriptor) => {
-            descriptor.validate()?;
-            (descriptor.endpoint, Some(descriptor.node_id))
-        }
-        NativePeerReference::LegacyEndpoint(endpoint) => (endpoint, None),
-    };
+    let descriptor = reference.into_descriptor();
+    descriptor.validate()?;
+    let endpoint = descriptor.endpoint;
+    let source_node = Some(descriptor.node_id);
     Ok(Peer {
         id: peer_id(endpoint.id),
         peer_roster_id,
@@ -399,40 +348,36 @@ fn peer_from_reference(
 }
 
 /// Returns every configured peer in stable endpoint-identity order.
-#[myko_query(Peer)]
+#[myko_query(Peer, item = Peer)]
 #[derive(Copy, PartialEq, Eq)]
 pub struct GetPeers;
 
-impl ItemQuery for GetPeers {
-    type Item = Peer;
-    type Output = Vec<Peer>;
-
-    fn execute(self, projection: &ItemProjection<Peer>) -> Self::Output {
-        let mut peers = projection.values().cloned().collect::<Vec<_>>();
-        peers.sort_by(|left, right| left.id.cmp(&right.id));
-        peers
+impl QueryHandler for GetPeers {
+    fn build_view(
+        ctx: QueryBuildArgs<Self>,
+    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn myko::item::AnyItem>>> {
+        Some(
+            ctx.federated_items::<Peer>()
+                .expect("validated peer federation source"),
+        )
     }
 }
 
-impl QueryHandler for GetPeers {}
-
 /// Returns every typed service advertised by one node in stable ID order.
-#[myko_query(AdvertisedService)]
+#[myko_query(AdvertisedService, item = AdvertisedService)]
 #[derive(Copy, PartialEq, Eq)]
 pub struct GetAdvertisedServices;
 
-impl ItemQuery for GetAdvertisedServices {
-    type Item = AdvertisedService;
-    type Output = Vec<AdvertisedService>;
-
-    fn execute(self, projection: &ItemProjection<AdvertisedService>) -> Self::Output {
-        let mut services = projection.values().cloned().collect::<Vec<_>>();
-        services.sort_by(|left, right| left.service_id.as_str().cmp(right.service_id.as_str()));
-        services
+impl QueryHandler for GetAdvertisedServices {
+    fn build_view(
+        ctx: QueryBuildArgs<Self>,
+    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn myko::item::AnyItem>>> {
+        Some(
+            ctx.federated_items::<AdvertisedService>()
+                .expect("validated advertised-service federation source"),
+        )
     }
 }
-
-impl QueryHandler for GetAdvertisedServices {}
 
 /// Reactive configured-peer roster for one authoritative node.
 #[myko_view(Peer, item = Peer)]
@@ -442,22 +387,22 @@ pub struct PeersView {
 }
 
 impl ViewHandler for PeersView {
-    type Item = Peer;
-    type Cursor = LogPosition;
+    fn source_node(&self, _local_node: NodeId) -> Option<NodeId> {
+        Some(self.source_node)
+    }
 
-    fn access_scope(&self) -> Option<ScopeId> {
+    fn scope_id(&self, _local_node: NodeId) -> Option<ScopeId> {
         Some(peer_scope(self.source_node))
     }
 
-    fn item_key(item: &Self::Item) -> Arc<str> {
-        Arc::from(item.id.to_string())
-    }
-
-    fn build(&self, context: &ViewContext) -> Result<LiveCollection<Self::Item>, AppError> {
-        let live = context
-            .query(self.source_node, peer_scope(self.source_node), GetPeers)?
-            .map_value(Clone::clone);
-        context.collection_from_subscription(&live, Self::item_key)
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+        myko::item::typed_map_arc_from_any_item::<Peer>(
+            ctx.federated_items::<Peer>()
+                .expect("validated peer federation source"),
+            "PeersView",
+        )
     }
 }
 
@@ -469,26 +414,22 @@ pub struct AdvertisedServicesView {
 }
 
 impl ViewHandler for AdvertisedServicesView {
-    type Item = AdvertisedService;
-    type Cursor = LogPosition;
+    fn source_node(&self, _local_node: NodeId) -> Option<NodeId> {
+        Some(self.source_node)
+    }
 
-    fn access_scope(&self) -> Option<ScopeId> {
+    fn scope_id(&self, _local_node: NodeId) -> Option<ScopeId> {
         Some(peer_scope(self.source_node))
     }
 
-    fn item_key(item: &Self::Item) -> Arc<str> {
-        Arc::from(item.service_id.as_str())
-    }
-
-    fn build(&self, context: &ViewContext) -> Result<LiveCollection<Self::Item>, AppError> {
-        let live = context
-            .query(
-                self.source_node,
-                peer_scope(self.source_node),
-                GetAdvertisedServices,
-            )?
-            .map_value(Clone::clone);
-        context.collection_from_subscription(&live, Self::item_key)
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+        myko::item::typed_map_arc_from_any_item::<AdvertisedService>(
+            ctx.federated_items::<AdvertisedService>()
+                .expect("validated advertised-service federation source"),
+            "AdvertisedServicesView",
+        )
     }
 }
 
@@ -502,17 +443,32 @@ pub struct PeerReport {
 
 impl ReportHandler for PeerReport {
     type Output = Option<Peer>;
-    type Cursor = LogPosition;
 
-    fn access_scope(&self) -> Option<ScopeId> {
+    fn source_node(&self, _local_node: NodeId) -> Option<NodeId> {
+        Some(self.source_node)
+    }
+
+    fn scope_id(&self, _local_node: NodeId) -> Option<ScopeId> {
         Some(peer_scope(self.source_node))
     }
 
-    fn build(&self, context: &ReportContext) -> Result<LiveSubscription<Self::Output>, AppError> {
+    fn compute(&self, context: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
         let peer_id = self.peer_id.clone();
-        Ok(context
-            .query(self.source_node, peer_scope(self.source_node), GetPeers)?
-            .map_value(move |peers| peers.iter().find(|peer| peer.id == peer_id).cloned()))
+        myko::item::typed_map_arc_from_any_item::<Peer>(
+            context
+                .federated_items::<Peer>()
+                .expect("validated peer federation source"),
+            "PeerReport",
+        )
+        .entries()
+        .map(move |peers| {
+            Arc::new(
+                peers
+                    .iter()
+                    .find(|(_, peer)| peer.id == peer_id)
+                    .map(|(_, peer)| peer.as_ref().clone()),
+            )
+        })
     }
 }
 
@@ -538,25 +494,31 @@ impl ServiceCapabilityReport {
 
 impl ReportHandler for ServiceCapabilityReport {
     type Output = bool;
-    type Cursor = LogPosition;
 
-    fn access_scope(&self) -> Option<ScopeId> {
+    fn source_node(&self, _local_node: NodeId) -> Option<NodeId> {
+        Some(self.source_node)
+    }
+
+    fn scope_id(&self, _local_node: NodeId) -> Option<ScopeId> {
         Some(peer_scope(self.source_node))
     }
 
-    fn build(&self, context: &ReportContext) -> Result<LiveSubscription<Self::Output>, AppError> {
+    fn compute(&self, context: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
         let service_id = self.service_id.clone();
-        Ok(context
-            .query(
-                self.source_node,
-                peer_scope(self.source_node),
-                GetAdvertisedServices,
-            )?
-            .map_value(move |services| {
+        myko::item::typed_map_arc_from_any_item::<AdvertisedService>(
+            context
+                .federated_items::<AdvertisedService>()
+                .expect("validated advertised-service federation source"),
+            "ServiceCapabilityReport",
+        )
+        .entries()
+        .map(move |services| {
+            Arc::new(
                 services
                     .iter()
-                    .any(|service| service.service_id == service_id)
-            }))
+                    .any(|(_, service)| service.service_id == service_id),
+            )
+        })
     }
 }
 
