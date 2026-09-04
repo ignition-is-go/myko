@@ -82,7 +82,7 @@ const STATE_STEPS: &[FlowStep] = &[
     FlowStep {
         number: "04",
         title: "Compose dependencies",
-        owner: "myko-app + Hyphae",
+        owner: "myko + Hyphae",
         detail: "Registered queries feed application reports and views through a retained reactive graph.",
     },
     FlowStep {
@@ -220,17 +220,17 @@ const COMPOSE_EXAMPLE: BuildExample = BuildExample {
     title: "Activate services once",
     detail: "Forrest explicitly activates its service catalog, then attaches that immutable application declaration to whichever Myko node substrate it opens.",
     source: "forrest-node/src/application.rs",
-    code: r"pub fn myko_application() -> Result<MykoApplication, AppError> {
-    let builder = MykoApplication::builder()
-        .service::<HostingService>()?
-        .service::<AgentService>()?
-        .service::<MessagingService>()?
-        .service::<AccessService>()?;
-    Ok(builder.build())
+    code: r"pub fn myko_application() -> MykoApplication {
+    MykoApplication::builder()
+        .service::<HostingService>()
+        .service::<AgentService>()
+        .service::<MessagingService>()
+        .service::<AccessService>()
+        .build()
 }
 
-pub fn application_node(node: Node) -> Result<ApplicationNode, AppError> {
-    Ok(ApplicationNode::new(node, myko_application()?))
+pub fn application_host(node: Node) -> Result<ApplicationHost, String> {
+    ApplicationHost::new(node, myko_application())
 }",
 };
 
@@ -256,16 +256,10 @@ const CRATES: &[CrateInfo] = &[
         path: "libs/myko/items-macros",
     },
     CrateInfo {
-        name: "myko-app",
+        name: "myko",
         layer: "application",
         summary: "Service catalog, bounded handlers, resources, reactive queries, reports, and views.",
-        path: "libs/myko/app",
-    },
-    CrateInfo {
-        name: "myko-app-macros",
-        layer: "application",
-        summary: "Scoped handler registration generated beside the application contracts that own it.",
-        path: "libs/myko/app-macros",
+        path: "libs/myko/core",
     },
     CrateInfo {
         name: "myko-federation",
@@ -320,12 +314,6 @@ const CRATES: &[CrateInfo] = &[
         layer: "UI lifecycle",
         summary: "Retains reactive cells and coalesces redraw wakeups without becoming a widget library.",
         path: "libs/myko/ratatui",
-    },
-    CrateInfo {
-        name: "myko-websocket-gateway",
-        layer: "optional edge",
-        summary: "Compatibility gateway for short-lived browser and WebSocket clients.",
-        path: "libs/myko/websocket-gateway",
     },
 ];
 
@@ -612,7 +600,7 @@ fn App() -> impl IntoView {
                             <div class="layer-row layer-runtime">
                                 <span class="layer-no">"L1"</span>
                                 <div><b>"Application runtime"</b><small>"catalog · handlers · resources · Hyphae graph"</small></div>
-                                <code>"myko-app"</code>
+                                <code>"myko"</code>
                             </div>
                             <div class="layer-row layer-core">
                                 <span class="layer-no">"L2"</span>
@@ -856,7 +844,7 @@ fn App() -> impl IntoView {
                                 <em>"authoritative"</em>
                             </div>
                             <div class="mesh-node-body">
-                                <span>"ApplicationNode"</span>
+                                <span>"ApplicationHost"</span>
                                 <span>"Redb journal"</span>
                                 <span>"Iroh endpoint"</span>
                             </div>

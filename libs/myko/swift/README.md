@@ -26,7 +26,7 @@ identity restoration, active-node locking, or foreground lifecycle mechanics.
 With `native-ffi`, `EmbeddedApplicationHost` also implements the framework's
 application and authority access adapters for any active runtime that exposes
 those two typed contexts. Application bridges no longer need an orphan-rule
-wrapper that forwards `ApplicationNode`, endpoint identity, and authority
+wrapper that forwards `ApplicationHost`, endpoint identity, and authority
 access back into Myko.
 
 The `native-ffi` feature adds Myko's generated Swift federation component.

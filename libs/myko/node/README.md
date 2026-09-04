@@ -67,6 +67,6 @@ startup window while rebuilding durable authority. Filesystem roots, model
 providers, and other application secrets do not belong in this runtime or its
 framework peer items.
 
-WebSocket is not part of this composition. A node may independently wrap the
-same Myko node in `myko-websocket-gateway` when it needs a short-lived edge
-client interface.
+WebSocket is not part of this composition. An application can expose the same
+state through retained `myko-server` when it needs a short-lived edge client;
+older wire formats are not preserved.

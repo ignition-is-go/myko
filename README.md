@@ -38,23 +38,22 @@ The v7 boundary is deliberately not a socket protocol:
   durably commit or reject work;
 - current-state queries and follows infer service from the item schema;
 - Redb and Iroh are replaceable framework adapters;
-- WebSocket is an opt-in compatibility edge for short-lived clients, not a
+- WebSocket is an opt-in transport edge for short-lived clients, not a
   dependency of nodes, persistence, commands, federation, or native clients.
 
 ## V7 crates
 
 | Crate | Responsibility |
 | --- | --- |
+| `myko` | retained application handlers, clients, sessions, reactive stores, and durable federation host |
 | `myko-items-macros` | `#[myko_service]`, `#[myko_item]`, and `#[myko_command]` generation |
 | `myko-items` | typed item, mutation, projection, and query contracts |
-| `myko-app` | registered reactive query, report, and view handlers over Hyphae |
 | `myko-federation` | transport-neutral nodes, commands, history, scopes, and Hyphae subscription lifecycle |
 | `myko-redb` | durable immutable journal and replication checkpoints |
 | `myko-iroh` | authenticated native replication, control, and typed streams |
 | `myko-local` | owner-local Unix peer transport for typed state and command follows |
 | `myko-node` | restartable Redb + Iroh node composition and peer supervision |
 | `myko-ratatui` | non-visual Hyphae lifecycle and coalesced redraw helpers |
-| `myko-websocket-gateway` | optional short-lived edge adapter |
 
 ## Declaring application state
 
@@ -124,7 +123,7 @@ to render a screen. Embedded Redb nodes and authenticated Iroh peers can
 materialize typed snapshot-then-live queries as one coherent Hyphae cell
 containing the value, source cursor, and liveness state. `myko-local` carries
 the same typed snapshot/follow contract over a protected Unix socket without
-making the local app an Iroh endpoint. `myko-app` registers application-owned
+making the local app an Iroh endpoint. `myko` registers application-owned
 query, report, and view handlers, retains their long-lived dependency drivers,
 and erases them only at a transport boundary. Handler subscriptions may use a
 single log cursor or an application-defined composite frontier. Transport-backed
@@ -135,15 +134,9 @@ subscriptions and emits bounded, coalesced redraw wakeups; it does not provide
 widgets or copy Myko data into a second UI store. Replicas use the separate
 durable history follower.
 
-The optional edge is explicit:
-
-```bash
-cargo test -p myko-websocket-gateway
-```
-
 Starting or linking a durable/native node does not bind a WebSocket listener.
-An application may supervise `myko-websocket-gateway` over the same node when a
-browser or other short-lived compatibility client needs one.
+The retained `myko-server` crate owns the WebSocket transport when an
+application needs one; old wire compatibility is not a supported contract.
 
 The retained v6 Postgres server bounds startup catch-up with
 `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` (300 seconds by default; `0` disables the
@@ -155,19 +148,17 @@ The default commands exercise the v7 native foundation:
 
 ```bash
 cargo check
-cargo test
-cargo clippy --all-targets --all-features -- -D warnings
-cargo fmt --all -- --check
+cargo flux run test
+cargo flux run lint
 ```
 
-To include every retained legacy v6 workspace member, use `--workspace`
-explicitly. To exercise the complete v7 adapter matrix, name the packages:
+To include every workspace member, use `--workspace` explicitly. To exercise
+the durable adapter matrix directly, name the packages:
 
 ```bash
 cargo test \
-  -p myko-items-macros -p myko-items -p myko-app -p myko-federation \
+  -p myko -p myko-items-macros -p myko-items -p myko-federation \
   -p myko-redb -p myko-iroh -p myko-local -p myko-node -p myko-ratatui \
-  -p myko-websocket-gateway \
   --all-features
 ```
 
