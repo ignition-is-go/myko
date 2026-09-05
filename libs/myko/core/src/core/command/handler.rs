@@ -205,6 +205,23 @@ impl CommandContext {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
+    /// Return the transport-authenticated final executor for this durable command.
+    ///
+    /// # Panics
+    ///
+    /// Panics if called from a legacy store-backed command context.
+    #[allow(clippy::expect_used)]
+    pub fn authority_executor(&self) -> &myko_federation::Principal {
+        &self
+            .federation()
+            .expect("durable command context")
+            .request()
+            .authority
+            .executor
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
     /// Read the authoritative durable scope topology.
     ///
     /// # Errors
