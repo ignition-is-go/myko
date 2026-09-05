@@ -10,8 +10,9 @@ use myko::{CommandContext, CommandError, CommandHandler, view::ViewHandler};
 use myko_federation::{
     AccessAttempt, AccessOperation, AllowAllAccessPolicy, ApprovalId, AuthorityPresentation,
     AuthorityRealmId, AuthorizationBinding, AuthorizationDecision, BatchId, ChangeBatch,
-    CommandRequest, DelegationId, ObligationId, Principal, PrincipalId, PrincipalKind,
-    ProvenanceOperation, ResourceClaim, ResourceClaimKind, ServiceId, SubscriptionLiveness,
+    CommandRequest, DelegationId, LiveCollectionHandle as _, ObligationId, Principal, PrincipalId,
+    PrincipalKind, ProvenanceOperation, ResourceClaim, ResourceClaimKind, ServiceId,
+    SubscriptionLiveness,
 };
 use myko_items::{ItemMutation, myko_command, myko_service};
 
@@ -454,6 +455,20 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
         view.current().value.as_deref(),
         Some(std::slice::from_ref(&first))
     );
+    let reactive_view = client
+        .follow_view_reactive(&AllLocalRecordsView {})
+        .await
+        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    let (reactive_updates_tx, reactive_updates_rx) = flume::bounded(16);
+    let _reactive_guard = reactive_view
+        .live_collection()
+        .state()
+        .subscribe(move |signal| {
+            if let Signal::Value(state) = signal {
+                let _ignored = reactive_updates_tx.send(state.clone());
+            }
+        });
+    let _initial_reactive_notification = reactive_updates_rx.try_recv();
     let submitted = local
         .command_client()
         .submit_typed_command(SetLocalRecord {
@@ -469,6 +484,24 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
     assert_eq!(first_probe.accepted(), 1);
 
     server.shutdown().await?;
+    let reactive_resync = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let update = reactive_updates_rx.recv_async().await.map_err(|error| {
+                LocalPeerError::Protocol(format!("reactive view observation ended: {error}"))
+            })?;
+            if matches!(
+                update.liveness,
+                SubscriptionLiveness::Resynchronizing { .. }
+            ) {
+                return Ok::<_, LocalPeerError>(update);
+            }
+        }
+    })
+    .await
+    .map_err(|_| {
+        LocalPeerError::Protocol("reactive view did not expose the disconnected state".to_owned())
+    })??;
+    assert!(reactive_resync.through.is_none());
     let admission = node.claim(command_id)?;
     node.commit(
         command_id,
@@ -492,6 +525,21 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
         second_probe.clone(),
     )
     .await?;
+
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let update = reactive_updates_rx.recv_async().await.map_err(|error| {
+                LocalPeerError::Protocol(format!("reactive view observation ended: {error}"))
+            })?;
+            if update.liveness == SubscriptionLiveness::Current {
+                return Ok::<_, LocalPeerError>(());
+            }
+        }
+    })
+    .await
+    .map_err(|_| {
+        LocalPeerError::Protocol("reactive view did not recover after reconnect".to_owned())
+    })??;
 
     let query_resync = query
         .recv()

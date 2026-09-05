@@ -436,6 +436,19 @@ where
     let task = tokio::spawn(async move {
         loop {
             match subscription.recv().await {
+                Ok(_)
+                    if let SubscriptionLiveness::Resynchronizing { reason } =
+                        &subscription.current.liveness =>
+                {
+                    task_writer.resynchronizing(reason.clone());
+                }
+                Ok(_)
+                    if let SubscriptionLiveness::Invalid { reason } =
+                        &subscription.current.liveness =>
+                {
+                    task_writer.invalidate(reason.clone());
+                    return;
+                }
                 Ok(_) => match keyed_rows(&subscription) {
                     Ok(rows) => {
                         if let Err(error) =
