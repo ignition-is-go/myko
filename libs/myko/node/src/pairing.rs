@@ -166,6 +166,13 @@ impl CommandHandler for InitiateDiscoveredPairing {
         PeerRosterId::from(node_id.to_string())
     }
 
+    fn required_capabilities(&self) -> Vec<myko_federation::CapabilityId> {
+        vec![
+            crate::discovery_capability_id(),
+            iroh_replicator_capability_id(),
+        ]
+    }
+
     fn execute(self, context: CommandContext) -> Result<Self::Result, CommandError> {
         let peer = context
             .resource::<DiscoveryViewState>()
@@ -977,5 +984,63 @@ mod tests {
 
         retain_observed_unsettled(&mut active, [(&id, true)].into_iter());
         assert!(active.is_empty());
+    }
+
+    #[test]
+    fn discovered_pairing_declares_discovery_runtime_access() {
+        let command = InitiateDiscoveredPairing {
+            peer_node_id: NodeId::new(),
+            ttl_seconds: 600,
+        };
+        assert_eq!(
+            command.required_capabilities(),
+            vec![
+                crate::discovery_capability_id(),
+                iroh_replicator_capability_id()
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn discovered_pairing_passes_outer_capability_preflight() -> Result<(), String> {
+        let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+        let node = crate::Node::open_loopback_with_policy(
+            directory.path(),
+            Duration::from_millis(20),
+            |_| Ok(Arc::new(myko_federation::AllowAllAccessPolicy)),
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+        let peer = NativeNodeDescriptor::new(
+            NodeId::new(),
+            myko_iroh::EndpointAddr::new(myko_iroh::SecretKey::generate().public()),
+        );
+        node.application()
+            .resources()
+            .get::<DiscoveryViewState>()
+            .map_err(|error| error.to_string())?
+            .publish(vec![myko_discovery::DiscoveredNode {
+                descriptor: peer.clone(),
+                display_name: "capability-test-peer".to_owned(),
+                kind: myko_discovery::ParticipantKind::FullNode,
+                capabilities: myko_discovery::ParticipantCapabilities::full_node(),
+                reachable: true,
+                last_error: None,
+            }]);
+        let result = myko_federation::CommandWatchingClient::exec_typed_command(
+            node.application(),
+            InitiateDiscoveredPairing {
+                peer_node_id: peer.node_id,
+                ttl_seconds: 60,
+            },
+        )
+        .await
+        .map_err(|error| error.to_string());
+        node.shutdown().await.map_err(|error| error.to_string())?;
+        let initiation = result?;
+        if initiation.peer != peer {
+            return Err("discovered pairing resolved the wrong peer".to_owned());
+        }
+        Ok(())
     }
 }
