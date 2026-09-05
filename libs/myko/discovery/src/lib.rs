@@ -85,6 +85,8 @@ impl ParticipantCapabilities {
 pub struct DiscoveredNode {
     pub descriptor: NativeNodeDescriptor,
     pub display_name: String,
+    #[serde(default)]
+    pub hostname: String,
     pub kind: ParticipantKind,
     pub capabilities: ParticipantCapabilities,
     pub reachable: bool,
@@ -110,6 +112,8 @@ impl DiscoveredNode {
 pub struct LanAdvertisement {
     pub descriptor: NativeNodeDescriptor,
     pub display_name: String,
+    #[serde(default)]
+    pub hostname: String,
     pub kind: ParticipantKind,
     pub capabilities: ParticipantCapabilities,
 }
@@ -121,6 +125,7 @@ impl LanAdvertisement {
         Self {
             descriptor,
             display_name: display_name.into(),
+            hostname: machine_hostname(),
             kind: ParticipantKind::FullNode,
             capabilities: ParticipantCapabilities::full_node(),
         }
@@ -130,12 +135,22 @@ impl LanAdvertisement {
         DiscoveredNode {
             descriptor: self.descriptor.clone(),
             display_name: self.display_name.clone(),
+            hostname: self.hostname.clone(),
             kind: self.kind,
             capabilities: self.capabilities.clone(),
             reachable: true,
             last_error: None,
         }
     }
+}
+
+/// Returns the operating system's hostname, independent of shell environment variables.
+#[must_use]
+pub fn machine_hostname() -> String {
+    gethostname::gethostname()
+        .to_string_lossy()
+        .trim()
+        .to_owned()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +305,20 @@ fn publish_roster(roster: &Mutex<LanRoster>, updates: &watch::Sender<Vec<Discove
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn discovery_preserves_hostname_separately_from_display_name() {
+        let descriptor = NativeNodeDescriptor::new(
+            NodeId::new(),
+            myko_iroh::EndpointAddr::new(myko_iroh::SecretKey::generate().public()),
+        );
+        let mut advertisement = LanAdvertisement::full_node(descriptor, "Workshop");
+        assert_eq!(advertisement.hostname, machine_hostname());
+        advertisement.hostname = "workstation.local".to_owned();
+        let discovered = advertisement.discovered();
+        assert_eq!(discovered.display_name, "Workshop");
+        assert_eq!(discovered.hostname, "workstation.local");
+    }
 
     #[test]
     fn foreground_edges_never_imply_hosted_workloads() {

@@ -1022,6 +1022,7 @@ mod tests {
             .publish(vec![myko_discovery::DiscoveredNode {
                 descriptor: peer.clone(),
                 display_name: "capability-test-peer".to_owned(),
+                hostname: "test-host".to_owned(),
                 kind: myko_discovery::ParticipantKind::FullNode,
                 capabilities: myko_discovery::ParticipantCapabilities::full_node(),
                 reachable: true,

@@ -26,6 +26,8 @@ use crate::{
 #[myko_item(service = FederationService, scoped_by = PeerRoster)]
 pub struct DiscoverySettings {
     pub display_name: String,
+    #[serde(default)]
+    pub hostname: String,
     pub enabled: bool,
 }
 
@@ -54,6 +56,7 @@ impl CommandHandler for ConfigureLanDiscovery {
             id: DiscoverySettingsId::from(context.node_id().to_string()),
             peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
             display_name,
+            hostname: myko_discovery::machine_hostname(),
             enabled: self.enabled,
         };
         context.emit_set(&settings)?;
@@ -325,6 +328,7 @@ mod tests {
                 EndpointAddr::new(SecretKey::generate().public()),
             ),
             display_name: display_name.to_owned(),
+            hostname: "test-host".to_owned(),
             kind: ParticipantKind::FullNode,
             capabilities: ParticipantCapabilities::full_node(),
             reachable: true,

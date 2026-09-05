@@ -9,6 +9,7 @@ license = "AGPL-3.0-or-later"
 workspace = true
 
 [dependencies]
+gethostname = "1.1.0"
 myko-federation.workspace = true
 myko-iroh.workspace = true
 serde.workspace = true

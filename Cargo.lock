@@ -5275,6 +5275,7 @@ version = "7.0.0-alpha.1"
 dependencies = [
  "async-dnssd",
  "futures-util",
+ "gethostname",
  "mdns-sd",
  "myko-federation",
  "myko-iroh",
