@@ -80,8 +80,8 @@ pub struct AddPeer {
     pub reference: NativePeerReference,
 }
 
-/// Remembers a mutually authenticated descriptor without implicitly enabling
-/// replication. An existing replication decision is preserved.
+/// Remembers a mutually authenticated descriptor and enables grant-filtered
+/// replication. This does not grant the peer access to local data.
 #[myko_command(Peer, item = Peer)]
 pub struct RememberPeer {
     pub descriptor: NativeNodeDescriptor,
@@ -190,9 +190,7 @@ impl CommandHandler for RememberPeer {
             peer_roster_id: PeerRosterId::from(context.node_id().to_string()),
             endpoint: self.descriptor.endpoint,
             source_node: Some(self.descriptor.node_id),
-            replication_enabled: existing
-                .as_ref()
-                .is_some_and(|peer| peer.replication_enabled),
+            replication_enabled: true,
             replication_selection: existing
                 .map(|peer| peer.replication_selection)
                 .unwrap_or_default(),

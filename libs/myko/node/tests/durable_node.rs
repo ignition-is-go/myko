@@ -1048,8 +1048,8 @@ async fn confirmed_pairing_remembers_pinned_peers_before_replication() -> Result
     require_peer_state(
         &target_peers,
         source_descriptor.node_id,
-        false,
-        "confirmed target did not remember a paused pinned source",
+        true,
+        "confirmed target did not enable replication for the pinned source",
     )?;
     let enabled = myko_federation::CommandWatchingClient::exec_typed_command(
         target.application(),
@@ -1122,13 +1122,13 @@ async fn typed_pairing_initiation_is_live_and_requires_mutual_confirmation() -> 
     require_peer_state(
         &source_peers,
         target.node().node_id(),
-        false,
+        true,
         "source did not remember the confirmed target",
     )?;
     require_peer_state(
         &target_peers,
         source.node().node_id(),
-        false,
+        true,
         "target did not remember the confirmed source",
     )?;
     target.shutdown().await.map_err(|error| error.to_string())?;
