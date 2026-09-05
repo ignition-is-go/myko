@@ -550,8 +550,12 @@ impl AccessPolicy for AuthorityPolicy {
             .cloned()
             .collect::<Vec<_>>();
         if authorized.is_empty() {
-            let decision = self.evaluate(request.clone());
-            return Err(decision);
+            return Err(deny(
+                request,
+                now,
+                "replication_no_authorized_scopes",
+                "no requested history scopes are authorized for this peer; pairing does not grant replication access",
+            ).decision);
         }
         let mut scoped = request.clone();
         scoped.target = AccessTarget::ScopeSet(authorized.clone());

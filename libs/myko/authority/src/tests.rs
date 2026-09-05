@@ -822,6 +822,38 @@ fn replication_intersection_is_partial_and_consumes_once() -> Result<(), String>
     Ok(())
 }
 
+#[test]
+fn ungranted_replication_reports_no_authorized_scopes() -> Result<(), String> {
+    let (application, policy, _) = open(Node::in_memory())?;
+    let mut access = request(
+        node_principal("node:ungranted"),
+        "scope:a",
+        AccessOperation::FollowHistory,
+    );
+    access.target = AccessTarget::History(ReplicationSelection::All);
+    access.resource_claims.clear();
+    let topology = application
+        .node()
+        .scope_topology()
+        .map_err(|error| error.to_string())?;
+    let Err(decision) =
+        policy.constrain_replication(&access, &ReplicationSelection::All, &topology)
+    else {
+        return Err("ungranted replication must be denied".to_owned());
+    };
+    let AuthorizationDecision::Deny(denial) = decision else {
+        return Err("ungranted replication did not return a denial".to_owned());
+    };
+    assert!(
+        denial
+            .report
+            .explanations
+            .iter()
+            .any(|explanation| explanation.code == "replication_no_authorized_scopes")
+    );
+    Ok(())
+}
+
 #[tokio::test]
 async fn idle_stream_does_not_consume_and_revocation_closes_it() -> Result<(), String> {
     use myko::server::FederatedSession;
