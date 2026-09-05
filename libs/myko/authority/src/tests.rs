@@ -159,14 +159,10 @@ fn authority_grants_view_keeps_revoked_records_live() -> Result<(), String> {
             .service::<AuthorityService>()
             .build(),
     )?;
-    let view = retained.watch_view_at(
-        Some(application.node_id()),
-        Some(authority_realm_scope(&AuthorityRealmKey::new("main"))),
-        &AuthorityGrantsView {
-            source_node: application.node_id(),
-            realm_id: AuthorityRealmKey::new("main"),
-        },
-    )?;
+    let view = retained.watch_view(&AuthorityGrantsView {
+        source_node: application.node_id(),
+        realm_id: AuthorityRealmKey::new("main"),
+    })?;
     let issued = grant(
         "grant:native-view",
         node_principal("node:peer"),

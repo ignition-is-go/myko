@@ -117,6 +117,14 @@ pub struct AuthorityGrantsView {
 }
 
 impl ViewHandler for AuthorityGrantsView {
+    fn source_node(&self, _local_node: myko_federation::NodeId) -> Option<myko_federation::NodeId> {
+        Some(self.source_node)
+    }
+
+    fn scope_id(&self, _local_node: myko_federation::NodeId) -> Option<ScopeId> {
+        Some(authority_realm_scope(&self.realm_id))
+    }
+
     #[allow(clippy::expect_used)]
     fn build_cell(
         context: ViewBuildArgs<Self>,
