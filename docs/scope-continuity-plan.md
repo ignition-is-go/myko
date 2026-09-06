@@ -134,10 +134,24 @@ of certified production startup or scope churn.
 Both repositories were pushed and synced to the Mac at Forrest `5edd01d` and
 Myko `70489faf`. Its full 172-test workspace run, strict Clippy, and formatting
 also passed in `/tmp/forrest-network-mac-validation.log`; no daemon or watcher
-was manually controlled. The next local regression reproduces model execution
+was manually controlled. A subsequent regression reproduced model execution
 bypassing retained task-claim dispatch in `/tmp/forrest-agent-retained-claim-red.log`.
-That test is intentionally failing pending the agent worker migration and is
-not part of the pushed network-monitor checkpoint.
+That initial failure belongs to the task-claim migration described below, not
+the network-monitor checkpoint.
+
+The task-claim regression now passes. AgentPool awaits the retained ClaimAgentTask
+result before constructing and running a harness. The daemon's existing native
+worker thread can stop that wait without deleting the admitted claim. The
+shutdown test verifies the same pending command and zero model calls; the pool
+test dispatches the saved claim and resumes execution. All 174 local workspace
+tests, strict Clippy, and formatting passed in
+`/tmp/forrest-agent-claim-workspace.log`,
+`/tmp/forrest-agent-claim-final-strict.log`, and
+`/tmp/forrest-agent-claim-fmt-check.log`.
+Model/tool execution remains synchronous after claims finish, and the public
+pool methods document their blocking-thread requirement. Completion, failure,
+and tool lifecycle commands still need migration. This is not certified-policy
+or persisted scope-recovery evidence.
 
 The node-effect caller migration passed the full Forrest workspace tests,
 formatting, and strict Clippy. Its focused verifier checks pending acceptance,
