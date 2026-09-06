@@ -262,7 +262,7 @@ fn install_obligated_grant(
     a_key: &SigningKey,
     b_key: &SigningKey,
     scope: ScopeId,
-    obligation: Option<myko_federation::Obligation>,
+    obligations: impl IntoIterator<Item = myko_federation::Obligation>,
 ) -> Result<(ControlHead, Principal, ScopeId), Box<dyn Error>> {
     let app = AuthorityPolicy::install(MykoApplication::new())?;
     let policy = Arc::new(AuthorityPolicy::new(
@@ -273,8 +273,9 @@ fn install_obligated_grant(
     let admin = Principal::new(PrincipalId::new("admin"), PrincipalKind::Node);
     let reader = Principal::new(PrincipalId::new("reader"), PrincipalKind::Node);
     policy.bootstrap(admin.clone())?;
-    let obligations = obligation.iter().map(|value| value.id.clone()).collect();
-    if let Some(obligation) = obligation {
+    let obligations = obligations.into_iter().collect::<Vec<_>>();
+    let obligation_ids = obligations.iter().map(|value| value.id.clone()).collect();
+    for obligation in obligations {
         policy.issue_obligation(
             admin.clone(),
             AuthorityPresentation::direct(admin.clone()),
@@ -294,7 +295,7 @@ fn install_obligated_grant(
             operations: vec![AccessOperation::ReadItems, AccessOperation::SubmitCommand],
             capabilities: Vec::new(),
             constraints: AuthorityConstraints::default(),
-            obligations,
+            obligations: obligation_ids,
             valid_from: Utc::now()
                 .checked_sub_signed(Duration::seconds(10))
                 .ok_or("time underflow")?,

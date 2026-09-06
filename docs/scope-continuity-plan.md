@@ -72,6 +72,18 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Saved commands now advance through multiple certified approval challenges. Recovery
+walks same-command continuation records and uses the existing guarded pending-state
+transition for each successor. It retains the saved batch and result, records the
+approvals that justified advancement, and still freshly revalidates before commit.
+Three regressions cover normal two-approval execution, reopening after the second
+challenge was chosen, and catching up through two chosen rounds of a three-approval
+command. The last case also checks that an unrelated challenge cannot replace the
+current challenge and that retry does not append duplicate advancement.
+The expanded gate passes 28 selected tests and five-crate strict checks. Formatting
+and Forrest's locked build check pass. These multi-approval tests use durable local
+controllers, not a native multi-node transport or abrupt process-loss test.
+
 `PreparedAuthorityRuntime` now retries retained work five seconds after each pass
 while commands remain prepared or await approval. The journal remains the work
 source. An integration regression restores one controller's evidence availability
@@ -109,7 +121,7 @@ parallel failure remains unresolved. No graph implementation was changed.
 Authority/federation/Iroh suites, the focused gate, strict Clippy, formatting, and
 Forrest's locked workspace check pass. The Mac SSH preflight still times out.
 
-Automatic multi-obligation advancement, certified non-effect policy, production Forrest
+Certified non-effect policy, production Forrest
 installation, custody, and abrupt node-loss proof remain unfinished. Pending
 evidence lookup scans retained history; no performance claim is made. All C01-C18
 acceptance rows remain open.

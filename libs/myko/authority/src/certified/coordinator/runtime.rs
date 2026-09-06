@@ -8,6 +8,7 @@ use myko_federation::{
 
 use super::{AuthorityDecisionCoordinator, AuthorityHistory, AuthorityRequestSource};
 
+mod challenge;
 mod lifecycle;
 mod policy;
 pub use lifecycle::PreparedAuthorityGuard;
@@ -183,9 +184,9 @@ impl AuthorityDecisionCoordinator {
             AuthorizationDecision::Permit(_) => self
                 .observer
                 .commit_prepared_authorization(command_id, &digest),
-            AuthorizationDecision::Challenge { challenge, .. } => self
-                .observer
-                .await_prepared_authorization(command_id, &digest, challenge.id),
+            AuthorizationDecision::Challenge { challenge, .. } => {
+                return self.park_prepared_challenge(command_id, &digest, challenge.id);
+            }
             AuthorizationDecision::Deny(denial) => self.observer.reject(
                 command_id,
                 AuthorizationDecision::Deny(denial).public_message(),

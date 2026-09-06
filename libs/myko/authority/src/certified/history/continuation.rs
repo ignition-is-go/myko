@@ -1,10 +1,59 @@
 use chrono::{DateTime, Utc};
-use myko_federation::{AuthorizationDecision, CommandId, control_quorum::ControlHead};
+use myko_federation::{
+    ApprovalId, AuthorityChallenge, AuthorizationDecision, ChallengeId, CommandId,
+    ControlTransition, ScopeTopology, control_quorum::ControlHead,
+};
 
 use super::{AuthorityDecisionRoot, AuthorityDecisionTransition, AuthorityHistory, project_facts};
 use crate::EvaluationState;
 
 impl AuthorityHistory {
+    pub(crate) fn next_pending_challenge_at(
+        &self,
+        head: ControlHead,
+        root: &AuthorityDecisionRoot,
+        previous: &ChallengeId,
+    ) -> Result<Option<(AuthorityChallenge, ApprovalId)>, String> {
+        let facts = self.selected_at(head)?;
+        let state = project_facts(&facts, self.realm_id(), ScopeTopology::default())?;
+        for transition in self.chain.transitions_to(head)? {
+            let ControlTransition::Retain { payload, .. } = transition else {
+                continue;
+            };
+            if !payload.0.starts_with(super::DECISION_DOMAIN) {
+                continue;
+            }
+            let decision = AuthorityDecisionTransition::from_payload(payload)?;
+            if decision.root() != root || decision.fulfills.as_ref() != Some(previous) {
+                continue;
+            }
+            let AuthorizationDecision::Challenge { challenge, .. } = decision.decision() else {
+                return Ok(None);
+            };
+            // Advancing a saved challenge records historical evidence. It does
+            // not renew approval expiry or authorize release of the effect.
+            let approval = state
+                .approvals
+                .iter()
+                .map(|record| &record.decision)
+                .filter(|approval| {
+                    approval.challenge_id == *previous
+                        && approval.binding == *decision.binding()
+                        && approval.approved
+                        && decision
+                            .request()
+                            .presentation
+                            .approvals
+                            .contains(&approval.id)
+                })
+                .map(|approval| approval.id.clone())
+                .min()
+                .ok_or_else(|| "certified challenge advancement has no approval".to_owned())?;
+            return Ok(Some((challenge.clone(), approval)));
+        }
+        Ok(None)
+    }
+
     /// Re-evaluate the exact challenged effect using approvals retained in the
     /// certified predecessor. A permitted or denied root cannot start another round.
     /// This plan must still be chosen by the controllers before use.

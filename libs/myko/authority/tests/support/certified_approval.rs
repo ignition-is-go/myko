@@ -4,6 +4,9 @@ use myko_federation::{AuthorityChallenge, Obligation, ObligationId};
 #[path = "certified_approval_retry.rs"]
 mod retry;
 
+#[path = "certified_approval_multiple.rs"]
+mod multiple;
+
 fn require(condition: bool, message: &str) -> TestResult {
     if condition {
         Ok(())
