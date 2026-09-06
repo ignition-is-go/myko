@@ -31,7 +31,7 @@ use myko_federation::{
         SignedControlProposal, SignedControlVote,
     },
 };
-use myko_iroh::{IrohReplicator, IrohScopedEvidenceEndpoint, endpoint_principal_id};
+use myko_iroh::{EndpointAddr, IrohReplicator, IrohScopedEvidenceEndpoint, endpoint_principal_id};
 use myko_redb::RedbJournal;
 
 type TestResult = Result<(), Box<dyn Error>>;
@@ -519,6 +519,7 @@ struct NativeControlHarness {
     coordinator_transport: IrohReplicator,
     a_binding: AuthorityControllerPrincipal,
     a_principal: Principal,
+    selected_anchor: AuthorityAnchor,
 }
 
 impl NativeControlHarness {
@@ -527,6 +528,16 @@ impl NativeControlHarness {
         b: Node,
         authority_scope: ScopeId,
         command_scope: ScopeId,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::start_with_anchor(a, b, authority_scope, command_scope, anchor()?).await
+    }
+
+    async fn start_with_anchor(
+        a: Node,
+        b: Node,
+        authority_scope: ScopeId,
+        command_scope: ScopeId,
+        selected_anchor: AuthorityAnchor,
     ) -> Result<Self, Box<dyn Error>> {
         let a_transport = IrohReplicator::bind_loopback(a.clone()).await?;
         let b_transport = IrohReplicator::bind_loopback(b.clone()).await?;
@@ -549,7 +560,7 @@ impl NativeControlHarness {
         a_transport.sessions().set_authority_control(Some(Arc::new(
             CertifiedAuthorityControlEndpoint::new(
                 a.clone(),
-                anchor()?,
+                selected_anchor.clone(),
                 a_key,
                 vec![a_binding.clone()],
             )?,
@@ -557,7 +568,7 @@ impl NativeControlHarness {
         b_transport.sessions().set_authority_control(Some(Arc::new(
             CertifiedAuthorityControlEndpoint::new(
                 b.clone(),
-                anchor()?,
+                selected_anchor.clone(),
                 b_key,
                 vec![a_binding.clone()],
             )?
@@ -572,20 +583,13 @@ impl NativeControlHarness {
             coordinator_transport,
             a_binding,
             a_principal,
+            selected_anchor,
         })
     }
 
-    async fn decide(
-        &self,
-        observer: &Node,
-        grant_head: ControlHead,
-        counter: u64,
-        operation: CommandId,
-        command_id: CommandId,
-        request: CertifiedAuthorityRequest,
-    ) -> Result<CoordinatedAuthorityDecision, Box<dyn Error>> {
+    fn peers(&self) -> Vec<AuthorityCoordinatorPeer> {
         let [a_key, b_key] = keys();
-        let peers = vec![
+        vec![
             AuthorityCoordinatorPeer::new(
                 Arc::new(
                     self.coordinator_transport
@@ -610,15 +614,57 @@ impl NativeControlHarness {
                     self.b_transport.address(),
                 ),
             )),
-        ];
+        ]
+    }
+
+    async fn decide(
+        &self,
+        observer: &Node,
+        grant_head: ControlHead,
+        counter: u64,
+        operation: CommandId,
+        command_id: CommandId,
+        request: CertifiedAuthorityRequest,
+    ) -> Result<CoordinatedAuthorityDecision, Box<dyn Error>> {
         Ok(AuthorityDecisionCoordinator::new(
-            anchor()?,
+            self.selected_anchor.clone(),
             observer.clone(),
             self.a_binding.clone(),
-            peers,
+            self.peers(),
         )?
         .decide(grant_head, counter, operation, command_id, request)
         .await?)
+    }
+
+    fn coordinator_with_extra_peer(
+        &self,
+        observer: &Node,
+        remote: EndpointAddr,
+        controller: ControllerId,
+    ) -> Result<AuthorityDecisionCoordinator, String> {
+        let mut peers = self.peers();
+        peers.push(
+            AuthorityCoordinatorPeer::new(
+                Arc::new(
+                    self.coordinator_transport
+                        .command_client(remote.clone())
+                        .with_control_request_timeout(std::time::Duration::from_secs(1)),
+                ),
+                self.a_principal.clone(),
+                controller,
+                realm(),
+            )
+            .with_observer_evidence_endpoint(Arc::new(
+                IrohScopedEvidenceEndpoint::new(self.a_transport.clone(), remote)
+                    .with_request_timeout(std::time::Duration::from_secs(1)),
+            )),
+        );
+        AuthorityDecisionCoordinator::new(
+            self.selected_anchor.clone(),
+            observer.clone(),
+            self.a_binding.clone(),
+            peers,
+        )
     }
 
     async fn shutdown(self) -> TestResult {
@@ -991,6 +1037,152 @@ async fn endpoint_reports_retained_evidence_failures_as_unavailable() -> TestRes
         .ok_or("endpoint prepared despite invalid retained evidence")?;
     if failure != AuthorizationFailure::Unavailable(AuthorityUnavailable::HistoryUnavailable) {
         return Err("retained evidence failure was exposed as an authorization denial".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_coordinator_survives_controller_shutdown_and_store_reopen() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a_path = directory.path().join("native-ha-a.redb");
+    let b_path = directory.path().join("native-ha-b.redb");
+    let a = RedbJournal::open_node(&a_path)?;
+    let b = RedbJournal::open_node(&b_path)?;
+    let c = RedbJournal::open_node(directory.path().join("native-ha-c.redb"))?;
+    let [a_key, b_key, c_key] = keys3();
+    let selected_anchor = anchor3()?;
+    let (grant_head, reader, scope) =
+        install_grant_with_anchor(&a, &b, &selected_anchor, &a_key, &b_key)?;
+    for event in authority_events(&a)? {
+        c.ingest(event)?;
+    }
+    let command_id = CommandId::new();
+    let (request, _) = prepare_command_evidence_at(&a, reader, scope.clone(), command_id)?;
+    let operation = CommandId::new();
+    let authority_scope = authority_realm_scope(&realm());
+    let harness = NativeControlHarness::start_with_anchor(
+        a.clone(),
+        b.clone(),
+        authority_scope.clone(),
+        scope.clone(),
+        selected_anchor.clone(),
+    )
+    .await?;
+    let c_transport = IrohReplicator::bind_loopback(c.clone()).await?;
+    let c_address = c_transport.address();
+    c_transport.sessions().set_authority_control(Some(Arc::new(
+        CertifiedAuthorityControlEndpoint::new(
+            c.clone(),
+            selected_anchor.clone(),
+            c_key.clone(),
+            vec![harness.a_binding.clone()],
+        )?,
+    )))?;
+    let c_client = harness
+        .coordinator_transport
+        .command_client(c_address.clone());
+    let promise = c_client
+        .prepare(
+            &harness.a_principal.id,
+            &AuthorityPresentation::direct(harness.a_principal.clone()),
+            grant_head,
+            ControlBallot {
+                counter: 2,
+                proposer: controller_id(&a_key),
+            },
+        )
+        .await
+        .map_err(|error| format!("third controller was not reachable: {error:?}"))?;
+    if promise.message.controller != controller_id(&c_key) {
+        return Err("third native controller returned the wrong signer".into());
+    }
+    c_transport.shutdown().await?;
+    drop(c_client);
+    drop(c);
+    assert_native_peer_unavailable(&harness, c_address.clone(), grant_head).await?;
+    let coordinator =
+        harness.coordinator_with_extra_peer(&a, c_address.clone(), controller_id(&c_key))?;
+    let chosen = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        coordinator.decide(grant_head, 3, operation, command_id, request),
+    )
+    .await??;
+    if !chosen.decision().is_permit() || b.command(command_id)?.is_none() {
+        return Err("native majority did not synchronize and certify the prepared effect".into());
+    }
+    let chosen_head = chosen.head();
+    let chosen_transition = chosen.transition().clone();
+    drop(coordinator);
+    harness.shutdown().await?;
+    drop(a);
+    drop(b);
+
+    let a = RedbJournal::open_node(&a_path)?;
+    let b = RedbJournal::open_node(&b_path)?;
+    let request = AuthorityRequestSource::new(a.clone()).prepared_command_request(command_id)?;
+    let harness = NativeControlHarness::start_with_anchor(
+        a.clone(),
+        b.clone(),
+        authority_scope,
+        scope,
+        selected_anchor.clone(),
+    )
+    .await?;
+    let coordinator = harness.coordinator_with_extra_peer(&a, c_address, controller_id(&c_key))?;
+    let recovered = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        coordinator.decide(grant_head, 5, operation, command_id, request),
+    )
+    .await??;
+    if recovered.head() != chosen_head || recovered.transition() != &chosen_transition {
+        return Err("native minority-loss retry changed or spent the chosen decision".into());
+    }
+    drop(coordinator);
+    harness.shutdown().await?;
+    Ok(())
+}
+
+async fn assert_native_peer_unavailable(
+    harness: &NativeControlHarness,
+    remote: EndpointAddr,
+    head: ControlHead,
+) -> TestResult {
+    let [a_key, _b_key] = keys();
+    let client = harness
+        .coordinator_transport
+        .command_client(remote.clone())
+        .with_control_request_timeout(std::time::Duration::from_millis(100));
+    let result = client
+        .prepare(
+            &harness.a_principal.id,
+            &AuthorityPresentation::direct(harness.a_principal.clone()),
+            head,
+            ControlBallot {
+                counter: 3,
+                proposer: controller_id(&a_key),
+            },
+        )
+        .await;
+    if !matches!(
+        result,
+        Err(AuthorizationFailure::Unavailable(
+            AuthorityUnavailable::CoordinationUnavailable,
+        ))
+    ) {
+        return Err("native control timeout did not report typed unavailability".into());
+    }
+    let evidence = IrohScopedEvidenceEndpoint::new(harness.a_transport.clone(), remote)
+        .with_request_timeout(std::time::Duration::from_millis(100));
+    let result = evidence
+        .refresh_scopes(&[authority_realm_scope(&realm())])
+        .await;
+    if !matches!(
+        result,
+        Err(RetainedEvidenceError::Unavailable(
+            AuthorityUnavailable::HistoryUnavailable,
+        ))
+    ) {
+        return Err("native evidence timeout did not report typed unavailability".into());
     }
     Ok(())
 }

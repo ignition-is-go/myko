@@ -366,6 +366,7 @@ impl IrohReplicator {
             replicator: self.clone(),
             peer,
             authority: None,
+            control_request_timeout: Duration::from_secs(10),
         }
     }
 

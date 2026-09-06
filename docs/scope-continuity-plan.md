@@ -76,8 +76,12 @@ The authority coordinator now tolerates unavailable minority peers during
 evidence refresh. Two healthy controllers in a three-controller electorate can
 certify a decision and recover the same decision after both stores reopen.
 Insufficient quorum still fails, and invalid evidence stops coordination before
-voting. The unavailable peer is injected in these tests, so native network loss
-and live effect-release permission remain unproven.
+voting. A native Iroh test also verifies that a third controller answers before
+shutdown, remains configured while the other two certify, and stays offline
+through their store reopen and exact-decision recovery. Native control requests
+and per-scope evidence refreshes now have configurable ten-second deadlines.
+The test uses one-second failed-peer deadlines and thirty-second decision bounds.
+This does not prove abrupt process loss, custody, or live effect-release permission.
 
 Prepared commands now recover automatically through the application command
 driver after durable reopen. Temporary authority unavailability defers the

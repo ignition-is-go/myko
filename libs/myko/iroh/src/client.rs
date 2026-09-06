@@ -29,6 +29,7 @@ pub struct IrohCommandClient {
     pub(super) replicator: IrohReplicator,
     pub(super) peer: EndpointAddr,
     pub(super) authority: Option<AuthorityPresentation>,
+    pub(super) control_request_timeout: std::time::Duration,
 }
 
 /// Authenticated current-then-live lifecycle stream for one native command.
@@ -332,6 +333,32 @@ impl CommandStateClient for IrohCommandClient {
 }
 
 impl IrohCommandClient {
+    /// Bounds each control request, including connection setup and response.
+    /// Defaults to ten seconds. Expiry reports temporary unavailability and
+    /// does not imply that a remote durable vote was rolled back.
+    #[must_use]
+    pub const fn with_control_request_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.control_request_timeout = timeout;
+        self
+    }
+
+    async fn control_frame(
+        &self,
+        request: ReplicationRequest,
+    ) -> Result<ReplicationFrame, IrohReplicationError> {
+        tokio::time::timeout(
+            self.control_request_timeout,
+            self.replicator
+                .remote_single_frame(self.peer.clone(), request, self.authority.clone()),
+        )
+        .await
+        .map_err(|_| {
+            IrohReplicationError::AuthorityUnavailable(
+                myko_federation::AuthorityUnavailable::CoordinationUnavailable,
+            )
+        })?
+    }
+
     /// Attaches a delegated authority, approvals, or lease to every request.
     #[must_use]
     pub fn with_authority(mut self, authority: AuthorityPresentation) -> Self {
@@ -386,12 +413,7 @@ impl IrohCommandClient {
         ballot: ControlBallot,
     ) -> Result<SignedControlVote, IrohReplicationError> {
         let frame = self
-            .replicator
-            .remote_single_frame(
-                self.peer.clone(),
-                ReplicationRequest::ControlPrepare { head, ballot },
-                self.authority.clone(),
-            )
+            .control_frame(ReplicationRequest::ControlPrepare { head, ballot })
             .await?;
         match frame {
             ReplicationFrame::ControlVote { vote } => Ok(*vote),
@@ -420,17 +442,12 @@ impl IrohCommandClient {
         value: ControlValue,
     ) -> Result<SignedControlProposal, IrohReplicationError> {
         let frame = self
-            .replicator
-            .remote_single_frame(
-                self.peer.clone(),
-                ReplicationRequest::ControlPropose {
-                    head,
-                    ballot,
-                    promises,
-                    value,
-                },
-                self.authority.clone(),
-            )
+            .control_frame(ReplicationRequest::ControlPropose {
+                head,
+                ballot,
+                promises,
+                value,
+            })
             .await?;
         match frame {
             ReplicationFrame::ControlProposal { proposal } => Ok(*proposal),
@@ -457,15 +474,10 @@ impl IrohCommandClient {
         proposal: SignedControlProposal,
     ) -> Result<SignedControlVote, IrohReplicationError> {
         let frame = self
-            .replicator
-            .remote_single_frame(
-                self.peer.clone(),
-                ReplicationRequest::ControlAccept {
-                    head,
-                    proposal: Box::new(proposal),
-                },
-                self.authority.clone(),
-            )
+            .control_frame(ReplicationRequest::ControlAccept {
+                head,
+                proposal: Box::new(proposal),
+            })
             .await?;
         match frame {
             ReplicationFrame::ControlVote { vote } => Ok(*vote),

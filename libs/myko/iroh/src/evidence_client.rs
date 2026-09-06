@@ -11,6 +11,7 @@ pub struct IrohScopedEvidenceEndpoint {
     node: Node,
     endpoint: iroh::Endpoint,
     remote: EndpointAddr,
+    request_timeout: std::time::Duration,
 }
 
 impl IrohScopedEvidenceEndpoint {
@@ -20,7 +21,16 @@ impl IrohScopedEvidenceEndpoint {
             endpoint: local.router.endpoint().clone(),
             node: local.node,
             remote,
+            request_timeout: std::time::Duration::from_secs(10),
         }
+    }
+
+    /// Bounds one scope refresh, including connection setup and transfer.
+    /// Defaults to ten seconds. A timeout leaves already retained history intact.
+    #[must_use]
+    pub const fn with_request_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.request_timeout = timeout;
+        self
     }
 }
 
@@ -28,14 +38,20 @@ impl ScopedRetainedEvidenceEndpoint for IrohScopedEvidenceEndpoint {
     fn refresh_scopes<'a>(&'a self, scopes: &'a [ScopeId]) -> RetainedEvidenceFuture<'a> {
         Box::pin(async move {
             for scope in scopes {
-                IrohReplicator::pull_scope_on(
-                    &self.node,
-                    &self.endpoint,
-                    self.remote.clone(),
-                    scope.clone(),
-                    None,
+                tokio::time::timeout(
+                    self.request_timeout,
+                    IrohReplicator::pull_scope_on(
+                        &self.node,
+                        &self.endpoint,
+                        self.remote.clone(),
+                        scope.clone(),
+                        None,
+                    ),
                 )
                 .await
+                .map_err(|_| {
+                    RetainedEvidenceError::Unavailable(AuthorityUnavailable::HistoryUnavailable)
+                })?
                 .map_err(|error| evidence_error(&error))?;
             }
             Ok(())
