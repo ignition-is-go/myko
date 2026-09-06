@@ -72,6 +72,24 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Agent workers now retain terminal completion or failure commands before returning
+to the supervisor. The supervisor awaits their existing typed command IDs rather
+than executing terminal handlers inline. Recovery checks retained outcomes before
+resolving execution resources or constructing a model driver. Competing terminal
+records fail closed without changing history.
+The batch-cancellation test runs two model calls, cancels the supervisor while
+completion dispatch waits, and recovers both saved answers without provider access.
+All 19 agent-pool tests and targeted strict Clippy pass in
+`/tmp/forrest-agent-batch-final-tests.log` and
+`/tmp/forrest-agent-batch-final-strict.log`. These tests use in-memory persistence.
+They do not prove disk reopen, abrupt process loss, or distributed fencing.
+Tool lifecycle commands still execute inline. All 179 workspace tests, strict
+workspace Clippy, and formatting pass in
+`/tmp/forrest-agent-terminal-workspace-tests.log`,
+`/tmp/forrest-agent-terminal-workspace-strict.log`, and
+`/tmp/forrest-agent-terminal-workspace-fmt.log`. Mac validation for this change
+remains outstanding.
+
 Native nodes can install certified authority on their existing Iroh transport
 and command dispatcher. Configuration keeps the original controller electorate
 separate from current authenticated routes. The node owns and stops its
