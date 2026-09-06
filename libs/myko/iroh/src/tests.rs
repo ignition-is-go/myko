@@ -50,31 +50,33 @@ impl AccessPolicy for ApprovalPolicy {
         Ok(AuthorizationDecision::from_rule(request, Ok(())))
     }
 
-    fn approve(
-        &self,
-        authenticated_executor: &PrincipalId,
-        presentation: &AuthorityPresentation,
-        challenge_id: &ChallengeId,
+    fn approve<'a>(
+        &'a self,
+        authenticated_executor: &'a PrincipalId,
+        presentation: &'a AuthorityPresentation,
+        challenge_id: &'a ChallengeId,
         approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationFailure> {
-        let now = Utc::now();
-        let request = AccessAttempt::scoped(
-            authenticated_executor.clone(),
-            presentation.clone(),
-            AccessOperation::ApproveAuthority,
-            ScopeId::new("authority:test"),
-        );
-        Ok(ApprovalDecision {
-            id: ApprovalId::new("iroh-approval"),
-            realm_id: AuthorityRealmId::new("test"),
-            challenge_id: challenge_id.clone(),
-            obligation_id: ObligationId::new("test-review"),
-            approver: presentation.principal.clone(),
-            binding: AuthorizationBinding::from_request(&request),
-            approved,
-            decided_at: now,
-            expires_at: now + ChronoDuration::minutes(1),
-            max_uses: 1,
+    ) -> myko_federation::AuthorityApprovalFuture<'a> {
+        Box::pin(async move {
+            let now = Utc::now();
+            let request = AccessAttempt::scoped(
+                authenticated_executor.clone(),
+                presentation.clone(),
+                AccessOperation::ApproveAuthority,
+                ScopeId::new("authority:test"),
+            );
+            Ok(ApprovalDecision {
+                id: ApprovalId::new("iroh-approval"),
+                realm_id: AuthorityRealmId::new("test"),
+                challenge_id: challenge_id.clone(),
+                obligation_id: ObligationId::new("test-review"),
+                approver: presentation.principal.clone(),
+                binding: AuthorizationBinding::from_request(&request),
+                approved,
+                decided_at: now,
+                expires_at: now + ChronoDuration::minutes(1),
+                max_uses: 1,
+            })
         })
     }
 }

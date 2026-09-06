@@ -1645,7 +1645,10 @@ impl FederatedSession {
             .read()
             .map_err(|_| "access-policy lock is poisoned".to_owned())?
             .clone();
-        match policy.approve(principal, presentation, challenge_id, approved) {
+        match policy
+            .approve(principal, presentation, challenge_id, approved)
+            .await
+        {
             Ok(decision) => {
                 emit(
                     send,

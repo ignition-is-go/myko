@@ -76,50 +76,82 @@ impl AuthorityDecisionCoordinator {
         presentation: &AuthorityPresentation,
         challenge: &ChallengeId,
         approved: bool,
-    ) -> Result<ApprovalDecision, String> {
+    ) -> Result<ApprovalDecision, AuthorizationFailure> {
+        let request = myko_federation::AccessAttempt::scoped(
+            authenticated_executor.clone(),
+            presentation.clone(),
+            myko_federation::AccessOperation::ApproveAuthority,
+            crate::authority_realm_scope(self.anchor.realm_id()),
+        );
+        let denied = |message: &str| {
+            AuthorizationFailure::from(crate::evaluator::denial(
+                &request,
+                Utc::now(),
+                "approval_invalid",
+                message,
+            ))
+        };
         if authenticated_executor != &presentation.executor.id
             || presentation.principal != presentation.executor
             || !presentation.provenance.is_empty()
         {
-            return Err("approval requires a directly authenticated approver".to_owned());
+            return Err(denied(
+                "approval requires a directly authenticated approver",
+            ));
         }
         let operation = CommandId::new();
         for _ in 0..self.max_rounds {
-            self.synchronize().await?;
-            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
-            let head = history.retained_head()?;
-            if let Some(existing) = history.approval_at(head, challenge, &presentation.principal)? {
+            self.synchronize()
+                .await
+                .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
+            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+            let head = history
+                .retained_head()
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+            if let Some(existing) = history
+                .approval_at(head, challenge, &presentation.principal)
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
+            {
                 if existing.approved != approved {
-                    return Err(
-                        "approval decision is immutable for this challenge and approver".to_owned(),
-                    );
+                    return Err(denied(
+                        "approval decision is immutable for this challenge and approver",
+                    ));
                 }
                 return Ok(existing);
             }
-            let planned = history.plan_approval_at(
-                head,
-                operation,
-                challenge,
-                &presentation.principal,
-                approved,
-                Utc::now(),
-            )?;
-            let desired = planned.control_value()?;
+            let planned = history
+                .plan_approval_at(
+                    head,
+                    operation,
+                    challenge,
+                    &presentation.principal,
+                    approved,
+                    Utc::now(),
+                )
+                .map_err(|message| denied(&message))?;
+            let desired = planned
+                .control_value()
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
             let ballot = ControlBallot {
-                counter: next_counter(&history, head)?,
+                counter: next_counter(&history, head)
+                    .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?,
                 proposer: self.proposer.controller,
             };
             let (chosen, evidence) = self
                 .choose_value(&history, head, ballot, desired.clone())
-                .await?;
+                .await
+                .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
             if evidence.proposal.message.value == desired {
-                let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+                let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())
+                    .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
                 return history
-                    .approval_at(chosen, challenge, &presentation.principal)?
-                    .ok_or_else(|| "chosen authority approval is not retained".to_owned());
+                    .approval_at(chosen, challenge, &presentation.principal)
+                    .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
+                    .ok_or_else(|| AuthorityUnavailable::HistoryUnavailable.into());
             }
         }
-        Err("authority approval did not converge before the retry limit".to_owned())
+        Err(AuthorityUnavailable::CoordinationUnavailable.into())
     }
 }
 

@@ -969,6 +969,7 @@ impl CoordinatedAuthorityDecision {
 }
 
 /// Coordinates one request-specific authority value through local controllers.
+#[derive(Debug)]
 pub struct AuthorityDecisionCoordinator {
     anchor: AuthorityAnchor,
     observer: Node,

@@ -787,6 +787,15 @@ impl AccessAttempt {
     }
 }
 
+/// An approval decision that may require remote authority coordination.
+pub type AuthorityApprovalFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<ApprovalDecision, AuthorizationFailure>>
+            + Send
+            + 'a,
+    >,
+>;
+
 /// Pluggable authorization decision shared by transport adapters.
 pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
     /// Returns a first-class permit, deny, or durable challenge decision.
@@ -829,30 +838,32 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
     ///
     /// Returns a structured denial when this policy cannot validate or record
     /// the approval.
-    fn approve(
-        &self,
-        _authenticated_executor: &PrincipalId,
-        presentation: &AuthorityPresentation,
-        _challenge_id: &ChallengeId,
+    fn approve<'a>(
+        &'a self,
+        _authenticated_executor: &'a PrincipalId,
+        presentation: &'a AuthorityPresentation,
+        _challenge_id: &'a ChallengeId,
         _approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationFailure> {
-        Err(AuthorizationFailure::Deny(Box::new(DenyDecision {
-            report: AuthorizationReport {
-                evaluated_at: Utc::now(),
-                principal: presentation.principal.clone(),
-                executor: presentation.executor.clone(),
-                operation: AccessOperation::ApproveAuthority,
-                explanations: vec![AuthorizationExplanation {
-                    code: "approval_unsupported".to_owned(),
-                    message: "this access policy does not accept approvals".to_owned(),
-                    grant_id: None,
-                    delegation_id: None,
-                    obligation_id: None,
-                    constraint: None,
-                }],
-            },
-            visibility: ResourceVisibility::Unbound,
-        })))
+    ) -> AuthorityApprovalFuture<'a> {
+        Box::pin(async move {
+            Err(AuthorizationFailure::Deny(Box::new(DenyDecision {
+                report: AuthorizationReport {
+                    evaluated_at: Utc::now(),
+                    principal: presentation.principal.clone(),
+                    executor: presentation.executor.clone(),
+                    operation: AccessOperation::ApproveAuthority,
+                    explanations: vec![AuthorizationExplanation {
+                        code: "approval_unsupported".to_owned(),
+                        message: "this access policy does not accept approvals".to_owned(),
+                        grant_id: None,
+                        delegation_id: None,
+                        obligation_id: None,
+                        constraint: None,
+                    }],
+                },
+                visibility: ResourceVisibility::Unbound,
+            })))
+        })
     }
 
     /// Registers one opaque application capability before grants may cite it.

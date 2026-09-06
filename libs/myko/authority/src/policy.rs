@@ -1,8 +1,8 @@
 use super::evaluator::denial;
 use super::{
     AccessAttempt, AccessOperation, AccessPolicy, AccessTarget, AppError, ApplicationCapability,
-    ApplicationHost, ApprovalDecision, Arc, AtomicU64, AuthorityDelegation, AuthorityFactSources,
-    AuthorityGrant, AuthorityPresentation, AuthorityRealm, AuthorityRealmKey, AuthorityService,
+    ApplicationHost, Arc, AtomicU64, AuthorityDelegation, AuthorityFactSources, AuthorityGrant,
+    AuthorityPresentation, AuthorityRealm, AuthorityRealmKey, AuthorityService,
     AuthorizationDecision, BootstrapRealm, CapabilityRegistrationId, Cell, CellImmutable,
     ChallengeId, CommandState, DecideChallenge, EvaluateAuthority, EvaluationState,
     FederationPermission, GetCapabilityRegistrationById, IssueAuthorityGrant, MykoApplication,
@@ -562,55 +562,19 @@ impl AccessPolicy for AuthorityPolicy {
     }
 
     #[allow(clippy::too_many_lines)] // Approval binding and idempotent persistence are one operation.
-    fn approve(
-        &self,
-        authenticated_executor: &PrincipalId,
-        presentation: &AuthorityPresentation,
-        challenge_id: &ChallengeId,
+    fn approve<'a>(
+        &'a self,
+        authenticated_executor: &'a PrincipalId,
+        presentation: &'a AuthorityPresentation,
+        challenge_id: &'a ChallengeId,
         approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationFailure> {
-        if authenticated_executor != &presentation.executor.id
-            || presentation.principal != presentation.executor
-            || !presentation.provenance.is_empty()
-        {
-            return Err(denial(
-                &AccessAttempt::scoped(
-                    authenticated_executor.clone(),
-                    presentation.clone(),
-                    AccessOperation::ApproveAuthority,
-                    authority_realm_scope(&self.realm_id),
-                ),
-                Utc::now(),
-                "approval_executor_mismatch",
-                "approval requires a directly authenticated approver",
-            )
-            .into());
-        }
-        let internal = authority_presentation(&self.application);
-        let decision = self
-            .application
-            .exec_trusted_framework_command(
-                internal,
-                DecideChallenge {
-                    realm_id: self.realm_id.clone(),
-                    challenge_id: challenge_id.clone(),
-                    approved,
-                    approver: presentation.principal.clone(),
-                    now: Utc::now(),
-                },
-            )
-            .map_err(|error| {
-                if !matches!(
-                    &error,
-                    AppError::Node(
-                        NodeError::CommandRejected { .. } | NodeError::AuthorizationDenied(_)
-                    )
-                ) {
-                    return AuthorizationFailure::Unavailable(
-                        AuthorityUnavailable::PersistenceUnavailable,
-                    );
-                }
-                denial(
+    ) -> myko_federation::AuthorityApprovalFuture<'a> {
+        Box::pin(async move {
+            if authenticated_executor != &presentation.executor.id
+                || presentation.principal != presentation.executor
+                || !presentation.provenance.is_empty()
+            {
+                return Err(denial(
                     &AccessAttempt::scoped(
                         authenticated_executor.clone(),
                         presentation.clone(),
@@ -618,88 +582,128 @@ impl AccessPolicy for AuthorityPolicy {
                         authority_realm_scope(&self.realm_id),
                     ),
                     Utc::now(),
-                    "approval_failed",
-                    &error.to_string(),
+                    "approval_executor_mismatch",
+                    "approval requires a directly authenticated approver",
                 )
-                .into()
-            })?;
-        if approved && let Some(command_id) = decision.binding.command_id {
-            let binding = &decision.binding;
-            let pending = self
+                .into());
+            }
+            let internal = authority_presentation(&self.application);
+            let decision = self
                 .application
-                .node()
-                .command(command_id)
-                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
-                .ok_or(AuthorityUnavailable::HistoryUnavailable)?;
-            let CommandState::AuthorizationPending {
-                challenge_id: pending_challenge,
-                approvals,
-                ..
-            } = &pending.state
-            else {
-                return Ok(decision);
-            };
-            if pending_challenge != &decision.challenge_id {
-                return Ok(decision);
-            }
-            let command_target = AccessTarget::KnownCommand {
-                command_id: pending.request.id,
-                service_id: pending.request.service_id.clone(),
-                scope_id: pending.request.scope_id.clone(),
-                command_type: pending.request.command_type.clone(),
-                principal_id: pending.request.principal_id.clone(),
-            };
-            let mut command_presentation = pending.request.authority;
-            for approval_id in approvals {
-                if !command_presentation.approvals.contains(approval_id) {
-                    command_presentation.approvals.push(approval_id.clone());
-                }
-            }
-            if !command_presentation.approvals.contains(&decision.id) {
-                command_presentation.approvals.push(decision.id.clone());
-            }
-            let topology = self
-                .application
-                .node()
-                .scope_topology()
-                .and_then(|mut topology| {
-                    topology.merge_proof(&binding.topology_proof)?;
-                    Ok(topology)
-                })
-                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
-            let effect_request = AccessAttempt {
-                principal_id: binding.executor.id.clone(),
-                presentation: command_presentation,
-                operation: binding.operation,
-                target: command_target,
-                resource_claims: binding.resources.clone(),
-                application_capabilities: binding.capabilities.clone(),
-                arguments_digest: binding.arguments_digest.clone(),
-                effect_digest: binding.effect_digest.clone(),
-                lease: None,
-                authorization_phase: myko_federation::AuthorizationPhase::Effect,
-                topology: Some(topology),
-            };
-            let next = self.evaluate(effect_request)?;
-            let transition = match next {
-                AuthorizationDecision::Permit(_) => self.application.node().resume_authorization(
-                    command_id,
-                    &decision.challenge_id,
-                    decision.id.clone(),
-                ),
-                AuthorizationDecision::Challenge { challenge, .. } => {
-                    self.application.node().advance_authorization(
-                        command_id,
-                        &decision.challenge_id,
-                        challenge.id,
-                        decision.id.clone(),
+                .exec_trusted_framework_command(
+                    internal,
+                    DecideChallenge {
+                        realm_id: self.realm_id.clone(),
+                        challenge_id: challenge_id.clone(),
+                        approved,
+                        approver: presentation.principal.clone(),
+                        now: Utc::now(),
+                    },
+                )
+                .map_err(|error| {
+                    if !matches!(
+                        &error,
+                        AppError::Node(
+                            NodeError::CommandRejected { .. } | NodeError::AuthorizationDenied(_)
+                        )
+                    ) {
+                        return AuthorizationFailure::Unavailable(
+                            AuthorityUnavailable::PersistenceUnavailable,
+                        );
+                    }
+                    denial(
+                        &AccessAttempt::scoped(
+                            authenticated_executor.clone(),
+                            presentation.clone(),
+                            AccessOperation::ApproveAuthority,
+                            authority_realm_scope(&self.realm_id),
+                        ),
+                        Utc::now(),
+                        "approval_failed",
+                        &error.to_string(),
                     )
+                    .into()
+                })?;
+            if approved && let Some(command_id) = decision.binding.command_id {
+                let binding = &decision.binding;
+                let pending = self
+                    .application
+                    .node()
+                    .command(command_id)
+                    .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
+                    .ok_or(AuthorityUnavailable::HistoryUnavailable)?;
+                let CommandState::AuthorizationPending {
+                    challenge_id: pending_challenge,
+                    approvals,
+                    ..
+                } = &pending.state
+                else {
+                    return Ok(decision);
+                };
+                if pending_challenge != &decision.challenge_id {
+                    return Ok(decision);
                 }
-                AuthorizationDecision::Deny(denied) => return Err(denied.into()),
-            };
-            transition.map_err(|_| AuthorityUnavailable::PersistenceUnavailable)?;
-        }
-        Ok(decision)
+                let command_target = AccessTarget::KnownCommand {
+                    command_id: pending.request.id,
+                    service_id: pending.request.service_id.clone(),
+                    scope_id: pending.request.scope_id.clone(),
+                    command_type: pending.request.command_type.clone(),
+                    principal_id: pending.request.principal_id.clone(),
+                };
+                let mut command_presentation = pending.request.authority;
+                for approval_id in approvals {
+                    if !command_presentation.approvals.contains(approval_id) {
+                        command_presentation.approvals.push(approval_id.clone());
+                    }
+                }
+                if !command_presentation.approvals.contains(&decision.id) {
+                    command_presentation.approvals.push(decision.id.clone());
+                }
+                let topology = self
+                    .application
+                    .node()
+                    .scope_topology()
+                    .and_then(|mut topology| {
+                        topology.merge_proof(&binding.topology_proof)?;
+                        Ok(topology)
+                    })
+                    .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+                let effect_request = AccessAttempt {
+                    principal_id: binding.executor.id.clone(),
+                    presentation: command_presentation,
+                    operation: binding.operation,
+                    target: command_target,
+                    resource_claims: binding.resources.clone(),
+                    application_capabilities: binding.capabilities.clone(),
+                    arguments_digest: binding.arguments_digest.clone(),
+                    effect_digest: binding.effect_digest.clone(),
+                    lease: None,
+                    authorization_phase: myko_federation::AuthorizationPhase::Effect,
+                    topology: Some(topology),
+                };
+                let next = self.evaluate(effect_request)?;
+                let transition = match next {
+                    AuthorizationDecision::Permit(_) => {
+                        self.application.node().resume_authorization(
+                            command_id,
+                            &decision.challenge_id,
+                            decision.id.clone(),
+                        )
+                    }
+                    AuthorizationDecision::Challenge { challenge, .. } => {
+                        self.application.node().advance_authorization(
+                            command_id,
+                            &decision.challenge_id,
+                            challenge.id,
+                            decision.id.clone(),
+                        )
+                    }
+                    AuthorizationDecision::Deny(denied) => return Err(denied.into()),
+                };
+                transition.map_err(|_| AuthorityUnavailable::PersistenceUnavailable)?;
+            }
+            Ok(decision)
+        })
     }
 
     fn register_application_capability(

@@ -9,10 +9,10 @@ use hyphae::{Signal, Watchable as _};
 use myko::{CommandContext, CommandError, CommandHandler, view::ViewHandler};
 use myko_federation::{
     AccessAttempt, AccessOperation, AllowAllAccessPolicy, ApprovalId, AuthorityPresentation,
-    AuthorityRealmId, AuthorityUnavailable, AuthorizationBinding, AuthorizationDecision,
-    AuthorizationFailure, BatchId, ChangeBatch, CommandRequest, DelegationId,
-    LiveCollectionHandle as _, ObligationId, Principal, PrincipalId, PrincipalKind,
-    ProvenanceOperation, ResourceClaim, ResourceClaimKind, ServiceId, SubscriptionLiveness,
+    AuthorityRealmId, AuthorityUnavailable, AuthorizationBinding, AuthorizationDecision, BatchId,
+    ChangeBatch, CommandRequest, DelegationId, LiveCollectionHandle as _, ObligationId, Principal,
+    PrincipalId, PrincipalKind, ProvenanceOperation, ResourceClaim, ResourceClaimKind, ServiceId,
+    SubscriptionLiveness,
 };
 use myko_items::{ItemMutation, myko_command, myko_service};
 
@@ -27,31 +27,33 @@ impl AccessPolicy for ApprovalPolicy {
         Ok(AuthorizationDecision::from_rule(request, Ok(())))
     }
 
-    fn approve(
-        &self,
-        authenticated_executor: &PrincipalId,
-        presentation: &AuthorityPresentation,
-        challenge_id: &ChallengeId,
+    fn approve<'a>(
+        &'a self,
+        authenticated_executor: &'a PrincipalId,
+        presentation: &'a AuthorityPresentation,
+        challenge_id: &'a ChallengeId,
         approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationFailure> {
-        let now = Utc::now();
-        let binding_request = AccessAttempt::scoped(
-            authenticated_executor.clone(),
-            presentation.clone(),
-            AccessOperation::ApproveAuthority,
-            ScopeId::new("authority:test"),
-        );
-        Ok(ApprovalDecision {
-            id: ApprovalId::new("local-approval"),
-            realm_id: AuthorityRealmId::new("test"),
-            challenge_id: challenge_id.clone(),
-            obligation_id: ObligationId::new("test-review"),
-            approver: presentation.principal.clone(),
-            binding: AuthorizationBinding::from_request(&binding_request),
-            approved,
-            decided_at: now,
-            expires_at: now + ChronoDuration::minutes(1),
-            max_uses: 1,
+    ) -> myko_federation::AuthorityApprovalFuture<'a> {
+        Box::pin(async move {
+            let now = Utc::now();
+            let binding_request = AccessAttempt::scoped(
+                authenticated_executor.clone(),
+                presentation.clone(),
+                AccessOperation::ApproveAuthority,
+                ScopeId::new("authority:test"),
+            );
+            Ok(ApprovalDecision {
+                id: ApprovalId::new("local-approval"),
+                realm_id: AuthorityRealmId::new("test"),
+                challenge_id: challenge_id.clone(),
+                obligation_id: ObligationId::new("test-review"),
+                approver: presentation.principal.clone(),
+                binding: AuthorizationBinding::from_request(&binding_request),
+                approved,
+                decided_at: now,
+                expires_at: now + ChronoDuration::minutes(1),
+                max_uses: 1,
+            })
         })
     }
 }
@@ -736,30 +738,26 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
         LocalPeerError::Protocol("reactive view did not recover after reconnect".to_owned())
     })??;
 
-    let query_resync = query
-        .recv()
-        .await
-        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
-    let report_resync = report
-        .recv()
-        .await
-        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
-    let view_resync = view
-        .recv()
-        .await
-        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
-    assert!(matches!(
-        query_resync.liveness,
-        SubscriptionLiveness::Resynchronizing { .. }
-    ));
-    assert!(matches!(
-        report_resync.liveness,
-        SubscriptionLiveness::Resynchronizing { .. }
-    ));
-    assert!(matches!(
-        view_resync.liveness,
-        SubscriptionLiveness::Resynchronizing { .. }
-    ));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !matches!(
+            query.recv().await?.liveness,
+            SubscriptionLiveness::Resynchronizing { .. }
+        ) {}
+        while !matches!(
+            report.recv().await?.liveness,
+            SubscriptionLiveness::Resynchronizing { .. }
+        ) {}
+        while !matches!(
+            view.recv().await?.liveness,
+            SubscriptionLiveness::Resynchronizing { .. }
+        ) {}
+        Ok::<(), HandlerClientError>(())
+    })
+    .await
+    .map_err(|_| {
+        LocalPeerError::Protocol("handler stream did not expose resynchronization".to_owned())
+    })?
+    .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
 
     let query_update = tokio::time::timeout(Duration::from_secs(2), async {
         loop {

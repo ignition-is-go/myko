@@ -72,31 +72,35 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
-Certified approval choices now live in the authority control history. Each choice
-is immutable for its challenge and approver, including its original expiry.
-Continuation rounds retain the original command root and exact effect binding,
-add only certified approval evidence, and cannot consume a terminal root again.
-Controller endpoints reconstruct the saved request before certifying a new round.
+`AccessPolicy::approve` now returns an awaited approval future. Session handlers,
+the raw authority policy, the certified policy, and transport tests use that one
+contract. The certified policy records the immutable approval through the
+coordinator, then wakes saved-effect recovery. Quorum outages remain typed
+unavailability rather than policy denials; a stopped worker also reports unavailable.
 
-The coordinator can continue a parked command, reopen its journals, freshly
-revalidate the consumed authority, and commit the exact saved batch and result
-once. Pending commands reconstruct their original prepared effect from retained
-history; both evidence access and commitment reject mismatched saved data.
-An approved pending command whose grant was revoked now reaches rejection instead
-of failing the command-state transition. Four focused approval tests cover these
-paths, expired challenges, unauthorized approvals, contradictory retries, and forged
-effect bindings. The rerunnable gate includes them in
+A real authenticated local-socket test approves a parked command, observes its
+exact saved batch and result commit once, retries the approval without changing
+it, and verifies unavailability after worker shutdown. This test exposed and fixed
+a queue mismatch: handler dispatch excludes parked approvals, so authority recovery
+now has its own retained prepared/pending command selection. Parked commands still
+cannot re-enter the handler queue. Six focused approval tests and the local/Iroh
+approval transport tests pass. The expanded rerunnable gate is
 `scripts/verify_prepared_authority_runtime.sh`.
 
-The final authority/federation suite passes all 267 tests. The focused gate,
-strict Clippy, workspace formatting, and Forrest's locked workspace check pass.
-The Mac SSH preflight still times out, so the other machine has not been synced.
+The broad parallel run exposed two test failures. A local restart test assumed its
+first queued report update was the disconnect frame. It now waits for that frame
+within a deadline while preserving reconnect and final-value checks; all 12 local
+tests pass afterward. A core graph-window test sampled the old page after a window
+change. Its isolated rerun and all 449 same-feature serial unit tests pass, but the
+parallel failure remains unresolved. No graph implementation was changed.
+Authority/federation/Iroh suites, the focused gate, strict Clippy, formatting, and
+Forrest's locked workspace check pass. The Mac SSH preflight still times out.
 
-This is not the production approval flow yet. Async user approval transport,
-automatic multi-obligation advancement, certified non-effect policy, production
-Forrest installation, custody, and abrupt node-loss proof remain unfinished.
-Pending evidence lookup currently scans retained history; no performance claim
-is made. All C01-C18 acceptance rows remain open.
+Automatic multi-obligation advancement, parked-work retry after transient quorum
+loss without another wakeup, certified non-effect policy, production Forrest
+installation, custody, and abrupt node-loss proof remain unfinished. Pending
+evidence lookup scans retained history; no performance claim is made. All C01-C18
+acceptance rows remain open.
 
 The following paragraphs describe preceding checkpoints and their limits.
 

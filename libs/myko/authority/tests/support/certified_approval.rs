@@ -9,6 +9,135 @@ fn require(condition: bool, message: &str) -> TestResult {
     }
 }
 
+#[tokio::test]
+async fn certified_approval_local_client_wakes_runtime_and_commits_saved_effect() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("b.redb"))?;
+    let approver = Principal::node(PrincipalId::new("local:approver"));
+    let challenge = challenge(&a, &b, &approver).await?;
+    let command_id = challenge.binding.command_id.ok_or("missing command")?;
+    let saved = prepared_runtime::saved_effect(&a, command_id)?;
+    a.await_prepared_authorization(command_id, saved.effect_digest(), challenge.id.clone())?;
+    require(
+        !a.pending_local_application_commands()?
+            .iter()
+            .any(|command| command.request.id == command_id),
+        "parked approval entered handler queue",
+    )?;
+    require(
+        a.pending_local_authorization_commands()?
+            .iter()
+            .any(|command| command.request.id == command_id),
+        "parked approval missing from authority queue",
+    )?;
+    let (runtime, policy) = myko_authority::certified::PreparedAuthorityRuntime::new(
+        coordinator(&a, &b)?,
+        Arc::new(AllowAllAccessPolicy),
+    );
+    a.set_command_access_policy(policy.clone())?;
+    let sessions = myko::server::FederatedSession::new(a.clone(), policy);
+    let socket = directory.path().join("approval.sock");
+    let server = myko_local::LocalNodeServer::spawn_sessions_authenticated(
+        &socket,
+        sessions,
+        approver.clone(),
+    )
+    .await?;
+    let (reported, reports) = flume::unbounded();
+    let worker = tokio::spawn(runtime.run(move |result| {
+        let _ = reported.send(result);
+    }));
+    let client = myko_local::LocalCommandClient::new(&socket);
+    let approval = client.approve_authority(challenge.id.clone(), true).await?;
+    require(
+        approval.approver == approver && approval.binding == challenge.binding,
+        "local approval changed authenticated principal or effect",
+    )?;
+    let mut failures = Vec::new();
+    tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        loop {
+            match reports.recv_async().await? {
+                Ok(command) if command.state.is_committed() => {
+                    return Ok::<(), flume::RecvError>(());
+                }
+                Ok(_) => {}
+                Err(error) => failures.push(error),
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("{error}; worker failures: {failures:?}"))??;
+    prepared_runtime::assert_exact_commit(&a, command_id, &saved)?;
+    let repeated = client.approve_authority(challenge.id.clone(), true).await?;
+    require(repeated == approval, "local retry changed approval")?;
+    worker.abort();
+    let _ = worker.await;
+    require(
+        matches!(
+            client.approve_authority(challenge.id, true).await,
+            Err(myko_local::LocalPeerError::AuthorityUnavailable(
+                AuthorityUnavailable::PolicyUnavailable
+            ))
+        ),
+        "stopped approval worker did not report unavailable",
+    )?;
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn certified_approval_quorum_outage_is_unavailable_not_denied() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("b.redb"))?;
+    let approver = Principal::node(PrincipalId::new("approver"));
+    let challenge = challenge(&a, &b, &approver).await?;
+    let [a_key, b_key] = keys();
+    let caller = Principal::node(PrincipalId::new("node:controller-a"));
+    let binding = AuthorityControllerPrincipal::new(caller.clone(), controller_id(&a_key));
+    let peers = vec![
+        AuthorityCoordinatorPeer::local(
+            a.clone(),
+            anchor()?,
+            a_key,
+            caller.clone(),
+            vec![binding.clone()],
+        )?,
+        AuthorityCoordinatorPeer::new(
+            Arc::new(UnavailableControlEndpoint),
+            caller,
+            controller_id(&b_key),
+            realm(),
+        ),
+    ];
+    let coordinator = AuthorityDecisionCoordinator::new(anchor()?, a.clone(), binding, peers)?;
+    let failure = coordinator
+        .approve(
+            &approver.id,
+            &AuthorityPresentation::direct(approver.clone()),
+            &challenge.id,
+            true,
+        )
+        .await;
+    require(
+        matches!(
+            failure,
+            Err(AuthorizationFailure::Unavailable(
+                AuthorityUnavailable::CoordinationUnavailable
+            ))
+        ),
+        "quorum outage was treated as an approval denial",
+    )?;
+    let history = AuthorityHistory::replay(&a, anchor()?)?;
+    require(
+        history
+            .approval_at(history.retained_head()?, &challenge.id, &approver)?
+            .is_none(),
+        "outage created an approval without a quorum",
+    )
+}
+
 async fn challenge(
     a: &Node,
     b: &Node,
@@ -114,7 +243,8 @@ async fn certified_approval_is_immutable_and_survives_reopen() -> TestResult {
     a.await_prepared_authorization(command_id, digest, challenge.id.clone())?;
     let approval = coordinator(&a, &b)?
         .approve(&approver.id, &presentation, &challenge.id, true)
-        .await?;
+        .await
+        .map_err(|failure| failure.public_message())?;
     require(
         approval.binding == challenge.binding && approval.max_uses == 1 && approval.approved,
         "approval changed binding or usage limit",
@@ -159,7 +289,8 @@ async fn certified_approval_is_immutable_and_survives_reopen() -> TestResult {
     require(
         coordinator
             .approve(&approver.id, &presentation, &challenge.id, true)
-            .await?
+            .await
+            .map_err(|failure| failure.public_message())?
             == approval,
         "reopen changed approval or expiry",
     )?;
@@ -304,7 +435,8 @@ async fn certified_approval_does_not_release_a_revoked_pending_effect() -> TestR
             &challenge.id,
             true,
         )
-        .await?;
+        .await
+        .map_err(|failure| failure.public_message())?;
     let head = AuthorityHistory::replay(&a, anchor()?)?.retained_head()?;
     certify_grant_revocation(&a, &b, head)?;
     let rejected = coordinator.release_prepared(command_id).await?;

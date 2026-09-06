@@ -625,8 +625,8 @@ fn immutable_fact_ids_cannot_reset_revocation() -> Result<(), String> {
     Ok(())
 }
 
-#[test]
-fn approval_is_bound_and_single_use() -> Result<(), String> {
+#[tokio::test]
+async fn approval_is_bound_and_single_use() -> Result<(), String> {
     let (application, policy, administrator) = open(Node::in_memory())?;
     let user = node_principal("node:user");
     let approver = node_principal("node:approver");
@@ -669,6 +669,7 @@ fn approval_is_bound_and_single_use() -> Result<(), String> {
             &challenge.id,
             true,
         )
+        .await
         .map_err(|decision| decision.public_message())?;
     access.presentation.approvals.push(approval.id.clone());
     assert!(policy.decide(&access).unwrap().is_permit());
@@ -685,8 +686,8 @@ fn approval_is_bound_and_single_use() -> Result<(), String> {
     Ok(())
 }
 
-#[test]
-fn approval_cannot_rebind_a_command_result_effect() -> Result<(), String> {
+#[tokio::test]
+async fn approval_cannot_rebind_a_command_result_effect() -> Result<(), String> {
     let (_application, policy, administrator) = open(Node::in_memory())?;
     let user = node_principal("node:effect-user");
     let obligation = Obligation {
@@ -728,6 +729,7 @@ fn approval_cannot_rebind_a_command_result_effect() -> Result<(), String> {
             &challenge.id,
             true,
         )
+        .await
         .map_err(|decision| decision.public_message())?;
     exact.presentation.approvals.push(approval.id);
     let mut rebound_result = exact.clone();
@@ -1473,8 +1475,9 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
     Ok(())
 }
 
-#[test]
-fn effect_challenges_park_exact_batch_and_multiple_approvals_commit_once() -> Result<(), String> {
+#[tokio::test]
+async fn effect_challenges_park_exact_batch_and_multiple_approvals_commit_once()
+-> Result<(), String> {
     let (application, policy, administrator) = open(Node::in_memory())?;
     let user = node_principal("node:user");
     let obligations = ["review-one", "review-two"]
@@ -1547,6 +1550,7 @@ fn effect_challenges_park_exact_batch_and_multiple_approvals_commit_once() -> Re
             &first_challenge,
             true,
         )
+        .await
         .map_err(|decision| format!("first approval: {}", decision.public_message()))?;
     let after_first = application
         .node()
@@ -1565,6 +1569,7 @@ fn effect_challenges_park_exact_batch_and_multiple_approvals_commit_once() -> Re
             &first_challenge,
             true,
         )
+        .await
         .map_err(|decision| format!("repeated approval: {}", decision.public_message()))?;
     assert_eq!(first.id, repeated.id);
     policy
@@ -1574,6 +1579,7 @@ fn effect_challenges_park_exact_batch_and_multiple_approvals_commit_once() -> Re
             &second_challenge,
             true,
         )
+        .await
         .map_err(|decision| format!("second approval: {}", decision.public_message()))?;
     let committed = application
         .node()

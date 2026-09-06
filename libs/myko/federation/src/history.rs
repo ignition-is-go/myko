@@ -1284,6 +1284,23 @@ pub(super) fn materialize_pending_local_commands(
     service_id: Option<&ServiceId>,
     command_type: Option<&str>,
 ) -> VecDeque<CommandSnapshot> {
+    materialize_local_commands(history, local_node, service_id, command_type, |state| {
+        matches!(
+            state,
+            CommandState::Submitted
+                | CommandState::Retrying { .. }
+                | CommandState::AuthorizationPrepared { .. }
+        )
+    })
+}
+
+pub(super) fn materialize_local_commands(
+    history: &[EventEnvelope],
+    local_node: NodeId,
+    service_id: Option<&ServiceId>,
+    command_type: Option<&str>,
+    include: impl Fn(&CommandState) -> bool,
+) -> VecDeque<CommandSnapshot> {
     let mut current = HashMap::<CommandId, (LogPosition, CommandSnapshot)>::new();
     for envelope in history {
         if envelope.origin.node_id != local_node {
@@ -1310,14 +1327,7 @@ pub(super) fn materialize_pending_local_commands(
     }
     let mut pending = current
         .into_values()
-        .filter(|(_, command)| {
-            matches!(
-                command.state,
-                CommandState::Submitted
-                    | CommandState::Retrying { .. }
-                    | CommandState::AuthorizationPrepared { .. }
-            )
-        })
+        .filter(|(_, command)| include(&command.state))
         .collect::<Vec<_>>();
     pending.sort_unstable_by(|left, right| {
         left.0.cmp(&right.0).then_with(|| {

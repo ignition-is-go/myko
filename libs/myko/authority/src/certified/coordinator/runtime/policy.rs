@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use hyphae::{Cell, CellImmutable};
 use myko_federation::{
-    AccessAttempt, AccessOperation, AccessPolicy, ApplicationCapability, ApprovalDecision,
-    AuthorityPresentation, AuthorityUnavailable, AuthorizationDecision, AuthorizationFailure,
-    AuthorizationPhase, ChallengeId, PrincipalId, ReplicationSelection, ScopeTopology,
+    AccessAttempt, AccessOperation, AccessPolicy, ApplicationCapability, AuthorityPresentation,
+    AuthorityUnavailable, AuthorizationDecision, AuthorizationFailure, AuthorizationPhase,
+    ChallengeId, PrincipalId, ReplicationSelection, ScopeTopology,
 };
 
 /// Defers effect authorization to the certified worker. Other operations use
@@ -13,11 +13,20 @@ use myko_federation::{
 pub struct PreparedEffectPolicy {
     non_effect: Arc<dyn AccessPolicy>,
     notify: flume::Sender<()>,
+    coordinator: Arc<super::AuthorityDecisionCoordinator>,
 }
 
 impl PreparedEffectPolicy {
-    pub(super) fn new(non_effect: Arc<dyn AccessPolicy>, notify: flume::Sender<()>) -> Self {
-        Self { non_effect, notify }
+    pub(super) fn new(
+        non_effect: Arc<dyn AccessPolicy>,
+        notify: flume::Sender<()>,
+        coordinator: Arc<super::AuthorityDecisionCoordinator>,
+    ) -> Self {
+        Self {
+            non_effect,
+            notify,
+            coordinator,
+        }
     }
 }
 
@@ -56,15 +65,28 @@ impl AccessPolicy for PreparedEffectPolicy {
             .constrain_replication(request, selection, topology)
     }
 
-    fn approve(
-        &self,
-        executor: &PrincipalId,
-        presentation: &AuthorityPresentation,
-        challenge_id: &ChallengeId,
+    fn approve<'a>(
+        &'a self,
+        executor: &'a PrincipalId,
+        presentation: &'a AuthorityPresentation,
+        challenge_id: &'a ChallengeId,
         approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationFailure> {
-        self.non_effect
-            .approve(executor, presentation, challenge_id, approved)
+    ) -> myko_federation::AuthorityApprovalFuture<'a> {
+        Box::pin(async move {
+            if self.notify.is_disconnected() {
+                return Err(AuthorityUnavailable::PolicyUnavailable.into());
+            }
+            let decision = self
+                .coordinator
+                .approve(executor, presentation, challenge_id, approved)
+                .await?;
+            match self.notify.try_send(()) {
+                Ok(()) | Err(flume::TrySendError::Full(())) => Ok(decision),
+                Err(flume::TrySendError::Disconnected(())) => {
+                    Err(AuthorityUnavailable::PolicyUnavailable.into())
+                }
+            }
+        })
     }
 
     fn register_application_capability(

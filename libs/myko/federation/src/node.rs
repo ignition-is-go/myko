@@ -2370,6 +2370,25 @@ impl Node {
         Ok(materialize_pending_local_commands(&history, self.node_id(), None, None).into())
     }
 
+    /// Returns saved local effects awaiting authority, including parked approvals.
+    /// These commands must not enter the handler execution queue again.
+    ///
+    /// # Errors
+    /// Returns an error when retained command history cannot be read.
+    pub fn pending_local_authorization_commands(&self) -> Result<Vec<CommandSnapshot>, NodeError> {
+        let history = self.events_after(None)?;
+        Ok(
+            materialize_local_commands(&history, self.node_id(), None, None, |state| {
+                matches!(
+                    state,
+                    CommandState::AuthorizationPrepared { .. }
+                        | CommandState::AuthorizationPending { .. }
+                )
+            })
+            .into(),
+        )
+    }
+
     /// Starts a gap-free work feed for every locally originated command in one
     /// application service.
     ///

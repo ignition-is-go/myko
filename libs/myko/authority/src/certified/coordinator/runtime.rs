@@ -16,7 +16,7 @@ pub use policy::PreparedEffectPolicy;
 /// Async prepared-effect execution. Admission and reads retain their explicitly
 /// supplied policy; this is not a replacement for certified read authorization.
 pub struct PreparedAuthorityRuntime {
-    coordinator: AuthorityDecisionCoordinator,
+    coordinator: Arc<AuthorityDecisionCoordinator>,
     wake: flume::Receiver<()>,
 }
 
@@ -29,9 +29,17 @@ impl PreparedAuthorityRuntime {
         non_effect_policy: Arc<dyn myko_federation::AccessPolicy>,
     ) -> (Self, Arc<PreparedEffectPolicy>) {
         let (notify, wake) = flume::bounded(1);
+        let coordinator = Arc::new(coordinator);
         (
-            Self { coordinator, wake },
-            Arc::new(PreparedEffectPolicy::new(non_effect_policy, notify)),
+            Self {
+                coordinator: coordinator.clone(),
+                wake,
+            },
+            Arc::new(PreparedEffectPolicy::new(
+                non_effect_policy,
+                notify,
+                coordinator,
+            )),
         )
     }
 
@@ -52,7 +60,7 @@ impl PreparedAuthorityRuntime {
         let commands = match self
             .coordinator
             .observer
-            .pending_local_application_commands()
+            .pending_local_authorization_commands()
         {
             Ok(commands) => commands,
             Err(error) => {
@@ -61,19 +69,13 @@ impl PreparedAuthorityRuntime {
             }
         };
         for command in commands {
-            if matches!(
-                command.state,
-                CommandState::AuthorizationPrepared { .. }
-                    | CommandState::AuthorizationPending { .. }
-            ) {
-                let id = command.request.id;
-                report(
-                    self.coordinator
-                        .release_prepared(id)
-                        .await
-                        .map_err(|error| format!("command {id}: {error}")),
-                );
-            }
+            let id = command.request.id;
+            report(
+                self.coordinator
+                    .release_prepared(id)
+                    .await
+                    .map_err(|error| format!("command {id}: {error}")),
+            );
         }
     }
 }
