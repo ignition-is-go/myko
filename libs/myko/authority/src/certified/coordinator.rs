@@ -686,18 +686,15 @@ impl AuthorityCoordinatorPeer {
         })
     }
 
-    async fn synchronize_evidence(&self, authority_scope: &ScopeId) -> Result<(), String> {
+    async fn synchronize_evidence(
+        &self,
+        authority_scope: &ScopeId,
+    ) -> Result<(), RetainedEvidenceError> {
         let Some(evidence) = &self.evidence else {
             return Ok(());
         };
         let scopes = [authority_scope.clone()];
-        evidence
-            .refresh_scopes(&scopes)
-            .await
-            .map_err(|error| match error {
-                RetainedEvidenceError::Unavailable(reason) => reason.to_string(),
-                RetainedEvidenceError::Invalid(message) => message,
-            })
+        evidence.refresh_scopes(&scopes).await
     }
 
     #[must_use]
@@ -1084,7 +1081,10 @@ impl AuthorityDecisionCoordinator {
     async fn synchronize(&self) -> Result<(), String> {
         let authority_scope = authority_realm_scope(self.anchor.realm_id());
         for peer in &self.peers {
-            peer.synchronize_evidence(&authority_scope).await?;
+            match peer.synchronize_evidence(&authority_scope).await {
+                Ok(()) | Err(RetainedEvidenceError::Unavailable(_)) => {}
+                Err(RetainedEvidenceError::Invalid(message)) => return Err(message),
+            }
         }
         let mut events = certified_events(&self.observer, self.anchor.realm_id())?;
         for peer in &self.peers {

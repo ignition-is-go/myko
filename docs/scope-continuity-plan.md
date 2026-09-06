@@ -72,6 +72,13 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+The authority coordinator now tolerates unavailable minority peers during
+evidence refresh. Two healthy controllers in a three-controller electorate can
+certify a decision and recover the same decision after both stores reopen.
+Insufficient quorum still fails, and invalid evidence stops coordination before
+voting. The unavailable peer is injected in these tests, so native network loss
+and live effect-release permission remain unproven.
+
 Prepared commands now recover automatically through the application command
 driver after durable reopen. Temporary authority unavailability defers the
 command without stopping independent work. Real-Redb tests verify that recovery

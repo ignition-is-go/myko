@@ -5,8 +5,8 @@ use ed25519_dalek::SigningKey;
 use myko::{
     ApplicationHost, MykoApplication,
     server::{
-        AuthorityControlEndpoint as _, AuthorityControlProposeRequest, RetainedEvidenceError,
-        RetainedEvidenceFuture, ScopedRetainedEvidenceEndpoint,
+        AuthorityControlEndpoint, AuthorityControlFuture, AuthorityControlProposeRequest,
+        RetainedEvidenceError, RetainedEvidenceFuture, ScopedRetainedEvidenceEndpoint,
     },
 };
 use myko_authority::{
@@ -27,7 +27,8 @@ use myko_federation::{
     PreparedCommandEffect, Principal, PrincipalId, PrincipalKind, ReplicationSelection,
     ResourceClaim, ResourceClaimKind, ScopeId, ScopeSelection, ScopeTopology, ServiceId,
     control_quorum::{
-        ControlBallot, ControlEpochId, ControlHead, ControlValue, ControllerId, SignedControlVote,
+        ControlBallot, ControlEpochId, ControlHead, ControlValue, ControllerId,
+        SignedControlProposal, SignedControlVote,
     },
 };
 use myko_iroh::{IrohReplicator, IrohScopedEvidenceEndpoint, endpoint_principal_id};
@@ -37,6 +38,10 @@ type TestResult = Result<(), Box<dyn Error>>;
 
 fn keys() -> [SigningKey; 2] {
     [1, 2].map(|seed| SigningKey::from_bytes(&[seed; 32]))
+}
+
+fn keys3() -> [SigningKey; 3] {
+    [1, 2, 3].map(|seed| SigningKey::from_bytes(&[seed; 32]))
 }
 
 fn controller_id(key: &SigningKey) -> ControllerId {
@@ -49,11 +54,24 @@ fn realm() -> AuthorityRealmId {
 
 fn anchor() -> Result<AuthorityAnchor, String> {
     let [a_key, b_key] = keys();
+    anchor_for(vec![controller_id(&a_key), controller_id(&b_key)])
+}
+
+fn anchor3() -> Result<AuthorityAnchor, String> {
+    let [a_key, b_key, c_key] = keys3();
+    anchor_for(vec![
+        controller_id(&a_key),
+        controller_id(&b_key),
+        controller_id(&c_key),
+    ])
+}
+
+fn anchor_for(controllers: Vec<ControllerId>) -> Result<AuthorityAnchor, String> {
     AuthorityAnchor::new(
         realm(),
         ControlEpochId([8; 32]),
         ControlHead([9; 32]),
-        vec![controller_id(&a_key), controller_id(&b_key)],
+        controllers,
     )
 }
 
@@ -93,30 +111,32 @@ fn sync_authority(a: &Node, b: &Node) -> TestResult {
     Ok(())
 }
 
-fn choose_selection(
+fn choose_selection_with_anchor(
     a: &Node,
     b: &Node,
+    selected_anchor: AuthorityAnchor,
+    a_key: &SigningKey,
+    b_key: &SigningKey,
     predecessor: ControlHead,
     value: &ControlValue,
 ) -> Result<ControlHead, Box<dyn Error>> {
     sync_authority(a, b)?;
-    let [a_key, b_key] = keys();
-    let context = AuthorityHistory::replay(a, anchor()?)?.context_at(predecessor)?;
+    let context = AuthorityHistory::replay(a, selected_anchor.clone())?.context_at(predecessor)?;
     let verifier = context.verifier()?;
     let ballot = ControlBallot {
         counter: 1,
-        proposer: controller_id(&a_key),
+        proposer: controller_id(a_key),
     };
-    let a_controller = AuthorityController::new(a.clone(), anchor()?);
-    let b_controller = AuthorityController::new(b.clone(), anchor()?);
+    let a_controller = AuthorityController::new(a.clone(), selected_anchor.clone());
+    let b_controller = AuthorityController::new(b.clone(), selected_anchor);
     let promises = vec![
-        a_controller.prepare(predecessor, ballot, &a_key)?,
-        b_controller.prepare(predecessor, ballot, &b_key)?,
+        a_controller.prepare(predecessor, ballot, a_key)?,
+        b_controller.prepare(predecessor, ballot, b_key)?,
     ];
-    let proposal = a_controller.propose(predecessor, ballot, &promises, value, &a_key)?;
+    let proposal = a_controller.propose(predecessor, ballot, &promises, value, a_key)?;
     let accepts = vec![
-        a_controller.accept(predecessor, &proposal, &a_key)?,
-        b_controller.accept(predecessor, &proposal, &b_key)?,
+        a_controller.accept(predecessor, &proposal, a_key)?,
+        b_controller.accept(predecessor, &proposal, b_key)?,
     ];
     let chosen = verifier
         .verify_prepare(ballot, &promises)?
@@ -195,6 +215,17 @@ fn prepare_command_evidence_at(
 }
 
 fn install_grant(a: &Node, b: &Node) -> Result<(ControlHead, Principal, ScopeId), Box<dyn Error>> {
+    let [a_key, b_key] = keys();
+    install_grant_with_anchor(a, b, &anchor()?, &a_key, &b_key)
+}
+
+fn install_grant_with_anchor(
+    a: &Node,
+    b: &Node,
+    selected_anchor: &AuthorityAnchor,
+    a_key: &SigningKey,
+    b_key: &SigningKey,
+) -> Result<(ControlHead, Principal, ScopeId), Box<dyn Error>> {
     let app = AuthorityPolicy::install(MykoApplication::new())?;
     let policy = Arc::new(AuthorityPolicy::new(
         ApplicationHost::new(a.clone(), app)?,
@@ -228,7 +259,15 @@ fn install_grant(a: &Node, b: &Node) -> Result<(ControlHead, Principal, ScopeId)
     )?;
     let selected = authority_events(a)?;
     let value = AuthoritySelection::new(CommandId::new(), &selected)?.control_value()?;
-    let head = choose_selection(a, b, anchor()?.genesis(), &value)?;
+    let head = choose_selection_with_anchor(
+        a,
+        b,
+        selected_anchor.clone(),
+        a_key,
+        b_key,
+        selected_anchor.genesis(),
+        &value,
+    )?;
     drop(policy);
     Ok((head, reader, scope))
 }
@@ -301,6 +340,65 @@ impl ScopedRetainedEvidenceEndpoint for InvalidEvidence {
     }
 }
 
+#[derive(Debug)]
+struct UnavailableEvidence;
+
+impl ScopedRetainedEvidenceEndpoint for UnavailableEvidence {
+    fn refresh_scopes<'a>(&'a self, _scopes: &'a [ScopeId]) -> RetainedEvidenceFuture<'a> {
+        Box::pin(async {
+            Err(RetainedEvidenceError::Unavailable(
+                AuthorityUnavailable::HistoryUnavailable,
+            ))
+        })
+    }
+}
+
+#[derive(Debug)]
+struct UnavailableControlEndpoint;
+
+impl AuthorityControlEndpoint for UnavailableControlEndpoint {
+    fn prepare<'a>(
+        &'a self,
+        _principal: &'a PrincipalId,
+        _presentation: &'a AuthorityPresentation,
+        _head: ControlHead,
+        _ballot: ControlBallot,
+    ) -> AuthorityControlFuture<'a, SignedControlVote> {
+        Box::pin(async {
+            Err(AuthorizationFailure::Unavailable(
+                AuthorityUnavailable::CoordinationUnavailable,
+            ))
+        })
+    }
+
+    fn propose<'a>(
+        &'a self,
+        _principal: &'a PrincipalId,
+        _presentation: &'a AuthorityPresentation,
+        _request: AuthorityControlProposeRequest,
+    ) -> AuthorityControlFuture<'a, SignedControlProposal> {
+        Box::pin(async {
+            Err(AuthorizationFailure::Unavailable(
+                AuthorityUnavailable::CoordinationUnavailable,
+            ))
+        })
+    }
+
+    fn accept<'a>(
+        &'a self,
+        _principal: &'a PrincipalId,
+        _presentation: &'a AuthorityPresentation,
+        _head: ControlHead,
+        _proposal: SignedControlProposal,
+    ) -> AuthorityControlFuture<'a, SignedControlVote> {
+        Box::pin(async {
+            Err(AuthorizationFailure::Unavailable(
+                AuthorityUnavailable::CoordinationUnavailable,
+            ))
+        })
+    }
+}
+
 fn add_unrelated_canary(node: &Node, label: &str) -> Result<CommandId, Box<dyn Error>> {
     let command_id = CommandId::new();
     let policy = Arc::new(AllowAllAccessPolicy);
@@ -331,6 +429,84 @@ fn coordinator(a: &Node, b: &Node) -> Result<AuthorityDecisionCoordinator, Box<d
     ];
     Ok(AuthorityDecisionCoordinator::new(
         anchor()?,
+        a.clone(),
+        a_binding,
+        peers,
+    )?)
+}
+
+fn coordinator_with_unavailable_minority(
+    a: &Node,
+    b: &Node,
+    evidence: Arc<dyn ScopedRetainedEvidenceEndpoint>,
+) -> Result<AuthorityDecisionCoordinator, Box<dyn Error>> {
+    let [a_key, b_key, c_key] = keys3();
+    let selected_anchor = anchor3()?;
+    let a_principal = Principal::node(PrincipalId::new("node:controller-a"));
+    let a_binding = AuthorityControllerPrincipal::new(a_principal.clone(), controller_id(&a_key));
+    let callers = vec![a_binding.clone()];
+    let peers = vec![
+        AuthorityCoordinatorPeer::local(
+            a.clone(),
+            selected_anchor.clone(),
+            a_key,
+            a_principal.clone(),
+            callers.clone(),
+        )?,
+        AuthorityCoordinatorPeer::local(
+            b.clone(),
+            selected_anchor.clone(),
+            b_key,
+            a_principal.clone(),
+            callers,
+        )?,
+        AuthorityCoordinatorPeer::new(
+            Arc::new(UnavailableControlEndpoint),
+            a_principal,
+            controller_id(&c_key),
+            realm(),
+        )
+        .with_observer_evidence_endpoint(evidence),
+    ];
+    Ok(AuthorityDecisionCoordinator::new(
+        selected_anchor,
+        a.clone(),
+        a_binding,
+        peers,
+    )?)
+}
+
+fn coordinator_with_unavailable_majority(
+    a: &Node,
+) -> Result<AuthorityDecisionCoordinator, Box<dyn Error>> {
+    let [a_key, b_key, c_key] = keys3();
+    let selected_anchor = anchor3()?;
+    let a_principal = Principal::node(PrincipalId::new("node:controller-a"));
+    let a_binding = AuthorityControllerPrincipal::new(a_principal.clone(), controller_id(&a_key));
+    let callers = vec![a_binding.clone()];
+    let peers = vec![
+        AuthorityCoordinatorPeer::local(
+            a.clone(),
+            selected_anchor.clone(),
+            a_key,
+            a_principal.clone(),
+            callers,
+        )?,
+        AuthorityCoordinatorPeer::new(
+            Arc::new(UnavailableControlEndpoint),
+            a_principal.clone(),
+            controller_id(&b_key),
+            realm(),
+        ),
+        AuthorityCoordinatorPeer::new(
+            Arc::new(UnavailableControlEndpoint),
+            a_principal,
+            controller_id(&c_key),
+            realm(),
+        ),
+    ];
+    Ok(AuthorityDecisionCoordinator::new(
+        selected_anchor,
         a.clone(),
         a_binding,
         peers,
@@ -489,6 +665,99 @@ async fn coordinator_recovers_chosen_decision_from_old_predecessor() -> TestResu
     {
         return Err("coordinated decision was not retained after reopen".into());
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn coordinator_decides_with_unavailable_minority_and_recovers_retry() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a_path = directory.path().join("ha-a.redb");
+    let b_path = directory.path().join("ha-b.redb");
+    let a = RedbJournal::open_node(&a_path)?;
+    let b = RedbJournal::open_node(&b_path)?;
+    let [a_key, b_key, _c_key] = keys3();
+    let selected_anchor = anchor3()?;
+    let (grant_head, reader, scope) =
+        install_grant_with_anchor(&a, &b, &selected_anchor, &a_key, &b_key)?;
+    let request_id = CommandId::new();
+    let operation = CommandId::new();
+    let request = prepare_command_evidence(&a, &b, reader, scope, request_id)?;
+    let coordinator = coordinator_with_unavailable_minority(&a, &b, Arc::new(UnavailableEvidence))?;
+    let chosen = coordinator
+        .decide(grant_head, 2, operation, request_id, request.clone())
+        .await?;
+    if !chosen.decision().is_permit() {
+        return Err("healthy quorum did not permit the prepared single-use effect".into());
+    }
+    let first_head = chosen.head();
+    let first_transition = chosen.transition().clone();
+    drop(coordinator);
+    drop(a);
+    drop(b);
+    let a = RedbJournal::open_node(&a_path)?;
+    let b = RedbJournal::open_node(&b_path)?;
+    let retried = coordinator_with_unavailable_minority(&a, &b, Arc::new(UnavailableEvidence))?
+        .decide(grant_head, 4, operation, request_id, request)
+        .await?;
+    if retried.head() != first_head || retried.transition() != &first_transition {
+        return Err("retry did not recover the original chosen decision".into());
+    }
+    let root = AuthorityDecisionRoot::new(realm(), request_id, AuthorizationPhase::Effect)?;
+    if AuthorityHistory::replay(&a, anchor3()?)?
+        .decision_at(first_head, &root)?
+        .is_none()
+    {
+        return Err("healthy quorum decision was not retained durably".into());
+    }
+    drop(a);
+    drop(b);
+    drop(directory);
+    Ok(())
+}
+
+#[tokio::test]
+async fn coordinator_rejects_invalid_minority_evidence_before_voting() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("invalid-a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("invalid-b.redb"))?;
+    let [a_key, b_key, _c_key] = keys3();
+    let (grant_head, reader, scope) =
+        install_grant_with_anchor(&a, &b, &anchor3()?, &a_key, &b_key)?;
+    let request_id = CommandId::new();
+    let request = prepare_command_evidence(&a, &b, reader, scope, request_id)?;
+    let before = a.events_after(None)?;
+    let result = coordinator_with_unavailable_minority(&a, &b, Arc::new(InvalidEvidence))?
+        .decide(grant_head, 2, CommandId::new(), request_id, request)
+        .await;
+    if result.is_ok() || a.events_after(None)? != before {
+        return Err("invalid evidence must fail before the coordinator starts a vote".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn coordinator_rejects_when_unavailable_controllers_leave_no_majority() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a_path = directory.path().join("insufficient-a.redb");
+    let b_path = directory.path().join("insufficient-b.redb");
+    let a = RedbJournal::open_node(&a_path)?;
+    let b = RedbJournal::open_node(&b_path)?;
+    let [a_key, b_key, _c_key] = keys3();
+    let selected_anchor = anchor3()?;
+    let (grant_head, reader, scope) =
+        install_grant_with_anchor(&a, &b, &selected_anchor, &a_key, &b_key)?;
+    let request_id = CommandId::new();
+    let operation = CommandId::new();
+    let request = prepare_command_evidence(&a, &b, reader, scope, request_id)?;
+    let result = coordinator_with_unavailable_majority(&a)?
+        .decide(grant_head, 2, operation, request_id, request)
+        .await;
+    if result.is_ok() {
+        return Err("coordinator chose a decision without controller majority".into());
+    }
+    drop(a);
+    drop(b);
+    drop(directory);
     Ok(())
 }
 
