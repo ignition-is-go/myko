@@ -1,12 +1,13 @@
 use std::{sync::Arc, time::Duration};
 
 use myko_federation::{
-    AuthorizationDecision, CommandId, CommandSnapshot, CommandState, FrameworkControlEvent,
-    NodeEvent,
+    AuthorizationDecision, CommandId, CommandSnapshot, CommandState, EventSubscription,
+    FrameworkControlEvent, MykoService as _, NodeEvent, ServiceId,
     control_quorum::{ControlBallot, ControlHead},
 };
 
 use super::{AuthorityDecisionCoordinator, AuthorityHistory, AuthorityRequestSource};
+use crate::{AuthorityService, authority_realm_scope};
 
 mod challenge;
 mod lifecycle;
@@ -14,7 +15,7 @@ mod policy;
 pub use lifecycle::PreparedAuthorityGuard;
 pub use policy::CertifiedRuntimePolicy;
 
-/// Async prepared-effect execution with a policy that also certifies scoped item reads.
+/// Local authority publication and prepared-effect execution with certified scoped reads.
 /// Other admission and read operations retain their explicitly supplied policy.
 pub struct PreparedAuthorityRuntime {
     coordinator: Arc<AuthorityDecisionCoordinator>,
@@ -44,24 +45,57 @@ impl PreparedAuthorityRuntime {
         )
     }
 
-    /// Resume retained work on startup, wakeup, and every five seconds while
-    /// work remains. Parked approvals are not retried by application dispatch.
-    /// Failures leave effects prepared and are reported without blocking the next
-    /// command. Dropping the policy closes the worker; cancelling it closes the
-    /// policy's wake channel, so subsequent access remains unavailable.
+    /// Publish locally accepted authority on startup and after administration commits.
+    /// Resume prepared work on wakeup and every five seconds while publication or
+    /// effects remain pending. Parked approvals are not retried by application dispatch.
+    /// Publication failures postpone effect release. Individual effect failures
+    /// leave that effect prepared without blocking the next command.
+    /// History transports must become ready independently of this worker.
+    /// Dropping the policy closes the worker; cancelling it closes the
+    /// policy's wake channel, so subsequent effect release remains unavailable.
     pub async fn run(self, mut report: impl FnMut(Result<CommandSnapshot, String>)) {
-        loop {
-            let pending = self.resolve_pending(&mut report).await;
-            let wake = if pending {
-                tokio::select! {
-                    wake = self.wake.recv_async() => wake,
-                    () = tokio::time::sleep(Duration::from_secs(5)) => Ok(()),
-                }
-            } else {
-                self.wake.recv_async().await
-            };
-            if wake.is_err() {
+        let mut authority_changes = match self.coordinator.observer.subscribe_from_now() {
+            Ok(events) => events,
+            Err(error) => {
+                report(Err(format!("authority publication watch failed: {error}")));
                 return;
+            }
+        };
+        loop {
+            let pending = match self.coordinator.certify_local_authority().await {
+                Ok(_) => self.resolve_pending(&mut report).await,
+                Err(error) => {
+                    report(Err(format!("authority publication failed: {error}")));
+                    true
+                }
+            };
+            tokio::select! {
+                wake = self.wake.recv_async() => if wake.is_err() { return; },
+                change = self.next_authority_commit(&mut authority_changes) => {
+                    if let Err(error) = change {
+                        report(Err(format!("authority publication watch failed: {error}")));
+                        return;
+                    }
+                },
+                () = tokio::time::sleep(Duration::from_secs(5)), if pending => {},
+            }
+        }
+    }
+
+    async fn next_authority_commit(&self, events: &mut EventSubscription) -> Result<(), String> {
+        let scope = authority_realm_scope(self.coordinator.anchor.realm_id());
+        let service = ServiceId::new(AuthorityService::SERVICE_ID);
+        loop {
+            let event = events
+                .recv_async()
+                .await
+                .map_err(|error| error.to_string())?;
+            if event.origin.node_id == self.coordinator.observer.node_id()
+                && let NodeEvent::CommandCommitted { command, .. } = event.event
+                && command.request.service_id == service
+                && command.request.scope_id == scope
+            {
+                return Ok(());
             }
         }
     }

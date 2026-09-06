@@ -297,10 +297,16 @@ fn record_obligated_grant(
     obligations: impl IntoIterator<Item = myko_federation::Obligation>,
 ) -> Result<(Principal, ScopeId), Box<dyn Error>> {
     let app = AuthorityPolicy::install(MykoApplication::new())?;
-    let policy = Arc::new(AuthorityPolicy::new(
-        ApplicationHost::new(a.clone(), app)?,
-        realm(),
-    ));
+    record_obligated_grant_in(ApplicationHost::new(a.clone(), app)?, scope, obligations)
+}
+
+fn record_obligated_grant_in(
+    application: ApplicationHost,
+    scope: ScopeId,
+    obligations: impl IntoIterator<Item = myko_federation::Obligation>,
+) -> Result<(Principal, ScopeId), Box<dyn Error>> {
+    let a = application.node().clone();
+    let policy = Arc::new(AuthorityPolicy::new(application, realm()));
     a.set_command_access_policy(policy.clone())?;
     let admin = Principal::new(PrincipalId::new("admin"), PrincipalKind::Node);
     let reader = Principal::new(PrincipalId::new("reader"), PrincipalKind::Node);

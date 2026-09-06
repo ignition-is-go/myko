@@ -132,6 +132,7 @@ async fn installed_runtime_joins_inflight_coordination_and_recovers_item_effect_
         |_| {},
     )?;
     tokio::time::timeout(StdDuration::from_secs(5), entered_rx.recv_async()).await??;
+    super::native_lifecycle::wait_prepared(&a, command_id).await?;
     let saved = super::prepared_runtime::saved_effect(&a, command_id)?;
     if saved.batch().changes.is_empty() || EXECUTIONS.load(Ordering::SeqCst) != 1 {
         return Err("installed dispatch did not run the item-writing handler exactly once".into());

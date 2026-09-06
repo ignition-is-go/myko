@@ -363,9 +363,9 @@ struct NodeReadiness {
 
 /// RAII ownership of one unfinished node-startup phase.
 ///
-/// Every transport waits until all startup gates have been released before it
-/// serves application or federation requests. Dropping the guard releases its
-/// phase, including during error unwinding.
+/// Application and history requests wait until all startup gates are released.
+/// Installed controller endpoints can serve authenticated coordination earlier.
+/// Dropping the guard releases its phase, including during error unwinding.
 #[derive(Debug)]
 pub struct NodeStartupGuard {
     readiness: Arc<NodeReadiness>,

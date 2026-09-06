@@ -72,6 +72,35 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+The prepared-authority worker now certifies locally accepted authority before
+releasing prepared effects. It subscribes before its initial scan, wakes for
+local AuthorityService commits in its realm, and retries failed publication
+without requiring another command. Foreign raw authority is not selected
+automatically. Publication failure postpones effect release.
+
+Native tests verify bootstrap after a peer becomes ready, later idle revocation,
+and publication recovery after a controller endpoint returns. The native node
+lifecycle test now uses its existing application host and lets the worker certify
+bootstrap before releasing the saved effect. Scoped history authorization and
+the history startup barrier remain intact. History transports must become ready
+independently of the worker, so resource initialization cannot wait for publication.
+Forrest still needs production controller configuration and worker installation.
+
+The final authority run passed 25 library, 52 coordinator, and 8 history tests
+in `/tmp/myko-authority-publication-gate-final.log`. Strict lint then found two
+test-only issues. Those corrections passed strict lint and the two publication
+tests in `/tmp/myko-authority-publication-strict-clean.log` and
+`/tmp/myko-authority-publication-final-tests.log`. Formatting and Forrest's locked
+all-target check passed in `/tmp/myko-authority-publication-fmt-check.log` and
+`/tmp/forrest-authority-publication-check-final.log`.
+
+Earlier failed runs exposed a blocking test observer and lifecycle fixture
+assumptions; their evidence remains in the decision trail. No full workspace,
+production cutover, or C01-C18 completion is claimed. The Mac remains behind
+with a modified Forrest lockfile; the latest follow-up inspection timed out.
+
+### Previous controller-startup checkpoint
+
 Controller prepare, propose, and accept requests now reach the explicitly
 installed authority endpoint before application startup completes. The endpoint
 still authenticates each caller and checks its controller binding. All other

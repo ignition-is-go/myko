@@ -32,7 +32,7 @@ impl myko::CommandHandler for NativeCommand {
     }
 }
 
-async fn wait_prepared(node: &Node, id: CommandId) -> TestResult {
+pub async fn wait_prepared(node: &Node, id: CommandId) -> TestResult {
     tokio::time::timeout(StdDuration::from_secs(10), async {
         loop {
             if node.command(id)?.is_some_and(|command| {
@@ -74,15 +74,7 @@ async fn authority_worker_leaves_native_dispatch_owned_by_the_node() -> TestResu
         PrincipalId::new("reader"),
         myko_federation::CommandSubmission::for_command(&command)?,
     )?;
-    let [a_key, b_key] = keys();
-    install_scoped_grant(
-        native.node(),
-        &b,
-        &anchor()?,
-        &a_key,
-        &b_key,
-        request.scope_id.clone(),
-    )?;
+    record_obligated_grant_in(native.application().clone(), request.scope_id.clone(), [])?;
     let harness = NativeControlHarness::start(
         native.node().clone(),
         b,
