@@ -85,9 +85,23 @@ now holds the existing reentrant dispatch lock across both operations. The
 focused regression failed before that fix and passed afterward. This is
 process-local dispatch ordering, not distributed fencing.
 
-Forrest's production policy is still raw authority. Its synchronous command
-callers and local subscriptions need migration before enabling certified policy.
+Forrest's production policy is still raw authority. Node-effect transitions and
+provider resource reconciliation now await the existing typed command client.
+Stopping the node-effect waiter preserves its pending command. Other synchronous
+command callers still need migration. Local subscription behavior under certified
+policy still needs verification before deciding whether those callers must change.
 No production cutover or C01-C18 completion is claimed.
+
+The node-effect caller migration passed the full Forrest workspace tests,
+formatting, and strict Clippy. Its focused verifier checks pending acceptance,
+cancellation without changing the retained command, exact completion results,
+remote root execution, and remote provider account use. Evidence is in
+`/tmp/forrest-node-effects-workspace-tests-final.log`,
+`/tmp/forrest-node-effects-workspace-strict-final.log`, and
+`/tmp/forrest-node-effects-verifier-retry.log`.
+Earlier link failures coincided with a full filesystem. Cargo removed generated
+artifacts from the agent build directories before the successful retry.
+No accepted history was removed. Mac SSH still times out.
 
 Verification passed for the federation suite, the authority and native-node
 suites, and strict lint for federation, core, authority, and native node.
