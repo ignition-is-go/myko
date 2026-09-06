@@ -114,7 +114,9 @@ The added Redb test passed with all 168 local workspace tests, strict lint, and
 formatting in `/tmp/forrest-root-disk-workspace.log`,
 `/tmp/forrest-root-disk-clippy.log`, and `/tmp/forrest-root-disk-fmt-check.log`.
 The previous production source passed all 167 tests, strict lint, and formatting
-on the Mac in `/tmp/forrest-root-mac-validation.log`. The new test's Mac run is pending.
+on the Mac in `/tmp/forrest-root-mac-validation.log`. The expanded five root tests,
+including Redb reopen, and workspace strict lint and formatting also passed on
+the Mac in `/tmp/forrest-root-disk-mac-validation.log`.
 Local subscription behavior under certified
 policy still needs verification before deciding whether those callers must change.
 No production cutover or C01-C18 completion is claimed.
