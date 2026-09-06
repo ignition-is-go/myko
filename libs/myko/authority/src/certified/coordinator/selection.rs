@@ -4,6 +4,44 @@ use super::{AuthorityDecisionCoordinator, AuthorityHistory, runtime::next_counte
 use crate::certified::AuthoritySelection;
 
 impl AuthorityDecisionCoordinator {
+    /// Certify locally accepted authority records not yet selected in this realm.
+    /// Retaining another origin's raw grants does not select them automatically.
+    /// Recover earlier accepted selections before recomputing the remaining records.
+    /// Already selected records are not selected again. The returned head is historical
+    /// evidence, not live permission or proof that another node has no newer records.
+    ///
+    /// # Errors
+    /// Rejects invalid retained records, unavailable quorum, and exhausted retries.
+    pub async fn certify_local_authority(&self) -> Result<ControlHead, String> {
+        let _turn = self.proposal_turn.lock().await;
+        for _ in 0..self.max_rounds {
+            self.synchronize().await?;
+            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+            let head = history.retained_head()?;
+            let Some(selection) =
+                history.pending_local_selection_at(head, self.observer.node_id())?
+            else {
+                return Ok(head);
+            };
+            let value = selection.control_value()?;
+            history.validate_transition_at(head, &value)?;
+            let ballot = ControlBallot {
+                counter: next_counter(&history, head)?,
+                proposer: self.proposer.controller,
+            };
+            self.choose_value(&history, head, ballot, value).await?;
+            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+            let head = history.retained_head()?;
+            if history
+                .pending_local_selection_at(head, self.observer.node_id())?
+                .is_none()
+            {
+                return Ok(head);
+            }
+        }
+        Err("retained authority selection did not converge before the retry limit".to_owned())
+    }
+
     /// Certify an exact selection of retained authority records through the controllers.
     ///
     /// Retrying the same selection recovers its original chosen head, even after

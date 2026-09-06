@@ -1,5 +1,8 @@
 use super::*;
 
+#[path = "retained_selection.rs"]
+mod retained;
+
 fn record_revocation(node: &Node) -> Result<AuthoritySelection, Box<dyn Error>> {
     let policy = Arc::new(AuthorityPolicy::new(
         ApplicationHost::new(

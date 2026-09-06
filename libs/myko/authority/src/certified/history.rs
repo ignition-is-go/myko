@@ -641,6 +641,45 @@ impl AuthorityHistory {
         Ok(Some(evidence.head()))
     }
 
+    pub(super) fn pending_local_selection_at(
+        &self,
+        head: ControlHead,
+        local_node: myko_federation::NodeId,
+    ) -> Result<Option<AuthoritySelection>, String> {
+        self.context_at(head)?;
+        let selected = self
+            .selected_at(head)?
+            .into_iter()
+            .filter_map(|fact| match fact {
+                CertifiedAuthorityFact::Event(event) => Some(EventKey::new(event.origin)),
+                CertifiedAuthorityFact::Decision(_) => None,
+            })
+            .collect::<BTreeSet<_>>();
+        let service = ServiceId::new(AuthorityService::SERVICE_ID);
+        let scope = authority_realm_scope(self.realm_id());
+        let records = self
+            .history
+            .iter()
+            .filter(|event| {
+                let command = match &event.event {
+                    NodeEvent::CommandLifecycle(command)
+                    | NodeEvent::CommandCommitted { command, .. } => command,
+                    NodeEvent::FrameworkControl(_) => return false,
+                };
+                event.origin.node_id == local_node
+                    && command.request.service_id == service
+                    && command.request.scope_id == scope
+                    && !selected.contains(&EventKey::new(event.origin))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if records.is_empty() {
+            Ok(None)
+        } else {
+            AuthoritySelection::new(CommandId::new(), &records).map(Some)
+        }
+    }
+
     /// Plan a new certified check of an already consumed, exact effect.
     /// No additional use or lease is created. This historical plan is not a
     /// live permit until quorum coordination and use-time checks succeed.

@@ -72,6 +72,27 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+`certify_local_authority` certifies this node's accepted AuthorityService records
+that are not yet selected. It recovers earlier accepted control values and then
+recomputes the remaining records, including when a previous attempt selected only
+a prefix. Completed retries append no additional selection. Foreign raw records
+are excluded even when they have been retained in the same realm.
+
+Native Redb/Iroh tests cover bootstrap, revocation, quorum outage, and reopen.
+Additional tests cover an accepted prefix and retained foreign grants. The three
+focused tests passed. The broader authority gate passed all 82 tests, strict
+Clippy, and formatting. Forrest's locked all-target check also passed. Evidence
+is in `/tmp/myko-local-startup-gate.log`,
+`/tmp/myko-local-startup-strict-final.log`,
+`/tmp/myko-local-startup-fmt-check.log`, and
+`/tmp/forrest-local-startup-check.log`.
+The returned head is historical evidence, not live permission or a guarantee
+that foreign nodes have no newer records. Selected in-flight lifecycle records
+remain lifecycle history, not completed grants. Production startup still needs
+controller configuration and explicit bindings. All C01-C18 remain open.
+
+### Previous caller-evidence checkpoint
+
 Controller evidence refresh now has an explicit binding for each authenticated
 proposer. Both authority-history and command-evidence refresh use that binding
 after checking the transport principal, direct presentation, and ballot identity.
