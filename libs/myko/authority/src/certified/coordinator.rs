@@ -21,13 +21,15 @@ use myko_federation::{
 use crate::{AuthorityRealmKey, AuthorityService, authority_realm_scope};
 
 use super::{
-    AuthorityAnchor, AuthorityController, AuthorityDecisionRevalidation, AuthorityDecisionRoot,
-    AuthorityDecisionTransition, AuthorityHistory,
+    AuthorityAnchor, AuthorityApprovalTransition, AuthorityController,
+    AuthorityDecisionRevalidation, AuthorityDecisionRoot, AuthorityDecisionTransition,
+    AuthorityHistory,
 };
 
 const DEFAULT_MAX_COORDINATION_ROUNDS: usize = 8;
 const DEFAULT_MAX_EVALUATION_SKEW_SECONDS: i64 = 300;
 
+mod approval;
 mod revalidation;
 mod runtime;
 pub use revalidation::CoordinatedAuthorityRevalidation;
@@ -317,6 +319,17 @@ impl CertifiedAuthorityControlEndpoint {
                 .validate_revalidation(presentation, head, ballot, promises, value, &revalidation)
                 .await;
         }
+        if let ControlTransition::Retain { payload, .. } = &transition
+            && let Some(approval) = AuthorityApprovalTransition::from_retained_payload(payload)
+                .map_err(|_| {
+                    control_denial_for_message(
+                        presentation,
+                        "authority approval payload is malformed",
+                    )
+                })?
+        {
+            return self.validate_approval(presentation, head, ballot, promises, value, &approval);
+        }
         let Some(decision) = decision_transition(presentation, value)? else {
             return Ok(());
         };
@@ -460,6 +473,38 @@ impl CertifiedAuthorityControlEndpoint {
                 "prepared command evidence is missing trusted topology",
             )
         })?;
+        if decision.is_continuation() {
+            request.topology = Some(topology);
+            let previous = history
+                .decision_at(head, decision.root())
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
+                .ok_or_else(|| {
+                    control_denial_for_message(
+                        presentation,
+                        "authority continuation has no prior challenge",
+                    )
+                })?;
+            if !previous.matches_prepared_request(request) {
+                return Err(control_denial_for_message(
+                    presentation,
+                    "authority continuation differs from the saved effect",
+                ));
+            }
+            return history
+                .plan_continuation_at(
+                    head,
+                    decision.operation(),
+                    decision.root(),
+                    *decision.evaluated_at(),
+                )
+                .and_then(|planned| planned.control_value())
+                .map_err(|_| {
+                    control_denial_for_message(
+                        presentation,
+                        "authority continuation does not match certified approvals",
+                    )
+                });
+        }
         history
             .plan_decision_at(
                 head,

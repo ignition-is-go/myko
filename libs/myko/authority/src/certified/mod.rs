@@ -28,8 +28,8 @@ pub use coordinator::{
     PreparedAuthorityGuard, PreparedAuthorityRuntime, PreparedEffectPolicy,
 };
 pub use history::{
-    AuthorityAnchor, AuthorityDecisionRevalidation, AuthorityDecisionRoot,
-    AuthorityDecisionTransition, AuthorityHistory, AuthoritySelection,
+    AuthorityAnchor, AuthorityApprovalTransition, AuthorityDecisionRevalidation,
+    AuthorityDecisionRoot, AuthorityDecisionTransition, AuthorityHistory, AuthoritySelection,
 };
 pub use issuer::AuthorityController;
 pub use rotation::AuthorityRotation;
@@ -99,6 +99,7 @@ fn project<T: MykoItem>(
 ) -> Result<Vec<T>, String> {
     let mut projection = ItemProjection::<T>::default();
     let immutable = [
+        ApprovalRecord::ITEM_TYPE,
         GrantUse::ITEM_TYPE,
         DelegationUse::ITEM_TYPE,
         ApprovalUse::ITEM_TYPE,

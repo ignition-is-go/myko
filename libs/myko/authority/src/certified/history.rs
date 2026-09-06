@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Utc};
 use myko_federation::{
     AccessAttempt, AuthorizationBinding, AuthorizationDecision, AuthorizationPhase,
-    CertifiedControlChain, CertifiedControlContext, CommandId, ControlAnchor, ControlTransition,
-    EventEnvelope, EventId, LogPosition, MykoService as _, Node, NodeEvent, ScopeId, ScopeTopology,
-    ServiceId, causal_replay,
+    CertifiedControlChain, CertifiedControlContext, ChallengeId, CommandId, ControlAnchor,
+    ControlTransition, EventEnvelope, EventId, LogPosition, MykoService as _, Node, NodeEvent,
+    ScopeId, ScopeTopology, ServiceId, causal_replay,
     control_quorum::{ControlEpochId, ControlHead, ControlValue, ControllerId},
 };
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,10 @@ use super::{AuthorityRotation, CertifiedAuthorityFact, project_facts};
 const SELECTION_DOMAIN: &[u8] = b"myko/certified-authority-selection/v1\0";
 const DECISION_DOMAIN: &[u8] = b"myko/certified-authority-decision/v1\0";
 
+mod approval;
+mod continuation;
 mod revalidation;
+pub use approval::AuthorityApprovalTransition;
 pub use revalidation::AuthorityDecisionRevalidation;
 
 #[derive(Debug, Clone)]
@@ -223,6 +226,7 @@ impl AuthorityDecisionRoot {
 pub struct AuthorityDecisionTransition {
     operation: CommandId,
     root: AuthorityDecisionRoot,
+    fulfills: Option<ChallengeId>,
     request: AccessAttempt,
     binding: AuthorizationBinding,
     topology: ScopeTopology,
@@ -274,7 +278,23 @@ impl AuthorityDecisionTransition {
 
     pub(super) fn matches_prepared_request(&self, mut request: AccessAttempt) -> bool {
         let topology = request.topology.take();
-        canonical_request(request) == self.request && topology.as_ref() == Some(&self.topology)
+        let mut expected = self.request.clone();
+        if self.fulfills.is_some()
+            && expected
+                .presentation
+                .approvals
+                .starts_with(&request.presentation.approvals)
+        {
+            expected
+                .presentation
+                .approvals
+                .clone_from(&request.presentation.approvals);
+        }
+        canonical_request(request) == expected && topology.as_ref() == Some(&self.topology)
+    }
+
+    pub(super) const fn is_continuation(&self) -> bool {
+        self.fulfills.is_some()
     }
 
     fn records(&self) -> &[DecisionRecord] {
@@ -289,6 +309,26 @@ impl AuthorityDecisionTransition {
         topology: ScopeTopology,
         state: &crate::EvaluationState,
     ) -> Result<Self, String> {
+        Self::plan_round(
+            operation,
+            root,
+            request,
+            evaluated_at,
+            topology,
+            state,
+            None,
+        )
+    }
+
+    fn plan_round(
+        operation: CommandId,
+        root: AuthorityDecisionRoot,
+        request: AccessAttempt,
+        evaluated_at: DateTime<Utc>,
+        topology: ScopeTopology,
+        state: &crate::EvaluationState,
+        fulfills: Option<ChallengeId>,
+    ) -> Result<Self, String> {
         if root.realm_id().as_str().is_empty() {
             return Err("authority decision realm is empty".to_owned());
         }
@@ -299,8 +339,8 @@ impl AuthorityDecisionTransition {
         let mut request_for_evaluation = request.clone();
         request_for_evaluation.topology = Some(topology.clone());
         let binding = AuthorizationBinding::from_request(&request_for_evaluation);
-        let seed = decision_seed(&root)?;
-        let decision_id = decision_id(&root)?;
+        let seed = decision_seed(&root, fulfills.as_ref())?;
+        let decision_id = decision_id(&root, fulfills.as_ref())?;
         let outcome = evaluate_seeded(state, &request_for_evaluation, evaluated_at, seed);
         let records = canonical_decision_records(decision_records(
             root.realm_id(),
@@ -313,6 +353,7 @@ impl AuthorityDecisionTransition {
         Ok(Self {
             operation,
             root,
+            fulfills,
             request,
             binding,
             topology,
@@ -331,6 +372,7 @@ impl AuthorityDecisionTransition {
             &AuthorityDecisionWire {
                 operation: self.operation,
                 root: self.root.clone(),
+                fulfills: self.fulfills.clone(),
                 request: self.request.clone(),
                 binding: self.binding.clone(),
                 topology: self.topology.clone(),
@@ -355,6 +397,7 @@ impl AuthorityDecisionTransition {
         let transition = Self {
             operation: wire.operation,
             root: wire.root,
+            fulfills: wire.fulfills,
             request: canonical_request(wire.request),
             binding: wire.binding,
             topology: wire.topology,
@@ -390,10 +433,10 @@ impl AuthorityDecisionTransition {
         if AuthorizationBinding::from_request(&request) != self.binding {
             return Err("authority decision binding does not match request".to_owned());
         }
-        if decision_seed(&self.root)? != self.seed {
+        if decision_seed(&self.root, self.fulfills.as_ref())? != self.seed {
             return Err("authority decision seed does not match root".to_owned());
         }
-        if decision_id(&self.root)? != self.decision_id {
+        if decision_id(&self.root, self.fulfills.as_ref())? != self.decision_id {
             return Err("authority decision id does not match root".to_owned());
         }
         if canonical_decision_records(self.records.clone()) != self.records {
@@ -403,13 +446,14 @@ impl AuthorityDecisionTransition {
     }
 
     fn validate_against(&self, state: &crate::EvaluationState) -> Result<(), String> {
-        let planned = Self::plan(
+        let planned = Self::plan_round(
             self.operation,
             self.root.clone(),
             self.request.clone(),
             self.evaluated_at,
             self.topology.clone(),
             state,
+            self.fulfills.clone(),
         )?;
         if &planned != self {
             return Err(
@@ -543,6 +587,7 @@ impl AuthorityHistory {
         root: &AuthorityDecisionRoot,
     ) -> Result<Option<AuthorityDecisionTransition>, String> {
         self.selected_at(head)?;
+        let mut latest = None;
         for transition in self.chain.transitions_to(head)? {
             let ControlTransition::Retain { payload, .. } = transition else {
                 continue;
@@ -550,11 +595,11 @@ impl AuthorityHistory {
             if payload.0.starts_with(DECISION_DOMAIN) {
                 let decision = AuthorityDecisionTransition::from_payload(payload)?;
                 if decision.root() == root {
-                    return Ok(Some(decision));
+                    latest = Some(decision);
                 }
             }
         }
-        Ok(None)
+        Ok(latest)
     }
 
     /// Plan a new certified check of an already consumed, exact effect.
@@ -661,6 +706,18 @@ impl<'a> AuthorityFactReplay<'a> {
             let state = project_facts(&self.output, self.realm, original.topology.clone())?;
             return revalidation.validate_against(original, state);
         }
+        if let Some(approval) = AuthorityApprovalTransition::from_retained_payload(payload)? {
+            if approval.operation() != *operation {
+                return Err(
+                    "authority approval operation differs from control transition".to_owned(),
+                );
+            }
+            let state = project_facts(&self.output, self.realm, ScopeTopology::default())?;
+            approval.validate_against(self.realm, &state)?;
+            self.output
+                .push(CertifiedAuthorityFact::Decision(approval.record()));
+            return Ok(());
+        }
         Err("control retain payload is not a certified authority value".to_owned())
     }
 
@@ -746,8 +803,8 @@ impl<'a> AuthorityFactReplay<'a> {
         if decision.root().realm_id() != self.realm {
             return Err("authority decision names another realm".to_owned());
         }
-        self.track_decision_root(&decision)?;
         let state = project_facts(&self.output, self.realm, decision.topology.clone())?;
+        self.track_decision_root(&decision, &state)?;
         decision.validate_against(&state)?;
         for record in decision.records() {
             let identity = (record.item_type(), record.item_id().to_owned());
@@ -763,20 +820,25 @@ impl<'a> AuthorityFactReplay<'a> {
     fn track_decision_root(
         &mut self,
         decision: &AuthorityDecisionTransition,
+        state: &crate::EvaluationState,
     ) -> Result<(), String> {
         if let Some(previous) = self
             .decisions
             .insert(decision.root().key(), decision.clone())
         {
-            if previous.binding != decision.binding
-                || previous.request != decision.request
-                || previous.topology != decision.topology
-            {
+            let planned = previous.continue_with_approvals(
+                decision.operation,
+                decision.evaluated_at,
+                state,
+            )?;
+            if planned != *decision {
                 return Err(
-                    "authority decision root was reused with a different binding".to_owned(),
+                    "authority continuation differs from the certified challenge and approvals"
+                        .to_owned(),
                 );
             }
-            return Err("authority decision root is selected more than once".to_owned());
+        } else if decision.fulfills.is_some() {
+            return Err("authority continuation has no previous challenge".to_owned());
         }
         Ok(())
     }
@@ -792,6 +854,8 @@ struct AuthoritySelectionWire {
 struct AuthorityDecisionWire {
     operation: CommandId,
     root: AuthorityDecisionRoot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fulfills: Option<ChallengeId>,
     request: AccessAttempt,
     binding: AuthorizationBinding,
     topology: ScopeTopology,
@@ -1011,15 +1075,27 @@ fn canonical_decision_records(mut records: Vec<DecisionRecord>) -> Vec<DecisionR
     records
 }
 
-fn decision_seed(root: &AuthorityDecisionRoot) -> Result<[u8; 32], String> {
+fn decision_seed(
+    root: &AuthorityDecisionRoot,
+    fulfills: Option<&ChallengeId>,
+) -> Result<[u8; 32], String> {
     let mut bytes = b"myko/certified-authority-evaluation-seed/v1\0".to_vec();
     serde_json::to_writer(&mut bytes, root).map_err(|error| error.to_string())?;
+    if let Some(challenge) = fulfills {
+        serde_json::to_writer(&mut bytes, challenge).map_err(|error| error.to_string())?;
+    }
     Ok(Sha256::digest(bytes).into())
 }
 
-fn decision_id(root: &AuthorityDecisionRoot) -> Result<String, String> {
+fn decision_id(
+    root: &AuthorityDecisionRoot,
+    fulfills: Option<&ChallengeId>,
+) -> Result<String, String> {
     let mut bytes = b"myko/certified-authority-decision-id/v1\0".to_vec();
     serde_json::to_writer(&mut bytes, root).map_err(|error| error.to_string())?;
+    if let Some(challenge) = fulfills {
+        serde_json::to_writer(&mut bytes, challenge).map_err(|error| error.to_string())?;
+    }
     Ok(format!("decision/{:x}", Sha256::digest(bytes)))
 }
 

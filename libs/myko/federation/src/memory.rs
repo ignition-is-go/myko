@@ -726,8 +726,17 @@ impl NodeBackend for InMemoryBackend {
             }
             return Self::resume_visible_command(&state, command_id);
         }
-        let CommandState::AuthorizationPrepared { effect } = existing.state else {
-            return Err(NodeError::CommandNotExecuting(command_id));
+        let effect = match existing.state {
+            CommandState::AuthorizationPrepared { effect } => effect,
+            CommandState::AuthorizationPending { batch, result, .. } => {
+                let retained = Self::retained_prepared_effect(&state, command_id)
+                    .ok_or(NodeError::CommandNotExecuting(command_id))?;
+                if retained.batch() != batch.as_ref() || retained.result() != result {
+                    return Err(NodeError::CommandConflict(command_id));
+                }
+                Box::new(retained.clone())
+            }
+            _ => return Err(NodeError::CommandNotExecuting(command_id)),
         };
         if effect.effect_digest() != effect_digest {
             return Err(NodeError::CommandConflict(command_id));
@@ -806,7 +815,9 @@ impl NodeBackend for InMemoryBackend {
             .ok_or(NodeError::UnknownCommand(command_id))?;
         if !matches!(
             existing.state,
-            CommandState::Executing | CommandState::AuthorizationPrepared { .. }
+            CommandState::Executing
+                | CommandState::AuthorizationPrepared { .. }
+                | CommandState::AuthorizationPending { .. }
         ) {
             return Err(NodeError::CommandNotExecuting(command_id));
         }

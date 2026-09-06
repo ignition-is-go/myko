@@ -37,6 +37,8 @@ use myko_redb::RedbJournal;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[path = "support/certified_approval.rs"]
+mod certified_approval;
 #[path = "support/prepared_authority_lifecycle.rs"]
 mod prepared_lifecycle;
 #[path = "support/prepared_authority_runtime.rs"]
@@ -250,6 +252,18 @@ fn install_scoped_grant(
     b_key: &SigningKey,
     scope: ScopeId,
 ) -> Result<(ControlHead, Principal, ScopeId), Box<dyn Error>> {
+    install_obligated_grant(a, b, selected_anchor, a_key, b_key, scope, None)
+}
+
+fn install_obligated_grant(
+    a: &Node,
+    b: &Node,
+    selected_anchor: &AuthorityAnchor,
+    a_key: &SigningKey,
+    b_key: &SigningKey,
+    scope: ScopeId,
+    obligation: Option<myko_federation::Obligation>,
+) -> Result<(ControlHead, Principal, ScopeId), Box<dyn Error>> {
     let app = AuthorityPolicy::install(MykoApplication::new())?;
     let policy = Arc::new(AuthorityPolicy::new(
         ApplicationHost::new(a.clone(), app)?,
@@ -259,6 +273,14 @@ fn install_scoped_grant(
     let admin = Principal::new(PrincipalId::new("admin"), PrincipalKind::Node);
     let reader = Principal::new(PrincipalId::new("reader"), PrincipalKind::Node);
     policy.bootstrap(admin.clone())?;
+    let obligations = obligation.iter().map(|value| value.id.clone()).collect();
+    if let Some(obligation) = obligation {
+        policy.issue_obligation(
+            admin.clone(),
+            AuthorityPresentation::direct(admin.clone()),
+            obligation,
+        )?;
+    }
     policy.issue_grant(
         admin.clone(),
         AuthorityPresentation::direct(admin.clone()),
@@ -272,7 +294,7 @@ fn install_scoped_grant(
             operations: vec![AccessOperation::ReadItems, AccessOperation::SubmitCommand],
             capabilities: Vec::new(),
             constraints: AuthorityConstraints::default(),
-            obligations: Vec::new(),
+            obligations,
             valid_from: Utc::now()
                 .checked_sub_signed(Duration::seconds(10))
                 .ok_or("time underflow")?,

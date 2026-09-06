@@ -1869,15 +1869,48 @@ impl Node {
         let command = self
             .command(command_id)?
             .ok_or(NodeError::UnknownCommand(command_id))?;
-        let CommandState::AuthorizationPrepared { effect } = &command.state else {
-            return Err(NodeError::InvalidCommandState(
-                "command is not awaiting prepared-effect authorization".to_owned(),
-            ));
+        let effect = match &command.state {
+            CommandState::AuthorizationPrepared { effect } => effect.clone(),
+            CommandState::AuthorizationPending { batch, result, .. } => {
+                let retained = self
+                    .events_after(None)?
+                    .into_iter()
+                    .rev()
+                    .find_map(|event| {
+                        let NodeEvent::CommandLifecycle(saved) = event.event else {
+                            return None;
+                        };
+                        if saved.request.id != command_id {
+                            return None;
+                        }
+                        let CommandState::AuthorizationPrepared { effect } = saved.state else {
+                            return None;
+                        };
+                        Some((saved.request, effect))
+                    })
+                    .ok_or_else(|| {
+                        NodeError::InvalidCommandState(
+                            "pending command has no retained prepared effect".to_owned(),
+                        )
+                    })?;
+                if retained.0 != command.request
+                    || retained.1.batch() != batch.as_ref()
+                    || retained.1.result() != result
+                {
+                    return Err(NodeError::CommandConflict(command_id));
+                }
+                retained.1
+            }
+            _ => {
+                return Err(NodeError::InvalidCommandState(
+                    "command is not awaiting prepared-effect authorization".to_owned(),
+                ));
+            }
         };
         effect.validate_digest()?;
         Ok(Self::prepared_effect_access_request(
             &command.request,
-            effect,
+            &effect,
         ))
     }
 

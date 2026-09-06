@@ -8,14 +8,15 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::{
-    ApprovalUse, ApprovalUseId, AuthorityRealmKey, ChallengeRecord, ChallengeRecordId,
-    CommandContext, CommandError, DecisionAudit, DecisionAuditId, DelegationUse, DelegationUseId,
-    EvaluationOutcome, EvaluationState, GrantUse, GrantUseId, LeaseRecord, LeaseRecordId,
-    realm_item_id,
+    ApprovalRecord, ApprovalUse, ApprovalUseId, AuthorityRealmKey, ChallengeRecord,
+    ChallengeRecordId, CommandContext, CommandError, DecisionAudit, DecisionAuditId, DelegationUse,
+    DelegationUseId, EvaluationOutcome, EvaluationState, GrantUse, GrantUseId, LeaseRecord,
+    LeaseRecordId, realm_item_id,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DecisionRecord {
+    Approval(ApprovalRecord),
     GrantUse(GrantUse),
     DelegationUse(DelegationUse),
     ApprovalUse(ApprovalUse),
@@ -27,6 +28,7 @@ pub enum DecisionRecord {
 impl DecisionRecord {
     pub(super) fn emit(&self, context: &CommandContext) -> Result<(), CommandError> {
         match self {
+            Self::Approval(record) => context.emit_set(record),
             Self::GrantUse(record) => context.emit_set(record),
             Self::DelegationUse(record) => context.emit_set(record),
             Self::ApprovalUse(record) => context.emit_set(record),
@@ -38,6 +40,7 @@ impl DecisionRecord {
 
     pub(super) fn mutation(&self) -> Result<ItemMutation, String> {
         match self {
+            Self::Approval(record) => ItemMutation::set(record),
             Self::GrantUse(record) => ItemMutation::set(record),
             Self::DelegationUse(record) => ItemMutation::set(record),
             Self::ApprovalUse(record) => ItemMutation::set(record),
@@ -50,6 +53,7 @@ impl DecisionRecord {
 
     pub(super) const fn item_type(&self) -> &'static str {
         match self {
+            Self::Approval(_) => ApprovalRecord::ITEM_TYPE,
             Self::GrantUse(_) => GrantUse::ITEM_TYPE,
             Self::DelegationUse(_) => DelegationUse::ITEM_TYPE,
             Self::ApprovalUse(_) => ApprovalUse::ITEM_TYPE,
@@ -61,6 +65,7 @@ impl DecisionRecord {
 
     pub(super) fn item_id(&self) -> &str {
         match self {
+            Self::Approval(record) => record.id.as_ref(),
             Self::GrantUse(record) => record.id.as_ref(),
             Self::DelegationUse(record) => record.id.as_ref(),
             Self::ApprovalUse(record) => record.id.as_ref(),

@@ -72,6 +72,34 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Certified approval choices now live in the authority control history. Each choice
+is immutable for its challenge and approver, including its original expiry.
+Continuation rounds retain the original command root and exact effect binding,
+add only certified approval evidence, and cannot consume a terminal root again.
+Controller endpoints reconstruct the saved request before certifying a new round.
+
+The coordinator can continue a parked command, reopen its journals, freshly
+revalidate the consumed authority, and commit the exact saved batch and result
+once. Pending commands reconstruct their original prepared effect from retained
+history; both evidence access and commitment reject mismatched saved data.
+An approved pending command whose grant was revoked now reaches rejection instead
+of failing the command-state transition. Four focused approval tests cover these
+paths, expired challenges, unauthorized approvals, contradictory retries, and forged
+effect bindings. The rerunnable gate includes them in
+`scripts/verify_prepared_authority_runtime.sh`.
+
+The final authority/federation suite passes all 267 tests. The focused gate,
+strict Clippy, workspace formatting, and Forrest's locked workspace check pass.
+The Mac SSH preflight still times out, so the other machine has not been synced.
+
+This is not the production approval flow yet. Async user approval transport,
+automatic multi-obligation advancement, certified non-effect policy, production
+Forrest installation, custody, and abrupt node-loss proof remain unfinished.
+Pending evidence lookup currently scans retained history; no performance claim
+is made. All C01-C18 acceptance rows remain open.
+
+The following paragraphs describe preceding checkpoints and their limits.
+
 `PreparedAuthorityRuntime::install` now installs the effect policy and starts
 application command dispatch and certified recovery together. Its guard owns both
 workers. Explicit shutdown stops dispatch, cancels in-flight coordination, and

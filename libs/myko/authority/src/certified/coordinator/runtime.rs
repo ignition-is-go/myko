@@ -61,7 +61,11 @@ impl PreparedAuthorityRuntime {
             }
         };
         for command in commands {
-            if matches!(command.state, CommandState::AuthorizationPrepared { .. }) {
+            if matches!(
+                command.state,
+                CommandState::AuthorizationPrepared { .. }
+                    | CommandState::AuthorizationPending { .. }
+            ) {
                 let id = command.request.id;
                 report(
                     self.coordinator
@@ -109,7 +113,19 @@ impl AuthorityDecisionCoordinator {
                     "retained authority decision differs from the prepared effect".to_owned(),
                 );
             }
-            original.decision().clone()
+            if matches!(original.decision(), AuthorizationDecision::Challenge { .. })
+                && self
+                    .observer
+                    .command(command_id)
+                    .map_err(|error| error.to_string())?
+                    .is_some_and(|command| {
+                        matches!(command.state, CommandState::AuthorizationPending { .. })
+                    })
+            {
+                self.continue_prepared(command_id).await?.decision().clone()
+            } else {
+                original.decision().clone()
+            }
         } else {
             self.decide(
                 head,
@@ -149,7 +165,7 @@ impl AuthorityDecisionCoordinator {
     }
 }
 
-fn next_counter(history: &AuthorityHistory, head: ControlHead) -> Result<u64, String> {
+pub(super) fn next_counter(history: &AuthorityHistory, head: ControlHead) -> Result<u64, String> {
     let context = history.context_at(head)?;
     let verifier = context.verifier()?;
     let maximum = history
