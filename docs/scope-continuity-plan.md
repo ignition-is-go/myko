@@ -87,7 +87,19 @@ Tool lifecycle commands still execute inline. All 179 workspace tests, strict
 workspace Clippy, and formatting pass in
 `/tmp/forrest-agent-terminal-workspace-tests.log`,
 `/tmp/forrest-agent-terminal-workspace-strict.log`, and
-`/tmp/forrest-agent-terminal-workspace-fmt.log`. Mac validation for this change
+`/tmp/forrest-agent-terminal-workspace-fmt.log`. The same 179-test workspace,
+strict Clippy, and formatting pass on the Mac at Forrest `f534174` and Myko
+`6c4f51d8` in `/tmp/forrest-agent-terminal-mac-validation.log`.
+An added Redb test closes the application with a real model answer pending,
+reopens and resumes its exact command, then reopens the completed store and
+checks the same result, history, and single answer. All 20 focused pool tests
+and targeted strict Clippy pass in `/tmp/forrest-agent-disk-tests.log` and
+`/tmp/forrest-agent-disk-strict.log`. The test uses `AllowAllAccessPolicy` and
+clean shutdown. It does not establish certified authorization or abrupt-loss
+safety. All 180 local workspace tests, strict workspace Clippy, and formatting
+pass in `/tmp/forrest-agent-disk-workspace-tests.log`,
+`/tmp/forrest-agent-disk-workspace-strict.log`, and
+`/tmp/forrest-agent-disk-workspace-fmt.log`. Mac validation of the added test
 remains outstanding.
 
 Native nodes can install certified authority on their existing Iroh transport
