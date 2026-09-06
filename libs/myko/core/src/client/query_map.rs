@@ -1464,7 +1464,11 @@ mod tests {
         assert!(watch.items().get().is_empty());
 
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
-        let frames = transport.sent_frames();
+        let frames = transport.wait_for_sent_frames(
+            1,
+            |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\"")),
+        );
+        assert_eq!(frames.len(), 1);
         let Some(WsFrame::Text(frame)) = frames.first() else {
             return;
         };
@@ -1487,6 +1491,7 @@ mod tests {
             "data": { "tx": &tx, "sequence": 0, "deletes": [], "upserts": [] }
         });
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(empty.to_string()));
+        wait_for_readiness(watch.ready(), true);
         assert!(
             watch.ready().get(),
             "an authoritative empty result is ready"
@@ -1494,6 +1499,7 @@ mod tests {
         assert!(watch.items().get().is_empty());
 
         transport.set_status(SocketConnectionStatus::Disconnected);
+        wait_for_readiness(watch.ready(), false);
         assert!(!watch.ready().get());
         let delayed = serde_json::json!({
             "event": "ws:m:query-response",
@@ -1517,6 +1523,11 @@ mod tests {
         assert!(watch.items().get().is_empty());
 
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let frames = transport.wait_for_sent_frames(
+            2,
+            |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\"")),
+        );
+        assert_eq!(frames.len(), 2);
         let restored = serde_json::json!({
             "event": "ws:m:query-response",
             "data": {
@@ -1535,12 +1546,20 @@ mod tests {
             }
         });
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
+        wait_for_readiness(watch.ready(), true);
         assert!(watch.ready().get());
         assert_eq!(watch.items().get().len(), 1);
 
         transport.set_status(SocketConnectionStatus::Connected("ws://second".to_owned()));
+        wait_for_readiness(watch.ready(), false);
         assert!(!watch.ready().get());
+        let frames = transport.wait_for_sent_frames(
+            3,
+            |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\"")),
+        );
+        assert_eq!(frames.len(), 3);
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
+        wait_for_readiness(watch.ready(), true);
         assert!(watch.ready().get());
     }
 
