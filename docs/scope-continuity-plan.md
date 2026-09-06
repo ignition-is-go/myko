@@ -72,6 +72,31 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+`PreparedAuthorityRuntime` now connects certified coordination to saved command
+effects. Its synchronous effect policy queues only wakeups and reports typed
+unavailability. The async worker finds pending commands in the journal, derives
+its starting head and ballot from retained evidence, recovers consumption, and
+freshly revalidates before immediately committing the exact saved batch and result.
+No permit returns to the command driver's retry loop. Malformed or conflicting
+chosen history prevents frontier recovery instead of selecting an older valid head.
+
+Four runtime tests cover the real command commit boundary, coalesced wakeups,
+worker cancellation, consumed-effect recovery after both stores reopen, revocation,
+quorum-outage ballot recovery after reopen, foreign-command rejection, and native
+Iroh evidence transfer and release. Nine control-chain tests, strict Clippy, and
+formatting pass. The broader authority and federation suite passes 261 tests;
+the final strengthened restart assertions also pass in the focused gate.
+Run `bash scripts/verify_prepared_authority_runtime.sh` to repeat that gate.
+
+This is an effect-only adapter with an explicit separate policy for admission,
+reads, replication, and administration. It is not installed in Forrest production.
+Certified non-effect authorization, approval resumption, automatic runtime lifecycle
+integration, custody, and all C01-C18 acceptance rows remain open. The runtime tests
+do not prove graceful production drain or abrupt process-kill recovery. Mac SSH
+still times out, so remote validation remains unfinished.
+
+The following paragraphs describe preceding checkpoints and their limits.
+
 The coordinator now certifies a fresh revalidation for each call. It follows
 intervening accepted checks and revocations, rejects changed effect evidence,
 and requires a controller majority. Native Iroh coverage exercises the same

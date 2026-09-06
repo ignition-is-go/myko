@@ -36,6 +36,9 @@ use myko_redb::RedbJournal;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[path = "support/prepared_authority_runtime.rs"]
+mod prepared_runtime;
+
 fn keys() -> [SigningKey; 2] {
     [1, 2].map(|seed| SigningKey::from_bytes(&[seed; 32]))
 }

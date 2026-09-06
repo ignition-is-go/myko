@@ -215,6 +215,26 @@ impl CertifiedControlChain {
         Ok(transitions)
     }
 
+    /// Return the last locally retained certified head, not proof of currentness.
+    ///
+    /// # Errors
+    /// Rejects a chain stopped by conflicting or malformed chosen evidence.
+    pub fn retained_head(&self) -> Result<ControlHead, String> {
+        if let Some(reason) = self.failures.values().next() {
+            return Err((*reason).to_owned());
+        }
+        let predecessors: BTreeSet<_> = self
+            .heads
+            .values()
+            .map(|transition| transition.predecessor.0)
+            .collect();
+        Ok(self
+            .heads
+            .keys()
+            .find(|head| !predecessors.contains(*head))
+            .map_or(self.anchor.genesis, |head| ControlHead(*head)))
+    }
+
     fn context_config(
         &self,
         head: ControlHead,

@@ -468,6 +468,17 @@ impl AuthorityHistory {
         self.chain.context_at(head)
     }
 
+    /// Locate the retained historical frontier for a new quorum round.
+    /// This never establishes live authority on its own.
+    ///
+    /// # Errors
+    /// Rejects malformed or conflicting chosen history and missing selected facts.
+    pub fn retained_head(&self) -> Result<ControlHead, String> {
+        let head = self.chain.retained_head()?;
+        self.context_at(head)?;
+        Ok(head)
+    }
+
     pub(super) fn validate_transition_at(
         &self,
         head: ControlHead,

@@ -217,6 +217,7 @@ fn retained_transition_replays_from_static_anchor() -> TestResult {
     let chain = CertifiedControlChain::replay(&events, anchor.clone())?;
     if chain.context_at(anchor.genesis())?.slot().predecessor != anchor.genesis()
         || chain.transitions_to(head)? != vec![&transition]
+        || chain.retained_head()? != head
     {
         return Err("certified retain transition did not replay from the anchor".into());
     }
@@ -336,6 +337,7 @@ fn reused_operation_invalidates_only_the_later_head() -> TestResult {
         chain.transitions_to(reused_head),
         "control operation was reused",
     )?;
+    expect_error_contains(chain.retained_head(), "control operation was reused")?;
     Ok(())
 }
 
@@ -358,6 +360,10 @@ fn chosen_malformed_payload_is_remembered_by_head() -> TestResult {
     }
     expect_error_contains(
         chain.context_at(head),
+        "chosen control transition value is malformed",
+    )?;
+    expect_error_contains(
+        chain.retained_head(),
         "chosen control transition value is malformed",
     )?;
     Ok(())
@@ -424,6 +430,7 @@ fn malformed_chosen_sibling_invalidates_competing_successor() -> TestResult {
         chain.context_at(malformed_head),
         "distinct chosen successors",
     )?;
+    expect_error_contains(chain.retained_head(), "distinct chosen successors")?;
     Ok(())
 }
 
@@ -489,7 +496,9 @@ fn deep_chain_replays_from_reversed_delivery_order() -> TestResult {
 
     let reversed = CertifiedControlChain::replay(&events, anchor)?;
     let expected_refs = expected.iter().collect::<Vec<_>>();
-    if reversed.transitions_to(successor_head)? != expected_refs {
+    if reversed.transitions_to(successor_head)? != expected_refs
+        || reversed.retained_head()? != successor_head
+    {
         return Err("reversed delivery did not replay the full certified chain".into());
     }
     let rotation_context = reversed.context_at(rotation_head)?;

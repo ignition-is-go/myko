@@ -1,4 +1,5 @@
-//! Authority reconstructed at a certified historical head, never live permission.
+//! Certified historical authority and fresh coordinated prepared-effect release.
+//! Historical assessments alone never establish live permission.
 
 use std::collections::BTreeSet;
 
@@ -24,6 +25,7 @@ pub use coordinator::{
     AuthorityControllerPrincipal, AuthorityCoordinatorPeer, AuthorityDecisionCoordinator,
     AuthorityRequestSource, CertifiedAuthorityControlEndpoint, CertifiedAuthorityRequest,
     CoordinatedAuthorityDecision, CoordinatedAuthorityRevalidation, LocalAuthorityPeer,
+    PreparedAuthorityRuntime, PreparedEffectPolicy,
 };
 pub use history::{
     AuthorityAnchor, AuthorityDecisionRevalidation, AuthorityDecisionRoot,

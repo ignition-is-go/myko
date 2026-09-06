@@ -29,7 +29,9 @@ const DEFAULT_MAX_COORDINATION_ROUNDS: usize = 8;
 const DEFAULT_MAX_EVALUATION_SKEW_SECONDS: i64 = 300;
 
 mod revalidation;
+mod runtime;
 pub use revalidation::CoordinatedAuthorityRevalidation;
+pub use runtime::{PreparedAuthorityRuntime, PreparedEffectPolicy};
 
 /// Framework-owned source for evidence used by certified coordination.
 #[derive(Clone)]
