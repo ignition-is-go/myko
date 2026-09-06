@@ -1221,7 +1221,8 @@ mod tests {
 
     use myko_federation::{
         AccessAttempt, AccessPolicy, AuthorityPresentation, AuthorityUnavailable,
-        CommandClient as _, Node, NodeError, PrincipalId, PrincipalKind,
+        CommandClient as _, CommandWatchingClient as _, Node, NodeError, PrincipalId,
+        PrincipalKind,
     };
 
     use super::*;
@@ -1277,6 +1278,64 @@ mod tests {
         UnavailableCommand {
             id: UnavailableRootId::from("unavailable-root"),
         }
+    }
+
+    #[tokio::test]
+    async fn typed_command_resumption_does_not_submit_again() -> Result<(), String> {
+        let host = ApplicationHost::new(
+            Node::in_memory(),
+            MykoApplication::builder()
+                .service::<UnavailableService>()
+                .build(),
+        )?
+        .with_access_policy(Arc::new(myko_federation::AllowAllAccessPolicy))
+        .map_err(|error| error.to_string())?;
+        let submitted = host
+            .submit_typed_command(unavailable_command())
+            .await
+            .map_err(|error| error.to_string())?
+            .command
+            .ok_or("command not retained")?;
+        let waiting = host.await_typed_command::<UnavailableCommand>(submitted.request.id);
+        tokio::pin!(waiting);
+        if tokio::time::timeout(std::time::Duration::from_millis(20), &mut waiting)
+            .await
+            .is_ok()
+        {
+            return Err("resumption dispatched the pending command".to_owned());
+        }
+        host.dispatch_registered_command(submitted.request.id)
+            .map_err(|error| error.to_string())?;
+        if !waiting.await.map_err(|error| error.to_string())? {
+            return Err("resumption lost the typed result".to_owned());
+        }
+        let before = host
+            .node()
+            .events_after(None)
+            .map_err(|error| error.to_string())?;
+        if !host
+            .await_typed_command::<UnavailableCommand>(submitted.request.id)
+            .await
+            .map_err(|error| error.to_string())?
+        {
+            return Err("completed resumption lost the typed result".to_owned());
+        }
+        if before
+            != host
+                .node()
+                .events_after(None)
+                .map_err(|error| error.to_string())?
+        {
+            return Err("resumption wrote a new command lifecycle".to_owned());
+        }
+        if !matches!(
+            host.await_typed_command::<UnavailableCommand>(myko_federation::CommandId::new())
+                .await,
+            Err(NodeError::UnknownCommand(_))
+        ) {
+            return Err("resumption did not report an unknown command".to_owned());
+        }
+        Ok(())
     }
 
     fn assert_unavailable_node_error(error: NodeError) -> Result<(), String> {

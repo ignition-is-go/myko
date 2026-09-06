@@ -605,26 +605,55 @@ pub trait CommandWatchingClient: CommandClient {
             let submission = submission?;
             let command_id = submission.id;
             let response = self.submit_submission(submission).await?;
-            let current = response
-                .command
-                .ok_or_else(|| Self::Error::from(NodeError::UnknownCommand(command_id)))?;
-            if let Some(result) = current.typed_completion::<C>().map_err(Self::Error::from)? {
-                return Ok(result);
-            }
-            let mut subscription = self
-                .watch_command_at(response.source_node, command_id)
-                .await?;
-            loop {
-                if let Some(result) = subscription
-                    .current()
-                    .typed_completion::<C>()
-                    .map_err(Self::Error::from)?
-                {
-                    return Ok(result);
-                }
-                let _updated = subscription.recv().await?;
-            }
+            complete_typed_command::<C, Self>(self, response, command_id).await
         })
+    }
+
+    /// Resumes an existing command without admitting or executing another command.
+    ///
+    /// Uses the source returned by the command lookup for gap-free typed completion.
+    /// Unknown commands and rejected or cancelled outcomes remain errors.
+    fn await_typed_command<C>(
+        &self,
+        command_id: CommandId,
+    ) -> TypedCommandClientFuture<'_, C::Output, Self::Error>
+    where
+        Self: Sized,
+        C: MykoCommand,
+    {
+        Box::pin(async move {
+            let response = self.command_state(command_id).await?;
+            complete_typed_command::<C, Self>(self, response, command_id).await
+        })
+    }
+}
+
+async fn complete_typed_command<C: MykoCommand, Client: CommandWatchingClient>(
+    client: &Client,
+    response: CommandResponse,
+    command_id: CommandId,
+) -> Result<C::Output, Client::Error> {
+    let current = response
+        .command
+        .ok_or_else(|| Client::Error::from(NodeError::UnknownCommand(command_id)))?;
+    if let Some(result) = current
+        .typed_completion::<C>()
+        .map_err(Client::Error::from)?
+    {
+        return Ok(result);
+    }
+    let mut subscription = client
+        .watch_command_at(response.source_node, command_id)
+        .await?;
+    loop {
+        if let Some(result) = subscription
+            .current()
+            .typed_completion::<C>()
+            .map_err(Client::Error::from)?
+        {
+            return Ok(result);
+        }
+        let _updated = subscription.recv().await?;
     }
 }
 

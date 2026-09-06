@@ -93,6 +93,19 @@ retained typed completion. Its focused test withholds dispatch, observes the
 pending command, and verifies the exact completion result after dispatch resumes.
 Remote root and provider tests require the completed dispatch mailbox to empty.
 These tests do not install certified authority.
+Root-task workers also await retained claims and outcomes, remain stoppable while
+commands wait, and join filesystem operations already started. On restart they
+resume an existing retained completion before reporting an interrupted task;
+competing retained outcomes are reported without modifying history. Myko owns
+typed command resumption and shares its completion logic with submit-and-watch.
+The root tests use real temporary-file writes with in-memory history. They do
+not prove disk recovery, certified authority, or founding-node replacement.
+Final local evidence is in `/tmp/forrest-root-final-workspace.log` with 167
+passing tests, `/tmp/forrest-root-final-clippy.log`, and
+`/tmp/forrest-root-final-fmt-check.log`. Myko's core suite passed 245 tests and
+federation library suite passed 147 tests in
+`/tmp/myko-typed-resumption-core-suite.log` and
+`/tmp/myko-typed-resumption-federation.log`; strict lint and formatting passed.
 Local subscription behavior under certified
 policy still needs verification before deciding whether those callers must change.
 No production cutover or C01-C18 completion is claimed.
