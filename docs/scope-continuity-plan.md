@@ -88,7 +88,12 @@ process-local dispatch ordering, not distributed fencing.
 Forrest's production policy is still raw authority. Node-effect transitions and
 provider resource reconciliation now await the existing typed command client.
 Stopping the node-effect waiter preserves its pending command. Other synchronous
-command callers still need migration. Local subscription behavior under certified
+command callers still need migration. Mesh-host mailbox cleanup now also awaits
+retained typed completion. Its focused test withholds dispatch, observes the
+pending command, and verifies the exact completion result after dispatch resumes.
+Remote root and provider tests require the completed dispatch mailbox to empty.
+These tests do not install certified authority.
+Local subscription behavior under certified
 policy still needs verification before deciding whether those callers must change.
 No production cutover or C01-C18 completion is claimed.
 
