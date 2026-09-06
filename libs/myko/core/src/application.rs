@@ -605,9 +605,11 @@ impl ApplicationHost {
         )?;
         request.principal_id = presentation.principal.id.clone();
         request.authority = presentation;
-        let command_id = request.id;
-        self.node.submit_trusted_framework_command(request)?;
-        let result = self.dispatch_typed::<C>(command_id, true)?;
+        let result = self
+            .node
+            .dispatch_trusted_framework_submission(request, |command_id| {
+                self.dispatch_typed::<C>(command_id, true)
+            })?;
         result
             .command
             .typed_completion::<C>()?

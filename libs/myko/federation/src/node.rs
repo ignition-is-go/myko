@@ -2139,14 +2139,21 @@ impl Node {
         self.backend.admit(request)
     }
 
-    /// Submits a framework-owned command without invoking the policy that the
-    /// command itself maintains.
+    /// Admits and dispatches a framework-owned command before an ordinary
+    /// dispatcher can claim it under the policy this command initializes.
+    /// The callback must dispatch synchronously.
     #[doc(hidden)]
-    pub fn submit_trusted_framework_command(
+    pub fn dispatch_trusted_framework_submission<E>(
         &self,
         request: CommandRequest,
-    ) -> Result<CommandSnapshot, NodeError> {
-        self.backend.submit(request)
+        dispatch: impl FnOnce(CommandId) -> Result<CommandDispatchResult, E>,
+    ) -> Result<CommandDispatchResult, E>
+    where
+        E: From<NodeError>,
+    {
+        let _dispatch = self.command_dispatch.lock();
+        let submitted = self.backend.submit(request).map_err(E::from)?;
+        dispatch(submitted.request.id)
     }
 
     /// Atomically appends the command's complete authoritative change batch.

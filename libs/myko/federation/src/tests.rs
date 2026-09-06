@@ -2060,6 +2060,56 @@ fn declared_command_schema_mismatch_does_not_claim_execution() {
 }
 
 #[test]
+fn trusted_submission_cannot_be_claimed_by_an_ordinary_dispatcher() {
+    let node = Node::in_memory();
+    node.set_command_access_policy(Arc::new(DenyAllAccessPolicy))
+        .unwrap();
+    let command = DeclaredCommand::new(
+        CommandId::new(),
+        ScopeId::new("session:bootstrap"),
+        PrincipalId::new("framework"),
+        PutRecord {
+            id: "bootstrap".to_owned(),
+            value: "trusted".to_owned(),
+        },
+    );
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+    let competitor_node = node.clone();
+    let mut competitor = None;
+    let mut claimed_early = false;
+    let result: Result<_, NodeError> =
+        node.dispatch_trusted_framework_submission(command.request().unwrap(), |id| {
+            competitor = Some(std::thread::spawn(move || {
+                started_tx.send(()).unwrap();
+                let result =
+                    competitor_node.dispatch_declared_command::<PutRecord, _>(id, |_| Ok(false));
+                finished_tx.send(result).unwrap();
+            }));
+            started_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+            claimed_early = finished_rx.recv_timeout(Duration::from_millis(50)).is_ok();
+            node.dispatch_trusted_framework_command::<PutRecord, _>(id, |_| Ok(true))
+        });
+    competitor.unwrap().join().unwrap();
+    assert!(
+        !claimed_early,
+        "ordinary dispatcher claimed trusted submission before its handler"
+    );
+    assert_eq!(
+        result
+            .unwrap()
+            .command
+            .typed_completion::<PutRecord>()
+            .unwrap(),
+        Some(true)
+    );
+    assert_eq!(
+        finished_rx.recv().unwrap().unwrap().disposition,
+        CommandDispatchDisposition::Resumed
+    );
+}
+
+#[test]
 fn declared_dispatch_rejects_malformed_work_and_continues_in_order() {
     let node = allow_all_node();
     let _policy = install_allow_all(&node);
