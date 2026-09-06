@@ -83,7 +83,7 @@ All 19 agent-pool tests and targeted strict Clippy pass in
 `/tmp/forrest-agent-batch-final-tests.log` and
 `/tmp/forrest-agent-batch-final-strict.log`. These tests use in-memory persistence.
 They do not prove disk reopen, abrupt process loss, or distributed fencing.
-Tool lifecycle commands still execute inline. All 179 workspace tests, strict
+At that checkpoint, tool lifecycle commands still executed inline. All 179 workspace tests, strict
 workspace Clippy, and formatting pass in
 `/tmp/forrest-agent-terminal-workspace-tests.log`,
 `/tmp/forrest-agent-terminal-workspace-strict.log`, and
@@ -99,8 +99,25 @@ clean shutdown. It does not establish certified authorization or abrupt-loss
 safety. All 180 local workspace tests, strict workspace Clippy, and formatting
 pass in `/tmp/forrest-agent-disk-workspace-tests.log`,
 `/tmp/forrest-agent-disk-workspace-strict.log`, and
-`/tmp/forrest-agent-disk-workspace-fmt.log`. Mac validation of the added test
-remains outstanding.
+`/tmp/forrest-agent-disk-workspace-fmt.log`. The Mac passed all 20 agent-pool
+tests, workspace strict Clippy, and formatting at Forrest `d0f458f` and Myko
+`adea8f2c` in `/tmp/forrest-agent-disk-mac-validation.log`.
+
+Tool staging, claims, approvals, rejections, results, and cancellation now use
+retained command admission. Agent workers yield to the async supervisor for
+typed completion, preserving the current tool call and model-step budget.
+Recovery awaits saved tool intents before resolving execution resources.
+A saved tool result on a waiting parent resumes without repeating its effect.
+Cancellation after a fresh claim retains cleanup before reporting interruption.
+All 27 focused agent-pool tests and targeted strict Clippy pass in
+`/tmp/forrest-tool-cancel-final-tests.log` and
+`/tmp/forrest-tool-cancel-final-strict.log`. All 187 workspace tests, strict
+workspace Clippy, and formatting pass in
+`/tmp/forrest-tool-lifecycle-workspace-tests.log`,
+`/tmp/forrest-tool-lifecycle-workspace-strict.log`, and
+`/tmp/forrest-tool-lifecycle-workspace-fmt.log`. Mac validation is pending.
+These new tool tests use in-memory persistence;
+they do not establish disk recovery, abrupt-loss safety, or distributed fencing.
 
 Native nodes can install certified authority on their existing Iroh transport
 and command dispatcher. Configuration keeps the original controller electorate
