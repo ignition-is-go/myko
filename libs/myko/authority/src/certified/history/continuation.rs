@@ -19,6 +19,17 @@ impl AuthorityHistory {
         root: &AuthorityDecisionRoot,
         evaluated_at: DateTime<Utc>,
     ) -> Result<AuthorityDecisionTransition, String> {
+        self.plan_available_continuation_at(head, operation, root, evaluated_at)?
+            .ok_or_else(|| "authority continuation has no new certified approval".to_owned())
+    }
+
+    pub(crate) fn plan_available_continuation_at(
+        &self,
+        head: ControlHead,
+        operation: CommandId,
+        root: &AuthorityDecisionRoot,
+        evaluated_at: DateTime<Utc>,
+    ) -> Result<Option<AuthorityDecisionTransition>, String> {
         let previous = self
             .decision_at(head, root)?
             .ok_or_else(|| "authority continuation has no previous decision".to_owned())?;
@@ -27,7 +38,7 @@ impl AuthorityHistory {
             self.realm_id(),
             previous.topology.clone(),
         )?;
-        previous.continue_with_approvals(operation, evaluated_at, &state)
+        previous.continue_with_available_approvals(operation, evaluated_at, &state)
     }
 }
 
@@ -38,6 +49,16 @@ impl AuthorityDecisionTransition {
         evaluated_at: DateTime<Utc>,
         state: &EvaluationState,
     ) -> Result<Self, String> {
+        self.continue_with_available_approvals(operation, evaluated_at, state)?
+            .ok_or_else(|| "authority continuation has no new certified approval".to_owned())
+    }
+
+    fn continue_with_available_approvals(
+        &self,
+        operation: CommandId,
+        evaluated_at: DateTime<Utc>,
+        state: &EvaluationState,
+    ) -> Result<Option<Self>, String> {
         let AuthorizationDecision::Challenge { challenge, .. } = &self.decision else {
             return Err("authority decision root is already terminal".to_owned());
         };
@@ -62,7 +83,7 @@ impl AuthorityDecisionTransition {
             .collect::<Vec<_>>();
         approvals.sort();
         if approvals.is_empty() {
-            return Err("authority continuation has no new certified approval".to_owned());
+            return Ok(None);
         }
         request.presentation.approvals.extend(approvals);
         Self::plan_round(
@@ -74,5 +95,6 @@ impl AuthorityDecisionTransition {
             state,
             Some(challenge.id.clone()),
         )
+        .map(Some)
     }
 }

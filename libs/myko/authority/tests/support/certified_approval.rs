@@ -1,6 +1,9 @@
 use super::*;
 use myko_federation::{AuthorityChallenge, Obligation, ObligationId};
 
+#[path = "certified_approval_retry.rs"]
+mod retry;
+
 fn require(condition: bool, message: &str) -> TestResult {
     if condition {
         Ok(())

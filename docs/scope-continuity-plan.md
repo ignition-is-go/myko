@@ -72,6 +72,19 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+`PreparedAuthorityRuntime` now retries retained work five seconds after each pass
+while commands remain prepared or await approval. The journal remains the work
+source. An integration regression restores one controller's evidence availability
+after a quorum failure and observes the exact saved effect commit once, without
+another wakeup or worker restart. It failed before this change and now passes.
+Waiting without a fresh approval returns the unchanged pending command, emits no
+repeat report, and appends no authority decision. Public continuation and replay
+validation still reject missing approval evidence. The fixed retry interval is not
+a backoff policy, and this test does not prove abrupt-process-loss recovery.
+The retry checkpoint passes the 25 selected tests and five-crate strict checks in
+`scripts/verify_prepared_authority_runtime.sh`, workspace formatting, and Forrest's
+locked workspace build check. The Mac remains unreachable over SSH.
+
 `AccessPolicy::approve` now returns an awaited approval future. Session handlers,
 the raw authority policy, the certified policy, and transport tests use that one
 contract. The certified policy records the immutable approval through the
@@ -96,8 +109,7 @@ parallel failure remains unresolved. No graph implementation was changed.
 Authority/federation/Iroh suites, the focused gate, strict Clippy, formatting, and
 Forrest's locked workspace check pass. The Mac SSH preflight still times out.
 
-Automatic multi-obligation advancement, parked-work retry after transient quorum
-loss without another wakeup, certified non-effect policy, production Forrest
+Automatic multi-obligation advancement, certified non-effect policy, production Forrest
 installation, custody, and abrupt node-loss proof remain unfinished. Pending
 evidence lookup scans retained history; no performance claim is made. All C01-C18
 acceptance rows remain open.

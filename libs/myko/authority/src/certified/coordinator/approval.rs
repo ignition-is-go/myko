@@ -23,6 +23,15 @@ impl AuthorityDecisionCoordinator {
         &self,
         command_id: CommandId,
     ) -> Result<AuthorityDecisionTransition, String> {
+        self.continue_available_prepared(command_id)
+            .await?
+            .ok_or_else(|| "authority continuation has no new certified approval".to_owned())
+    }
+
+    pub(super) async fn continue_available_prepared(
+        &self,
+        command_id: CommandId,
+    ) -> Result<Option<AuthorityDecisionTransition>, String> {
         let request = AuthorityRequestSource::new(self.observer.clone())
             .prepared_command_request(command_id)?;
         let root = request.root(self.anchor.realm_id(), command_id)?;
@@ -43,9 +52,13 @@ impl AuthorityDecisionCoordinator {
                 previous.decision(),
                 myko_federation::AuthorizationDecision::Challenge { .. }
             ) {
-                return Ok(previous);
+                return Ok(Some(previous));
             }
-            let planned = history.plan_continuation_at(head, operation, &root, Utc::now())?;
+            let Some(planned) =
+                history.plan_available_continuation_at(head, operation, &root, Utc::now())?
+            else {
+                return Ok(None);
+            };
             let desired = planned.control_value()?;
             let ballot = ControlBallot {
                 counter: next_counter(&history, head)?,
@@ -57,7 +70,8 @@ impl AuthorityDecisionCoordinator {
             if evidence.proposal.message.value == desired {
                 return AuthorityHistory::replay(&self.observer, self.anchor.clone())?
                     .decision_at(chosen, &root)?
-                    .ok_or_else(|| "chosen authority continuation is not retained".to_owned());
+                    .ok_or_else(|| "chosen authority continuation is not retained".to_owned())
+                    .map(Some);
             }
         }
         Err("authority continuation did not converge before the retry limit".to_owned())

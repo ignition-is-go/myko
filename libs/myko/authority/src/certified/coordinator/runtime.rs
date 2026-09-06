@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use myko_federation::{
     AuthorizationDecision, CommandId, CommandSnapshot, CommandState, FrameworkControlEvent,
@@ -43,20 +43,32 @@ impl PreparedAuthorityRuntime {
         )
     }
 
-    /// Resume retained work on startup and whenever application dispatch retries.
+    /// Resume retained work on startup, wakeup, and every five seconds while
+    /// work remains. Parked approvals are not retried by application dispatch.
     /// Failures leave effects prepared and are reported without blocking the next
     /// command. Dropping the policy closes the worker; cancelling it closes the
     /// policy's wake channel, so subsequent access remains unavailable.
     pub async fn run(self, mut report: impl FnMut(Result<CommandSnapshot, String>)) {
         loop {
-            self.resolve_pending(&mut report).await;
-            if self.wake.recv_async().await.is_err() {
+            let pending = self.resolve_pending(&mut report).await;
+            let wake = if pending {
+                tokio::select! {
+                    wake = self.wake.recv_async() => wake,
+                    () = tokio::time::sleep(Duration::from_secs(5)) => Ok(()),
+                }
+            } else {
+                self.wake.recv_async().await
+            };
+            if wake.is_err() {
                 return;
             }
         }
     }
 
-    async fn resolve_pending(&self, report: &mut impl FnMut(Result<CommandSnapshot, String>)) {
+    async fn resolve_pending(
+        &self,
+        report: &mut impl FnMut(Result<CommandSnapshot, String>),
+    ) -> bool {
         let commands = match self
             .coordinator
             .observer
@@ -65,18 +77,29 @@ impl PreparedAuthorityRuntime {
             Ok(commands) => commands,
             Err(error) => {
                 report(Err(error.to_string()));
-                return;
+                return true;
             }
         };
+        let mut pending = false;
         for command in commands {
             let id = command.request.id;
-            report(
-                self.coordinator
-                    .release_prepared(id)
-                    .await
-                    .map_err(|error| format!("command {id}: {error}")),
-            );
+            let result = self
+                .coordinator
+                .release_prepared(id)
+                .await
+                .map_err(|error| format!("command {id}: {error}"));
+            pending |= result.as_ref().map_or(true, |current| {
+                matches!(
+                    current.state,
+                    CommandState::AuthorizationPrepared { .. }
+                        | CommandState::AuthorizationPending { .. }
+                )
+            });
+            if !result.as_ref().is_ok_and(|current| current == &command) {
+                report(result);
+            }
         }
+        pending
     }
 }
 
@@ -124,7 +147,12 @@ impl AuthorityDecisionCoordinator {
                         matches!(command.state, CommandState::AuthorizationPending { .. })
                     })
             {
-                self.continue_prepared(command_id).await?.decision().clone()
+                self.continue_available_prepared(command_id)
+                    .await?
+                    .map_or_else(
+                        || original.decision().clone(),
+                        |continued| continued.decision().clone(),
+                    )
             } else {
                 original.decision().clone()
             }
