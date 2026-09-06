@@ -2268,7 +2268,6 @@ impl std::fmt::Debug for ReplicationProtocol {
 
 impl ProtocolHandler for ReplicationProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        self.sessions.node().wait_until_ready().await;
         let (mut send, mut receive) = connection.accept_bi().await?;
         let request = read_request(&mut receive).await?;
         let principal = endpoint_principal_id(connection.remote_id());

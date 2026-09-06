@@ -49,6 +49,8 @@ mod certified_selection;
 mod certified_streams;
 #[path = "support/native_authority_lifecycle.rs"]
 mod native_lifecycle;
+#[path = "support/native_startup.rs"]
+mod native_startup;
 #[path = "support/prepared_authority_lifecycle.rs"]
 mod prepared_lifecycle;
 #[path = "support/prepared_authority_runtime.rs"]

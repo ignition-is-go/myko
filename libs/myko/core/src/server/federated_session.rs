@@ -559,12 +559,22 @@ impl FederatedSession {
             destination = ?destination,
             "session request waiting for node readiness"
         );
-        self.node.wait_until_ready().await;
+        // Startup may itself need a controller quorum. These requests use the
+        // explicitly installed controller endpoint's authentication, not the
+        // application policy that startup is still restoring.
+        if !matches!(
+            envelope.request,
+            NodeRequest::ControlPrepare { .. }
+                | NodeRequest::ControlPropose { .. }
+                | NodeRequest::ControlAccept { .. }
+        ) {
+            self.node.wait_until_ready().await;
+        }
         tracing::debug!(
             node_id = %self.node.node_id(),
             principal_id = %authenticated.id,
             request = request_kind,
-            "node ready; opening session request"
+            "request readiness satisfied; opening session request"
         );
         let (send, receive) = flume::bounded(SESSION_FRAME_CAPACITY);
         let mut service = self.clone();

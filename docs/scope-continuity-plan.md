@@ -72,6 +72,32 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Controller prepare, propose, and accept requests now reach the explicitly
+installed authority endpoint before application startup completes. The endpoint
+still authenticates each caller and checks its controller binding. All other
+session requests retain the application startup barrier. Iroh delegates that
+ordering to the shared session instead of blocking before decoding the request.
+
+The native Redb and Iroh regression failed on a controller-vote timeout before
+the change, then passed. It checks both forged presentation and wrong proposer
+rejection without history changes, and ordinary session blocking until readiness.
+The coordinator suite passed 50 tests and the session suite passed 18. Strict
+authority and Iroh lint passed, as did Forrest's locked all-target check.
+The strengthened final regression also passed. Logs are
+`/tmp/myko-startup-barrier-coordinator.log`,
+`/tmp/myko-startup-barrier-session.log`,
+`/tmp/myko-startup-barrier-strict.log`,
+`/tmp/myko-startup-barrier-final-test.log`, and
+`/tmp/forrest-startup-barrier-check.log`.
+
+Scoped evidence refresh still waits for application readiness. Production
+assembly must resolve that ordering along with controller configuration and
+administration publication. This change does not complete startup certification
+or production integration. All C01-C18 remain open. The latest Mac inspection
+timed out without changing the remote checkout.
+
+### Previous local-authority checkpoint
+
 `certify_local_authority` certifies this node's accepted AuthorityService records
 that are not yet selected. It recovers earlier accepted control values and then
 recomputes the remaining records, including when a previous attempt selected only
