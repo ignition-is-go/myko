@@ -98,14 +98,23 @@ commands wait, and join filesystem operations already started. On restart they
 resume an existing retained completion before reporting an interrupted task;
 competing retained outcomes are reported without modifying history. Myko owns
 typed command resumption and shares its completion logic with submit-and-watch.
-The root tests use real temporary-file writes with in-memory history. They do
-not prove disk recovery, certified authority, or founding-node replacement.
+The root tests use real temporary-file writes. A Redb test now closes and
+reopens the store with a saved completion still pending, resumes that exact
+outcome without a competing command, then reopens the completed store and checks
+the exact retained result, history, and unchanged sentinel file. This proves the
+single-node reopen path, not crash-at-every-instruction behavior, certified
+authority, or founding-node replacement.
 Final local evidence is in `/tmp/forrest-root-final-workspace.log` with 167
 passing tests, `/tmp/forrest-root-final-clippy.log`, and
 `/tmp/forrest-root-final-fmt-check.log`. Myko's core suite passed 245 tests and
 federation library suite passed 147 tests in
 `/tmp/myko-typed-resumption-core-suite.log` and
 `/tmp/myko-typed-resumption-federation.log`; strict lint and formatting passed.
+The added Redb test passed with all 168 local workspace tests, strict lint, and
+formatting in `/tmp/forrest-root-disk-workspace.log`,
+`/tmp/forrest-root-disk-clippy.log`, and `/tmp/forrest-root-disk-fmt-check.log`.
+The previous production source passed all 167 tests, strict lint, and formatting
+on the Mac in `/tmp/forrest-root-mac-validation.log`. The new test's Mac run is pending.
 Local subscription behavior under certified
 policy still needs verification before deciding whether those callers must change.
 No production cutover or C01-C18 completion is claimed.
@@ -122,7 +131,7 @@ artifacts from the agent build directories before the successful retry.
 No accepted history was removed. Earlier Mac SSH attempts timed out. The latest
 sync succeeded at Myko `2ea81db4` and Forrest `4201531`, preserving the watcher
 lockfile through autostash and leaving both remote worktrees clean. Mac
-validation of this source is still pending.
+validation of that production source subsequently passed as recorded above.
 
 Verification passed for the federation suite, the authority and native-node
 suites, and strict lint for federation, core, authority, and native node.
