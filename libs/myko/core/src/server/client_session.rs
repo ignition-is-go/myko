@@ -151,7 +151,23 @@ pub struct ClientSession<W: SessionSink> {
 
 enum SubscriptionEntry {
     Query(QuerySubscription),
-    Guard { _guard: SubscriptionGuard },
+    Guard {
+        _guard: SubscriptionGuard,
+    },
+    #[cfg(not(target_arch = "wasm32"))]
+    NativeMap {
+        _task: NativeMapTask,
+    },
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct NativeMapTask(tokio::task::JoinHandle<()>);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for NativeMapTask {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 struct QuerySubscription {
@@ -465,34 +481,58 @@ impl<W: SessionSink> ClientSession<W> {
 
     /// Subscribe a prepared node handler to the retained keyed-map runtime.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn subscribe_node_handler_map(
+    pub(crate) fn subscribe_node_handler_map(
         &mut self,
         tx: Arc<str>,
-        cell: hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
-    ) {
+        output: Arc<super::native_map::NativeMapOutput>,
+        required_cut: Option<myko_federation::LogPosition>,
+    ) -> Result<(), String> {
+        let executor = tokio::runtime::Handle::try_current()
+            .map_err(|error| format!("native handler requires an executor: {error}"))?;
         let writer = Arc::clone(&self.writer);
         let epoch = NEXT_HANDLER_EPOCH.fetch_add(1, Ordering::Relaxed);
-        let state = Arc::new(Mutex::new(NodeHandlerMapState::new(epoch)));
-        let callback_state = Arc::clone(&state);
-        let guard = cell.subscribe_diffs(move |diff| {
-            let frame = if let Ok(mut state) = callback_state.lock() {
-                state.apply(diff)
-            } else {
-                tracing::error!("node handler map state is poisoned");
-                return;
-            };
-            match frame {
-                Ok(frame) => {
-                    if let Err(error) = writer.send_node_frame(frame) {
-                        tracing::error!(%error, "node handler frame delivery failed");
+        let retained = output.is_retained();
+        let mut publications = output.watch();
+        let task = executor.spawn(async move {
+            let _owner = output;
+            let mut state = NodeHandlerMapState::new(epoch);
+            while let Ok(publication) = publications.recv_async().await {
+                let waiting_for_cut = retained
+                    && required_cut.is_some_and(|required| {
+                        publication
+                            .state
+                            .through
+                            .is_none_or(|through| through < required)
+                    });
+                if waiting_for_cut
+                    && !matches!(
+                        publication.state.liveness,
+                        myko_federation::SubscriptionLiveness::Invalid { .. }
+                    )
+                {
+                    continue;
+                }
+                match state.apply_snapshot(&publication.state) {
+                    Ok(frame) => {
+                        if let Err(error) = writer.send_node_frame(frame) {
+                            tracing::error!(%error, "node handler frame delivery failed");
+                            return;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, "node handler frame serialization failed");
+                        return;
                     }
                 }
-                Err(error) => tracing::error!(%error, "node handler frame serialization failed"),
             }
         });
-        drop(cell);
-        self.subscriptions
-            .insert(tx, SubscriptionEntry::Guard { _guard: guard });
+        self.subscriptions.insert(
+            tx,
+            SubscriptionEntry::NativeMap {
+                _task: NativeMapTask(task),
+            },
+        );
+        Ok(())
     }
 
     /// Subscribe a prepared scalar handler to the retained report runtime.
@@ -704,14 +744,30 @@ impl NodeHandlerMapState {
         }
     }
 
-    fn apply(
+    fn apply_snapshot(
         &mut self,
-        diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+        snapshot: &super::native_map::MapSnapshot,
     ) -> Result<myko_wire::NodeFrame, serde_json::Error> {
+        let through = snapshot.through.map(serde_json::to_value).transpose()?;
         let mut upserts = Vec::new();
-        let mut deletes = Vec::new();
+        let next = snapshot.value.clone().unwrap_or_default();
+        let deletes = self
+            .rows
+            .keys()
+            .filter(|key| !next.contains_key(*key))
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         let membership_changed =
-            apply_node_handler_diff(diff, &mut self.rows, &mut upserts, &mut deletes)?;
+            !deletes.is_empty() || next.keys().any(|key| !self.rows.contains_key(key));
+        for (key, value) in &next {
+            if self.rows.get(key) != Some(value) {
+                upserts.push(myko_wire::ErasedKeyedValue {
+                    key: key.to_string(),
+                    value: serde_json::to_value(value)?,
+                });
+            }
+        }
+        self.rows = next;
         let revision = myko_wire::HandlerStreamRevision {
             epoch: self.epoch,
             sequence: self.sequence,
@@ -733,8 +789,8 @@ impl NodeHandlerMapState {
                 revision,
                 state: Box::new(myko_wire::ErasedHandlerState {
                     value: Some(serde_json::Value::Array(values)),
-                    through: None,
-                    liveness: myko_federation::SubscriptionLiveness::Current,
+                    through,
+                    liveness: snapshot.liveness.clone(),
                     row_keys: Some(row_keys),
                 }),
             });
@@ -746,59 +802,10 @@ impl NodeHandlerMapState {
                 deletes,
                 order: membership_changed
                     .then(|| self.rows.keys().map(ToString::to_string).collect()),
-                through: None,
-                liveness: myko_federation::SubscriptionLiveness::Current,
+                through,
+                liveness: snapshot.liveness.clone(),
             }),
         })
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn apply_node_handler_diff(
-    diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
-    rows: &mut BTreeMap<Arc<str>, Arc<dyn AnyItem>>,
-    upserts: &mut Vec<myko_wire::ErasedKeyedValue>,
-    deletes: &mut Vec<String>,
-) -> Result<bool, serde_json::Error> {
-    match diff {
-        hyphae::MapDiff::Initial { entries } => {
-            let old_rows = std::mem::take(rows);
-            for (key, value) in entries {
-                rows.insert(Arc::clone(key), Arc::clone(value));
-            }
-            deletes.extend(
-                old_rows
-                    .into_keys()
-                    .filter(|key| !rows.contains_key(key))
-                    .map(|key| key.to_string()),
-            );
-            Ok(true)
-        }
-        hyphae::MapDiff::Insert { key, value }
-        | hyphae::MapDiff::Update {
-            key,
-            new_value: value,
-            ..
-        } => {
-            rows.insert(Arc::clone(key), Arc::clone(value));
-            upserts.push(myko_wire::ErasedKeyedValue {
-                key: key.to_string(),
-                value: serde_json::to_value(value)?,
-            });
-            Ok(matches!(diff, hyphae::MapDiff::Insert { .. }))
-        }
-        hyphae::MapDiff::Remove { key, .. } => {
-            rows.remove(key);
-            deletes.push(key.to_string());
-            Ok(true)
-        }
-        hyphae::MapDiff::Batch { changes } => {
-            let mut membership_changed = false;
-            for change in changes {
-                membership_changed |= apply_node_handler_diff(change, rows, upserts, deletes)?;
-            }
-            Ok(membership_changed)
-        }
     }
 }
 
@@ -1277,6 +1284,8 @@ mod tests {
         messages: Mutex<Vec<MykoMessage>>,
         #[cfg(not(target_arch = "wasm32"))]
         node_frames: Mutex<Vec<myko_wire::NodeFrame>>,
+        #[cfg(not(target_arch = "wasm32"))]
+        node_frame_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     }
 
     impl MockWriter {
@@ -1285,6 +1294,8 @@ mod tests {
                 messages: Mutex::new(Vec::new()),
                 #[cfg(not(target_arch = "wasm32"))]
                 node_frames: Mutex::new(Vec::new()),
+                #[cfg(not(target_arch = "wasm32"))]
+                node_frame_hook: Mutex::new(None),
             }
         }
 
@@ -1362,6 +1373,14 @@ mod tests {
                 .lock()
                 .map_err(|_| "node frame sink is poisoned".to_owned())?
                 .push(frame);
+            let hook = self
+                .node_frame_hook
+                .lock()
+                .map_err(|_| "node frame hook is poisoned".to_owned())?
+                .take();
+            if let Some(hook) = hook {
+                hook();
+            }
             Ok(())
         }
     }
@@ -1853,9 +1872,54 @@ mod tests {
         assert!(mock.message_count() >= 2);
     }
 
-    #[test]
+    #[tokio::test]
     #[cfg(not(target_arch = "wasm32"))]
-    fn node_handler_map_uses_the_retained_subscription_owner() {
+    async fn node_handler_map_keeps_changes_made_while_delivering_its_initial_frame() {
+        let _serial = scheduler_test_serial();
+        let map = hyphae::CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
+        map.insert("a".into(), make_entity("a", "Alice"));
+        let mock = Arc::new(MockWriter::new());
+        let during_initial = map.clone();
+        *mock
+            .node_frame_hook
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Box::new(move || {
+            during_initial.remove(&Arc::<str>::from("a"));
+        }));
+        let mut session =
+            ClientSession::new("client-handoff".into(), ArcMockWriter(Arc::clone(&mock)));
+
+        let output = super::super::native_map::NativeMapOutput::new(map.lock());
+        assert!(output.is_ok());
+        let Ok(output) = output else {
+            return;
+        };
+        assert!(
+            session
+                .subscribe_node_handler_map("handler-handoff".into(), output, None)
+                .is_ok()
+        );
+        wait_for_node_frames(&mock, 2).await;
+
+        let frames = mock.node_frames();
+        assert!(matches!(
+            frames.first(),
+            Some(myko_wire::NodeFrame::HandlerState { state, .. })
+                if state.row_keys.as_deref() == Some(&["a".to_owned()])
+        ));
+        assert!(
+            frames.iter().any(|frame| matches!(
+                frame,
+                myko_wire::NodeFrame::HandlerViewDelta { delta, .. }
+                    if delta.deletes == ["a"]
+            )),
+            "the deletion during initial frame delivery was lost"
+        );
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn node_handler_map_uses_the_retained_subscription_owner() {
         let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
@@ -1865,8 +1929,19 @@ mod tests {
         let mut session = ClientSession::new("client-1".into(), writer);
         let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
 
-        session.subscribe_node_handler_map("handler-1".into(), cellmap);
+        let output = super::super::native_map::NativeMapOutput::new(cellmap);
+        assert!(output.is_ok());
+        let Ok(output) = output else {
+            return;
+        };
+        assert!(
+            session
+                .subscribe_node_handler_map("handler-1".into(), output, None)
+                .is_ok()
+        );
+        wait_for_node_frames(&mock, 1).await;
         store.remove(&"a".into());
+        wait_for_node_frames(&mock, 2).await;
 
         let frames = mock.node_frames();
         assert!(matches!(
@@ -1879,6 +1954,72 @@ mod tests {
                 if delta.deletes == ["a"]
         )));
         assert_eq!(session.subscription_count(), 1);
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn retained_handler_waits_for_target_cut_and_preserves_liveness() {
+        let row = make_entity("a", "Alice");
+        let value = BTreeMap::from([(Arc::<str>::from("a"), row)]);
+        let (writer, live) =
+            myko_federation::live_subscription(myko_federation::LiveSubscriptionState {
+                value: Some(value.clone()),
+                through: Some(myko_federation::LogPosition::new(1)),
+                liveness: myko_federation::SubscriptionLiveness::Current,
+            });
+        let output = super::super::native_map::NativeMapOutput::from_retained(live);
+        let mock = Arc::new(MockWriter::new());
+        let mut session =
+            ClientSession::new("retained-cut".into(), ArcMockWriter(Arc::clone(&mock)));
+        assert!(
+            session
+                .subscribe_node_handler_map(
+                    "retained-cut".into(),
+                    output,
+                    Some(myko_federation::LogPosition::new(2)),
+                )
+                .is_ok()
+        );
+        let stale_was_sent = tokio::time::timeout(std::time::Duration::from_millis(20), async {
+            while mock.node_frames().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        assert!(stale_was_sent.is_err());
+        assert!(mock.node_frames().is_empty());
+
+        writer.replace(myko_federation::LiveSubscriptionState {
+            value: Some(value),
+            through: Some(myko_federation::LogPosition::new(2)),
+            liveness: myko_federation::SubscriptionLiveness::Resynchronizing {
+                reason: "selected history is incomplete".to_owned(),
+            },
+        });
+        wait_for_node_frames(&mock, 1).await;
+        let frames = mock.node_frames();
+        assert!(matches!(
+            frames.first(),
+            Some(myko_wire::NodeFrame::HandlerState { state, .. })
+                if state.through == Some(serde_json::json!(2))
+                    && matches!(
+                        state.liveness,
+                        myko_federation::SubscriptionLiveness::Resynchronizing { .. }
+                    )
+                    && state.row_keys.as_deref() == Some(&["a".to_owned()])
+        ));
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn wait_for_node_frames(mock: &MockWriter, count: usize) {
+        let started = std::time::Instant::now();
+        while mock.node_frames().len() < count {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "native handler frames did not arrive"
+            );
+            tokio::task::yield_now().await;
+        }
     }
 
     #[test]

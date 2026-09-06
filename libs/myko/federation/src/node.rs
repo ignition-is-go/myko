@@ -5,6 +5,56 @@ pub trait NodeBackend: Send + Sync + 'static {
     /// Returns this node's stable identity.
     fn node_id(&self) -> NodeId;
 
+    /// Bind one proposer ballot to its full signed proposal before release.
+    ///
+    /// # Errors
+    /// Rejects unavailable persistence, journal failure, and proposal conflicts.
+    fn propose_control(
+        &self,
+        _request: &crate::control_quorum::ControlProposalRequest<'_>,
+        _key: &ed25519_dalek::SigningKey,
+    ) -> Result<crate::control_quorum::SignedControlProposal, NodeError> {
+        Err(NodeError::DurableJournalRequired)
+    }
+
+    /// Serialize controller recovery and voting with the durable journal append.
+    ///
+    /// # Errors
+    /// Rejects unavailable persistence, conflicting history, and superseded votes.
+    fn vote_control(
+        &self,
+        _request: &crate::control_quorum::ControlVoteRequest<'_>,
+        _key: &ed25519_dalek::SigningKey,
+    ) -> Result<crate::control_quorum::SignedControlVote, NodeError> {
+        Err(NodeError::DurableJournalRequired)
+    }
+
+    /// Returns the durable store identity, or `None` without a durable store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store identity cannot be read.
+    fn storage_incarnation(&self) -> Result<Option<StorageIncarnationId>, NodeError> {
+        Ok(None)
+    }
+
+    /// Durably records an unverified retained-history assertion.
+    ///
+    /// Signature, obligation, membership, and custody validation remain the
+    /// caller's responsibility.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this backend has no durable journal or the
+    /// statement does not match the store identity or supplied retained manifest.
+    fn record_retained_history_statement(
+        &self,
+        _signed: SignedRetainedHistoryStatement,
+        _manifest: &SelectedHistoryManifest,
+    ) -> Result<EventEnvelope, NodeError> {
+        Err(NodeError::DurableJournalRequired)
+    }
+
     /// Durably submits a command without granting execution to the caller.
     ///
     /// # Errors
@@ -38,6 +88,45 @@ pub trait NodeBackend: Send + Sync + 'static {
         result: Vec<u8>,
     ) -> Result<CommandSnapshot, NodeError>;
 
+    /// Durably freezes one computed handler effect before policy evaluation.
+    ///
+    /// An exact retry returns the retained prepared state; a different body for
+    /// the same command is rejected.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the command is absent, no longer executable, or
+    /// the prepared body does not match its admitted command.
+    fn prepare_authorization(
+        &self,
+        command_id: CommandId,
+        effect: PreparedCommandEffect,
+    ) -> Result<CommandSnapshot, NodeError>;
+
+    /// Commits an already prepared effect by digest after authorization permits it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the command has no matching prepared effect.
+    fn commit_prepared_authorization(
+        &self,
+        command_id: CommandId,
+        effect_digest: &str,
+    ) -> Result<CommandSnapshot, NodeError>;
+
+    /// Parks an already prepared effect behind a durable challenge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the command has no matching prepared effect or a
+    /// different challenge already owns it.
+    fn await_prepared_authorization(
+        &self,
+        command_id: CommandId,
+        effect_digest: &str,
+        challenge_id: ChallengeId,
+    ) -> Result<CommandSnapshot, NodeError>;
+
     /// Rejects an executing command before any authoritative change is committed.
     ///
     /// # Errors
@@ -53,19 +142,6 @@ pub trait NodeBackend: Send + Sync + 'static {
     /// Returns an error when the command is absent, no longer executing, or
     /// the retry lifecycle cannot be durably appended.
     fn retry(&self, command_id: CommandId, reason: String) -> Result<CommandSnapshot, NodeError>;
-
-    /// Parks an executing command behind one exact durable challenge.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the exact effect cannot be durably parked.
-    fn await_authorization(
-        &self,
-        command_id: CommandId,
-        challenge_id: ChallengeId,
-        batch: ChangeBatch,
-        result: Vec<u8>,
-    ) -> Result<CommandSnapshot, NodeError>;
 
     /// Resubmits a parked command with the approval that released it.
     ///
@@ -123,6 +199,7 @@ pub trait NodeBackend: Send + Sync + 'static {
             let command = match envelope.event {
                 NodeEvent::CommandLifecycle(command)
                 | NodeEvent::CommandCommitted { command, .. } => command,
+                NodeEvent::FrameworkControl(_) => return None,
             };
             (command.request.id == command_id).then_some(envelope.origin.node_id)
         }))
@@ -134,6 +211,24 @@ pub trait NodeBackend: Send + Sync + 'static {
     ///
     /// Returns an error when backend history cannot be read.
     fn events_after(&self, after: Option<LogPosition>) -> Result<Vec<EventEnvelope>, NodeError>;
+
+    /// Returns dependency-complete events in causal order at one local log cut.
+    ///
+    /// A parent received after `through` cannot release a child in this snapshot.
+    ///
+    /// # Errors
+    /// Returns an error when history is unavailable or causally invalid.
+    fn causal_events_through(&self, through: LogPosition) -> Result<Vec<EventEnvelope>, NodeError> {
+        let history = self
+            .events_after(None)?
+            .into_iter()
+            .filter(|event| event.position <= through)
+            .collect::<Vec<_>>();
+        Ok(crate::causal::causal_replay(&history)?
+            .into_iter()
+            .cloned()
+            .collect())
+    }
 
     /// Reads at most `limit` immutable events after an exclusive cursor.
     ///
@@ -184,27 +279,19 @@ pub trait NodeBackend: Send + Sync + 'static {
     /// Returns an error when the backend cannot establish the subscription.
     fn subscribe(&self, after: Option<LogPosition>) -> Result<EventSubscription, NodeError>;
 
-    /// Returns the complete scope topology known to this backend, including
-    /// deterministic relationships derived while attaching typed schemas.
+    /// Returns scope topology established by dependency-complete history.
+    /// Retained events with missing ancestors must not establish authority.
     ///
     /// # Errors
     ///
     /// Returns an error when backend state cannot be read.
     #[doc(hidden)]
-    fn scope_topology(&self) -> Result<ScopeTopology, NodeError>;
-
-    /// Installs deterministic scope relationships recovered from typed item
-    /// history. Implementations must apply the complete set atomically.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error for a conflicting parent, a cycle, or unavailable
-    /// backend state.
-    #[doc(hidden)]
-    fn install_derived_scope_relations(
-        &self,
-        relations: &[(ScopeId, ScopeId)],
-    ) -> Result<(), NodeError>;
+    fn scope_topology(&self) -> Result<ScopeTopology, NodeError> {
+        let Some(through) = self.latest_position()? else {
+            return Ok(ScopeTopology::default());
+        };
+        ScopeTopology::from_events(&self.causal_events_through(through)?)
+    }
 
     /// Idempotently ingests an immutable event received from another node.
     ///
@@ -222,13 +309,19 @@ pub struct Node {
     readiness: Arc<NodeReadiness>,
     command_dispatch: Arc<ReentrantMutex<()>>,
     command_access_policy: Arc<RwLock<Option<Weak<dyn AccessPolicy>>>>,
-    replication_coverage: SharedReplicationPositions,
+    replication_coverage: Arc<RwLock<HashMap<(NodeId, ReplicationSelection), ReplicationCoverage>>>,
     replication_resumptions: SharedReplicationPositions,
     replication_sources: Arc<RwLock<HashMap<NodeId, ReplicationSourceAvailability>>>,
 }
 
 type ReplicationPositions = HashMap<(NodeId, ReplicationSelection), Option<LogPosition>>;
 type SharedReplicationPositions = Arc<RwLock<ReplicationPositions>>;
+
+#[derive(Clone, Copy)]
+struct ReplicationCoverage {
+    source_through: Option<LogPosition>,
+    local_cut: Option<LogPosition>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ReplicationSourceAvailability {
@@ -716,9 +809,9 @@ impl CommandDispatchDisposition {
     const fn for_resumed_state(state: &CommandState) -> Self {
         match state {
             CommandState::Rejected { .. } | CommandState::Cancelled { .. } => Self::Rejected,
-            CommandState::Retrying { .. } | CommandState::AuthorizationPending { .. } => {
-                Self::Retrying
-            }
+            CommandState::Retrying { .. }
+            | CommandState::AuthorizationPrepared { .. }
+            | CommandState::AuthorizationPending { .. } => Self::Retrying,
             _ => Self::Resumed,
         }
     }
@@ -904,7 +997,7 @@ pub enum TypedCommandAdmission {
 
 fn item_query_claims<Q>(
     selection: ScopeSelection,
-    source_node: NodeId,
+    source_node: Option<NodeId>,
     query: &Q,
 ) -> Vec<ResourceClaim>
 where
@@ -923,7 +1016,7 @@ where
 
 fn item_query_claim<Q>(
     selection: ScopeSelection,
-    source_node: NodeId,
+    source_node: Option<NodeId>,
     item_id: Option<&str>,
 ) -> ResourceClaim
 where
@@ -932,7 +1025,7 @@ where
     ResourceClaim {
         selection,
         kind: ResourceClaimKind::Referenced,
-        source_node: Some(source_node),
+        source_node,
         service_id: Some(ServiceId::new(Q::Item::SERVICE_ID)),
         item_type: Some(Q::Item::ITEM_TYPE.to_owned()),
         item_id: item_id.map(ToOwned::to_owned),
@@ -955,6 +1048,7 @@ pub struct CommandContext {
     changes: Arc<Mutex<Vec<ItemMutation>>>,
     actual_claims: Arc<Mutex<Vec<ResourceClaim>>>,
     actual_capabilities: Arc<Mutex<Vec<CapabilityId>>>,
+    causal_reads: Arc<Mutex<HashSet<EventId>>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1066,25 +1160,48 @@ impl CommandContext {
         Ok(())
     }
 
-    /// Executes a generated query against this service/scope's current local
-    /// authoritative item state.
+    /// Reads a logical scope from a fixed local history cut. Observed batches
+    /// in the command's own atomic scope become required replay dependencies.
     ///
     /// # Errors
     ///
     /// Returns an error if current typed state cannot be materialized.
+    #[allow(clippy::needless_pass_by_value)] // Typed query APIs accept an owned one-shot request.
     pub fn query<Q>(&self, query: Q) -> Result<ItemQueryResult<Q>, NodeError>
     where
         Q: ItemQuery,
     {
         for claim in item_query_claims(
             ScopeSelection::Exact(self.command.request.scope_id.clone()),
-            self.node.node_id(),
+            None,
             &query,
         ) {
             self.record_actual_claim(claim)?;
         }
-        self.node
-            .query_items_in(self.node.node_id(), &self.command.request.scope_id, query)
+        let (_, history) = self.node.causal_snapshot()?;
+        let service_id = ServiceId::new(Q::Item::SERVICE_ID);
+        let service_scope = Some((&service_id, &self.command.request.scope_id));
+        let projection = project_item_history(&history, None, service_scope)?;
+        self.causal_reads
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .extend(
+                history
+                    .iter()
+                    .filter(|event| {
+                        matches!(event.event, NodeEvent::CommandCommitted { .. })
+                            // Output-only replicas must not need a foreign service's private history.
+                            && command_from_event(&event.event).is_some_and(|command| {
+                                command.request.service_id == self.command.request.service_id
+                            })
+                            && event.event.affected_scope_ids().iter().any(|scope| {
+                                scope.equivalent_to(&self.command.request.scope_id)
+                            })
+                            && item_history_scope_matches::<Q::Item>(event, service_scope)
+                    })
+                    .map(|event| event.origin),
+            );
+        Ok(__snapshot_item_query(&query, &projection))
     }
 
     /// Executes a command-safe authoritative exact/subtree query after
@@ -1103,17 +1220,15 @@ impl CommandContext {
     where
         Q: ItemQuery,
     {
-        for claim in item_query_claims(selection.clone(), self.node.node_id(), &query) {
+        for claim in item_query_claims(selection.clone(), None, &query) {
             self.record_actual_claim(claim)?;
         }
-        let history = self.node.events_after(None)?;
+        let (_, history) = self.node.causal_snapshot()?;
         let topology = ScopeTopology::from_events(&history)?;
         let mut projection = ItemProjection::default();
-        for envelope in &history {
-            if envelope.origin.node_id != self.node.node_id() {
-                continue;
-            }
-            let NodeEvent::CommandCommitted { command, .. } = &envelope.event else {
+        let mut observed = Vec::new();
+        for (index, envelope) in history.iter().enumerate() {
+            let NodeEvent::CommandCommitted { command, batch } = &envelope.event else {
                 continue;
             };
             if command.request.service_id != Q::Item::SERVICE_ID {
@@ -1122,12 +1237,30 @@ impl CommandContext {
             let _changed = apply_selected_item_envelope(
                 &mut projection,
                 envelope,
-                self.node.node_id(),
+                None,
                 &selection,
                 None,
                 &topology,
+                projection_revision(index)?,
             )?;
+            if command.request.service_id == self.command.request.service_id
+                && envelope
+                    .event
+                    .affected_scope_ids()
+                    .iter()
+                    .any(|scope| scope.equivalent_to(&self.command.request.scope_id))
+                && batch.changes.iter().any(|mutation| {
+                    item_mutation_scope::<Q::Item>(mutation, &batch.scope_id)
+                        .is_some_and(|scope| selection.contains_scope(&scope, &topology))
+                })
+            {
+                observed.push(envelope.origin);
+            }
         }
+        self.causal_reads
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .extend(observed);
         Ok(__snapshot_item_query(&query, &projection))
     }
 
@@ -1224,17 +1357,51 @@ impl CommandContext {
         self.commit_bytes(encoded)
     }
 
+    fn prepare_batch(&self) -> Result<ChangeBatch, NodeError> {
+        let changes = self
+            .changes
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .clone();
+        let mut causal_parents = self
+            .causal_reads
+            .lock()
+            .map_err(|_| NodeError::Poisoned)?
+            .iter()
+            .copied()
+            .collect::<Vec<_>>();
+        causal_parents.push(self.command.updated_at);
+        let mut batch = ChangeBatch {
+            id: BatchId::new(),
+            command_id: self.command.request.id,
+            service_id: self.command.request.service_id.clone(),
+            scope_id: self.command.request.scope_id.clone(),
+            causal_parents,
+            changes,
+        };
+        // Bind known local write predecessors into the exact effect being authorized.
+        // Approval resumption must not change this batch when newer writes arrive.
+        batch
+            .causal_parents
+            .extend(crate::causal::scoped_author_parents(
+                &self.node.events_after(None)?,
+                self.node.node_id(),
+                &batch,
+            ));
+        batch
+            .causal_parents
+            .sort_unstable_by_key(|event| (event.node_id, event.sequence));
+        batch.causal_parents.dedup();
+        Ok(batch)
+    }
+
     /// Atomically commits emitted items and an application-owned result body.
     ///
     /// # Errors
     ///
     /// Returns an error if the durable commit fails.
     pub fn commit_bytes(self, result: Vec<u8>) -> Result<CommandSnapshot, NodeError> {
-        let changes = self
-            .changes
-            .lock()
-            .map_err(|_| NodeError::Poisoned)?
-            .clone();
+        let batch = self.prepare_batch()?;
         let actual_claims = self
             .actual_claims
             .lock()
@@ -1245,14 +1412,6 @@ impl CommandContext {
             .lock()
             .map_err(|_| NodeError::Poisoned)?
             .clone();
-        let batch = ChangeBatch {
-            id: BatchId::new(),
-            command_id: self.command.request.id,
-            service_id: self.command.request.service_id.clone(),
-            scope_id: self.command.request.scope_id.clone(),
-            causal_parents: vec![self.command.updated_at],
-            changes,
-        };
         let mut prospective_topology = self.node.scope_topology()?;
         prospective_topology.observe_event(&NodeEvent::CommandCommitted {
             command: self.command.clone(),
@@ -1261,64 +1420,22 @@ impl CommandContext {
         if self.authorization == CommandAuthorization::TrustedFramework {
             return self.node.commit(self.command.request.id, batch, result);
         }
-        let policy = self
+        let effect = PreparedCommandEffect::new(
+            self.command.updated_at,
+            batch,
+            result,
+            actual_claims,
+            actual_capabilities,
+            prospective_topology,
+        )?;
+        let prepared = self
             .node
-            .command_access_policy
-            .read()
-            .map_err(|_| NodeError::Poisoned)?
-            .as_ref()
-            .and_then(Weak::upgrade);
-        let Some(policy) = policy else {
-            let reason = "no command access policy is installed".to_owned();
-            let _rejected = self.node.reject(self.command.request.id, reason.clone())?;
-            return Err(NodeError::AuthorizationDenied(reason));
-        };
-        let effect_digest = serde_json::to_vec(&(
-            "myko-command-effect-v1",
-            &batch,
-            &actual_claims,
-            &actual_capabilities,
-            &result,
-        ))
-        .map(|bytes| digest_bytes(&bytes))
-        .map_err(|error| NodeError::ResultEncoding(error.to_string()))?;
-        let request = AccessAttempt {
-            principal_id: self.command.request.authority.executor.id.clone(),
-            presentation: self.command.request.authority.clone(),
-            operation: AccessOperation::SubmitCommand,
-            target: AccessTarget::KnownCommand {
-                command_id: self.command.request.id,
-                service_id: self.command.request.service_id.clone(),
-                scope_id: self.command.request.scope_id.clone(),
-                command_type: self.command.request.command_type.clone(),
-                principal_id: self.command.request.principal_id.clone(),
-            },
-            resource_claims: actual_claims,
-            application_capabilities: actual_capabilities,
-            arguments_digest: self.command.request.arguments_digest.clone(),
-            effect_digest: Some(effect_digest),
-            lease: None,
-            authorization_phase: AuthorizationPhase::Effect,
-            topology: Some(prospective_topology),
-        };
-        let decision = policy.decide(&request);
-        match decision {
-            AuthorizationDecision::Permit(_) => {}
-            AuthorizationDecision::Challenge { challenge, .. } => {
-                return self.node.backend.await_authorization(
-                    self.command.request.id,
-                    challenge.id,
-                    batch,
-                    result,
-                );
-            }
-            AuthorizationDecision::Deny(denied) => {
-                let reason = AuthorizationDecision::Deny(denied).public_message();
-                let _rejected = self.node.reject(self.command.request.id, reason.clone())?;
-                return Err(NodeError::AuthorizationDenied(reason));
-            }
+            .prepare_authorization(self.command.request.id, effect)?;
+        let command = self.node.resolve_prepared_authorization(prepared)?;
+        if let CommandState::Rejected { reason } = &command.state {
+            return Err(NodeError::AuthorizationDenied(reason.clone()));
         }
-        self.node.commit(self.command.request.id, batch, result)
+        Ok(command)
     }
 
     /// Rejects this executing command without committing emitted items.
@@ -1462,16 +1579,20 @@ impl Node {
             .map_err(|_| NodeError::Poisoned)?
             .get(&key)
             .is_some_and(|position| *position == after);
+        let receipt = ReplicationCoverage {
+            source_through: through,
+            local_cut: self.backend.latest_position()?,
+        };
         let mut coverage = self
             .replication_coverage
             .write()
             .map_err(|_| NodeError::Poisoned)?;
         match coverage.get(&key) {
-            Some(previous) if *previous == after => {
-                coverage.insert(key.clone(), through);
+            Some(previous) if previous.source_through == after => {
+                coverage.insert(key.clone(), receipt);
             }
             None if after.is_none() || trusted_resume => {
-                coverage.insert(key.clone(), through);
+                coverage.insert(key.clone(), receipt);
             }
             _ => {}
         }
@@ -1490,12 +1611,12 @@ impl Node {
         source_node: NodeId,
         service_id: &ServiceId,
         authorized: &[ScopeSelection],
-        topology: &ScopeTopology,
+        snapshot: &SelectedHistorySnapshot,
     ) -> Result<(ProjectionCoverage, Option<LogPosition>), NodeError> {
         if source_node == self.node_id() {
-            let through = self.events_after(None)?.last().map(|event| event.position);
-            return Ok((ProjectionCoverage::LocalAuthoritative, through));
+            return Ok((ProjectionCoverage::LocalAuthoritative, snapshot.through));
         }
+        let topology = &snapshot.topology;
         let availability = self
             .replication_sources
             .read()
@@ -1512,24 +1633,25 @@ impl Node {
             .replication_coverage
             .read()
             .map_err(|_| NodeError::Poisoned)?;
-        let observed_source = self
-            .events_after(None)?
-            .iter()
-            .any(|event| event.origin.node_id == source_node);
+        let observed_source = snapshot.observed_source(source_node);
         let mut through: Option<LogPosition> = None;
         let all_covered = authorized.iter().all(|requested| {
             let best = coverage
                 .iter()
-                .filter(|((candidate_source, selection), _)| {
+                .filter(|((candidate_source, selection), receipt)| {
                     candidate_source == &source_node
+                        && receipt.local_cut <= snapshot.through
                         && selection.covers_scope_selection(service_id, requested, topology)
                 })
-                .filter_map(|(_, candidate_through)| *candidate_through)
+                .filter_map(|(_, receipt)| receipt.source_through)
                 .max();
-            let found = coverage.iter().any(|((candidate_source, selection), _)| {
-                candidate_source == &source_node
-                    && selection.covers_scope_selection(service_id, requested, topology)
-            });
+            let found = coverage
+                .iter()
+                .any(|((candidate_source, selection), receipt)| {
+                    candidate_source == &source_node
+                        && receipt.local_cut <= snapshot.through
+                        && selection.covers_scope_selection(service_id, requested, topology)
+                });
             if found {
                 through = match (through, best) {
                     (Some(current), Some(candidate)) => Some(current.min(candidate)),
@@ -1558,6 +1680,39 @@ impl Node {
     ) -> Result<CommandSnapshot, NodeError> {
         self.backend
             .resume_authorization(command_id, challenge_id, approval_id)
+    }
+
+    /// Freezes a computed handler effect before invoking live authorization.
+    #[doc(hidden)]
+    pub fn prepare_authorization(
+        &self,
+        command_id: CommandId,
+        effect: PreparedCommandEffect,
+    ) -> Result<CommandSnapshot, NodeError> {
+        self.backend.prepare_authorization(command_id, effect)
+    }
+
+    /// Commits a previously prepared effect after an exact authorization permit.
+    #[doc(hidden)]
+    pub fn commit_prepared_authorization(
+        &self,
+        command_id: CommandId,
+        effect_digest: &str,
+    ) -> Result<CommandSnapshot, NodeError> {
+        self.backend
+            .commit_prepared_authorization(command_id, effect_digest)
+    }
+
+    /// Parks a previously prepared effect behind an exact authority challenge.
+    #[doc(hidden)]
+    pub fn await_prepared_authorization(
+        &self,
+        command_id: CommandId,
+        effect_digest: &str,
+        challenge_id: ChallengeId,
+    ) -> Result<CommandSnapshot, NodeError> {
+        self.backend
+            .await_prepared_authorization(command_id, effect_digest, challenge_id)
     }
 
     #[doc(hidden)]
@@ -1601,6 +1756,17 @@ impl Node {
     #[must_use]
     pub fn node_id(&self) -> NodeId {
         self.backend.node_id()
+    }
+
+    /// Returns the durable store identity, or `None` without a durable store.
+    ///
+    /// This identity alone does not detect a restored or copied database.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the store identity cannot be read.
+    pub fn storage_incarnation(&self) -> Result<Option<StorageIncarnationId>, NodeError> {
+        self.backend.storage_incarnation()
     }
 
     /// Durably submits a command without making the client its executor.
@@ -1681,6 +1847,67 @@ impl Node {
             return DenyAllAccessPolicy.decide(&access);
         };
         policy.decide(&access)
+    }
+
+    fn prepared_effect_access_request(
+        request: &CommandRequest,
+        effect: &PreparedCommandEffect,
+    ) -> AccessAttempt {
+        AccessAttempt {
+            principal_id: request.authority.executor.id.clone(),
+            presentation: request.authority.clone(),
+            operation: AccessOperation::SubmitCommand,
+            target: AccessTarget::KnownCommand {
+                command_id: request.id,
+                service_id: request.service_id.clone(),
+                scope_id: request.scope_id.clone(),
+                command_type: request.command_type.clone(),
+                principal_id: request.principal_id.clone(),
+            },
+            resource_claims: effect.resource_claims().to_vec(),
+            application_capabilities: effect.application_capabilities().to_vec(),
+            arguments_digest: request.arguments_digest.clone(),
+            effect_digest: Some(effect.effect_digest().to_owned()),
+            lease: None,
+            authorization_phase: effect.authorization_phase(),
+            topology: Some(effect.topology_proof().clone()),
+        }
+    }
+
+    fn resolve_prepared_authorization(
+        &self,
+        command: CommandSnapshot,
+    ) -> Result<CommandSnapshot, NodeError> {
+        let CommandState::AuthorizationPrepared { effect } = command.state else {
+            return Ok(command);
+        };
+        effect.validate_digest()?;
+        let request = Self::prepared_effect_access_request(&command.request, &effect);
+        let Some(policy) = self
+            .command_access_policy
+            .read()
+            .map_err(|_| NodeError::Poisoned)?
+            .as_ref()
+            .and_then(Weak::upgrade)
+        else {
+            let reason = "no command access policy is installed".to_owned();
+            return self.reject(command.request.id, reason);
+        };
+        match policy.decide(&request) {
+            AuthorizationDecision::Permit(_) => {
+                self.commit_prepared_authorization(command.request.id, effect.effect_digest())
+            }
+            AuthorizationDecision::Challenge { challenge, .. } => self
+                .await_prepared_authorization(
+                    command.request.id,
+                    effect.effect_digest(),
+                    challenge.id,
+                ),
+            AuthorizationDecision::Deny(denied) => {
+                let reason = AuthorizationDecision::Deny(denied).public_message();
+                self.reject(command.request.id, reason)
+            }
+        }
     }
 
     /// Durably submits a typed application command without executing it.
@@ -1787,8 +2014,16 @@ impl Node {
                 )),
                 command,
                 changes: Arc::new(Mutex::new(Vec::new())),
+                causal_reads: Arc::new(Mutex::new(HashSet::new())),
             }),
-            CommandAdmission::Resume(command) => TypedCommandAdmission::Resume(command),
+            CommandAdmission::Resume(command) => {
+                let command = if authorization == CommandAuthorization::Enforce {
+                    self.resolve_prepared_authorization(command)?
+                } else {
+                    command
+                };
+                TypedCommandAdmission::Resume(command)
+            }
         })
     }
 
@@ -1917,6 +2152,18 @@ impl Node {
         self.backend.command(command_id)
     }
 
+    pub(super) fn command_through(
+        &self,
+        command_id: CommandId,
+        through: Option<LogPosition>,
+    ) -> Result<Option<CommandSnapshot>, NodeError> {
+        let history = through
+            .map(|cut| self.causal_events_through(cut))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(materialize_command_snapshot(&history, command_id))
+    }
+
     /// Reads one current command state and starts a gap-free lifecycle watch.
     ///
     /// The snapshot is reconstructed from the same bounded history prefix used
@@ -1931,11 +2178,10 @@ impl Node {
         &self,
         command_id: CommandId,
     ) -> Result<(CommandResponse, CommandWatch), NodeError> {
-        let history = self.events_after(None)?;
-        let through = history.last().map(|envelope| envelope.position);
+        let through = self.backend.latest_position()?;
         let events = self.subscribe(through)?;
         let current = self
-            .command(command_id)?
+            .command_through(command_id, through)?
             .ok_or(NodeError::UnknownCommand(command_id))?;
         Ok((
             CommandResponse {
@@ -1943,6 +2189,7 @@ impl Node {
                 command: Some(current.clone()),
             },
             CommandWatch {
+                node: self.clone(),
                 command_id,
                 current,
                 events,
@@ -1966,16 +2213,14 @@ impl Node {
         &self,
         command_id: CommandId,
     ) -> Result<(CommandResponse, CommandWatch), NodeError> {
-        let history = self.events_after(None)?;
-        let through = history.last().map(|envelope| envelope.position);
+        let through = self.backend.latest_position()?;
         let mut events = self.subscribe(through)?;
-        let current = match self.command(command_id)? {
+        let current = match self.command_through(command_id, through)? {
             Some(current) => current,
             None => loop {
                 let envelope = events.recv_async().await?;
-                let command = command_from_event(&envelope.event);
-                if command.request.id == command_id {
-                    break command.clone();
+                if let Some(command) = self.command_through(command_id, Some(envelope.position))? {
+                    break command;
                 }
             },
         };
@@ -1985,6 +2230,7 @@ impl Node {
                 command: Some(current.clone()),
             },
             CommandWatch {
+                node: self.clone(),
                 command_id,
                 current,
                 events,
@@ -2215,12 +2461,15 @@ impl Node {
                 let (command, disposition) = match handled {
                     Ok(output) => {
                         let command = context.commit(&output)?;
-                        let disposition =
-                            if matches!(command.state, CommandState::AuthorizationPending { .. }) {
-                                CommandDispatchDisposition::Retrying
-                            } else {
-                                CommandDispatchDisposition::Committed
-                            };
+                        let disposition = if matches!(
+                            command.state,
+                            CommandState::AuthorizationPrepared { .. }
+                                | CommandState::AuthorizationPending { .. }
+                        ) {
+                            CommandDispatchDisposition::Retrying
+                        } else {
+                            CommandDispatchDisposition::Committed
+                        };
                         (command, disposition)
                     }
                     Err(CommandHandlerError::Reject(reason)) => (
@@ -2237,6 +2486,11 @@ impl Node {
                 })
             }
             Ok(DeclaredCommandAdmission::Resume(command)) => {
+                let command = if authorization == CommandAuthorization::Enforce {
+                    self.resolve_prepared_authorization(command)?
+                } else {
+                    command
+                };
                 let disposition = CommandDispatchDisposition::for_resumed_state(&command.state);
                 Ok(CommandDispatchResult {
                     command,
@@ -2346,8 +2600,7 @@ impl Node {
         validate_command_state_request(&request)?;
         let source_node = request.source_node.unwrap_or_else(|| self.node_id());
         request.source_node = Some(source_node);
-        let history = self.events_after(None)?;
-        let latest = history.last().map(|envelope| envelope.position);
+        let latest = self.backend.latest_position()?;
         let through = match request.snapshot_through {
             Some(requested) if latest.is_none_or(|latest| requested > latest) => {
                 return Err(NodeError::InvalidCommandState(format!(
@@ -2359,6 +2612,10 @@ impl Node {
             None => latest,
         };
         request.snapshot_through = through;
+        let history = through
+            .map(|cut| self.causal_events_through(cut))
+            .transpose()?
+            .unwrap_or_default();
         let current = materialize_command_state_entries(history, source_node, &request, through);
         let page_size = usize::try_from(request.page_size).map_err(|error| {
             NodeError::InvalidCommandState(format!(
@@ -2415,6 +2672,64 @@ impl Node {
             next = snapshot.append_page(&request, page)?;
         }
         Ok(snapshot)
+    }
+
+    /// Follows causally ready entries for a source-bound command catalog.
+    ///
+    /// One late ancestor can release several entries. They share one atomic
+    /// update and cursor so reconnect cannot skip part of the release.
+    ///
+    /// # Errors
+    /// Returns an error for a foreign serving cursor, invalid request, or unavailable history.
+    pub fn watch_commands(
+        &self,
+        request: CommandWatchRequest,
+    ) -> Result<CommandCatalogWatch, NodeError> {
+        let latest = self.backend.latest_position()?;
+        if request.serving_node != self.node_id()
+            || request
+                .after
+                .is_some_and(|cut| latest.is_none_or(|latest| cut > latest))
+        {
+            return Err(NodeError::InvalidCommandState(
+                "command watch cursor does not belong to serving history".to_owned(),
+            ));
+        }
+        let current = self.command_catalog_through(&request, request.after)?;
+        let events = self.subscribe(request.after)?;
+        Ok(CommandCatalogWatch {
+            node: self.clone(),
+            request,
+            current,
+            events,
+        })
+    }
+
+    pub(super) fn command_catalog_through(
+        &self,
+        request: &CommandWatchRequest,
+        through: Option<LogPosition>,
+    ) -> Result<BTreeMap<String, CommandStateEntry>, NodeError> {
+        let state_request = CommandStateRequest {
+            source_node: Some(request.source_node),
+            service_id: request.service_id.clone(),
+            scope_id: request.scope_id.clone(),
+            command_type: request.command_type.clone(),
+            snapshot_through: through,
+            after_command_id: None,
+            page_size: DEFAULT_COMMAND_STATE_PAGE_SIZE,
+        };
+        validate_command_state_request(&state_request)?;
+        let history = through
+            .map(|cut| self.causal_events_through(cut))
+            .transpose()?
+            .unwrap_or_default();
+        Ok(materialize_command_state_entries(
+            history,
+            request.source_node,
+            &state_request,
+            through,
+        ))
     }
 
     /// Materializes one bounded page of schema-specific current state.
@@ -2541,12 +2856,56 @@ impl Node {
         source_node: Option<NodeId>,
         service_scope: Option<(&ServiceId, &ScopeId)>,
     ) -> Result<ItemProjection<T>, NodeError> {
-        let mut projection = ItemProjection::default();
-        for envelope in self.events_after(None)? {
-            let _changed =
-                apply_item_envelope(&mut projection, &envelope, source_node, service_scope)?;
-        }
-        Ok(projection)
+        let history = if source_node.is_some() {
+            self.events_after(None)?
+        } else {
+            self.causal_snapshot()?.1
+        };
+        project_item_history(&history, source_node, service_scope)
+    }
+
+    /// Returns dependency-complete history at a fixed observer-local cut.
+    ///
+    /// Projection adapters must derive values and topology from this same history.
+    /// This local read does not authorize disclosure to a remote principal.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if retained history cannot be read or ordered.
+    pub fn causal_events_through(
+        &self,
+        through: LogPosition,
+    ) -> Result<Vec<EventEnvelope>, NodeError> {
+        self.backend.causal_events_through(through)
+    }
+
+    /// Freezes a local history cut and returns its dependency-complete events.
+    ///
+    /// Adapters can subscribe after the returned cut without a replay/live gap.
+    /// The cut may include unresolved events omitted from the returned history;
+    /// it is not proof of complete replicated coverage or authorization to serve it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the cut or its retained history cannot be read.
+    pub fn causal_snapshot(&self) -> Result<(Option<LogPosition>, Vec<EventEnvelope>), NodeError> {
+        let through = self.backend.latest_position()?;
+        let history = through
+            .map(|cut| self.causal_events_through(cut))
+            .transpose()?
+            .unwrap_or_default();
+        Ok((through, history))
+    }
+
+    /// Capture the latest local recording position for a new read or subscription.
+    ///
+    /// A position is a target, not evidence that a projection has consumed it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the local journal head cannot be read.
+    pub fn local_history_cut(&self) -> Result<Option<LogPosition>, NodeError> {
+        self.backend.latest_position()
     }
 
     /// Executes a generated typed query against current local and replicated
@@ -2660,12 +3019,15 @@ impl Node {
     where
         Q: ItemQuery,
     {
-        self.query_items_selected_phase(
-            authenticated_executor,
-            presentation,
-            source_node,
-            requested,
-            AuthorizationPhase::Admission,
+        self.query_items_selected_at(
+            SelectedQueryRead {
+                authenticated_executor,
+                presentation,
+                source_node,
+                requested,
+                phase: AuthorizationPhase::Admission,
+                through: self.backend.latest_position()?,
+            },
             query,
         )
     }
@@ -2708,20 +3070,24 @@ impl Node {
 
     #[allow(clippy::too_many_lines)] // Keeps one fail-closed visibility derivation auditable.
     #[allow(clippy::needless_pass_by_value)] // The typed query is a one-shot snapshot request.
-    pub(super) fn query_items_selected_phase<Q>(
+    pub(super) fn query_items_selected_at<Q>(
         &self,
-        authenticated_executor: PrincipalId,
-        presentation: AuthorityPresentation,
-        source_node: NodeId,
-        requested: &ScopeSelection,
-        authorization_phase: AuthorizationPhase,
+        read: SelectedQueryRead<'_>,
         query: Q,
     ) -> Result<SelectedQueryResult<ItemQueryResult<Q>>, NodeError>
     where
         Q: ItemQuery,
     {
-        let history = self.events_after(None)?;
-        let topology = ScopeTopology::from_events(&history)?;
+        let SelectedQueryRead {
+            authenticated_executor,
+            presentation,
+            source_node,
+            requested,
+            phase: authorization_phase,
+            through,
+        } = read;
+        let snapshot = SelectedHistorySnapshot::at(self, through)?;
+        let topology = &snapshot.topology;
         let Some(policy) = self
             .command_access_policy
             .read()
@@ -2773,13 +3139,13 @@ impl Node {
         let (authorized, policy_covers_request) = match policy.constrain_replication(
             &access,
             &ReplicationSelection::Scopes(vec![requested.clone()]),
-            &topology,
+            topology,
         ) {
             Ok(ReplicationSelection::Scopes(authorized)) => (authorized, true),
             Ok(ReplicationSelection::Intersection { scopes, .. }) => {
                 let covers = scopes
                     .iter()
-                    .any(|selection| selection.covers_in(requested, &topology));
+                    .any(|selection| selection.covers_in(requested, topology));
                 (scopes, covers)
             }
             Ok(selection) => match selection {
@@ -2824,14 +3190,22 @@ impl Node {
             && requested_scopes.iter().all(|scope| {
                 authorized
                     .iter()
-                    .any(|selection| selection.contains_scope(scope, &topology))
+                    .any(|selection| selection.contains_scope(scope, topology))
             });
-        let (coverage, through) = self.selected_projection_coverage(
+        let (mut coverage, mut through) = self.selected_projection_coverage(
             source_node,
             &ServiceId::new(Q::Item::SERVICE_ID),
             &authorized,
-            &topology,
+            &snapshot,
         )?;
+        if !matches!(
+            coverage,
+            ProjectionCoverage::Unreachable | ProjectionCoverage::Undiscoverable
+        ) && snapshot.has_pending_for::<Q::Item>(source_node, &authorized)
+        {
+            coverage = ProjectionCoverage::HistoryIncomplete;
+            through = None;
+        }
         let source_complete = matches!(
             coverage,
             ProjectionCoverage::LocalAuthoritative | ProjectionCoverage::ReplicatedComplete
@@ -2840,7 +3214,7 @@ impl Node {
             || !matches!(requested, ScopeSelection::Subtree(root) if !topology.knows(root));
         let complete = source_complete && topology_complete;
         let mut projection = ItemProjection::default();
-        for envelope in &history {
+        for (index, envelope) in snapshot.ready.iter().enumerate() {
             if envelope.origin.node_id != source_node {
                 continue;
             }
@@ -2853,16 +3227,18 @@ impl Node {
             let _changed = apply_selected_item_envelope(
                 &mut projection,
                 envelope,
-                source_node,
+                Some(source_node),
                 requested,
                 Some(&authorized),
-                &topology,
+                topology,
+                projection_revision(index)?,
             )?;
         }
         let visibility = match coverage {
             ProjectionCoverage::Unreachable => ResourceVisibility::Unreachable,
             ProjectionCoverage::Undiscoverable => ResourceVisibility::Undiscoverable,
             ProjectionCoverage::ReplicatedIncomplete => ResourceVisibility::NotReplicated,
+            ProjectionCoverage::HistoryIncomplete => ResourceVisibility::HistoryIncomplete,
             ProjectionCoverage::LocalAuthoritative | ProjectionCoverage::ReplicatedComplete
                 if !topology_complete =>
             {
@@ -2911,13 +3287,16 @@ impl Node {
     where
         Q: ItemQuery,
     {
-        let history = self.events_after(None)?;
-        let through = history.last().map(|event| event.position);
-        let snapshot = self.query_items_selected(
-            authenticated_executor.clone(),
-            presentation.clone(),
-            source_node,
-            &requested,
+        let through = self.backend.latest_position()?;
+        let snapshot = self.query_items_selected_at(
+            SelectedQueryRead {
+                authenticated_executor: authenticated_executor.clone(),
+                presentation: presentation.clone(),
+                source_node,
+                requested: &requested,
+                phase: AuthorizationPhase::Admission,
+                through,
+            },
             query.clone(),
         )?;
         let mut events = self.subscribe(through)?;
@@ -3053,6 +3432,7 @@ impl Node {
                 query,
                 projection,
                 source_node: Some(source_node),
+                node: self.clone(),
                 service_id,
                 scope_id: Some(scope_id),
                 events,
@@ -3096,6 +3476,7 @@ impl Node {
                 query,
                 projection,
                 source_node: Some(source_node),
+                node: self.clone(),
                 service_id,
                 scope_id: None,
                 events,
@@ -3122,17 +3503,8 @@ impl Node {
         Q: ItemQuery,
     {
         let service_id = ServiceId::new(Q::Item::SERVICE_ID);
-        let history = self.events_after(None)?;
-        let through = history.last().map(|envelope| envelope.position);
-        let mut projection = ItemProjection::default();
-        for envelope in &history {
-            let _changed = apply_item_envelope(
-                &mut projection,
-                envelope,
-                None,
-                Some((&service_id, &scope_id)),
-            )?;
-        }
+        let (through, history) = self.causal_snapshot()?;
+        let projection = project_item_history(&history, None, Some((&service_id, &scope_id)))?;
         let snapshot = ItemQuerySnapshot {
             through,
             value: __snapshot_item_query(&query, &projection),
@@ -3144,6 +3516,7 @@ impl Node {
                 query,
                 projection,
                 source_node: None,
+                node: self.clone(),
                 service_id,
                 scope_id: Some(scope_id),
                 events,
@@ -3172,14 +3545,14 @@ impl Node {
         T: MykoItem,
     {
         let service_id = ServiceId::new(T::SERVICE_ID);
-        let history = self.events_after(None)?;
-        let through = history.last().map(|envelope| envelope.position);
-        let mut projection = ItemProjection::default();
-        for envelope in &history {
-            let service_scope = scope_id.as_ref().map(|scope_id| (&service_id, scope_id));
-            let _changed =
-                apply_item_envelope(&mut projection, envelope, source_node, service_scope)?;
-        }
+        let (through, history) = if source_node.is_none() {
+            self.causal_snapshot()?
+        } else {
+            let history = self.events_after(None)?;
+            (history.last().map(|event| event.position), history)
+        };
+        let service_scope = scope_id.as_ref().map(|scope_id| (&service_id, scope_id));
+        let projection = project_item_history(&history, source_node, service_scope)?;
         let snapshot = ItemProjectionSnapshot {
             through,
             projection: projection.clone(),
@@ -3190,6 +3563,7 @@ impl Node {
             ItemProjectionWatch {
                 projection,
                 source_node,
+                node: self.clone(),
                 service_id,
                 scope_id,
                 events,
@@ -3233,7 +3607,7 @@ impl Node {
         self.backend.scope_ids_page(after, limit)
     }
 
-    /// Reconstructs immutable nested-scope parentage from authoritative items.
+    /// Reconstructs nested-scope parentage from dependency-complete history.
     ///
     /// # Errors
     ///
@@ -3241,16 +3615,6 @@ impl Node {
     /// an existing scope root.
     pub fn scope_topology(&self) -> Result<ScopeTopology, NodeError> {
         self.backend.scope_topology()
-    }
-
-    /// Installs scope relationships deterministically recovered by registered
-    /// typed item schemas before the node becomes ready.
-    #[doc(hidden)]
-    pub fn install_derived_scope_relations(
-        &self,
-        relations: &[(ScopeId, ScopeId)],
-    ) -> Result<(), NodeError> {
-        self.backend.install_derived_scope_relations(relations)
     }
 
     /// Creates a replay-then-live subscription without a cursor gap.
@@ -3301,6 +3665,60 @@ impl Node {
         self.backend.ingest(event)
     }
 
+    /// Persist a controller response before returning its signature.
+    ///
+    /// The key must belong to one durable controller. Sharing it across independent
+    /// stores or rolling back its history violates crash-fault voting assumptions.
+    /// This local framework API does not authorize a remote request or activate an epoch.
+    ///
+    /// # Errors
+    /// Rejects unavailable persistence, journal failure, corrupt retained votes,
+    /// superseded ballots, and conflicting same-ballot values. A journal that
+    /// differs from live state requires reopening before further votes.
+    pub fn vote_control(
+        &self,
+        request: &crate::control_quorum::ControlVoteRequest<'_>,
+        key: &ed25519_dalek::SigningKey,
+    ) -> Result<crate::control_quorum::SignedControlVote, NodeError> {
+        self.backend.vote_control(request, key)
+    }
+
+    /// Persist one proposer's value and prepare proof before it can be accepted.
+    ///
+    /// Exact retries recover the original signed proposal, including after reopen.
+    /// The key must not be shared across independent stores or rolled back.
+    /// This does not allocate ballots, run a coordinator, or activate authority.
+    ///
+    /// # Errors
+    /// Rejects wrong keys, conflicting retained proposals, journal failure, and
+    /// durable/live history disagreement requiring reopen.
+    pub fn propose_control(
+        &self,
+        request: &crate::control_quorum::ControlProposalRequest<'_>,
+        key: &ed25519_dalek::SigningKey,
+    ) -> Result<crate::control_quorum::SignedControlProposal, NodeError> {
+        self.backend.propose_control(request, key)
+    }
+
+    /// Durably records an unverified retained-history assertion.
+    ///
+    /// This does not verify the signature, obligation, membership, authority,
+    /// or custody. Callers must establish those conditions before relying on
+    /// the persisted statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when durable storage is unavailable or the statement
+    /// does not exactly match the supplied manifest, local holder, and store identity.
+    pub fn record_retained_history_statement(
+        &self,
+        signed: SignedRetainedHistoryStatement,
+        manifest: &SelectedHistoryManifest,
+    ) -> Result<EventEnvelope, NodeError> {
+        self.backend
+            .record_retained_history_statement(signed, manifest)
+    }
+
     /// Exports immutable events after an exclusive local replay cursor.
     ///
     /// # Errors
@@ -3334,12 +3752,17 @@ impl Node {
         let through = suffix.last().map(|event| event.position).or(after);
         let events = suffix
             .into_iter()
-            .filter(|event| {
-                event
+            .filter(|event| match &event.event {
+                NodeEvent::FrameworkControl(control) => matches!(
+                    control.selection(),
+                    ScopeSelection::Exact(control_scope)
+                        if control_scope.equivalent_to(&scope_id)
+                ),
+                NodeEvent::CommandLifecycle(_) | NodeEvent::CommandCommitted { .. } => event
                     .event
                     .affected_scope_ids()
                     .iter()
-                    .all(|affected| affected.equivalent_to(&scope_id))
+                    .all(|affected| affected.equivalent_to(&scope_id)),
             })
             .collect();
         Ok(ScopedReplicationBatch {
@@ -3353,6 +3776,9 @@ impl Node {
 
     /// Exports the selected application history while retaining the source cursor.
     ///
+    /// The cursor stops before unresolved history. Advancing past an event whose
+    /// scope relationships are not ready could omit it permanently from a subtree.
+    ///
     /// # Errors
     ///
     /// Returns an error when backend history cannot be read.
@@ -3361,11 +3787,23 @@ impl Node {
         selection: ReplicationSelection,
         after: Option<LogPosition>,
     ) -> Result<SelectedReplicationBatch, NodeError> {
+        let ready_history = match self.backend.latest_position()? {
+            Some(through) => self.backend.causal_events_through(through)?,
+            None => Vec::new(),
+        };
+        let topology = ScopeTopology::from_events(&ready_history)?;
+        let ready_origins = ready_history
+            .iter()
+            .map(|event| event.origin)
+            .collect::<HashSet<_>>();
         let history = self.backend.events_page(after, DURABLE_EVENT_PAGE_LIMIT)?;
-        let through = history.last().map(|event| event.position).or(after);
-        let topology = self.scope_topology()?;
+        let mut through = after;
         let mut events = Vec::new();
         for event in history {
+            if !ready_origins.contains(&event.origin) {
+                break;
+            }
+            through = Some(event.position);
             if selection.includes_in(&event.event, &topology) {
                 events.push(event);
             }
@@ -3537,12 +3975,18 @@ fn validate_scoped_replication_batch(batch: &ScopedReplicationBatch) -> Result<(
                 event.position.get()
             )));
         }
-        if !event
-            .event
-            .affected_scope_ids()
-            .iter()
-            .all(|scope_id| scope_id.equivalent_to(&batch.scope_id))
-        {
+        let belongs_to_scope = match &event.event {
+            NodeEvent::FrameworkControl(control) => matches!(
+                control.selection(),
+                ScopeSelection::Exact(scope) if scope.equivalent_to(&batch.scope_id)
+            ),
+            NodeEvent::CommandLifecycle(_) | NodeEvent::CommandCommitted { .. } => event
+                .event
+                .affected_scope_ids()
+                .iter()
+                .all(|scope_id| scope_id.equivalent_to(&batch.scope_id)),
+        };
+        if !belongs_to_scope {
             return Err(NodeError::InvalidReplicationBatch(format!(
                 "event at position {} does not belong to scope {}",
                 event.position.get(),
@@ -3668,6 +4112,68 @@ pub(super) fn apply_item_envelope<T: MykoItem>(
     source_node: Option<NodeId>,
     service_scope: Option<(&ServiceId, &ScopeId)>,
 ) -> Result<bool, NodeError> {
+    apply_item_envelope_at_revision(
+        projection,
+        envelope,
+        source_node,
+        service_scope,
+        envelope.position.get(),
+    )
+}
+
+pub(super) fn project_item_history<T: MykoItem>(
+    history: &[EventEnvelope],
+    source_node: Option<NodeId>,
+    service_scope: Option<(&ServiceId, &ScopeId)>,
+) -> Result<ItemProjection<T>, NodeError> {
+    let mut projection = ItemProjection::default();
+    if source_node.is_some() {
+        for envelope in history {
+            apply_item_envelope(&mut projection, envelope, source_node, service_scope)?;
+        }
+    } else {
+        for (index, envelope) in history
+            .iter()
+            .filter(|envelope| item_history_scope_matches::<T>(envelope, service_scope))
+            .enumerate()
+        {
+            let revision = projection_revision(index)?;
+            apply_item_envelope_at_revision(
+                &mut projection,
+                envelope,
+                None,
+                service_scope,
+                revision,
+            )?;
+        }
+    }
+    Ok(projection)
+}
+
+fn item_history_scope_matches<T: MykoItem>(
+    envelope: &EventEnvelope,
+    service_scope: Option<(&ServiceId, &ScopeId)>,
+) -> bool {
+    command_from_event(&envelope.event)
+        .is_some_and(|command| command.request.service_id == T::SERVICE_ID)
+        && service_scope.is_none_or(|(_, scope)| {
+            envelope.event.scope_id().equivalent_to(scope)
+                || matches!(&envelope.event, NodeEvent::CommandCommitted { batch, .. }
+                if batch.changes.iter().any(|mutation| {
+                    mutation.scope_id.as_ref().is_some_and(|placed| {
+                        ScopeId::new(placed.clone()).equivalent_to(scope)
+                    })
+                }))
+        })
+}
+
+fn apply_item_envelope_at_revision<T: MykoItem>(
+    projection: &mut ItemProjection<T>,
+    envelope: &EventEnvelope,
+    source_node: Option<NodeId>,
+    service_scope: Option<(&ServiceId, &ScopeId)>,
+    revision: u64,
+) -> Result<bool, NodeError> {
     if source_node.is_some_and(|source| source != envelope.origin.node_id) {
         return Ok(false);
     }
@@ -3693,7 +4199,7 @@ pub(super) fn apply_item_envelope<T: MykoItem>(
             .apply_at_order_in_scope(
                 mutation,
                 Some(batch.scope_id.as_str()),
-                envelope.position.get(),
+                revision,
                 change_index,
             )
             .map_err(|error| NodeError::CorruptHistory(error.to_string()))?;
@@ -3701,15 +4207,23 @@ pub(super) fn apply_item_envelope<T: MykoItem>(
     Ok(changed)
 }
 
+fn projection_revision(index: usize) -> Result<u64, NodeError> {
+    u64::try_from(index)
+        .ok()
+        .and_then(|index| index.checked_add(1))
+        .ok_or(NodeError::PositionExhausted)
+}
+
 fn apply_selected_item_envelope<T: MykoItem>(
     projection: &mut ItemProjection<T>,
     envelope: &EventEnvelope,
-    source_node: NodeId,
+    source_node: Option<NodeId>,
     requested: &ScopeSelection,
     authorized: Option<&[ScopeSelection]>,
     topology: &ScopeTopology,
+    revision: u64,
 ) -> Result<bool, NodeError> {
-    if envelope.origin.node_id != source_node {
+    if source_node.is_some_and(|source| envelope.origin.node_id != source) {
         return Ok(false);
     }
     let NodeEvent::CommandCommitted { command, batch } = &envelope.event else {
@@ -3741,7 +4255,7 @@ fn apply_selected_item_envelope<T: MykoItem>(
             .apply_at_order_in_scope(
                 mutation,
                 Some(batch.scope_id.as_str()),
-                envelope.position.get(),
+                revision,
                 change_index,
             )
             .map_err(|error| NodeError::CorruptHistory(error.to_string()))?;

@@ -149,7 +149,7 @@ pub use myko_macros::*;
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
 #[cfg(not(target_arch = "wasm32"))]
-pub use server::{SourcedItem, SourcedItemKey, SourcedItemMap};
+pub use server::{SourcedItem, SourcedItemKey, SourcedItemMap, SourcedItemSnapshot};
 pub use tracing; // For proc macro generated tracing::debug!/warn! in typed sagas
 #[cfg(feature = "codegen-ts")]
 pub use ts_rs::{self, TS};

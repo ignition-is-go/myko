@@ -557,22 +557,24 @@ impl ViewHandler for PairingReceiptsView {
 
     fn build_cell(
         context: ViewBuildArgs<Self>,
-    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-        myko::item::typed_map_arc_from_any_item::<PendingPairingReceipt>(
-            context
-                .federated_items::<PendingPairingReceipt>()
-                .expect("validated pairing-receipt federation source"),
-            "PairingReceiptsView",
-        )
-        .map_entries(|_, pending| {
-            let id = Arc::from(pending.receipt.invitation_id.to_string());
-            (
-                Arc::clone(&id),
-                Arc::new(PairingReceiptRow {
-                    id,
-                    receipt: pending.receipt.clone(),
-                }),
+    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
+        myko::view::LocalView::new({
+            myko::item::typed_map_arc_from_any_item::<PendingPairingReceipt>(
+                context
+                    .federated_items::<PendingPairingReceipt>()
+                    .expect("validated pairing-receipt federation source"),
+                "PairingReceiptsView",
             )
+            .map_entries(|_, pending| {
+                let id = Arc::from(pending.receipt.invitation_id.to_string());
+                (
+                    Arc::clone(&id),
+                    Arc::new(PairingReceiptRow {
+                        id,
+                        receipt: pending.receipt.clone(),
+                    }),
+                )
+            })
         })
     }
 }

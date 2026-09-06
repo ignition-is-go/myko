@@ -81,6 +81,200 @@ fn put_grant(
         .map_err(|error| error.to_string())
 }
 
+#[test]
+fn planned_authority_records_repeat_exactly_and_respect_consumption_phase() -> Result<(), String> {
+    use crate::decision_records::{DecisionRecord, decision_records};
+    use myko_federation::AuthorizationPhase;
+
+    let node = Node::in_memory();
+    let (_application, policy, administrator) = open(node.clone())?;
+    let user = node_principal("node:record-planning");
+    let mut allowance = grant(
+        "planned-use",
+        user.clone(),
+        "scope:planned",
+        vec![FederationPermission::ReadState, FederationPermission::Write],
+        vec![AccessOperation::ReadItems, AccessOperation::SubmitCommand],
+    );
+    allowance.max_uses = Some(1);
+    put_grant(&policy, &administrator, allowance)?;
+    let realm = AuthorityRealmKey::new("main");
+    let state = load_state(&node, &realm).map_err(|error| error.to_string())?;
+    let now = Utc::now();
+    let mut attempt = request(user, "scope:planned", AccessOperation::ReadItems);
+    for (phase, operation, expected_uses) in [
+        (AuthorizationPhase::Admission, AccessOperation::ReadItems, 1),
+        (
+            AuthorizationPhase::Admission,
+            AccessOperation::SubmitCommand,
+            0,
+        ),
+        (
+            AuthorizationPhase::Effect,
+            AccessOperation::SubmitCommand,
+            1,
+        ),
+        (
+            AuthorizationPhase::Continuation,
+            AccessOperation::ReadItems,
+            0,
+        ),
+    ] {
+        attempt.authorization_phase = phase;
+        attempt.operation = operation;
+        let mut outcome = evaluate(&state, &attempt, now);
+        assert!(outcome.decision.is_permit());
+        outcome
+            .delegations
+            .insert(DelegationId::new("planned-delegation"));
+        outcome
+            .approvals
+            .insert(ApprovalId::new("planned-approval"));
+        let records = decision_records(&realm, &attempt, &state, &outcome, "fixed-decision", now);
+        assert_eq!(
+            records,
+            decision_records(&realm, &attempt, &state, &outcome, "fixed-decision", now)
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, DecisionRecord::GrantUse(_)))
+                .count(),
+            expected_uses
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, DecisionRecord::DelegationUse(_)))
+                .count(),
+            expected_uses
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, DecisionRecord::ApprovalUse(_)))
+                .count(),
+            expected_uses
+        );
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| matches!(record, DecisionRecord::Audit(_)))
+                .count(),
+            1
+        );
+        assert_ne!(
+            records,
+            decision_records(&realm, &attempt, &state, &outcome, "other-decision", now)
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn planned_challenges_are_recorded_once_and_leases_keep_exact_binding() -> Result<(), String> {
+    use crate::decision_records::{DecisionRecord, decision_records};
+    use crate::evaluator::evaluate_seeded;
+
+    let node = Node::in_memory();
+    let (_application, policy, administrator) = open(node.clone())?;
+    let realm = AuthorityRealmKey::new("main");
+    let user = node_principal("node:planned-records");
+    let obligation = Obligation {
+        id: ObligationId::new("planned-review"),
+        realm_id: realm.clone(),
+        challenge_kind: "review".to_owned(),
+        prompt: "Review access".to_owned(),
+        approvers: vec![administrator.clone()],
+        approval_lifetime_seconds: 60,
+        approval_use_count: 1,
+    };
+    policy
+        .issue_obligation(
+            administrator.clone(),
+            AuthorityPresentation::direct(administrator.clone()),
+            obligation.clone(),
+        )
+        .map_err(|error| error.to_string())?;
+    let mut guarded = grant(
+        "planned-challenge",
+        user.clone(),
+        "scope:review",
+        vec![FederationPermission::ReadState],
+        vec![AccessOperation::ReadItems],
+    );
+    guarded.obligations.push(obligation.id);
+    put_grant(&policy, &administrator, guarded)?;
+    let mut leased = grant(
+        "planned-lease",
+        user.clone(),
+        "scope:lease-plan",
+        vec![FederationPermission::ReadState],
+        vec![AccessOperation::ReadItems],
+    );
+    leased.constraints.max_lease_seconds = Some(60);
+    put_grant(&policy, &administrator, leased)?;
+    let mut state = load_state(&node, &realm).map_err(|error| error.to_string())?;
+    let now = Utc::now();
+    let attempt = request(user.clone(), "scope:review", AccessOperation::ReadItems);
+    let outcome = evaluate_seeded(&state, &attempt, now, [1; 32]);
+    let records = decision_records(
+        &realm,
+        &attempt,
+        &state,
+        &outcome,
+        "challenge-decision",
+        now,
+    );
+    let challenge = records
+        .iter()
+        .find_map(|record| match record {
+            DecisionRecord::Challenge(record) => Some(record.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| "planned challenge missing".to_owned())?;
+    assert_eq!(
+        records,
+        decision_records(
+            &realm,
+            &attempt,
+            &state,
+            &outcome,
+            "challenge-decision",
+            now
+        )
+    );
+    assert_eq!(records.len(), 2);
+    state.challenges.push(challenge);
+    let repeated = evaluate_seeded(&state, &attempt, now, [2; 32]);
+    assert_eq!(outcome.decision, repeated.decision);
+    let records = decision_records(&realm, &attempt, &state, &repeated, "challenge-retry", now);
+    assert!(matches!(records.as_slice(), [DecisionRecord::Audit(_)]));
+
+    let mut attempt = request(user, "scope:lease-plan", AccessOperation::ReadItems);
+    attempt.lease = Some(AuthorityLeaseRequest {
+        duration_seconds: 30,
+        offline: false,
+    });
+    let outcome = evaluate_seeded(&state, &attempt, now, [3; 32]);
+    let records = decision_records(&realm, &attempt, &state, &outcome, "lease-decision", now);
+    assert_eq!(
+        records,
+        decision_records(&realm, &attempt, &state, &outcome, "lease-decision", now)
+    );
+    let lease = records
+        .iter()
+        .find_map(|record| match record {
+            DecisionRecord::Lease(record) => Some(record),
+            _ => None,
+        })
+        .ok_or_else(|| "planned lease missing".to_owned())?;
+    assert_eq!(lease.binding, AuthorizationBinding::from_request(&attempt));
+    assert_eq!(lease.lease.expires_at, now + Duration::seconds(30));
+    assert_eq!(lease.id, LeaseRecordId::from(lease.lease.id.as_str()));
+    Ok(())
+}
+
 fn wait_for_grant_record(
     view: &myko::view::TypedViewCellMap<GrantRecord>,
     grant_id: &str,
@@ -815,6 +1009,154 @@ fn replication_intersection_is_partial_and_consumes_once() -> Result<(), String>
             )
             .is_err()
     );
+    Ok(())
+}
+
+#[test]
+fn retained_foreign_grants_do_not_become_local_authority_after_restart() -> Result<(), String> {
+    use myko_federation::EventJournal as _;
+
+    let directory = tempfile::tempdir().map_err(|error| error.to_string())?;
+    let user = node_principal("node:foreign-grantee");
+    let foreign_access = request(user.clone(), "scope:foreign", AccessOperation::ReadItems);
+    let foreign_history = {
+        let source = myko_redb::RedbJournal::open_node(directory.path().join("source.redb"))
+            .map_err(|error| error.to_string())?;
+        let (application, policy, administrator) = open(source)?;
+        put_grant(
+            &policy,
+            &administrator,
+            grant(
+                "foreign-grant",
+                user.clone(),
+                "scope:foreign",
+                vec![FederationPermission::ReadState],
+                vec![AccessOperation::ReadItems],
+            ),
+        )?;
+        if !policy.decide(&foreign_access).is_permit() {
+            return Err("source did not authorize its own grant".to_owned());
+        }
+        application
+            .node()
+            .events_after(None)
+            .map_err(|error| error.to_string())?
+    };
+    let target_path = directory.path().join("target.redb");
+    {
+        let target =
+            myko_redb::RedbJournal::open_node(&target_path).map_err(|error| error.to_string())?;
+        let (application, policy, administrator) = open(target)?;
+        put_grant(
+            &policy,
+            &administrator,
+            grant(
+                "local-grant",
+                user.clone(),
+                "scope:local",
+                vec![FederationPermission::ReadState],
+                vec![AccessOperation::ReadItems],
+            ),
+        )?;
+        for event in &foreign_history {
+            application
+                .node()
+                .ingest(event.clone())
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    let (reopened, journal) = myko_redb::RedbJournal::open_node_with_journal(&target_path)
+        .map_err(|error| error.to_string())?;
+    journal
+        .verify_retained_history(&foreign_history)
+        .map_err(|error| error.to_string())?;
+    let application =
+        AuthorityPolicy::install(MykoApplication::new()).map_err(|error| error.to_string())?;
+    let policy = AuthorityPolicy::new(
+        ApplicationHost::new(reopened, application)?,
+        AuthorityRealmKey::new("main"),
+    );
+    if !policy
+        .decide(&request(user, "scope:local", AccessOperation::ReadItems))
+        .is_permit()
+    {
+        return Err("reopened local authority was not ready or lost its grant".to_owned());
+    }
+    let AuthorizationDecision::Deny(denial) = policy.decide(&foreign_access) else {
+        return Err("retaining a foreign grant created local authority".to_owned());
+    };
+    if !denial
+        .report
+        .explanations
+        .iter()
+        .any(|explanation| explanation.code == "grant_coverage")
+    {
+        return Err(format!(
+            "foreign grant denied for an unexpected reason: {:?}",
+            denial.report
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn replication_preserves_a_fully_authorized_subtree_but_not_an_exact_grant() -> Result<(), String> {
+    let (application, policy, administrator) = open(Node::in_memory())?;
+    let broad_user = node_principal("node:subtree-reader");
+    let exact_user = node_principal("node:exact-reader");
+    let subtree = ScopeSelection::Subtree(ScopeId::new("scope:a"));
+    let mut broad = grant(
+        "replicate-subtree",
+        broad_user.clone(),
+        "scope:a",
+        vec![FederationPermission::ReadHistory],
+        vec![AccessOperation::ReadHistory],
+    );
+    broad.selection = subtree.clone();
+    broad.max_uses = Some(1);
+    put_grant(&policy, &administrator, broad)?;
+    put_grant(
+        &policy,
+        &administrator,
+        grant(
+            "replicate-exact",
+            exact_user.clone(),
+            "scope:a",
+            vec![FederationPermission::ReadHistory],
+            vec![AccessOperation::ReadHistory],
+        ),
+    )?;
+    let requested = ReplicationSelection::Scopes(vec![subtree.clone()]);
+    let topology = application
+        .node()
+        .scope_topology()
+        .map_err(|error| error.to_string())?;
+    for (user, should_cover_subtree) in [(broad_user, true), (exact_user, false)] {
+        let access = request(user, "scope:a", AccessOperation::ReadHistory);
+        let narrowed = policy
+            .constrain_replication(&access, &requested, &topology)
+            .map_err(|decision| decision.public_message())?;
+        let ReplicationSelection::Intersection { scopes, .. } = narrowed else {
+            return Err(
+                "policy did not preserve the requested selector in an intersection".to_owned(),
+            );
+        };
+        let covers_subtree = scopes
+            .iter()
+            .any(|allowed| allowed.covers_in(&subtree, &topology));
+        if covers_subtree != should_cover_subtree {
+            return Err(format!(
+                "subtree authorization changed during narrowing: {scopes:?}"
+            ));
+        }
+        if should_cover_subtree
+            && policy
+                .constrain_replication(&access, &requested, &topology)
+                .is_ok()
+        {
+            return Err("subtree grant consumption was not preserved".to_owned());
+        }
+    }
     Ok(())
 }
 

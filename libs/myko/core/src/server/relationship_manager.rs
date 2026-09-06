@@ -1682,6 +1682,18 @@ mod cascade_tests {
         assert!(causal.derived_mutations >= 2);
         assert!(causal.max_observed_depth >= 2);
 
+        let observation_deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        while seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .len()
+            < 3
+            && std::time::Instant::now() < observation_deadline
+        {
+            std::thread::yield_now();
+        }
         let seen = seen
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);

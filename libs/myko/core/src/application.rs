@@ -649,6 +649,28 @@ impl ApplicationHost {
             .items_across_sources::<T>(scope_id)
     }
 
+    /// Read typed items from all origins at one current local history cut.
+    ///
+    /// This trusted in-process read uses the same projection and completeness
+    /// assessment as retained sources, without waiting for their background tasks.
+    /// Callers must inspect liveness before treating the rows as complete. It does
+    /// not establish remote coverage, custody, or caller authorization.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when local history or its typed projection cannot be read.
+    pub fn snapshot_items_across_sources_selected<T>(
+        &self,
+        selection: &myko_federation::ScopeSelection,
+    ) -> Result<myko_federation::LiveSubscriptionState<crate::SourcedItemSnapshot<T>>, String>
+    where
+        T: crate::MykoItem,
+    {
+        let snapshot = myko_federation::SelectedHistorySnapshot::current(&self.node)
+            .map_err(|error| error.to_string())?;
+        crate::server::federated_source::selected_snapshot_state::<T>(&snapshot, selection)
+    }
+
     /// Return the shared durable source behind an internal typed projection.
     #[doc(hidden)]
     pub fn item_source<T>(
@@ -687,25 +709,13 @@ impl ApplicationHost {
             scope_id: request.scope_id.clone(),
         };
         match request.kind {
-            myko_federation::HandlerKind::Query => {
-                let rows = self.server.handler_registry.open_federated_query(
-                    &request.handler_id,
-                    request.params,
-                    request_context,
-                    Arc::clone(&self.server),
-                    source,
-                )?;
-                session.subscribe_node_handler_map(tx, rows);
-            }
-            myko_federation::HandlerKind::View => {
-                let rows = self.server.handler_registry.open_federated_view(
-                    &request.handler_id,
-                    request.params,
-                    request_context,
-                    Arc::clone(&self.server),
-                    source,
-                )?;
-                session.subscribe_node_handler_map(tx, rows);
+            myko_federation::HandlerKind::Query | myko_federation::HandlerKind::View => {
+                let required_cut = self
+                    .node
+                    .local_history_cut()
+                    .map_err(|error| error.to_string())?;
+                let output = self.server.open_native_map(&request, request_context)?;
+                session.subscribe_node_handler_map(tx, output, required_cut)?;
             }
             myko_federation::HandlerKind::Report => {
                 let report = self.server.handler_registry.open_federated_report(
@@ -736,12 +746,12 @@ impl ApplicationHost {
         )
     }
 
-    /// Open one typed retained view against a durable source selection.
+    /// Open a typed local-map view against a durable source selection.
     ///
     /// # Errors
     ///
-    /// Returns an error when the view is absent, malformed, or produces a
-    /// different row type than its registration declares.
+    /// Returns an error when the view is absent, malformed, or returns a retained
+    /// publication. Raw maps cannot preserve retained publication evidence.
     pub fn watch_view_at<V>(
         &self,
         source_node: Option<myko_federation::NodeId>,
@@ -756,27 +766,32 @@ impl ApplicationHost {
             self.server.host_id,
             "node-view",
         ));
-        let rows = self.application.handlers.open_federated_view(
-            V::view_id_static().as_ref(),
-            serde_json::to_value(view).map_err(|error| error.to_string())?,
-            request,
-            Arc::clone(&self.server),
-            crate::server::federated_source::FederatedRequest {
-                source_node,
-                scope_id,
-            },
-        )?;
+        let rows = self
+            .application
+            .handlers
+            .open_federated_view(
+                V::view_id_static().as_ref(),
+                serde_json::to_value(view).map_err(|error| error.to_string())?,
+                request,
+                Arc::clone(&self.server),
+                crate::server::federated_source::FederatedRequest {
+                    source_node,
+                    scope_id,
+                },
+            )?
+            .into_local_map()?;
         Ok(crate::item::typed_map_arc_from_any_item::<V::Item>(
             rows,
             "ApplicationHost::watch_view",
         ))
     }
 
-    /// Open a typed retained view using the source and scope declared by its parameters.
+    /// Open a typed local-map view using its declared source and scope.
     ///
     /// # Errors
     ///
-    /// Returns an error when the view cannot be serialized, found, or opened.
+    /// Returns an error when the view cannot be serialized, found, or opened,
+    /// including when its output is a retained publication rather than a local map.
     pub fn watch_view<V>(&self, view: &V) -> Result<crate::view::TypedViewCellMap<V::Item>, String>
     where
         V: crate::view::ViewParams,
@@ -788,15 +803,16 @@ impl ApplicationHost {
         )
     }
 
-    /// Open an in-process view with the same lifecycle shape used by transport clients.
+    /// Open an in-process local-map view as a live collection.
     ///
-    /// The retained row map remains the only mutable state. This method adds a
-    /// current lifecycle cell for native-language and UI adapters that consume
-    /// [`myko_federation::LiveCollection`].
+    /// The row map remains the only mutable state. Its absent history cut and
+    /// local current state do not certify durable or federated completeness.
+    /// Retained publications must use the native handler subscription path.
     ///
     /// # Errors
     ///
-    /// Returns an error when the typed view cannot be opened.
+    /// Returns an error when the typed view cannot be opened or returns a retained
+    /// publication, whose evidence this local-map adapter cannot preserve.
     pub fn watch_view_live<V>(
         &self,
         view: &V,

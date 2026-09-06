@@ -41,19 +41,19 @@ pub struct ConnectedClients {}
 
 impl ViewHandler for ConnectedClients {
     #[cfg(not(target_arch = "wasm32"))]
-    fn build_cell(
-        ctx: ViewBuildArgs<Self>,
-    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>
+    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl crate::view::ViewBuildOutput<Item = Self::Item>
     where
         Self: Send + Sync + 'static,
     {
-        ctx.view_context
-            .query_map_by_str(GetAllClients {})
-            .left_semi_join_by(
-                client_registry().connected_ids(),
-                |client_id, _| client_id.clone(),
-                |client_id, ()| client_id.clone(),
-            )
+        crate::view::LocalView::new({
+            ctx.view_context
+                .query_map_by_str(GetAllClients {})
+                .left_semi_join_by(
+                    client_registry().connected_ids(),
+                    |client_id, _| client_id.clone(),
+                    |client_id, ()| client_id.clone(),
+                )
+        })
     }
 }
 

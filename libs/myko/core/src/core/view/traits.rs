@@ -1,11 +1,12 @@
 use std::sync::Arc;
 
-use hyphae::MapQuery;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::context::ViewBuildContext;
-use crate::{cache::CacheKey, common::with_transaction::WithTransaction, wire::WrappedView};
+use crate::{
+    cache::CacheKey, common::with_transaction::WithTransaction, item::AnyItem, wire::WrappedView,
+};
 
 pub trait ViewId {
     fn view_id(&self) -> Arc<str>;
@@ -16,7 +17,7 @@ pub trait ViewIdStatic {
 }
 
 pub trait ViewItemType {
-    type Item: hyphae::traits::CellValue;
+    type Item: AnyItem + hyphae::traits::CellValue;
     fn view_item_type(&self) -> Arc<str>;
     fn view_item_type_static() -> Arc<str>;
 }
@@ -126,13 +127,39 @@ impl<TView: ViewItemType> ViewBuildArgs<TView> {
             .ok_or_else(|| "server has no federation runtime".to_owned())?
             .items_across_sources_selected::<T>(selection)
     }
+
+    /// Open canonical accepted-history snapshots for an exact scope or subtree.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when this is not a federated request or the selected
+    /// projection snapshot cannot be established.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn sourced_snapshots_selected<T>(
+        &self,
+        selection: myko_federation::ScopeSelection,
+    ) -> Result<myko_federation::LiveSubscription<crate::server::SourcedItemSnapshot<T>>, String>
+    where
+        T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
+    {
+        let _request = self
+            .federated
+            .as_ref()
+            .ok_or_else(|| "view was not opened from a federation request".to_owned())?;
+        self.view_context
+            .view_context
+            .server_ctx
+            .federated()
+            .ok_or_else(|| "server has no federation runtime".to_owned())?
+            .sourced_snapshots_selected::<T>(selection)
+    }
 }
 
-/// Build the reactive `CellMap` for a view.
+/// Build a registered output for a view.
 ///
 /// # Ordering
 ///
-/// Views are **sorted by their `CellMap` key** (the `id` field on each view item).
+/// Local views are **sorted by their `CellMap` key** (the `id` field on each view item).
 /// The wire protocol sorts items lexicographically by key before sending them
 /// to clients. To control sort order, use a compound key like
 /// `format!("{sort_field}\x1F{unique_id}")` where `\x1F` (Unit Separator) sorts
@@ -161,13 +188,13 @@ pub trait ViewHandler: ViewItemType + Sized {
         Vec::new()
     }
 
-    /// Build a reactive map plan for this view.
+    /// Build a local map plan or retained publication for this view.
     ///
-    /// Returns `impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>` so impls can chain
-    /// `inner_join`, `filter_map_entries`, `select_cell`, etc. without materializing
-    /// intermediate `CellMap`s. The framework materializes once at the
-    /// registration boundary. Concrete `TypedViewCellMap`/`CellMap` values
-    /// still satisfy the bound via the blanket impl on `ReactiveMap`.
+    /// Local implementations return [`super::LocalView`] so impls can chain
+    /// `inner_join`, `filter_map_entries`, `select_cell`, etc. before the
+    /// registration boundary materializes the map. Retained implementations
+    /// return [`super::RetainedView`] to preserve publication cursor, liveness,
+    /// and sequence metadata.
     ///
     /// Keep recognized join/projection chains unmaterialized through this
     /// boundary so Hyphae can retain its specialized and adaptive join-region
@@ -175,16 +202,9 @@ pub trait ViewHandler: ViewItemType + Sized {
     /// externally side-effect-free, and nonblocking; Hyphae may invoke them
     /// repeatedly or concurrently, with no stable order, count, or thread.
     #[must_use]
-    #[allow(clippy::as_conversions, clippy::unreachable)]
-    fn build_cell(
-        _ctx: ViewBuildArgs<Self>,
-    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>
+    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl super::ViewBuildOutput<Item = Self::Item>
     where
-        Self: Send + Sync + 'static,
-    {
-        unreachable!("view handlers execute on the server")
-            as super::cell::TypedViewCellMap<Self::Item>
-    }
+        Self: Send + Sync + 'static;
 }
 
 pub trait AnyView: WithTransaction + ViewId + std::fmt::Debug + Send + Sync + 'static {

@@ -110,13 +110,15 @@ impl ViewHandler for AllLocalRecordsView {
 
     fn build_cell(
         context: myko::view::ViewBuildArgs<Self>,
-    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-        myko::item::typed_map_arc_from_any_item::<LocalRecord>(
-            context
-                .federated_items::<LocalRecord>()
-                .expect("test federation source is configured"),
-            "AllLocalRecordsView",
-        )
+    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
+        myko::view::LocalView::new({
+            myko::item::typed_map_arc_from_any_item::<LocalRecord>(
+                context
+                    .federated_items::<LocalRecord>()
+                    .expect("test federation source is configured"),
+                "AllLocalRecordsView",
+            )
+        })
     }
 }
 
@@ -303,7 +305,11 @@ async fn local_handler_connector_follows_retained_query() -> Result<(), LocalPee
     .await?;
     let client = LocalHandlerConnector::new(&socket).client();
     let mut query = client
-        .follow_query(node.node_id(), scope_id.clone(), &AllLocalRecordHandlers {})
+        .follow_query(
+            Some(node.node_id()),
+            scope_id.clone(),
+            &AllLocalRecordHandlers {},
+        )
         .await
         .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
     if query.current().value.as_deref() != Some(std::slice::from_ref(&first)) {
@@ -364,7 +370,7 @@ async fn one_connector_family_multiplexes_128_handler_subscriptions() -> Result<
         let scope_id = scope_id.clone();
         opening.spawn(async move {
             client
-                .follow_query(source_node, scope_id, &AllLocalRecordHandlers {})
+                .follow_query(Some(source_node), scope_id, &AllLocalRecordHandlers {})
                 .await
         });
     }
@@ -432,7 +438,11 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
     let local = LocalClientSession::new(&socket).with_reconnect_policy(reconnect_policy);
     let client = local.handler_connector().client();
     let mut query = client
-        .follow_query(node.node_id(), scope_id.clone(), &AllLocalRecordHandlers {})
+        .follow_query(
+            Some(node.node_id()),
+            scope_id.clone(),
+            &AllLocalRecordHandlers {},
+        )
         .await
         .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
     assert_eq!(
@@ -637,7 +647,7 @@ async fn dropped_handler_clients_release_connection_capacity() -> Result<(), Loc
     for _ in 0..MAX_CONNECTIONS + 8 {
         let query = client
             .follow_query(
-                node.node_id(),
+                Some(node.node_id()),
                 ScopeId::new("local-scope"),
                 &AllLocalRecordHandlers {},
             )
@@ -685,7 +695,7 @@ async fn local_peer_watches_command_lifecycle_without_polling() -> Result<(), Lo
     let (_initial, mut subscription) = client.watch_command(command_id).await?;
     let handler_subscription = handler
         .follow_query(
-            node.node_id(),
+            Some(node.node_id()),
             ScopeId::new("local-scope"),
             &AllLocalRecordHandlers {},
         )
@@ -787,7 +797,7 @@ async fn local_item_application_and_live_clients_preserve_authority_presentation
         .with_authority(presentation.clone())
         .client()
         .follow_query(
-            node.node_id(),
+            Some(node.node_id()),
             ScopeId::new("local-scope"),
             &AllLocalRecordHandlers {},
         )

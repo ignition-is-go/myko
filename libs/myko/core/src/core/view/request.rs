@@ -92,9 +92,7 @@ impl<V: ViewItemType> ViewItemType for ViewRequest<V> {
 }
 
 impl<V: ViewHandler + Clone + Send + Sync + 'static> ViewHandler for ViewRequest<V> {
-    fn build_cell(
-        ctx: ViewBuildArgs<Self>,
-    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl super::ViewBuildOutput<Item = Self::Item> {
         V::build_cell(ViewBuildArgs {
             view: Arc::new(ctx.view.view.clone()),
             view_context: ctx.view_context,

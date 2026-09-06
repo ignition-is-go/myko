@@ -8,6 +8,9 @@ use super::{
     is_stream, permission_for,
 };
 
+mod identity;
+use identity::EvaluationSeed;
+
 fn selection_covers(
     granted: &ScopeSelection,
     claimed: &ScopeSelection,
@@ -120,6 +123,7 @@ struct EvaluationContext<'a> {
     state: &'a EvaluationState,
     request: &'a AccessAttempt,
     now: DateTime<Utc>,
+    seed: EvaluationSeed,
     claims: &'a [ResourceClaim],
     binding: AuthorizationBinding,
     grant_use_counts: BTreeMap<AuthorityGrantId, u64>,
@@ -132,6 +136,7 @@ impl<'a> EvaluationContext<'a> {
         state: &'a EvaluationState,
         request: &'a AccessAttempt,
         now: DateTime<Utc>,
+        seed: EvaluationSeed,
     ) -> EvaluationResult<Self> {
         if state.realm.is_none() {
             return Err(Box::new(deny(
@@ -169,6 +174,7 @@ impl<'a> EvaluationContext<'a> {
             state,
             request,
             now,
+            seed,
             claims: &request.resource_claims,
             binding: AuthorizationBinding::from_request(request),
             grant_use_counts,
@@ -579,7 +585,7 @@ fn resolve_obligations(
             .checked_add_signed(Duration::seconds(lifetime))
             .unwrap_or(DateTime::<Utc>::MAX_UTC);
         let pending = AuthorityChallenge {
-            id: ChallengeId::random(),
+            id: context.seed.challenge_id(&obligation.obligation.id),
             realm_id: obligation.obligation.realm_id.clone(),
             obligation_id,
             kind: obligation.obligation.challenge_kind.clone(),
@@ -602,7 +608,7 @@ fn permit(
     let lease = context
         .request
         .lease
-        .and_then(|requested| make_lease(requested, context.now));
+        .and_then(|requested| make_lease(requested, context.now, context.seed));
     EvaluationOutcome {
         decision: AuthorizationDecision::Permit(PermitDecision {
             report: AuthorizationReport {
@@ -647,20 +653,290 @@ pub(super) fn evaluate(
     request: &AccessAttempt,
     now: DateTime<Utc>,
 ) -> EvaluationOutcome {
-    match EvaluationContext::new(state, request, now).and_then(|context| evaluate_stages(&context))
+    evaluate_seeded(state, request, now, EvaluationSeed::random().into_bytes())
+}
+
+pub(super) fn evaluate_seeded(
+    state: &EvaluationState,
+    request: &AccessAttempt,
+    now: DateTime<Utc>,
+    seed: [u8; 32],
+) -> EvaluationOutcome {
+    match EvaluationContext::new(state, request, now, EvaluationSeed::from_bytes(seed))
+        .and_then(|context| evaluate_stages(&context))
     {
         Ok(outcome) => outcome,
         Err(outcome) => *outcome,
     }
 }
 
-fn make_lease(request: AuthorityLeaseRequest, now: DateTime<Utc>) -> Option<AuthorityLease> {
+fn make_lease(
+    request: AuthorityLeaseRequest,
+    now: DateTime<Utc>,
+    seed: EvaluationSeed,
+) -> Option<AuthorityLease> {
     let seconds = i64::try_from(request.duration_seconds).ok()?;
     let expires_at = now.checked_add_signed(Duration::seconds(seconds))?;
     Some(AuthorityLease {
-        id: LeaseId::random(),
+        id: seed.lease_id(),
         issued_at: now,
         expires_at,
         offline: request.offline,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        AuthorityRealmId, ChallengeRecord, ChallengeRecordId, GrantRecord, GrantRecordId,
+        Obligation, ObligationRecord, ObligationRecordId,
+    };
+    use myko_federation::{
+        AuthorityPresentation, AuthorityRealmId as FederationAuthorityRealmId, AuthorizationPhase,
+        Principal, PrincipalId, PrincipalKind, ScopeId,
+    };
+
+    const FIRST_SEED: [u8; 32] = [7; 32];
+    const SECOND_SEED: [u8; 32] = [9; 32];
+
+    fn principal(name: &str) -> Principal {
+        Principal::new(PrincipalId::new(name), PrincipalKind::Node)
+    }
+
+    fn instant(seconds: i64) -> DateTime<Utc> {
+        DateTime::<Utc>::from_timestamp(seconds, 0).unwrap_or(DateTime::<Utc>::UNIX_EPOCH)
+    }
+
+    fn request_for(scope: &str) -> AccessAttempt {
+        let principal = principal("node:user");
+        AccessAttempt::scoped(
+            principal.id.clone(),
+            AuthorityPresentation::direct(principal),
+            AccessOperation::ReadItems,
+            ScopeId::new(scope),
+        )
+    }
+
+    fn state_for(
+        request: &AccessAttempt,
+        obligations: Vec<myko_federation::ObligationId>,
+    ) -> EvaluationState {
+        let realm_id = FederationAuthorityRealmId::new("main");
+        let realm_item_id = AuthorityRealmId::new("main");
+        let grant = AuthorityGrant {
+            id: AuthorityGrantId::new("grant:read"),
+            realm_id,
+            grantor: principal("node:admin"),
+            grantee: request.presentation.principal.clone(),
+            selection: request.resource_claims.first().map_or_else(
+                || ScopeSelection::Exact(ScopeId::new("scope:test")),
+                |claim| claim.selection.clone(),
+            ),
+            permissions: vec![FederationPermission::ReadState],
+            operations: vec![AccessOperation::ReadItems],
+            capabilities: Vec::new(),
+            constraints: myko_federation::AuthorityConstraints {
+                max_lease_seconds: Some(3_600),
+                allow_offline: true,
+                ..myko_federation::AuthorityConstraints::default()
+            },
+            obligations,
+            valid_from: instant(0),
+            expires_at: None,
+            max_uses: None,
+        };
+        EvaluationState {
+            realm: Some(crate::AuthorityRealm {
+                id: realm_item_id.clone(),
+                bootstrap_principal: principal("node:admin"),
+                bootstrapped_at: instant(0),
+            }),
+            capabilities: Vec::new(),
+            grants: vec![GrantRecord {
+                id: GrantRecordId::from(grant.id.as_str()),
+                authority_realm_id: realm_item_id,
+                grant,
+                revoked_at: None,
+            }],
+            delegations: Vec::new(),
+            obligations: Vec::new(),
+            challenges: Vec::new(),
+            approvals: Vec::new(),
+            grant_uses: Vec::new(),
+            delegation_uses: Vec::new(),
+            approval_uses: Vec::new(),
+            leases: Vec::new(),
+            topology: ScopeTopology::default(),
+        }
+    }
+
+    fn with_obligation(
+        mut state: EvaluationState,
+        obligation_id: myko_federation::ObligationId,
+    ) -> EvaluationState {
+        let realm_id = FederationAuthorityRealmId::new("main");
+        state.obligations.push(ObligationRecord {
+            id: ObligationRecordId::from(obligation_id.as_str()),
+            authority_realm_id: AuthorityRealmId::new("main"),
+            obligation: Obligation {
+                id: obligation_id,
+                realm_id,
+                challenge_kind: "approval".to_owned(),
+                prompt: "Approve access".to_owned(),
+                approvers: vec![principal("node:admin")],
+                approval_lifetime_seconds: 60,
+                approval_use_count: 1,
+            },
+            revoked_at: None,
+        });
+        state
+    }
+
+    fn challenge_from(outcome: EvaluationOutcome) -> Result<AuthorityChallenge, String> {
+        match outcome.decision {
+            AuthorizationDecision::Challenge { challenge, .. } => Ok(challenge),
+            other => Err(format!("expected challenge, got {other:?}")),
+        }
+    }
+
+    fn lease_from(outcome: EvaluationOutcome) -> Result<AuthorityLease, String> {
+        match outcome.decision {
+            AuthorizationDecision::Permit(permit) => permit
+                .lease
+                .ok_or_else(|| "permit did not include a lease".to_owned()),
+            other => Err(format!("expected permit, got {other:?}")),
+        }
+    }
+
+    #[test]
+    fn seeded_challenge_ids_are_stable_for_same_input() -> Result<(), String> {
+        let request = request_for("scope:seeded-challenge");
+        let obligation_id = myko_federation::ObligationId::new("obligation:approval");
+        let state = with_obligation(
+            state_for(&request, vec![obligation_id.clone()]),
+            obligation_id,
+        );
+        let now = instant(100);
+
+        let first = challenge_from(evaluate_seeded(&state, &request, now, FIRST_SEED))?;
+        let repeated = challenge_from(evaluate_seeded(&state, &request, now, FIRST_SEED))?;
+        let other = challenge_from(evaluate_seeded(&state, &request, now, SECOND_SEED))?;
+
+        if first.id != repeated.id {
+            return Err("same seed and input did not preserve challenge id".to_owned());
+        }
+        if first.id == other.id {
+            return Err("different seed did not change newly minted challenge id".to_owned());
+        }
+        if first.expires_at != repeated.expires_at || first.expires_at != other.expires_at {
+            return Err("challenge expiry changed with seed".to_owned());
+        }
+        if first.expires_at != instant(160) {
+            return Err("challenge expiry did not use the obligation lifetime".to_owned());
+        }
+        if first.id.as_str()
+            != "deterministic:513901ae99e0befeef2d5c5bb1082405dbdfdc7bc3dad68736c9e1bc5c38da4b"
+        {
+            return Err("seeded challenge id changed from the domain-separated golden".to_owned());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_challenge_ids_include_the_obligation() -> Result<(), String> {
+        let request = request_for("scope:seeded-obligation");
+        let first_obligation = myko_federation::ObligationId::new("obligation:first");
+        let second_obligation = myko_federation::ObligationId::new("obligation:second");
+        let first_state = with_obligation(
+            state_for(&request, vec![first_obligation.clone()]),
+            first_obligation,
+        );
+        let second_state = with_obligation(
+            state_for(&request, vec![second_obligation.clone()]),
+            second_obligation,
+        );
+        let now = instant(100);
+
+        let first = challenge_from(evaluate_seeded(&first_state, &request, now, FIRST_SEED))?;
+        let second = challenge_from(evaluate_seeded(&second_state, &request, now, FIRST_SEED))?;
+
+        if first.id == second.id {
+            return Err(
+                "same seed produced the same challenge id for distinct obligations".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_evaluation_reuses_existing_challenge() -> Result<(), String> {
+        let request = request_for("scope:existing-challenge");
+        let obligation_id = myko_federation::ObligationId::new("obligation:reuse");
+        let mut state = with_obligation(
+            state_for(&request, vec![obligation_id.clone()]),
+            obligation_id.clone(),
+        );
+        let now = instant(100);
+        let existing = AuthorityChallenge {
+            id: ChallengeId::new("challenge:existing"),
+            realm_id: FederationAuthorityRealmId::new("main"),
+            obligation_id,
+            kind: "approval".to_owned(),
+            prompt: "Already pending".to_owned(),
+            binding: AuthorizationBinding::from_request(&request),
+            issued_at: instant(90),
+            expires_at: instant(500),
+        };
+        state.challenges.push(ChallengeRecord {
+            id: ChallengeRecordId::from(existing.id.as_str()),
+            authority_realm_id: AuthorityRealmId::new("main"),
+            challenge: existing.clone(),
+        });
+
+        let first = challenge_from(evaluate_seeded(&state, &request, now, FIRST_SEED))?;
+        let second = challenge_from(evaluate_seeded(&state, &request, now, SECOND_SEED))?;
+
+        if first != existing || second != existing {
+            return Err(
+                "seeded evaluation minted a new challenge instead of reusing existing".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn seeded_lease_ids_are_stable_without_changing_expiry() -> Result<(), String> {
+        let mut request = request_for("scope:seeded-lease");
+        request.authorization_phase = AuthorizationPhase::Admission;
+        request.lease = Some(AuthorityLeaseRequest {
+            duration_seconds: 120,
+            offline: true,
+        });
+        let state = state_for(&request, Vec::new());
+        let now = instant(200);
+
+        let first = lease_from(evaluate_seeded(&state, &request, now, FIRST_SEED))?;
+        let repeated = lease_from(evaluate_seeded(&state, &request, now, FIRST_SEED))?;
+        let other = lease_from(evaluate_seeded(&state, &request, now, SECOND_SEED))?;
+
+        if first.id != repeated.id {
+            return Err("same seed and input did not preserve lease id".to_owned());
+        }
+        if first.id == other.id {
+            return Err("different seed did not change newly minted lease id".to_owned());
+        }
+        if first.expires_at != repeated.expires_at || first.expires_at != other.expires_at {
+            return Err("lease expiry changed with seed".to_owned());
+        }
+        if first.expires_at != instant(320) {
+            return Err("lease expiry did not use the requested duration".to_owned());
+        }
+        if first.id.as_str()
+            != "deterministic:afdb92e146faf61a6161e7f3909018925519185d12d1039dd63214bd3af216b6"
+        {
+            return Err("seeded lease id changed from the domain-separated golden".to_owned());
+        }
+        Ok(())
+    }
 }

@@ -97,7 +97,7 @@ macro_rules! uuid_id {
 
 macro_rules! string_id {
     ($name:ident) => {
-        #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+        #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -126,6 +126,7 @@ macro_rules! string_id {
 uuid_id!(BatchId);
 uuid_id!(CommandId);
 uuid_id!(NodeId);
+uuid_id!(StorageIncarnationId);
 string_id!(PrincipalId);
 string_id!(ScopeId);
 string_id!(ServiceId);

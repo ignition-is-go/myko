@@ -226,11 +226,31 @@ where
 }
 
 struct MapCacheEntry {
-    weak: WeakCellMap<Arc<str>, AnyItemArc>,
+    weak: Option<WeakCellMap<Arc<str>, AnyItemArc>>,
+    #[cfg(not(target_arch = "wasm32"))]
+    publication: Mutex<std::sync::Weak<super::native_map::NativeMapOutput>>,
     /// Lazily-created typed projections keyed by `TypeId` of the output
     /// `CellMap<K, V>`. Each value is a type-erased weak cell map that can be
     /// downcast back to the concrete `WeakCellMap<K, V>`.
     typed: Mutex<HashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>>,
+}
+
+struct NativeMapGate<'a> {
+    gates: &'a DashMap<String, Arc<Mutex<()>>, ahash::RandomState>,
+    key: &'a str,
+    gate: &'a Arc<Mutex<()>>,
+}
+
+impl Drop for NativeMapGate<'_> {
+    fn drop(&mut self) {
+        if let dashmap::mapref::entry::Entry::Occupied(entry) =
+            self.gates.entry(self.key.to_owned())
+            && Arc::ptr_eq(entry.get(), self.gate)
+            && Arc::strong_count(entry.get()) == 2
+        {
+            entry.remove();
+        }
+    }
 }
 
 #[derive(Default)]
@@ -254,13 +274,59 @@ impl BufferedIngestType {
 impl MapCacheEntry {
     fn new(map: &FilteredCellMap) -> Self {
         Self {
-            weak: map.downgrade(),
+            weak: Some(map.downgrade()),
+            #[cfg(not(target_arch = "wasm32"))]
+            publication: Mutex::new(std::sync::Weak::new()),
+            typed: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn retained(output: &Arc<super::native_map::NativeMapOutput>) -> Self {
+        Self {
+            weak: None,
+            publication: Mutex::new(Arc::downgrade(output)),
             typed: Mutex::new(HashMap::new()),
         }
     }
 
     fn get(&self) -> Option<FilteredCellMap> {
-        self.weak.upgrade().map(hyphae::CellMap::lock)
+        self.weak.as_ref()?.upgrade().map(hyphae::CellMap::lock)
+    }
+
+    fn is_alive(&self) -> bool {
+        if self.get().is_some() {
+            return true;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            return self
+                .publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .upgrade()
+                .is_some();
+        }
+        #[cfg(target_arch = "wasm32")]
+        false
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn publication(&self) -> Result<Option<Arc<super::native_map::NativeMapOutput>>, String> {
+        let mut publication = self
+            .publication
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(output) = publication.upgrade() {
+            return Ok(Some(output));
+        }
+        let Some(map) = self.get() else {
+            return Ok(None);
+        };
+        let output = super::native_map::NativeMapOutput::new(map)?;
+        *publication = Arc::downgrade(&output);
+        drop(publication);
+        Ok(Some(output))
     }
 
     /// Get or create a typed projection of this untyped map.
@@ -274,7 +340,7 @@ impl MapCacheEntry {
         F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     {
         let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
-        let source = self.weak.upgrade()?.lock();
+        let source = self.weak.as_ref()?.upgrade()?.lock();
         let mut typed = self
             .typed
             .lock()
@@ -360,6 +426,91 @@ pub struct MykoServerRuntime {
 }
 
 impl MykoServerContext {
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn open_native_map(
+        &self,
+        handler: &myko_wire::HandlerRequest,
+        request: Arc<RequestContext>,
+    ) -> Result<Arc<super::native_map::NativeMapOutput>, String> {
+        let cache = match handler.kind {
+            myko_federation::HandlerKind::Query => &self.query_cache,
+            myko_federation::HandlerKind::View => &self.view_cache,
+            _ => return Err("native map requires a query or view handler".to_owned()),
+        };
+        let key = format!(
+            "{}:native-map:{}",
+            request.host_id,
+            serde_json::to_string(handler).map_err(|error| error.to_string())?
+        );
+        if let Some(entry) = cache.get(&key)
+            && let Some(output) = entry.publication()?
+        {
+            return Ok(output);
+        }
+        let gate = self
+            .compute_gates
+            .entry(key.clone())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _lease = NativeMapGate {
+            gates: &self.compute_gates,
+            key: &key,
+            gate: &gate,
+        };
+        let _lock = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(entry) = cache.get(&key)
+            && let Some(output) = entry.publication()?
+        {
+            return Ok(output);
+        }
+        let source = super::federated_source::FederatedRequest {
+            source_node: handler.source_node,
+            scope_id: handler.scope_id.clone(),
+        };
+        let server = Arc::new(self.clone());
+        let (entry, output) = match handler.kind {
+            myko_federation::HandlerKind::Query => {
+                let rows = self.handler_registry.open_federated_query(
+                    &handler.handler_id,
+                    handler.params.clone(),
+                    request,
+                    server,
+                    source,
+                )?;
+                let entry = MapCacheEntry::new(&rows);
+                let output = entry.publication()?.ok_or_else(|| {
+                    "native map expired while constructing its publication".to_owned()
+                })?;
+                (entry, output)
+            }
+            myko_federation::HandlerKind::View => match self.handler_registry.open_federated_view(
+                &handler.handler_id,
+                handler.params.clone(),
+                request,
+                server,
+                source,
+            )? {
+                crate::view::RegisteredViewOutput::LocalMap(rows) => {
+                    let entry = MapCacheEntry::new(&rows);
+                    let output = entry.publication()?.ok_or_else(|| {
+                        "native map expired while constructing its publication".to_owned()
+                    })?;
+                    (entry, output)
+                }
+                crate::view::RegisteredViewOutput::RetainedPublication(publication) => {
+                    let output = super::native_map::NativeMapOutput::from_retained(publication);
+                    let entry = MapCacheEntry::retained(&output);
+                    (entry, output)
+                }
+            },
+            _ => return Err("native map requires a query or view handler".to_owned()),
+        };
+        cache.insert(key.clone(), entry);
+        Ok(output)
+    }
+
     /// Build the retained server context around one durable application node.
     ///
     /// # Errors
@@ -600,7 +751,7 @@ impl MykoServerContext {
     pub fn query_cache_live_count(&self) -> usize {
         self.query_cache
             .iter()
-            .filter(|entry| entry.value().weak.upgrade().is_some())
+            .filter(|entry| entry.value().is_alive())
             .count()
     }
 
@@ -619,7 +770,7 @@ impl MykoServerContext {
     pub fn view_cache_live_count(&self) -> usize {
         self.view_cache
             .iter()
-            .filter(|entry| entry.value().weak.upgrade().is_some())
+            .filter(|entry| entry.value().is_alive())
             .count()
     }
 
@@ -630,10 +781,8 @@ impl MykoServerContext {
     /// regardless — this is a backstop for foreign ids that go dead and are
     /// never looked up again.
     pub fn sweep_dead_cache_entries(&self) {
-        self.query_cache
-            .retain(|_, entry| entry.weak.upgrade().is_some());
-        self.view_cache
-            .retain(|_, entry| entry.weak.upgrade().is_some());
+        self.query_cache.retain(|_, entry| entry.is_alive());
+        self.view_cache.retain(|_, entry| entry.is_alive());
         self.report_cache.retain(|_, entry| entry.is_alive());
         crate::query::sweep_all_belongs_to_source_indexes();
     }
@@ -2678,8 +2827,47 @@ impl MykoServerContext {
         computed
     }
 
+    fn compute_or_cache_result(
+        &self,
+        key: &str,
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        compute: impl FnOnce() -> Result<FilteredCellMap, String>,
+    ) -> Result<FilteredCellMap, String> {
+        if let Some(cell) = Self::try_get_cached(cache, key) {
+            return Ok(cell);
+        }
+        let gate = self
+            .compute_gates
+            .entry(key.to_owned())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone();
+        let _lease = NativeMapGate {
+            gates: &self.compute_gates,
+            key,
+            gate: &gate,
+        };
+        let _lock = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(cell) = Self::try_get_cached(cache, key) {
+            return Ok(cell);
+        }
+        let computed = compute()?;
+        cache.insert(key.to_owned(), MapCacheEntry::new(&computed));
+        Ok(computed)
+    }
+
     /// Build a reactive view cell map (type-erased for framework internals).
-    pub fn view_map_untyped<V>(&self, view: V, request: Arc<RequestContext>) -> FilteredViewCellMap
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the view cannot be built as a local map. Retained
+    /// publications must be opened through the native handler boundary.
+    pub fn view_map_untyped<V>(
+        &self,
+        view: V,
+        request: Arc<RequestContext>,
+    ) -> Result<FilteredViewCellMap, String>
     where
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -2699,7 +2887,7 @@ impl MykoServerContext {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> FilteredViewCellMap
+    ) -> Result<FilteredViewCellMap, String>
     where
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -2707,7 +2895,7 @@ impl MykoServerContext {
         let mut key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
         #[cfg(not(target_arch = "wasm32"))]
         Self::append_federated_cache_key(&mut key, federated.as_ref());
-        self.compute_or_cache(&key, &self.view_cache, || {
+        self.compute_or_cache_result(&key, &self.view_cache, || {
             let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
             let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
             V::cell_factory(
@@ -2717,20 +2905,21 @@ impl MykoServerContext {
                 Arc::new(self.clone()),
                 #[cfg(not(target_arch = "wasm32"))]
                 federated,
-            )
-            .unwrap_or_else(|error| {
-                tracing::error!(
-                    view_id = %V::view_id_static(),
-                    %error,
-                    "typed view factory failed; returning an empty view"
-                );
-                CellMap::new().lock()
-            })
+            )?
+            .into_local_map()
         })
     }
 
     /// Build a typed reactive view cell map.
-    pub fn view<V>(&self, view: V, request: Arc<RequestContext>) -> TypedViewCellMap<V::Item>
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the view cannot be built as a local typed map.
+    pub fn view<V>(
+        &self,
+        view: V,
+        request: Arc<RequestContext>,
+    ) -> Result<TypedViewCellMap<V::Item>, String>
     where
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -2750,7 +2939,7 @@ impl MykoServerContext {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> TypedViewCellMap<V::Item>
+    ) -> Result<TypedViewCellMap<V::Item>, String>
     where
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -2763,19 +2952,22 @@ impl MykoServerContext {
             request,
             #[cfg(not(target_arch = "wasm32"))]
             federated,
-        );
+        )?;
         if let Some(entry) = self.view_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
                 typed_map_arc_from_any_item(source, "MykoServerContext::view")
             })
         {
-            return typed;
+            return Ok(typed);
         }
         tracing::error!(
             view_id = %V::view_id_static(),
             "view cache entry disappeared after construction; using an uncached projection"
         );
-        typed_map_arc_from_any_item(untyped, "MykoServerContext::view fallback")
+        Ok(typed_map_arc_from_any_item(
+            untyped,
+            "MykoServerContext::view fallback",
+        ))
     }
 
     /// Run a one-shot (non-reactive) query.
@@ -3123,6 +3315,111 @@ mod tests {
         )
     }
 
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_map_cache_shares_outputs_without_retaining_dead_owners() {
+        use hyphae::DepNode as _;
+
+        let ctx = make_ctx();
+        let handler = myko_wire::HandlerRequest {
+            kind: myko_federation::HandlerKind::Query,
+            handler_id: "GetAllClients".to_owned(),
+            source_node: None,
+            scope_id: None,
+            params: serde_json::json!({}),
+        };
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let threads = [0, 1].map(|_| {
+            let ctx = ctx.clone();
+            let handler = handler.clone();
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let request = Arc::new(crate::request::RequestContext::internal(
+                    Arc::<str>::from(Uuid::new_v4().to_string()),
+                    ctx.host_id,
+                    "native-test",
+                ));
+                barrier.wait();
+                ctx.open_native_map(&handler, request)
+            })
+        });
+        let [left, right] = threads.map(std::thread::JoinHandle::join);
+        assert!(matches!(&left, Ok(Ok(_))));
+        assert!(matches!(&right, Ok(Ok(_))));
+        let (Ok(Ok(left)), Ok(Ok(right))) = (left, right) else {
+            return;
+        };
+        assert!(Arc::ptr_eq(&left, &right));
+        assert!(ctx.compute_gates.is_empty());
+        let weak = Arc::downgrade(&left);
+        drop((left, right));
+        assert!(weak.upgrade().is_none());
+        let root = ctx
+            .registry
+            .get_or_create(crate::entities::client::Client::ENTITY_NAME_STATIC);
+        assert_eq!(ctx.query_cache.len(), 1);
+        for entry in ctx.query_cache.iter() {
+            assert!(
+                entry
+                    .publication
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .upgrade()
+                    .is_none()
+            );
+            let map = entry.get();
+            assert!(map.is_some());
+            let Some(map) = map else {
+                return;
+            };
+            assert_eq!(
+                map.diffs().materialize().id(),
+                root.diffs().materialize().id()
+            );
+        }
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_map_cache_releases_a_derived_map_after_its_last_owner() {
+        use hyphae::SelectExt as _;
+        let root = hyphae::CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
+        let derived = hyphae::MapQuery::materialize(root.clone().select(|_| true));
+        let weak = derived.downgrade();
+        let entry = super::MapCacheEntry::new(&derived);
+        let output = entry.publication();
+        assert!(matches!(&output, Ok(Some(_))));
+        let Ok(Some(output)) = output else {
+            return;
+        };
+        drop(derived);
+        assert!(weak.upgrade().is_some());
+        drop(output);
+        assert!(weak.upgrade().is_none());
+        assert!(entry.get().is_none());
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn native_map_failed_open_releases_its_compute_gate() {
+        let ctx = make_ctx();
+        let handler = myko_wire::HandlerRequest {
+            kind: myko_federation::HandlerKind::Query,
+            handler_id: "missing-native-handler".to_owned(),
+            source_node: None,
+            scope_id: None,
+            params: serde_json::json!({}),
+        };
+        let request = Arc::new(crate::request::RequestContext::internal(
+            Arc::<str>::from("missing-handler"),
+            ctx.host_id,
+            "native-test",
+        ));
+        assert!(ctx.open_native_map(&handler, request).is_err());
+        assert!(ctx.compute_gates.is_empty());
+        assert!(ctx.query_cache.is_empty());
+    }
+
     struct OrderingPersister {
         registry: Arc<StoreRegistry>,
         calls: AtomicUsize,
@@ -3331,6 +3628,17 @@ mod tests {
         let _serial = scheduler_test_serial();
         let ctx = make_ctx();
 
+        let store = ctx.registry.get_or_create("ImmediateTestItem");
+        let (diffs_sent, diffs_seen) = std::sync::mpsc::channel();
+        let _guard = store.subscribe_diffs(move |diff| {
+            let _delivered = diffs_sent.send(format!("{diff:?}"));
+        });
+        assert!(
+            diffs_seen
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_ok()
+        );
+
         assert!(
             ctx.apply_event_batch(vec![MEvent {
                 item: json!({ "id": "old-1", "value": 1 }),
@@ -3343,21 +3651,13 @@ mod tests {
             .is_ok()
         );
 
-        let store = ctx.registry.get_or_create("ImmediateTestItem");
-        let diffs_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let diffs_seen_for_closure = diffs_seen.clone();
-        let _guard = store.subscribe_diffs(move |diff| {
-            diffs_seen_for_closure
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .push(format!("{diff:?}"));
-        });
-        // subscribe_diffs replays the current snapshot synchronously on
-        // subscribe -- drop that so only diffs from the batch below count.
-        diffs_seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clear();
+        // Observe the seed notification before measuring the mixed batch.
+        // Clearing a buffer cannot drain a notification still awaiting delivery.
+        assert!(
+            diffs_seen
+                .recv_timeout(std::time::Duration::from_secs(1))
+                .is_ok()
+        );
 
         let applied = ctx
             .apply_event_batch(vec![
@@ -3396,16 +3696,18 @@ mod tests {
                 .is_none()
         );
 
-        let seen = diffs_seen
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(
-            seen.len(),
-            2,
-            "both the SET and DEL diffs must reach subscribers, not just the last one: {:?}",
-            *seen
+        let seen = [
+            diffs_seen.recv_timeout(std::time::Duration::from_secs(1)),
+            diffs_seen.recv_timeout(std::time::Duration::from_secs(1)),
+        ];
+        assert!(
+            seen.iter().all(Result::is_ok),
+            "both SET and DEL diffs must be delivered: {seen:?}"
         );
-        drop(seen);
+        assert!(
+            diffs_seen.try_recv().is_err(),
+            "batch delivered an unexpected extra diff"
+        );
     }
 
     #[test]
@@ -3490,6 +3792,22 @@ mod tests {
             request.clone(),
         );
         let connected_clients = ctx.view(ConnectedClients {}, request);
+        assert!(connected_clients.is_ok());
+        let Ok(connected_clients) = connected_clients else {
+            return;
+        };
+        let await_liveness = |online| {
+            let started = std::time::Instant::now();
+            while status.get().online != online
+                || connected_clients.get_value(&client_id).is_some() != online
+            {
+                assert!(
+                    started.elapsed() < std::time::Duration::from_secs(1),
+                    "client liveness projections did not converge to online={online}"
+                );
+                std::thread::yield_now();
+            }
+        };
 
         assert!(!status.get().online, "replayed entity is not a live client");
         assert!(
@@ -3499,6 +3817,7 @@ mod tests {
 
         let registry = client_registry();
         registry.register(client_id.clone(), Arc::new(ClientStatusTestWriter));
+        await_liveness(true);
         assert!(
             status.get().online,
             "registered writer makes the client live"
@@ -3509,6 +3828,7 @@ mod tests {
         );
 
         registry.unregister(&client_id);
+        await_liveness(false);
         assert!(
             !status.get().online,
             "unregistering the writer makes the client offline"

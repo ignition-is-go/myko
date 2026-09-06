@@ -495,7 +495,12 @@ pub trait CommandSending: ServerScoped {
 /// Subscribe to view dependencies (reuse incremental map-native view logic).
 pub trait Viewing: ServerScoped {
     /// Subscribe to a view and get a typed reactive `CellMap`.
-    fn view<V>(&self, view: V) -> crate::core::view::TypedViewCellMap<V::Item>
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the nested view is retained and cannot be reduced
+    /// to a raw local map, or when its local projection cannot be built.
+    fn view<V>(&self, view: V) -> Result<crate::core::view::TypedViewCellMap<V::Item>, String>
     where
         V: crate::core::view::ViewFactory + Clone,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug,
@@ -516,7 +521,12 @@ pub trait Viewing: ServerScoped {
     }
 
     /// Subscribe to a view and get an untyped (erased) reactive map.
-    fn view_map_untyped<V>(&self, view: V) -> crate::core::view::FilteredViewCellMap
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the nested view is retained and cannot be reduced
+    /// to a raw local map, or when its local projection cannot be built.
+    fn view_map_untyped<V>(&self, view: V) -> Result<crate::core::view::FilteredViewCellMap, String>
     where
         V: crate::core::view::ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,

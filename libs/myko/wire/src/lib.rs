@@ -27,7 +27,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Transport adapters may version their framing independently, but a peer must
 /// not decode an envelope whose message schema it does not understand.
-pub const WIRE_PROTOCOL_VERSION: u32 = 5;
+pub const WIRE_PROTOCOL_VERSION: u32 = 10;
 
 /// A versioned message envelope for framed transports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -304,7 +304,11 @@ pub enum NodeFrame {
     CommandState { page: Box<CommandStatePage> },
     /// Command catalog is ready to stream updates.
     CommandWatchReady { request: Box<CommandWatchRequest> },
-    /// Command-state stream update.
+    /// Atomic command-state catalog release at one consumed serving cursor.
+    ///
+    /// The enclosed update can contain multiple command transitions released
+    /// by the same late causal parent; clients must apply the whole batch
+    /// before resuming after its cursor.
     CommandUpdate { update: Box<CommandStateUpdate> },
     /// Item-state page.
     ItemState { page: Box<ItemStatePage> },
@@ -369,6 +373,11 @@ mod tests {
     fn envelope_uses_current_schema_version() {
         let envelope = WireEnvelope::new(NodeRequestEnvelope::connected(NodeRequest::Identify));
         assert_eq!(envelope.version, WIRE_PROTOCOL_VERSION);
+    }
+
+    #[test]
+    fn prepared_effect_lifecycle_uses_schema_version_ten() {
+        assert_eq!(WIRE_PROTOCOL_VERSION, 10);
     }
 
     #[test]

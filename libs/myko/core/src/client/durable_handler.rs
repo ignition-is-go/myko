@@ -537,14 +537,17 @@ impl MykoClient {
             .ok_or(HandlerClientError::MissingConnector)
     }
 
-    /// Open a typed durable query over one exact source and scope.
+    /// Open a typed durable query in one scope, optionally filtered by event origin.
+    ///
+    /// `None` reads the logical scope across origins. The connector selects the
+    /// serving node independently; an origin filter does not route the request.
     ///
     /// # Errors
     ///
     /// Returns an error when the connector, protocol, or typed payload is invalid.
     pub async fn follow_query<Q>(
         &self,
-        source_node: NodeId,
+        source_node: Option<NodeId>,
         scope_id: ScopeId,
         query: &Q,
     ) -> Result<NodeHandlerSubscription<Vec<Q::Item>>, HandlerClientError>
@@ -557,7 +560,7 @@ impl MykoClient {
             HandlerRequest {
                 kind: myko_federation::HandlerKind::Query,
                 handler_id: Q::query_id_static().to_string(),
-                source_node: Some(source_node),
+                source_node,
                 scope_id: Some(scope_id),
                 params: serde_json::to_value(query)?,
             },
@@ -627,14 +630,14 @@ impl MykoClient {
         .await
     }
 
-    /// Open a reconnecting reactive durable query.
+    /// Open a reconnecting reactive durable query with an optional origin filter.
     ///
     /// # Errors
     ///
     /// Returns an error when the initial subscription cannot be established.
     pub async fn follow_query_reactive<Q>(
         &self,
-        source_node: NodeId,
+        source_node: Option<NodeId>,
         scope_id: ScopeId,
         query: &Q,
     ) -> Result<ReactiveViewSubscription<Q::Item>, HandlerClientError>

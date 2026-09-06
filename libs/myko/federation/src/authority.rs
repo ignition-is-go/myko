@@ -533,6 +533,8 @@ pub enum ResourceVisibility {
     Unreachable,
     NotReplicated,
     TopologyIncomplete,
+    /// Retained changes are waiting for their causal dependencies.
+    HistoryIncomplete,
 }
 
 /// Proof supplied with a selected projection. Callers cannot convert an empty
@@ -543,6 +545,8 @@ pub enum ProjectionCoverage {
     LocalAuthoritative,
     ReplicatedComplete,
     ReplicatedIncomplete,
+    /// The selected history cannot yet be fully materialized.
+    HistoryIncomplete,
     Unreachable,
     Undiscoverable,
 }

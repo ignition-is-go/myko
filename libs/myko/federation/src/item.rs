@@ -453,31 +453,10 @@ pub(super) fn validate_command_state_entry(
             .equivalent_to(&request.scope_id)
         || entry.command.request.command_type != request.command_type
         || entry.admitted_at > entry.command.updated_at.sequence
-        || entry.admitted_at > entry.last_changed_at
         || through.is_none_or(|ceiling| entry.last_changed_at > ceiling)
     {
         return Err(NodeError::InvalidCommandState(
             "command catalog entry does not match its source, contract, or cursor".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-pub(super) fn validate_command_update(
-    request: &CommandWatchRequest,
-    update: &CommandStateUpdate,
-) -> Result<(), NodeError> {
-    if update.command.updated_at.node_id != request.source_node
-        || update.command.request.service_id != request.service_id
-        || !update
-            .command
-            .request
-            .scope_id
-            .equivalent_to(&request.scope_id)
-        || update.command.request.command_type != request.command_type
-    {
-        return Err(NodeError::InvalidCommandState(
-            "command stream update does not match its source or contract".to_owned(),
         ));
     }
     Ok(())
@@ -514,7 +493,9 @@ pub(super) fn materialize_command_state_entries(
         {
             continue;
         }
-        let command = command_from_event(&envelope.event);
+        let Some(command) = command_from_event(&envelope.event) else {
+            continue;
+        };
         if command.request.service_id != request.service_id
             || !command.request.scope_id.equivalent_to(&request.scope_id)
             || command.request.command_type != request.command_type
@@ -524,7 +505,7 @@ pub(super) fn materialize_command_state_entries(
         let key = command.request.id.to_string();
         if let Some(entry) = current.get_mut(&key) {
             entry.admitted_at = entry.admitted_at.min(command.updated_at.sequence);
-            if command_transition_is_newer(&entry.command, command) {
+            if command_snapshot_supersedes(&entry.command, command) {
                 entry.last_changed_at = envelope.position;
                 entry.command = command.clone();
             }
@@ -561,23 +542,24 @@ pub(super) fn next_command_state_request(
             "command-state response exceeded its requested page size".to_owned(),
         ));
     }
+    let source_node = page.request.source_node.ok_or_else(|| {
+        NodeError::InvalidCommandState("command-state page did not resolve its source".to_owned())
+    })?;
+    let watch = CommandWatchRequest {
+        serving_node: page.serving_node,
+        source_node,
+        service_id: page.request.service_id.clone(),
+        scope_id: page.request.scope_id.clone(),
+        command_type: page.request.command_type.clone(),
+        after: page.through,
+    };
     let mut previous = page.request.after_command_id.clone();
     for entry in &page.commands {
+        validate_command_state_entry(&watch, page.through, entry)?;
         let command_id = entry.command.request.id.to_string();
-        if entry.command.request.service_id != page.request.service_id
-            || !entry
-                .command
-                .request
-                .scope_id
-                .equivalent_to(&page.request.scope_id)
-            || entry.command.request.command_type != page.request.command_type
-            || entry.admitted_at > entry.last_changed_at
-            || page
-                .through
-                .is_none_or(|through| entry.last_changed_at > through)
-            || previous
-                .as_deref()
-                .is_some_and(|cursor| command_id.as_str() <= cursor)
+        if previous
+            .as_deref()
+            .is_some_and(|cursor| command_id.as_str() <= cursor)
         {
             return Err(NodeError::InvalidCommandState(
                 "command-state page contains mismatched or unordered state".to_owned(),
@@ -796,12 +778,15 @@ pub(super) enum SelectedQueryWake {
 
 impl<Q: ItemQuery> SelectedQueryWatch<Q> {
     fn reauthorize(&self) -> Result<SelectedQueryResult<ItemQueryResult<Q>>, NodeError> {
-        let result = self.node.query_items_selected_phase(
-            self.authenticated_executor.clone(),
-            self.presentation.clone(),
-            self.source_node,
-            &self.requested,
-            AuthorizationPhase::Continuation,
+        let result = self.node.query_items_selected_at(
+            SelectedQueryRead {
+                authenticated_executor: self.authenticated_executor.clone(),
+                presentation: self.presentation.clone(),
+                source_node: self.source_node,
+                requested: &self.requested,
+                phase: AuthorizationPhase::Continuation,
+                through: self.cursor,
+            },
             self.query.clone(),
         )?;
         if let Some(decision) = result.authorization.as_ref() {
@@ -890,6 +875,7 @@ pub struct ItemQueryWatch<Q: ItemQuery> {
     pub(super) query: Q,
     pub(super) projection: ItemProjection<Q::Item>,
     pub(super) source_node: Option<NodeId>,
+    pub(super) node: Node,
     pub(super) service_id: ServiceId,
     pub(super) scope_id: Option<ScopeId>,
     pub(super) events: EventSubscription,
@@ -903,6 +889,7 @@ pub struct ItemQueryWatch<Q: ItemQuery> {
 pub struct ItemProjectionWatch<T: MykoItem> {
     pub(super) projection: ItemProjection<T>,
     pub(super) source_node: Option<NodeId>,
+    pub(super) node: Node,
     pub(super) service_id: ServiceId,
     pub(super) scope_id: Option<ScopeId>,
     pub(super) events: EventSubscription,
@@ -929,24 +916,29 @@ impl<T: MykoItem> ItemProjectionWatch<T> {
         &mut self,
         envelope: &EventEnvelope,
     ) -> Result<Option<ItemProjectionUpdate<T>>, NodeError> {
-        let advances_cursor = match &envelope.event {
-            NodeEvent::CommandCommitted { command, batch } => {
-                self.source_node
-                    .is_none_or(|source_node| envelope.origin.node_id == source_node)
-                    && command.request.service_id == self.service_id
-                    && self.scope_id.as_ref().is_none_or(|scope_id| {
-                        command.request.scope_id.equivalent_to(scope_id)
-                            || batch.changes.iter().any(|mutation| {
-                                mutation
-                                    .affects_scope::<T>(batch.scope_id.as_str(), scope_id.as_str())
-                                    || mutation.scope_id.as_ref().is_some_and(|placed| {
-                                        ScopeId::new(placed.clone()).equivalent_to(scope_id)
-                                    })
-                            })
-                    })
-            }
-            NodeEvent::CommandLifecycle(_) => false,
-        };
+        let advances_cursor = advances_item_cursor::<T>(
+            envelope,
+            self.source_node,
+            &self.service_id,
+            self.scope_id.as_ref(),
+        );
+        if self.source_node.is_none() {
+            let history = self.node.causal_events_through(envelope.position)?;
+            let service_scope = self
+                .scope_id
+                .as_ref()
+                .map(|scope| (&self.service_id, scope));
+            let next = project_item_history(&history, None, service_scope)?;
+            let diff = projection_diff(&self.projection, &next);
+            self.projection = next;
+            return Ok(
+                (advances_cursor || diff.is_some()).then(|| ItemProjectionUpdate {
+                    position: envelope.position,
+                    projection: self.projection.clone(),
+                    diff,
+                }),
+            );
+        }
         if !advances_cursor {
             return Ok(None);
         }
@@ -1105,29 +1097,26 @@ impl<Q: ItemQuery> ItemQueryWatch<Q> {
         &mut self,
         envelope: &EventEnvelope,
     ) -> Result<Option<ItemQueryUpdate<ItemQueryResult<Q>>>, NodeError> {
-        let advances_cursor = match &envelope.event {
-            NodeEvent::CommandCommitted { command, batch } => {
-                self.source_node
-                    .is_none_or(|source_node| envelope.origin.node_id == source_node)
-                    && command.request.service_id == self.service_id
-                    && self.scope_id.as_ref().is_none_or(|scope_id| {
-                        command.request.scope_id.equivalent_to(scope_id)
-                            || batch.changes.iter().any(|mutation| {
-                                mutation.affects_scope::<Q::Item>(
-                                    batch.scope_id.as_str(),
-                                    scope_id.as_str(),
-                                ) || mutation.scope_id.as_ref().is_some_and(|placed| {
-                                    ScopeId::new(placed.clone()).equivalent_to(scope_id)
-                                })
-                            })
-                    })
-            }
-            NodeEvent::CommandLifecycle(_) => false,
-        };
+        let advances_cursor = advances_item_cursor::<Q::Item>(
+            envelope,
+            self.source_node,
+            &self.service_id,
+            self.scope_id.as_ref(),
+        );
         let service_scope = self
             .scope_id
             .as_ref()
             .map(|scope_id| (&self.service_id, scope_id));
+        if self.source_node.is_none() {
+            let history = self.node.causal_events_through(envelope.position)?;
+            let next = project_item_history(&history, None, service_scope)?;
+            let changed = self.projection != next;
+            self.projection = next;
+            return Ok((advances_cursor || changed).then(|| ItemQueryUpdate {
+                position: envelope.position,
+                value: __snapshot_item_query(&self.query, &self.projection),
+            }));
+        }
         let _changed = apply_item_envelope(
             &mut self.projection,
             envelope,
@@ -1138,6 +1127,65 @@ impl<Q: ItemQuery> ItemQueryWatch<Q> {
             position: envelope.position,
             value: __snapshot_item_query(&self.query, &self.projection),
         }))
+    }
+}
+
+fn advances_item_cursor<T: MykoItem>(
+    envelope: &EventEnvelope,
+    source_node: Option<NodeId>,
+    service_id: &ServiceId,
+    scope_id: Option<&ScopeId>,
+) -> bool {
+    let NodeEvent::CommandCommitted { command, batch } = &envelope.event else {
+        return false;
+    };
+    source_node.is_none_or(|source| envelope.origin.node_id == source)
+        && &command.request.service_id == service_id
+        && scope_id.is_none_or(|scope| {
+            command.request.scope_id.equivalent_to(scope)
+                || batch.changes.iter().any(|mutation| {
+                    mutation.affects_scope::<T>(batch.scope_id.as_str(), scope.as_str())
+                        || mutation
+                            .scope_id
+                            .as_ref()
+                            .is_some_and(|placed| ScopeId::new(placed.clone()).equivalent_to(scope))
+                })
+        })
+}
+
+fn projection_diff<T: MykoItem>(
+    previous: &ItemProjection<T>,
+    next: &ItemProjection<T>,
+) -> Option<MapDiff<T::Id, Arc<ItemState<T>>>> {
+    let mut changes = Vec::new();
+    for state in previous.states() {
+        let key = state.value().item_id();
+        if next.state_by_stored_id(key.as_ref()).is_none() {
+            changes.push(MapDiff::Remove {
+                key: key.clone(),
+                old_value: Arc::new(state.clone()),
+            });
+        }
+    }
+    for state in next.states() {
+        let key = state.value().item_id();
+        match previous.state_by_stored_id(key.as_ref()) {
+            None => changes.push(MapDiff::Insert {
+                key: key.clone(),
+                value: Arc::new(state.clone()),
+            }),
+            Some(old) if old != state => changes.push(MapDiff::Update {
+                key: key.clone(),
+                old_value: Arc::new(old.clone()),
+                new_value: Arc::new(state.clone()),
+            }),
+            Some(_) => {}
+        }
+    }
+    match changes.len() {
+        0 => None,
+        1 => changes.pop(),
+        _ => Some(MapDiff::Batch { changes }),
     }
 }
 

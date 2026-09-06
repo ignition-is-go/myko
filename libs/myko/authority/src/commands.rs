@@ -1,20 +1,18 @@
 use super::{
     AccessAttempt, AccessOperation, ApplicationCapability, ApprovalDecision, ApprovalId,
-    ApprovalRecord, ApprovalRecordId, ApprovalUse, ApprovalUseId, AuthorityConstraints,
-    AuthorityDelegation, AuthorityGrant, AuthorityGrantId, AuthorityRealm, AuthorityRealmId,
-    AuthorityRealmKey, AuthorityService, AuthorizationBinding, AuthorizationDecision, BTreeMap,
-    CapabilityRegistration, CapabilityRegistrationId, ChallengeId, ChallengeRecord,
-    ChallengeRecordId, CommandContext, CommandError, CommandHandler, DateTime, DecisionAudit,
-    DecisionAuditId, DelegationId, DelegationRecord, DelegationRecordId, DelegationUse,
-    DelegationUseId, Deserialize, Duration, EvaluationState, FederationPermission,
-    GetAllApprovalRecords, GetAllApprovalUses, GetAllCapabilityRegistrations,
+    ApprovalRecord, ApprovalRecordId, AuthorityConstraints, AuthorityDelegation, AuthorityGrant,
+    AuthorityGrantId, AuthorityRealm, AuthorityRealmId, AuthorityRealmKey, AuthorityService,
+    AuthorizationDecision, BTreeMap, CapabilityRegistration, CapabilityRegistrationId, ChallengeId,
+    ChallengeRecordId, CommandContext, CommandError, CommandHandler, DateTime, DelegationId,
+    DelegationRecord, DelegationRecordId, Deserialize, Duration, EvaluationState,
+    FederationPermission, GetAllApprovalRecords, GetAllApprovalUses, GetAllCapabilityRegistrations,
     GetAllChallengeRecords, GetAllDelegationRecords, GetAllDelegationUses, GetAllGrantRecords,
     GetAllGrantUses, GetAllLeaseRecords, GetAllObligationRecords, GetAuthorityRealmById,
     GetCapabilityRegistrationById, GetChallengeRecordById, GetDelegationRecordById,
-    GetGrantRecordById, GetObligationRecordById, GrantRecord, GrantRecordId, GrantUse, GrantUseId,
-    LeaseRecord, LeaseRecordId, Obligation, ObligationRecord, ObligationRecordId, PermitDecision,
-    Principal, ResourceClaim, ScopeId, ScopeSelection, ScopeTopology, Serialize, Utc,
-    administration_claim, evaluate, myko_command, realm_item_id, record_id,
+    GetGrantRecordById, GetObligationRecordById, GrantRecord, GrantRecordId, Obligation,
+    ObligationRecord, ObligationRecordId, Principal, ResourceClaim, ScopeId, ScopeSelection,
+    ScopeTopology, Serialize, Utc, administration_claim, evaluate, myko_command, realm_item_id,
+    record_id,
 };
 
 #[myko_command(AuthorityRealm, service = AuthorityService, scope = AuthorityRealm)]
@@ -510,75 +508,16 @@ impl CommandHandler for EvaluateAuthority {
         };
         let outcome = evaluate(&state, &request, self.now);
         let decision_id = record_id("decision");
-        let realm_id = realm_item_id(&self.realm_id);
-
-        let consume = matches!(
-            request.authorization_phase,
-            myko_federation::AuthorizationPhase::Effect
-        ) || (matches!(
-            request.authorization_phase,
-            myko_federation::AuthorizationPhase::Admission
-        ) && request.operation != AccessOperation::SubmitCommand);
-        for grant_id in outcome.grants.iter().filter(|_| consume) {
-            context.emit_set(&GrantUse {
-                id: GrantUseId::from(record_id("grant-use")),
-                authority_realm_id: realm_id.clone(),
-                grant_id: grant_id.clone(),
-                decision_id: decision_id.clone(),
-                used_at: self.now,
-            })?;
+        for record in crate::decision_records::decision_records(
+            &self.realm_id,
+            &request,
+            &state,
+            &outcome,
+            &decision_id,
+            self.now,
+        ) {
+            record.emit(&context)?;
         }
-        for delegation_id in outcome.delegations.iter().filter(|_| consume) {
-            context.emit_set(&DelegationUse {
-                id: DelegationUseId::from(record_id("delegation-use")),
-                authority_realm_id: realm_id.clone(),
-                delegation_id: delegation_id.clone(),
-                decision_id: decision_id.clone(),
-                used_at: self.now,
-            })?;
-        }
-        for approval_id in outcome.approvals.iter().filter(|_| consume) {
-            context.emit_set(&ApprovalUse {
-                id: ApprovalUseId::from(record_id("approval-use")),
-                authority_realm_id: realm_id.clone(),
-                approval_id: approval_id.clone(),
-                decision_id: decision_id.clone(),
-                used_at: self.now,
-            })?;
-        }
-        if let AuthorizationDecision::Challenge { challenge, .. } = &outcome.decision {
-            let challenge_id = ChallengeRecordId::from(challenge.id.as_str());
-            if context
-                .exec_item_query(GetChallengeRecordById {
-                    id: challenge_id.clone(),
-                })?
-                .is_empty()
-            {
-                context.emit_set(&ChallengeRecord {
-                    id: challenge_id,
-                    authority_realm_id: realm_id.clone(),
-                    challenge: challenge.clone(),
-                })?;
-            }
-        }
-        if let AuthorizationDecision::Permit(PermitDecision {
-            lease: Some(lease), ..
-        }) = &outcome.decision
-        {
-            context.emit_set(&LeaseRecord {
-                id: LeaseRecordId::from(lease.id.as_str()),
-                authority_realm_id: realm_id.clone(),
-                lease: lease.clone(),
-                binding: AuthorizationBinding::from_request(&request),
-            })?;
-        }
-        context.emit_set(&DecisionAudit {
-            id: DecisionAuditId::from(decision_id),
-            authority_realm_id: realm_id,
-            request,
-            decision: outcome.decision.clone(),
-            recorded_at: self.now,
-        })?;
         Ok(outcome.decision)
     }
 }

@@ -58,7 +58,7 @@ pub use federated_session::{
     FederatedSession, NodeFrameStream, NodeRequestRouter, NodeRouteFuture,
 };
 #[cfg(not(target_arch = "wasm32"))]
-pub use federated_source::{SourcedItem, SourcedItemKey, SourcedItemMap};
+pub use federated_source::{SourcedItem, SourcedItemKey, SourcedItemMap, SourcedItemSnapshot};
 #[cfg(not(target_arch = "wasm32"))]
 pub use handler_registry::HandlerAuthority;
 pub use handler_registry::HandlerRegistry;
@@ -71,3 +71,5 @@ pub use persister::{
 };
 pub use protocol::{message_to_cbor, message_to_json};
 pub use relationship_manager::RelationshipManager;
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod native_map;

@@ -2638,9 +2638,9 @@ fn address_has_explicit_port(addr: &str) -> bool {
 
 #[cfg(test)]
 mod message_capture_tests {
-    use std::collections::VecDeque;
+    use std::{collections::VecDeque, time::Instant};
 
-    use hyphae::Gettable;
+    use hyphae::{Gettable, Mutable};
 
     use super::{MAX_DISCONNECTED_SENDS, MykoClient, WsFrame, enqueue_disconnected_frame};
     use crate::wire::{MykoMessage, PingData};
@@ -2651,6 +2651,18 @@ mod message_capture_tests {
             timestamp: chrono::Utc::now().timestamp_millis(),
         });
         serde_json::to_string(&message).map(WsFrame::Text)
+    }
+
+    fn wait_for_dispatch_state(client: &MykoClient, message_present: bool, ping_present: bool) {
+        let started = Instant::now();
+        while (
+            client.messages().get().is_some(),
+            client.ping_ms_sync().is_some(),
+        ) != (message_present, ping_present)
+            && started.elapsed() < std::time::Duration::from_secs(1)
+        {
+            std::thread::yield_now();
+        }
     }
 
     #[test]
@@ -2664,12 +2676,16 @@ mod message_capture_tests {
             return;
         };
         MykoClient::handle_frame(&client.inner, &captured_frame);
+        wait_for_dispatch_state(&client, true, true);
         assert!(client.messages().get().is_some());
         assert!(client.ping_ms_sync().is_some());
 
         client.set_last_message_capture(false);
+        client.inner.ping_ms.set(None);
+        wait_for_dispatch_state(&client, false, false);
         assert!(!client.is_last_message_capture_enabled());
         assert!(client.messages().get().is_none());
+        assert!(client.ping_ms_sync().is_none());
 
         let uncaptured_frame = ping_frame("not-captured");
         assert!(uncaptured_frame.is_ok());
@@ -2677,6 +2693,7 @@ mod message_capture_tests {
             return;
         };
         MykoClient::handle_frame(&client.inner, &uncaptured_frame);
+        wait_for_dispatch_state(&client, false, true);
         assert!(client.messages().get().is_none());
         assert!(client.ping_ms_sync().is_some());
     }

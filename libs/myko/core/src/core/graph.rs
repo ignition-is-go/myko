@@ -6707,13 +6707,16 @@ mod tests {
                 })
                 .is_ok()
         );
+        wait_for_count(&diffs, 1);
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
 
         assert!(context.del(&first).is_ok());
         assert!(neighbors.get_value(&article_b.id()).is_some());
         assert!(context.del(&parallel).is_ok());
+        wait_for_count(&diffs, 2);
         assert!(neighbors.get_value(&article_b.id()).is_none());
         assert!(context.del(&self_loop).is_ok());
+        wait_for_count(&diffs, 3);
         assert!(neighbors.get_value(&article_a.id()).is_none());
     }
 

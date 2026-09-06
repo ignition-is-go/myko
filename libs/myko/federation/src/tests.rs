@@ -1,5 +1,6 @@
 use super::*;
 use myko_items::{myko_item, myko_service};
+use sha2::Sha256;
 
 fn install_allow_all(node: &Node) -> Arc<dyn AccessPolicy> {
     let policy: Arc<dyn AccessPolicy> = Arc::new(AllowAllAccessPolicy);
@@ -20,6 +21,66 @@ fn allow_all_node() -> Node {
 #[derive(Debug)]
 struct SelectedScopesPolicy {
     allowed: Vec<ScopeSelection>,
+}
+
+#[derive(Debug)]
+struct NestedScopePolicy {
+    parent: ScopeId,
+    child: ScopeId,
+}
+
+#[derive(Debug)]
+struct ChallengeFirstEffectPolicy {
+    challenge_id: ChallengeId,
+    effect: std::sync::Mutex<Option<AccessAttempt>>,
+}
+
+impl AccessPolicy for NestedScopePolicy {
+    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
+        if request
+            .topology
+            .as_ref()
+            .is_some_and(|topology| topology.is_descendant_of(&self.child, &self.parent))
+        {
+            Ok(())
+        } else {
+            Err("scope is not established beneath the granted parent".to_owned())
+        }
+    }
+}
+
+impl AccessPolicy for ChallengeFirstEffectPolicy {
+    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
+        AllowAllAccessPolicy.authorize(request)
+    }
+
+    fn decide(&self, request: &AccessAttempt) -> AuthorizationDecision {
+        if request.authorization_phase != AuthorizationPhase::Effect {
+            return AllowAllAccessPolicy.decide(request);
+        }
+        let mut effect = self.effect.lock().unwrap();
+        if effect.is_some() {
+            return AllowAllAccessPolicy.decide(request);
+        }
+        *effect = Some(request.clone());
+        drop(effect);
+        let AuthorizationDecision::Permit(permit) = AllowAllAccessPolicy.decide(request) else {
+            return AllowAllAccessPolicy.decide(request);
+        };
+        AuthorizationDecision::Challenge {
+            challenge: AuthorityChallenge {
+                id: self.challenge_id.clone(),
+                realm_id: AuthorityRealmId::new("test-realm"),
+                obligation_id: ObligationId::new("test-obligation"),
+                kind: "test-effect-challenge".to_owned(),
+                prompt: "park exact effect".to_owned(),
+                binding: AuthorizationBinding::from_request(request),
+                issued_at: chrono::Utc::now(),
+                expires_at: chrono::Utc::now(),
+            },
+            report: permit.report,
+        }
+    }
 }
 
 impl AccessPolicy for SelectedScopesPolicy {
@@ -241,6 +302,785 @@ fn nested_scope_parent_is_immutable() {
     ));
 }
 
+fn pending_nested_scope() -> (Node, EventEnvelope, ScopeId, ScopeId) {
+    let dependency_source = allow_all_node();
+    commit_test_record(&dependency_source, "topology-parent", "ready");
+    let dependency_history = dependency_source.events_after(None).unwrap();
+    let dependency = dependency_history.last().unwrap().origin;
+
+    let source = allow_all_node();
+    for event in &dependency_history {
+        source.ingest(event.clone()).unwrap();
+    }
+    let project_id = FederationProjectId::from("project-pending-topology");
+    let project_scope = ScopeId::for_item::<FederationProject>(&project_id);
+    let scene_id = FederationSceneId::from("scene-pending-topology");
+    let scene_scope = ScopeId::for_item::<FederationScene>(&scene_id);
+    let mut command = request(CommandId::new());
+    command.scope_id = project_scope.clone();
+    command.resource_claims.first_mut().unwrap().selection =
+        ScopeSelection::Exact(project_scope.clone());
+    let executing = source.admit(command.clone()).unwrap().snapshot().clone();
+    let scene = FederationScene {
+        id: scene_id,
+        federation_project_id: project_id,
+        name: "pending scene".to_owned(),
+    };
+    source
+        .commit(
+            command.id,
+            ChangeBatch {
+                id: BatchId::new(),
+                command_id: command.id,
+                service_id: command.service_id,
+                scope_id: command.scope_id,
+                causal_parents: vec![executing.updated_at, dependency],
+                changes: vec![mutation_in(&scene_scope, &scene)],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+
+    let source_history = source.events_after(None).unwrap();
+    let target = allow_all_node();
+    for event in source_history
+        .iter()
+        .filter(|event| event.origin != dependency)
+    {
+        target.ingest(event.clone()).unwrap();
+    }
+
+    (
+        target,
+        dependency_history.last().unwrap().clone(),
+        project_scope,
+        scene_scope,
+    )
+}
+
+#[test]
+fn pending_nested_scope_is_inventory_but_not_topology_until_its_parent_arrives() {
+    let (target, dependency, project_scope, scene_scope) = pending_nested_scope();
+    let pending_topology = target.scope_topology().unwrap();
+    assert_eq!(pending_topology.parent(&scene_scope), None);
+    assert!(!pending_topology.is_descendant_of(&scene_scope, &project_scope));
+    assert!(
+        target
+            .scope_ids_page(None, DURABLE_EVENT_PAGE_LIMIT)
+            .unwrap()
+            .contains(&scene_scope)
+    );
+
+    target.ingest(dependency).unwrap();
+    let released_topology = target.scope_topology().unwrap();
+    assert_eq!(released_topology.parent(&scene_scope), Some(&project_scope));
+    assert!(released_topology.is_descendant_of(&scene_scope, &project_scope));
+}
+
+#[test]
+fn selected_export_keeps_its_cursor_before_unresolved_scope_history() {
+    let (source, dependency, project_scope, scene_scope) = pending_nested_scope();
+    let selection = ReplicationSelection::Scopes(vec![ScopeSelection::Subtree(project_scope)]);
+    let first = source.export_selected(selection.clone(), None).unwrap();
+    let unresolved = source
+        .events_after(first.through)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event.affected_scope_ids().contains(&scene_scope))
+        .unwrap();
+    assert!(
+        first
+            .through
+            .is_none_or(|through| through < unresolved.position)
+    );
+    let paused = source
+        .export_selected(selection.clone(), first.through)
+        .unwrap();
+    assert_eq!(paused.through, first.through);
+    assert!(paused.events.is_empty());
+
+    source.ingest(dependency).unwrap();
+    let resumed = source.export_selected(selection, paused.through).unwrap();
+    assert!(
+        resumed
+            .events
+            .iter()
+            .any(|event| event.origin == unresolved.origin)
+    );
+    assert!(
+        resumed
+            .through
+            .is_some_and(|through| through >= unresolved.position)
+    );
+}
+
+#[test]
+fn pending_nested_scope_still_prevents_reparenting() {
+    let first = allow_all_node();
+    let second = allow_all_node();
+    let scene_id = FederationSceneId::from("scene-retained-validation");
+    commit_nested_scene(
+        &first,
+        &FederationProjectId::from("project-first"),
+        &scene_id,
+        &FederationSceneElementId::from("element-first"),
+    );
+    commit_nested_scene(
+        &second,
+        &FederationProjectId::from("project-second"),
+        &scene_id,
+        &FederationSceneElementId::from("element-second"),
+    );
+
+    let target = allow_all_node();
+    let first_commit = first.events_after(None).unwrap().pop().unwrap();
+    target.ingest(first_commit).unwrap();
+    assert!(
+        target
+            .scope_topology()
+            .unwrap()
+            .parent(&ScopeId::for_item::<FederationScene>(&scene_id))
+            .is_none()
+    );
+
+    let second_commit = second.events_after(None).unwrap().pop().unwrap();
+    assert!(matches!(
+        target.ingest(second_commit),
+        Err(NodeError::InvalidItemMutation(reason)) if reason.contains("cannot move from parent")
+    ));
+}
+
+#[test]
+fn selected_queries_withhold_pending_roots_until_their_dependencies_arrive() {
+    let (node, dependency, project_scope, scene_scope) = pending_nested_scope();
+    let origin = node
+        .events_after(None)
+        .unwrap()
+        .into_iter()
+        .find(|event| event.event.affected_scope_ids().contains(&scene_scope))
+        .unwrap()
+        .origin
+        .node_id;
+    let principal = PrincipalId::new("node:selected-causal-reader");
+    let requested = ScopeSelection::Subtree(project_scope);
+    let pending = node
+        .query_items_selected(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal.clone()),
+            origin,
+            &requested,
+            GetAllFederationScenes,
+        )
+        .unwrap();
+    assert_eq!(pending.value, Some(Vec::new()));
+    assert!(!pending.complete);
+    assert_eq!(pending.coverage, ProjectionCoverage::HistoryIncomplete);
+    assert_ne!(
+        pending.visibility,
+        ResourceVisibility::AuthoritativelyAbsent
+    );
+
+    node.ingest(dependency).unwrap();
+    let released = node
+        .query_items_selected(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal),
+            origin,
+            &requested,
+            GetAllFederationScenes,
+        )
+        .unwrap();
+    assert_eq!(released.value.unwrap().len(), 1);
+}
+
+#[test]
+fn local_pending_history_is_not_authoritative_absence_and_does_not_block_other_scopes() {
+    let (retained, dependency, _, scene_scope) = pending_nested_scope();
+    let history = retained.events_after(None).unwrap();
+    let origin = history
+        .iter()
+        .find(|event| event.event.affected_scope_ids().contains(&scene_scope))
+        .unwrap()
+        .origin
+        .node_id;
+    let node = Node::with_backend(Arc::new(InMemoryBackend::new(origin)));
+    let _policy = install_allow_all(&node);
+    for event in history {
+        node.ingest(event).unwrap();
+    }
+    let principal = PrincipalId::new("node:local-causal-reader");
+    let pending = node
+        .query_item_selected::<FederationScene>(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal.clone()),
+            origin,
+            &ScopeSelection::Exact(scene_scope),
+            GetFederationSceneById {
+                id: FederationSceneId::from("scene-pending-topology"),
+            },
+        )
+        .unwrap();
+    assert_eq!(pending.value, Some(None));
+    assert_eq!(pending.visibility, ResourceVisibility::HistoryIncomplete);
+    assert!(!pending.complete);
+    assert_eq!(pending.through, None);
+    let unrelated = node
+        .query_items_selected(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal),
+            origin,
+            &ScopeSelection::Exact(ScopeId::new("session:unrelated")),
+            GetAllTestRecords,
+        )
+        .unwrap();
+    assert!(unrelated.complete);
+    node.ingest(dependency).unwrap();
+}
+
+#[test]
+fn selected_watch_does_not_release_a_child_before_its_consumed_parent_cursor() {
+    let (retained, dependency, project_scope, scene_scope) = pending_nested_scope();
+    let history = retained.events_after(None).unwrap();
+    let origin = history
+        .iter()
+        .find(|event| event.event.affected_scope_ids().contains(&scene_scope))
+        .unwrap()
+        .origin
+        .node_id;
+    let node = allow_all_node();
+    let principal = PrincipalId::new("node:selected-watch-reader");
+    let (_, mut watch) = node
+        .watch_items_selected(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal),
+            origin,
+            ScopeSelection::Subtree(project_scope),
+            GetAllFederationScenes,
+        )
+        .unwrap();
+    for event in history {
+        node.ingest(event).unwrap();
+    }
+    let pending_cut = node.events_after(None).unwrap().last().unwrap().position;
+    node.ingest(dependency).unwrap();
+    loop {
+        let update = watch.recv().unwrap();
+        if update.position <= pending_cut {
+            assert_eq!(update.result.value, Some(Vec::new()));
+        } else {
+            assert_eq!(update.result.value.unwrap().len(), 1);
+            break;
+        }
+    }
+}
+
+#[test]
+fn selected_history_snapshot_rejects_a_cut_beyond_local_history() {
+    let node = allow_all_node();
+    let empty = SelectedHistorySnapshot::at(&node, None).unwrap();
+    assert_eq!(empty.through(), None);
+    assert!(empty.ready().is_empty());
+    assert!(matches!(
+        SelectedHistorySnapshot::at(&node, Some(LogPosition::new(1))),
+        Err(NodeError::HistoryCutUnavailable {
+            available: None,
+            ..
+        })
+    ));
+    commit_test_record(&node, "snapshot-record", "persisted");
+    let current = SelectedHistorySnapshot::current(&node).unwrap();
+    assert!(current.through().is_some());
+    assert!(!current.ready().is_empty());
+    assert!(matches!(
+        SelectedHistorySnapshot::at(&node, Some(LogPosition::new(u64::MAX))),
+        Err(NodeError::HistoryCutUnavailable { available, .. })
+            if available == current.through()
+    ));
+}
+
+#[test]
+fn selected_history_snapshot_keeps_pending_evidence_scoped_and_fixed_at_its_cut() {
+    let (node, dependency, project_scope, scene_scope) = pending_nested_scope();
+    let cut = node.causal_snapshot().unwrap().0;
+    let selected = ScopeSelection::Exact(scene_scope.clone());
+    let before = SelectedHistorySnapshot::at(&node, cut).unwrap();
+    assert_eq!(before.through(), cut);
+    assert!(before.has_pending_in::<FederationScene>(&selected));
+    assert!(before.has_pending_in::<FederationScene>(&ScopeSelection::Subtree(project_scope)));
+    assert!(
+        !before.has_pending_in::<FederationScene>(&ScopeSelection::Exact(ScopeId::new(
+            "unrelated:scope"
+        )))
+    );
+    assert_eq!(before.topology().parent(&scene_scope), None);
+
+    node.ingest(dependency).unwrap();
+    let after = SelectedHistorySnapshot::at(&node, node.causal_snapshot().unwrap().0).unwrap();
+    assert!(!after.has_pending_in::<FederationScene>(&selected));
+    assert!(after.topology().parent(&scene_scope).is_some());
+    let old = SelectedHistorySnapshot::at(&node, cut).unwrap();
+    assert!(old.has_pending_in::<FederationScene>(&selected));
+    assert_eq!(old.ready(), before.ready());
+    assert_eq!(old.topology().parent(&scene_scope), None);
+}
+
+#[test]
+fn selected_history_snapshot_checks_pending_items_from_foreign_origins() {
+    let (writer, dependency, root) = pending_item_without_its_scope_ancestor();
+    let replica = allow_all_node();
+    for event in writer.events_after(None).unwrap() {
+        replica.ingest(event).unwrap();
+    }
+    let selection = ScopeSelection::Subtree(root);
+    let pending = SelectedHistorySnapshot::current(&replica).unwrap();
+    assert!(!pending.has_pending_for::<FederationSceneElement>(
+        replica.node_id(),
+        std::slice::from_ref(&selection)
+    ));
+    assert!(pending.has_pending_in::<FederationSceneElement>(&selection));
+    replica.ingest(dependency).unwrap();
+    let released = SelectedHistorySnapshot::current(&replica).unwrap();
+    assert!(!released.has_pending_in::<FederationSceneElement>(&selection));
+}
+
+#[test]
+fn selected_history_cannot_borrow_a_replication_receipt_from_a_later_cut() {
+    let source = allow_all_node();
+    let first = commit_test_record(&source, "first", "at the first cut");
+    let replica = allow_all_node();
+    let first_report = replica.ingest_batch(source.export(None).unwrap()).unwrap();
+    let first_cut = replica.events_after(None).unwrap().last().unwrap().position;
+    commit_test_record(&source, "second", "after the first cut");
+    replica
+        .ingest_batch(source.export(first_report.through).unwrap())
+        .unwrap();
+    let principal = PrincipalId::new("node:coverage-cut-reader");
+    let selection = ScopeSelection::Exact(ScopeId::new("session:test"));
+    let old = replica
+        .query_items_selected_at(
+            SelectedQueryRead {
+                authenticated_executor: principal.clone(),
+                presentation: AuthorityPresentation::direct_node(principal.clone()),
+                source_node: source.node_id(),
+                requested: &selection,
+                phase: AuthorizationPhase::Continuation,
+                through: Some(first_cut),
+            },
+            GetAllTestRecords,
+        )
+        .unwrap();
+    assert_eq!(old.value, Some(vec![first]));
+    assert!(!old.complete);
+    assert_eq!(old.coverage, ProjectionCoverage::ReplicatedIncomplete);
+    assert_eq!(old.through, None);
+    let current = replica
+        .query_items_selected(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal),
+            source.node_id(),
+            &selection,
+            GetAllTestRecords,
+        )
+        .unwrap();
+    assert!(current.complete);
+    assert_eq!(current.value.unwrap().len(), 2);
+}
+
+#[test]
+fn selected_authorization_cannot_use_a_parent_edge_received_after_its_cut() {
+    let (node, dependency, parent, child) = pending_nested_scope();
+    let history = node.events_after(None).unwrap();
+    let cut = history.last().unwrap().position;
+    let origin = history
+        .iter()
+        .find(|event| event.event.affected_scope_ids().contains(&child))
+        .unwrap()
+        .origin
+        .node_id;
+    let policy: Arc<dyn AccessPolicy> = Arc::new(NestedScopePolicy {
+        parent,
+        child: child.clone(),
+    });
+    node.set_command_access_policy(policy.clone()).unwrap();
+    node.ingest(dependency).unwrap();
+    let selection = ScopeSelection::Exact(child);
+    let principal = PrincipalId::new("node:scoped-authority-reader");
+    let old = node
+        .query_items_selected_at(
+            SelectedQueryRead {
+                authenticated_executor: principal.clone(),
+                presentation: AuthorityPresentation::direct_node(principal.clone()),
+                source_node: origin,
+                requested: &selection,
+                phase: AuthorizationPhase::Continuation,
+                through: Some(cut),
+            },
+            GetAllFederationScenes,
+        )
+        .unwrap();
+    assert!(old.value.is_none());
+    assert!(
+        old.authorization
+            .is_some_and(|decision| !decision.is_permit())
+    );
+    let current = node
+        .query_items_selected(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal),
+            origin,
+            &selection,
+            GetAllFederationScenes,
+        )
+        .unwrap();
+    assert_eq!(current.value.unwrap().len(), 1);
+}
+
+fn pending_item_without_its_scope_ancestor() -> (Node, EventEnvelope, ScopeId) {
+    let ancestor = allow_all_node();
+    let project = FederationProjectId::from("unknown-ancestor-project");
+    let scene = FederationSceneId::from("unknown-ancestor-scene");
+    commit_nested_scene(
+        &ancestor,
+        &project,
+        &scene,
+        &FederationSceneElementId::from("ancestor-item"),
+    );
+    let ancestor_history = ancestor.events_after(None).unwrap();
+    let dependency = ancestor_history.last().unwrap().clone();
+    let writer = allow_all_node();
+    writer.ingest_batch(ancestor.export(None).unwrap()).unwrap();
+    let scope = ScopeId::for_item::<FederationScene>(&scene);
+    let mut command = request(CommandId::new());
+    command.scope_id = scope.clone();
+    command.resource_claims.first_mut().unwrap().selection = ScopeSelection::Exact(scope.clone());
+    let executing = writer.admit(command.clone()).unwrap().snapshot().updated_at;
+    let item = FederationSceneElement {
+        id: FederationSceneElementId::from("pending-owned-item"),
+        federation_scene_id: scene,
+        name: "waiting for the ancestor".to_owned(),
+    };
+    writer
+        .commit(
+            command.id,
+            ChangeBatch {
+                id: BatchId::new(),
+                command_id: command.id,
+                service_id: command.service_id,
+                scope_id: scope.clone(),
+                causal_parents: vec![executing, dependency.origin],
+                changes: vec![mutation_in(&scope, &item)],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let node = Node::with_backend(Arc::new(InMemoryBackend::new(writer.node_id())));
+    for event in writer
+        .events_after(None)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.origin != dependency.origin)
+    {
+        node.ingest(event).unwrap();
+    }
+    (
+        node,
+        dependency,
+        ScopeId::for_item::<FederationProject>(&project),
+    )
+}
+
+#[test]
+fn selected_subtree_is_incomplete_when_a_pending_items_ancestor_is_missing() {
+    let (node, dependency, root) = pending_item_without_its_scope_ancestor();
+    let _policy = install_allow_all(&node);
+    let selection = ScopeSelection::Subtree(root);
+    let principal = PrincipalId::new("node:missing-ancestor-reader");
+    let pending = node
+        .query_items_selected(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal.clone()),
+            node.node_id(),
+            &selection,
+            GetAllFederationSceneElements,
+        )
+        .unwrap();
+    assert_eq!(pending.value, Some(Vec::new()));
+    assert!(!pending.complete);
+    assert_eq!(pending.visibility, ResourceVisibility::HistoryIncomplete);
+    node.ingest(dependency).unwrap();
+    let ready = node
+        .query_items_selected(
+            principal.clone(),
+            AuthorityPresentation::direct_node(principal),
+            node.node_id(),
+            &selection,
+            GetAllFederationSceneElements,
+        )
+        .unwrap();
+    assert!(ready.complete);
+    assert_eq!(ready.value.unwrap().len(), 1);
+}
+
+fn ready_nested_scope_on_its_author() -> (Node, ScopeId, ScopeId) {
+    let (retained, dependency, project_scope, scene_scope) = pending_nested_scope();
+    retained.ingest(dependency).unwrap();
+    let history = retained.events_after(None).unwrap();
+    let origin = history
+        .iter()
+        .find(|event| event.event.affected_scope_ids().contains(&scene_scope))
+        .unwrap()
+        .origin
+        .node_id;
+    let node = Node::with_backend(Arc::new(InMemoryBackend::new(origin)));
+    let _policy = install_allow_all(&node);
+    for event in history {
+        node.ingest(event).unwrap();
+    }
+    assert_eq!(
+        node.scope_topology().unwrap().parent(&scene_scope),
+        Some(&project_scope)
+    );
+    (node, project_scope, scene_scope)
+}
+
+#[test]
+fn causal_replay_keeps_a_later_root_update_after_its_same_origin_creation() {
+    let (node, project_scope, scene_scope) = ready_nested_scope_on_its_author();
+    let _policy = install_allow_all(&node);
+    let mut command = request(CommandId::new());
+    command.scope_id = scene_scope.clone();
+    command.resource_claims.first_mut().unwrap().selection =
+        ScopeSelection::Exact(scene_scope.clone());
+    let executing = node.admit(command.clone()).unwrap().snapshot().updated_at;
+    let updated = FederationScene {
+        id: FederationSceneId::from("scene-pending-topology"),
+        federation_project_id: FederationProjectId::from("project-pending-topology"),
+        name: "updated after creation".to_owned(),
+    };
+    node.commit(
+        command.id,
+        ChangeBatch {
+            id: BatchId::new(),
+            command_id: command.id,
+            service_id: command.service_id,
+            scope_id: scene_scope.clone(),
+            causal_parents: vec![executing],
+            changes: vec![mutation_in(&scene_scope, &updated)],
+        },
+        Vec::new(),
+    )
+    .unwrap();
+    assert_eq!(
+        node.scope_topology().unwrap().parent(&scene_scope),
+        Some(&project_scope)
+    );
+    assert_eq!(
+        node.query_items_across_sources_in(&scene_scope, GetAllFederationScenes)
+            .unwrap(),
+        vec![updated]
+    );
+}
+
+#[test]
+fn blind_context_writes_record_their_scoped_author_predecessor() {
+    for delete in [false, true] {
+        let (node, _, scene_scope) = ready_nested_scope_on_its_author();
+        let _policy = install_allow_all(&node);
+        let creator = node
+            .events_after(None)
+            .unwrap()
+            .into_iter()
+            .find(|event| {
+                event.origin.node_id == node.node_id()
+                    && matches!(&event.event, NodeEvent::CommandCommitted { batch, .. }
+                        if batch.changes.iter().any(|mutation|
+                            mutation.scope_id.as_deref() == Some(scene_scope.as_str())))
+            })
+            .unwrap()
+            .origin;
+        let mut command = request(CommandId::new());
+        command.scope_id = scene_scope.clone();
+        command.resource_claims.first_mut().unwrap().selection =
+            ScopeSelection::Exact(scene_scope.clone());
+        node.submit(command.clone()).unwrap();
+        let context = match node.begin_command(command.id).unwrap() {
+            TypedCommandAdmission::Execute(context) => Some(context),
+            TypedCommandAdmission::Resume(_) => None,
+        }
+        .unwrap();
+        let updated = FederationScene {
+            id: FederationSceneId::from("scene-pending-topology"),
+            federation_project_id: FederationProjectId::from("project-pending-topology"),
+            name: "blind write after creation".to_owned(),
+        };
+        if delete {
+            context.emit_delete::<FederationScene>(&updated.id).unwrap();
+        } else {
+            context.emit_set(&updated).unwrap();
+        }
+        context.commit(&()).unwrap();
+        let committed = node.events_after(None).unwrap().pop().unwrap();
+        let batch = match committed.event {
+            NodeEvent::CommandCommitted { batch, .. } => Some(batch),
+            NodeEvent::CommandLifecycle(_) | NodeEvent::FrameworkControl(_) => None,
+        }
+        .unwrap();
+        assert!(batch.causal_parents.contains(&creator));
+        assert_eq!(
+            node.query_items_across_sources_in(&scene_scope, GetAllFederationScenes)
+                .unwrap(),
+            if delete { Vec::new() } else { vec![updated] }
+        );
+    }
+}
+
+#[test]
+fn challenged_effect_keeps_its_author_parent_and_exact_parked_payload() {
+    let (node, _, scene_scope) = ready_nested_scope_on_its_author();
+    let creator = node
+        .events_after(None)
+        .unwrap()
+        .into_iter()
+        .find(|event| {
+            event.origin.node_id == node.node_id()
+                && matches!(&event.event, NodeEvent::CommandCommitted { batch, .. }
+                    if batch.changes.iter().any(|mutation|
+                        mutation.scope_id.as_deref() == Some(scene_scope.as_str())))
+        })
+        .unwrap()
+        .origin;
+    let challenge_id = ChallengeId::new("challenge-parked-effect");
+    let policy = Arc::new(ChallengeFirstEffectPolicy {
+        challenge_id: challenge_id.clone(),
+        effect: std::sync::Mutex::new(None),
+    });
+    node.set_command_access_policy(policy.clone()).unwrap();
+
+    let mut original = request(CommandId::new());
+    original.scope_id = scene_scope.clone();
+    original.resource_claims.first_mut().unwrap().selection =
+        ScopeSelection::Exact(scene_scope.clone());
+    node.submit(original.clone()).unwrap();
+    let context = match node.begin_command(original.id).unwrap() {
+        TypedCommandAdmission::Execute(context) => Some(context),
+        TypedCommandAdmission::Resume(_) => None,
+    }
+    .unwrap();
+    let parked_item = FederationScene {
+        id: FederationSceneId::from("scene-pending-topology"),
+        federation_project_id: FederationProjectId::from("project-pending-topology"),
+        name: "parked exact effect".to_owned(),
+    };
+    context.emit_set(&parked_item).unwrap();
+    let prepared_from = node.command(original.id).unwrap().unwrap().updated_at;
+    let parked = context.commit(&()).unwrap();
+    let (batch, result) = match parked.state {
+        CommandState::AuthorizationPending { batch, result, .. } => Some((batch, result)),
+        _ => None,
+    }
+    .unwrap();
+    assert!(batch.causal_parents.contains(&creator));
+    let effect = policy.effect.lock().unwrap().clone().unwrap();
+    assert_eq!(effect.authorization_phase, AuthorizationPhase::Effect);
+    let encoded = serde_json::to_vec(&(
+        "myko-prepared-command-effect-v1",
+        prepared_from,
+        AuthorizationPhase::Effect,
+        &*batch,
+        &result,
+        &effect.resource_claims,
+        &effect.application_capabilities,
+        effect.topology.as_ref().unwrap(),
+    ))
+    .unwrap();
+    assert_eq!(
+        effect.effect_digest,
+        Some(format!("sha256:{:x}", Sha256::digest(encoded)))
+    );
+
+    let mut intervening = request(CommandId::new());
+    intervening.scope_id = scene_scope.clone();
+    intervening.resource_claims.first_mut().unwrap().selection = ScopeSelection::Exact(scene_scope);
+    node.submit(intervening.clone()).unwrap();
+    let context = match node.begin_command(intervening.id).unwrap() {
+        TypedCommandAdmission::Execute(context) => Some(context),
+        TypedCommandAdmission::Resume(_) => None,
+    }
+    .unwrap();
+    let intervening_item = FederationScene {
+        id: FederationSceneId::from("scene-pending-topology"),
+        federation_project_id: FederationProjectId::from("project-pending-topology"),
+        name: "intervening same-scope write".to_owned(),
+    };
+    context.emit_set(&intervening_item).unwrap();
+    context.commit(&()).unwrap();
+
+    let committed = node
+        .resume_authorization(
+            original.id,
+            &challenge_id,
+            ApprovalId::new("approval-parked-effect"),
+        )
+        .unwrap();
+    assert!(matches!(committed.state,
+        CommandState::CommittedLocally { batch_id, .. } if batch_id == batch.id));
+    let committed_batch = node
+        .events_after(None)
+        .unwrap()
+        .into_iter()
+        .find_map(|event| match event.event {
+            NodeEvent::CommandCommitted { command, batch } if command.request.id == original.id => {
+                Some(batch)
+            }
+            NodeEvent::CommandLifecycle(_)
+            | NodeEvent::CommandCommitted { .. }
+            | NodeEvent::FrameworkControl(_) => None,
+        })
+        .unwrap();
+    assert_eq!(committed_batch, *batch);
+    assert_eq!(node.command(original.id).unwrap(), Some(committed));
+}
+
+#[test]
+fn command_reads_record_cross_scope_batches_that_created_their_items() {
+    for selected in [false, true] {
+        let (node, project_scope, scene_scope) = ready_nested_scope_on_its_author();
+        let _policy = install_allow_all(&node);
+        let mut command = request(CommandId::new());
+        command.scope_id = scene_scope.clone();
+        command.resource_claims.first_mut().unwrap().selection =
+            ScopeSelection::Exact(scene_scope.clone());
+        node.submit(command.clone()).unwrap();
+        let context = match node.begin_command(command.id).unwrap() {
+            TypedCommandAdmission::Execute(context) => Some(context),
+            TypedCommandAdmission::Resume(_) => None,
+        }
+        .unwrap();
+        let scenes = if selected {
+            context.query_selected(
+                ScopeSelection::Exact(scene_scope.clone()),
+                GetAllFederationScenes,
+            )
+        } else {
+            context.query(GetAllFederationScenes)
+        }
+        .unwrap();
+        let mut updated = scenes.into_iter().next().unwrap();
+        updated.name = "updated after observing creation".to_owned();
+        context.emit_set(&updated).unwrap();
+        context.commit(&()).unwrap();
+        assert_eq!(
+            node.scope_topology().unwrap().parent(&scene_scope),
+            Some(&project_scope)
+        );
+        assert_eq!(
+            node.query_items_across_sources_in(&scene_scope, GetAllFederationScenes)
+                .unwrap(),
+            vec![updated]
+        );
+    }
+}
+
 #[myko_service(
     TestRecord,
     TestMarker,
@@ -324,11 +1164,16 @@ impl MykoCommand for OtherCommand {}
 
 struct FailingJournal {
     node_id: NodeId,
+    storage_incarnation: StorageIncarnationId,
 }
 
 impl EventJournal for FailingJournal {
     fn node_id(&self) -> Result<NodeId, NodeError> {
         Ok(self.node_id)
+    }
+
+    fn storage_incarnation(&self) -> Result<StorageIncarnationId, NodeError> {
+        Ok(self.storage_incarnation)
     }
 
     fn replay(&self) -> Result<Vec<EventEnvelope>, NodeError> {
@@ -744,6 +1589,9 @@ fn command_catalog_stream_adds_and_advances_matching_commands() {
         ))
         .unwrap();
     let mut stream = CommandStateStream::from_snapshot(&snapshot).unwrap();
+    let mut watch = node
+        .watch_commands(snapshot.watch_request().unwrap())
+        .unwrap();
     let second = DeclaredCommand::new(
         CommandId::new(),
         scope_id,
@@ -756,12 +1604,8 @@ fn command_catalog_stream_adds_and_advances_matching_commands() {
     node.submit(second.request().unwrap()).unwrap();
     node.claim(second.id).unwrap();
 
-    let events = node.events_after(snapshot.through).unwrap();
-    for event in &events {
-        let Some(update) = stream.request().update_from_envelope(event) else {
-            assert!(stream.request().update_from_envelope(event).is_some());
-            return;
-        };
+    for _ in 0..2 {
+        let update = watch.recv().unwrap();
         let _current = stream.apply(&update).unwrap();
     }
     let current = stream.current().typed::<PutRecord>().unwrap();
@@ -775,13 +1619,166 @@ fn command_catalog_stream_adds_and_advances_matching_commands() {
     } else {
         assert_eq!(current.len(), 2);
     }
-    let Some(first_event) = events.first() else {
-        assert!(!events.is_empty());
-        return;
+}
+
+#[test]
+fn command_catalog_stream_rejects_an_invalid_batch_atomically() {
+    let node = allow_all_node();
+    let scope_id = ScopeId::new("session:test");
+    let first = request(CommandId::new());
+    node.submit(first).unwrap();
+    let initial = node
+        .command_states(CommandStateRequest {
+            source_node: Some(node.node_id()),
+            service_id: ServiceId::new(TestService::SERVICE_ID),
+            scope_id: scope_id.clone(),
+            command_type: "prompt".to_owned(),
+            snapshot_through: None,
+            after_command_id: None,
+            page_size: DEFAULT_COMMAND_STATE_PAGE_SIZE,
+        })
+        .unwrap();
+    let mut stream = CommandStateStream::from_snapshot(&initial).unwrap();
+    node.submit(request(CommandId::new())).unwrap();
+    node.submit(request(CommandId::new())).unwrap();
+    let latest = node
+        .command_states(CommandStateRequest {
+            source_node: Some(node.node_id()),
+            service_id: ServiceId::new(TestService::SERVICE_ID),
+            scope_id,
+            command_type: "prompt".to_owned(),
+            snapshot_through: None,
+            after_command_id: None,
+            page_size: DEFAULT_COMMAND_STATE_PAGE_SIZE,
+        })
+        .unwrap();
+    let mut changed = latest.commands.get(1..).unwrap().to_vec();
+    changed.last_mut().unwrap().command.request.scope_id = ScopeId::new("session:wrong");
+    let before = stream.current();
+    let update = CommandStateUpdate {
+        through: latest.through.unwrap(),
+        commands: changed,
     };
-    let mut foreign = first_event.clone();
-    foreign.origin.node_id = NodeId::new();
-    assert!(stream.request().update_from_envelope(&foreign).is_none());
+
+    assert!(matches!(
+        stream.apply(&update),
+        Err(NodeError::InvalidCommandState(_))
+    ));
+    assert_eq!(stream.current(), before);
+}
+
+#[test]
+fn command_catalog_stream_rejects_empty_and_duplicate_batches_without_advancing() {
+    let node = allow_all_node();
+    node.submit(request(CommandId::new())).unwrap();
+    let snapshot = node
+        .command_states(CommandStateRequest {
+            source_node: Some(node.node_id()),
+            service_id: ServiceId::new(TestService::SERVICE_ID),
+            scope_id: ScopeId::new("session:test"),
+            command_type: "prompt".to_owned(),
+            snapshot_through: None,
+            after_command_id: None,
+            page_size: DEFAULT_COMMAND_STATE_PAGE_SIZE,
+        })
+        .unwrap();
+    let mut stream = CommandStateStream::from_snapshot(&snapshot).unwrap();
+    let before = stream.current();
+    let next = snapshot.through.unwrap().next().unwrap();
+
+    assert!(matches!(
+        stream.apply(&CommandStateUpdate {
+            through: next,
+            commands: Vec::new(),
+        }),
+        Err(NodeError::InvalidCommandState(_))
+    ));
+    assert_eq!(stream.current(), before);
+
+    let entry = snapshot.commands.first().unwrap().clone();
+    assert!(matches!(
+        stream.apply(&CommandStateUpdate {
+            through: next,
+            commands: vec![entry.clone(), entry],
+        }),
+        Err(NodeError::InvalidCommandState(_))
+    ));
+    assert_eq!(stream.current(), before);
+}
+
+#[test]
+fn command_catalog_keeps_origin_sequence_separate_from_serving_cursor() {
+    let history = imported_command_history(Vec::new());
+    let mut executing = history.executing.clone();
+    let sparse_origin = EventId::new(history.source_node, LogPosition::new(10_000));
+    executing.origin = sparse_origin;
+    if let NodeEvent::CommandLifecycle(command) = &mut executing.event {
+        command.updated_at = sparse_origin;
+    }
+    let target = allow_all_node();
+    target.ingest(executing).unwrap();
+
+    let snapshot = target
+        .command_states(command_page_request(&history))
+        .unwrap();
+    let entry = snapshot.commands.first().unwrap();
+    assert_eq!(entry.admitted_at, LogPosition::new(10_000));
+    assert_eq!(entry.last_changed_at, LogPosition::FIRST);
+    assert!(CommandStateStream::from_snapshot(&snapshot).is_ok());
+}
+
+#[test]
+fn one_late_parent_releases_two_commands_as_one_catalog_batch() {
+    let parent_source = allow_all_node();
+    let parent = parent_source.submit(request(CommandId::new())).unwrap();
+    let parent_envelope = parent_source.events_after(None).unwrap().pop().unwrap();
+    let source = allow_all_node();
+    for _ in 0..2 {
+        let command = request(CommandId::new());
+        let executing = source.admit(command.clone()).unwrap().snapshot().clone();
+        let mut changes = batch(&command);
+        changes.causal_parents = vec![executing.updated_at, parent.updated_at];
+        source
+            .commit(command.id, changes, b"completed".to_vec())
+            .unwrap();
+    }
+    let target = allow_all_node();
+    for event in source.events_after(None).unwrap() {
+        target.ingest(event).unwrap();
+    }
+    let request = CommandStateRequest {
+        source_node: Some(source.node_id()),
+        service_id: ServiceId::new(TestService::SERVICE_ID),
+        scope_id: ScopeId::new("session:test"),
+        command_type: "prompt".to_owned(),
+        snapshot_through: None,
+        after_command_id: None,
+        page_size: DEFAULT_COMMAND_STATE_PAGE_SIZE,
+    };
+    let initial = target.command_states(request.clone()).unwrap();
+    assert!(
+        initial
+            .commands
+            .iter()
+            .all(|entry| entry.command.state == CommandState::Executing)
+    );
+    let mut stream = CommandStateStream::from_snapshot(&initial).unwrap();
+    let mut watch = target
+        .watch_commands(initial.watch_request().unwrap())
+        .unwrap();
+
+    target.ingest(parent_envelope).unwrap();
+    let update = watch.recv().unwrap();
+    assert_eq!(update.commands.len(), 2);
+    let streamed = stream.apply(&update).unwrap();
+    let snapshot = target.command_states(request).unwrap();
+    assert_eq!(streamed, snapshot);
+    assert!(
+        streamed
+            .commands
+            .iter()
+            .all(|entry| entry.command.state.is_committed())
+    );
 }
 
 #[test]
@@ -839,7 +1836,7 @@ fn command_context_rejects_cross_service_writes_but_allows_declared_reads() {
     request.resource_claims.push(ResourceClaim {
         selection: ScopeSelection::Exact(request.scope_id.clone()),
         kind: ResourceClaimKind::Referenced,
-        source_node: Some(node.node_id()),
+        source_node: None,
         service_id: Some(ServiceId::new(OtherService::SERVICE_ID)),
         item_type: Some(OtherRecord::ITEM_TYPE.to_owned()),
         item_id: None,
@@ -2287,6 +3284,7 @@ fn stale_lifecycle_events_cannot_resurrect_a_cancelled_command() {
 fn failed_durable_append_never_changes_visible_state() {
     let node = Node::from_journal(Arc::new(FailingJournal {
         node_id: NodeId::new(),
+        storage_incarnation: StorageIncarnationId::new(),
     }))
     .unwrap();
     let _policy = install_allow_all(&node);
@@ -2299,6 +3297,11 @@ fn failed_durable_append_never_changes_visible_state() {
     ));
     assert!(node.command(command.id).unwrap().is_none());
     assert!(node.events_after(None).unwrap().is_empty());
+    assert!(
+        node.causal_events_through(LogPosition::new(1))
+            .unwrap()
+            .is_empty()
+    );
     assert!(events.try_recv().is_none());
 }
 
@@ -2573,6 +3576,639 @@ fn command_origin_survives_replication_without_becoming_the_replica() {
     assert_eq!(
         target.command_origin(target_command.id).unwrap(),
         Some(target.node_id())
+    );
+}
+
+#[test]
+fn replicated_event_identity_rejects_changed_immutable_content() {
+    let source = allow_all_node();
+    let target = allow_all_node();
+    let request = request(CommandId::new());
+    source.admit(request.clone()).unwrap();
+    source
+        .commit(request.id, batch(&request), b"original result".to_vec())
+        .unwrap();
+    let committed = source.events_after(None).unwrap().pop().unwrap();
+    assert!(matches!(
+        &committed.event,
+        NodeEvent::CommandCommitted { .. }
+    ));
+    target.ingest(committed.clone()).unwrap();
+
+    let mut forwarded = committed.clone();
+    forwarded.position = LogPosition::new(999);
+    assert_eq!(target.ingest(forwarded).unwrap(), IngestStatus::Duplicate);
+
+    let mut conflicting = committed.clone();
+    if let NodeEvent::CommandCommitted { command, .. } = &mut conflicting.event {
+        command.result = Some(b"forged result".to_vec());
+    }
+    assert_eq!(
+        target.ingest(conflicting),
+        Err(NodeError::EventConflict(committed.origin))
+    );
+
+    let mut conflicting_time = committed;
+    conflicting_time.recorded_at += chrono::Duration::seconds(1);
+    let origin = conflicting_time.origin;
+    assert_eq!(
+        target.ingest(conflicting_time),
+        Err(NodeError::EventConflict(origin))
+    );
+    assert_eq!(
+        target.command(request.id).unwrap().unwrap().result,
+        Some(b"original result".to_vec())
+    );
+    assert_eq!(target.events_after(None).unwrap().len(), 1);
+}
+
+#[test]
+fn concurrent_scope_batches_materialize_independently_of_delivery_order() {
+    let first = allow_all_node();
+    let second = allow_all_node();
+    let scope = ScopeId::new("session:test");
+    commit_test_record(&first, "shared", "first");
+    commit_test_record(&second, "shared", "second");
+    let first_history = first.events_after(None).unwrap();
+    let second_history = second.events_after(None).unwrap();
+    let forward = allow_all_node();
+    let reverse = allow_all_node();
+    for event in first_history.iter().chain(&second_history) {
+        forward.ingest(event.clone()).unwrap();
+    }
+    for event in second_history.iter().chain(&first_history) {
+        reverse.ingest(event.clone()).unwrap();
+    }
+    assert_eq!(
+        forward
+            .query_items_across_sources_in(&scope, GetAllTestRecords)
+            .unwrap(),
+        reverse
+            .query_items_across_sources_in(&scope, GetAllTestRecords)
+            .unwrap(),
+        "the same accepted batches must not select a winner by delivery order"
+    );
+    assert_eq!(forward.events_after(None).unwrap().len(), 4);
+    assert_eq!(reverse.events_after(None).unwrap().len(), 4);
+    assert_eq!(
+        forward.project_items::<TestRecord>().unwrap(),
+        reverse.project_items::<TestRecord>().unwrap(),
+        "ordering metadata must agree as well as values"
+    );
+}
+
+#[test]
+fn all_source_watches_reconcile_concurrent_batches_like_snapshots() {
+    let first = allow_all_node();
+    let second = allow_all_node();
+    commit_test_record(&first, "shared", "first");
+    commit_test_record(&second, "shared", "second");
+    let scope = ScopeId::new("session:test");
+    let target = allow_all_node();
+    let (_, mut query_watch) = target
+        .watch_items_across_sources_in(scope.clone(), GetAllTestRecords)
+        .unwrap();
+    let (_, mut projection_watch) = target
+        .watch_item_projection::<TestRecord>(None, Some(scope.clone()))
+        .unwrap();
+    let mut sources = [&first, &second];
+    sources.sort_by_key(|source| std::cmp::Reverse(source.node_id()));
+    for source in sources {
+        for event in source.events_after(None).unwrap() {
+            target.ingest(event).unwrap();
+        }
+        while query_watch.try_recv().unwrap().is_some() {}
+    }
+    for event in target.events_after(None).unwrap() {
+        projection_watch.apply(&event).unwrap();
+    }
+    let expected = target
+        .query_items_across_sources_in(&scope, GetAllTestRecords)
+        .unwrap();
+    assert_eq!(query_watch.current(), expected);
+    assert_eq!(
+        projection_watch
+            .projection
+            .values()
+            .cloned()
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
+#[test]
+fn a_late_causal_parent_releases_a_pending_batch_to_live_queries() {
+    let source = allow_all_node();
+    let expected = commit_test_record(&source, "pending", "accepted");
+    let history = source.events_after(None).unwrap();
+    let target = allow_all_node();
+    let scope = ScopeId::new("session:test");
+    let (_, mut watch) = target
+        .watch_items_across_sources_in(scope.clone(), GetAllTestRecords)
+        .unwrap();
+    target.ingest(history.last().unwrap().clone()).unwrap();
+    while watch.try_recv().unwrap().is_some() {}
+    assert!(watch.current().is_empty());
+    assert!(
+        target
+            .query_items_across_sources_in(&scope, GetAllTestRecords)
+            .unwrap()
+            .is_empty()
+    );
+    target.ingest(history.first().unwrap().clone()).unwrap();
+    let released = watch.try_recv().unwrap().unwrap();
+    assert_eq!(released.value, vec![expected]);
+    assert_eq!(target.events_after(None).unwrap().len(), 2);
+}
+
+#[test]
+fn unrelated_scope_history_does_not_revise_scoped_projection_metadata() {
+    let first = allow_all_node();
+    let second = allow_all_node();
+    let (unrelated, relevant) = if first.node_id() < second.node_id() {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    let scope = ScopeId::new("session:test");
+    commit_test_record(relevant, "retained", "unchanged");
+    commit_test_record_in(
+        unrelated,
+        ScopeId::new("session:other"),
+        "other",
+        "irrelevant",
+    );
+    let target = allow_all_node();
+    target.ingest_batch(relevant.export(None).unwrap()).unwrap();
+    let (before, _) = target
+        .watch_item_projection::<TestRecord>(None, Some(scope.clone()))
+        .unwrap();
+    target
+        .ingest_batch(unrelated.export(None).unwrap())
+        .unwrap();
+    let (after, _) = target
+        .watch_item_projection::<TestRecord>(None, Some(scope))
+        .unwrap();
+    assert_eq!(before.projection, after.projection);
+}
+
+#[test]
+fn shared_causal_index_preserves_the_consumed_log_cut() {
+    let source = allow_all_node();
+    let expected = commit_test_record(&source, "pending", "accepted");
+    let history = source.events_after(None).unwrap();
+    let target = allow_all_node();
+    let (_, mut watch) = target
+        .watch_items_across_sources_in(ScopeId::new("session:test"), GetAllTestRecords)
+        .unwrap();
+    target.ingest(history.last().unwrap().clone()).unwrap();
+    let child_cut = target.events_after(None).unwrap().last().unwrap().position;
+    target.ingest(history.first().unwrap().clone()).unwrap();
+    assert!(target.causal_events_through(child_cut).unwrap().is_empty());
+    assert!(watch.try_recv().unwrap().unwrap().value.is_empty());
+    assert_eq!(watch.try_recv().unwrap().unwrap().value, vec![expected]);
+}
+
+struct ImportedCommandHistory {
+    source_node: NodeId,
+    request: CommandRequest,
+    executing: EventEnvelope,
+    committed: EventEnvelope,
+    replicated: EventEnvelope,
+}
+
+fn imported_command_history(extra_parents: Vec<EventId>) -> ImportedCommandHistory {
+    let source = allow_all_node();
+    let request = request(CommandId::new());
+    let executing = source.admit(request.clone()).unwrap().snapshot().clone();
+    let mut change_batch = batch(&request);
+    change_batch.causal_parents = std::iter::once(executing.updated_at)
+        .chain(extra_parents)
+        .collect();
+    let batch_id = change_batch.id;
+    let committed = source
+        .commit(request.id, change_batch, b"completed".to_vec())
+        .unwrap();
+    let history = source.events_after(None).unwrap();
+    let executing_envelope = history.first().unwrap().clone();
+    let committed_envelope = history.last().unwrap().clone();
+    let replicated_sequence = committed.updated_at.sequence.get().checked_add(1).unwrap();
+    let replicated_origin = EventId::new(source.node_id(), LogPosition::new(replicated_sequence));
+    let replicated = EventEnvelope {
+        position: LogPosition::new(replicated_sequence),
+        origin: replicated_origin,
+        recorded_at: Utc::now(),
+        event: NodeEvent::CommandLifecycle(CommandSnapshot {
+            request: request.clone(),
+            state: CommandState::Replicated {
+                batch_id,
+                position: committed.updated_at,
+                acknowledged_replicas: 2,
+                required_replicas: 2,
+            },
+            result: committed.result,
+            updated_at: replicated_origin,
+        }),
+    };
+    ImportedCommandHistory {
+        source_node: source.node_id(),
+        request,
+        executing: executing_envelope,
+        committed: committed_envelope,
+        replicated,
+    }
+}
+
+fn command_page_request(history: &ImportedCommandHistory) -> CommandStateRequest {
+    CommandStateRequest {
+        source_node: Some(history.source_node),
+        service_id: history.request.service_id.clone(),
+        scope_id: history.request.scope_id.clone(),
+        command_type: history.request.command_type.clone(),
+        snapshot_through: None,
+        after_command_id: None,
+        page_size: DEFAULT_COMMAND_STATE_PAGE_SIZE,
+    }
+}
+
+fn poll_once<F: Future>(future: Pin<&mut F>) -> Poll<F::Output> {
+    future.poll(&mut Context::from_waker(Waker::noop()))
+}
+
+#[test]
+fn command_reads_withhold_a_commit_and_later_status_until_ancestry_arrives() {
+    let history = imported_command_history(Vec::new());
+    let target = allow_all_node();
+    target.ingest(history.committed.clone()).unwrap();
+    target.ingest(history.replicated.clone()).unwrap();
+
+    assert_eq!(target.command(history.request.id).unwrap(), None);
+    assert!(
+        target
+            .command_state_page(command_page_request(&history))
+            .unwrap()
+            .commands
+            .is_empty()
+    );
+    assert!(matches!(
+        target.watch_command(history.request.id),
+        Err(NodeError::UnknownCommand(id)) if id == history.request.id
+    ));
+
+    target.ingest(history.executing.clone()).unwrap();
+    let visible = target.command(history.request.id).unwrap().unwrap();
+    assert!(matches!(visible.state, CommandState::Replicated { .. }));
+    assert_eq!(visible.result.as_deref(), Some(b"completed".as_slice()));
+    assert_eq!(
+        target
+            .command_state_page(command_page_request(&history))
+            .unwrap()
+            .commands
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn incomplete_imported_command_blocks_duplicate_execution_paths() {
+    let history = imported_command_history(Vec::new());
+    let target = allow_all_node();
+    target.ingest(history.committed).unwrap();
+
+    assert!(matches!(
+        target.submit(history.request.clone()),
+        Err(NodeError::CommandHistoryIncomplete(id)) if id == history.request.id
+    ));
+    assert!(matches!(
+        target.admit(history.request.clone()),
+        Err(NodeError::CommandHistoryIncomplete(id)) if id == history.request.id
+    ));
+    assert!(matches!(
+        target.claim(history.request.id),
+        Err(NodeError::CommandHistoryIncomplete(id)) if id == history.request.id
+    ));
+    assert!(matches!(
+        target.cancel(history.request.id, "do not replay".to_owned()),
+        Err(NodeError::CommandHistoryIncomplete(id)) if id == history.request.id
+    ));
+    assert_eq!(target.command(history.request.id).unwrap(), None);
+}
+
+#[test]
+fn command_eventually_waits_for_a_causally_ready_command() {
+    let history = imported_command_history(Vec::new());
+    let target = allow_all_node();
+    let mut future = Box::pin(target.watch_command_eventually(history.request.id));
+    assert!(poll_once(future.as_mut()).is_pending());
+
+    target.ingest(history.committed.clone()).unwrap();
+    target.ingest(history.replicated).unwrap();
+    assert!(poll_once(future.as_mut()).is_pending());
+
+    target.ingest(history.executing).unwrap();
+    let result = poll_once(future.as_mut());
+    assert!(
+        result.is_ready(),
+        "causally ready command did not wake its eventual watch"
+    );
+    let Poll::Ready(result) = result else {
+        return;
+    };
+    let (response, _) = result.unwrap();
+    let command = response.command.unwrap();
+    assert!(matches!(command.state, CommandState::Replicated { .. }));
+    assert_eq!(command.result.as_deref(), Some(b"completed".as_slice()));
+}
+
+#[test]
+fn existing_command_watch_releases_status_after_another_commands_parent() {
+    let parent_source = allow_all_node();
+    let parent_request = request(CommandId::new());
+    let parent = parent_source.submit(parent_request).unwrap();
+    let parent_envelope = parent_source.events_after(None).unwrap().pop().unwrap();
+    let history = imported_command_history(vec![parent.updated_at]);
+    let target = allow_all_node();
+    target.ingest(history.executing.clone()).unwrap();
+    let (initial, mut watch) = target.watch_command(history.request.id).unwrap();
+    assert_eq!(initial.command.unwrap().state, CommandState::Executing);
+
+    target.ingest(history.committed.clone()).unwrap();
+    target.ingest(history.replicated).unwrap();
+    let mut pending = Box::pin(watch.recv_async());
+    assert!(poll_once(pending.as_mut()).is_pending());
+
+    target.ingest(parent_envelope).unwrap();
+    let result = poll_once(pending.as_mut());
+    assert!(
+        result.is_ready(),
+        "released command status did not wake its existing watch"
+    );
+    let Poll::Ready(result) = result else {
+        return;
+    };
+    let command = result.unwrap();
+    assert!(matches!(command.state, CommandState::Replicated { .. }));
+    assert_eq!(command.result.as_deref(), Some(b"completed".as_slice()));
+}
+
+#[test]
+fn command_watch_keeps_consumed_cuts_when_the_parent_is_already_queued() {
+    let parent_source = allow_all_node();
+    let parent = parent_source.submit(request(CommandId::new())).unwrap();
+    let parent_envelope = parent_source.events_after(None).unwrap().pop().unwrap();
+    let history = imported_command_history(vec![parent.updated_at]);
+    let target = allow_all_node();
+    target.ingest(history.executing).unwrap();
+    let (_, mut watch) = target.watch_command(history.request.id).unwrap();
+
+    target.ingest(history.committed).unwrap();
+    target.ingest(history.replicated).unwrap();
+    target.ingest(parent_envelope).unwrap();
+
+    let command = watch.recv().unwrap();
+    assert!(matches!(command.state, CommandState::Replicated { .. }));
+    assert_eq!(command.result.as_deref(), Some(b"completed".as_slice()));
+}
+
+#[test]
+fn committed_command_ignores_higher_sequence_cancel_and_reject_everywhere() {
+    let history = imported_command_history(Vec::new());
+    let target = allow_all_node();
+    target.ingest(history.executing.clone()).unwrap();
+    target.ingest(history.committed.clone()).unwrap();
+    let committed = target.command(history.request.id).unwrap().unwrap();
+    let (_, mut command_watch) = target.watch_command(history.request.id).unwrap();
+    let catalog = target
+        .command_states(command_page_request(&history))
+        .unwrap();
+    let mut catalog_watch = target
+        .watch_commands(catalog.watch_request().unwrap())
+        .unwrap();
+
+    let terminal_states = [
+        CommandState::Cancelled {
+            reason: "forged cancellation".to_owned(),
+        },
+        CommandState::Rejected {
+            reason: "forged rejection".to_owned(),
+        },
+    ];
+    for (offset, state) in terminal_states.into_iter().enumerate() {
+        let sequence = u64::try_from(offset).unwrap().checked_add(100).unwrap();
+        let origin = EventId::new(history.source_node, LogPosition::new(sequence));
+        target
+            .ingest(EventEnvelope {
+                position: LogPosition::new(sequence),
+                origin,
+                recorded_at: Utc::now(),
+                event: NodeEvent::CommandLifecycle(CommandSnapshot {
+                    request: history.request.clone(),
+                    state,
+                    result: None,
+                    updated_at: origin,
+                }),
+            })
+            .unwrap();
+    }
+
+    assert_eq!(
+        target.command(history.request.id).unwrap(),
+        Some(committed.clone())
+    );
+    assert_eq!(
+        target.admit(history.request.clone()).unwrap().snapshot(),
+        &committed
+    );
+    let page = target
+        .command_state_page(command_page_request(&history))
+        .unwrap();
+    assert_eq!(page.commands.first().unwrap().command, committed);
+    let mut command_update = Box::pin(command_watch.recv_async());
+    assert!(poll_once(command_update.as_mut()).is_pending());
+    let mut catalog_update = Box::pin(catalog_watch.recv_async());
+    assert!(poll_once(catalog_update.as_mut()).is_pending());
+    assert_eq!(target.events_after(None).unwrap().len(), 4);
+}
+
+#[test]
+fn command_pages_keep_their_cut_when_a_late_parent_is_already_present() {
+    let parent_source = allow_all_node();
+    let parent_request = request(CommandId::new());
+    let parent = parent_source.submit(parent_request).unwrap();
+    let parent_envelope = parent_source.events_after(None).unwrap().pop().unwrap();
+    let history = imported_command_history(vec![parent.updated_at]);
+    let target = allow_all_node();
+    target.ingest(history.executing.clone()).unwrap();
+    target.ingest(history.committed.clone()).unwrap();
+    let child_cut = target.events_after(None).unwrap().last().unwrap().position;
+    target.ingest(parent_envelope).unwrap();
+
+    let mut request = command_page_request(&history);
+    request.snapshot_through = Some(child_cut);
+    let page = target.command_state_page(request).unwrap();
+    let command = &page.commands.first().unwrap().command;
+    assert_eq!(command.state, CommandState::Executing);
+    assert_eq!(command.result, None);
+}
+
+#[test]
+fn a_command_records_the_replica_history_it_observed() {
+    command_records_observed_history(false);
+}
+
+#[test]
+fn a_selected_command_read_records_the_replica_history_it_observed() {
+    command_records_observed_history(true);
+}
+
+fn command_records_observed_history(selected: bool) {
+    let first = allow_all_node();
+    let second = allow_all_node();
+    let (writer, source) = if first.node_id() < second.node_id() {
+        (&first, &second)
+    } else {
+        (&second, &first)
+    };
+    let original = commit_test_record(source, "shared", "before");
+    let source_history = source.events_after(None).unwrap();
+    let observed_origin = source_history.last().unwrap().origin;
+    writer.ingest_batch(source.export(None).unwrap()).unwrap();
+    let request = request(CommandId::new());
+    writer.submit(request.clone()).unwrap();
+    let context = match writer.begin_command(request.id).unwrap() {
+        TypedCommandAdmission::Execute(context) => Some(context),
+        TypedCommandAdmission::Resume(_) => None,
+    }
+    .unwrap();
+    let read = if selected {
+        context.query_selected(ScopeSelection::Exact(request.scope_id), GetAllTestRecords)
+    } else {
+        context.query(GetAllTestRecords)
+    }
+    .unwrap();
+    assert_eq!(read, vec![original.clone()]);
+    commit_test_record(source, "unobserved", "arrived after the read");
+    let unobserved_origin = source.events_after(None).unwrap().last().unwrap().origin;
+    writer.ingest_batch(source.export(None).unwrap()).unwrap();
+    let changed = TestRecord {
+        value: "after".to_owned(),
+        ..original
+    };
+    context.emit_set(&changed).unwrap();
+    context.commit(&()).unwrap();
+    let history = writer.events_after(None).unwrap();
+    let committed = history.last().unwrap();
+    assert!(
+        matches!(&committed.event, NodeEvent::CommandCommitted { batch, .. }
+        if batch.causal_parents.contains(&observed_origin)
+            && !batch.causal_parents.contains(&unobserved_origin))
+    );
+    let observer = allow_all_node();
+    for event in history.iter().rev().chain(&source_history) {
+        observer.ingest(event.clone()).unwrap();
+    }
+    assert_eq!(
+        observer
+            .query_items_across_sources_in(
+                &ScopeId::new("session:test"),
+                GetTestRecordById {
+                    id: changed.id.clone()
+                },
+            )
+            .unwrap(),
+        vec![changed]
+    );
+}
+
+#[test]
+fn source_pinned_claims_do_not_authorize_scope_union_reads() {
+    let node = allow_all_node();
+    let mut request = request(CommandId::new());
+    for claim in &mut request.resource_claims {
+        claim.source_node = Some(node.node_id());
+    }
+    node.submit(request.clone()).unwrap();
+    let context = match node.begin_command(request.id).unwrap() {
+        TypedCommandAdmission::Execute(context) => Some(context),
+        TypedCommandAdmission::Resume(_) => None,
+    }
+    .unwrap();
+    assert!(matches!(
+        context.query(GetAllTestRecords),
+        Err(NodeError::AuthorizationDenied(_))
+    ));
+    assert!(matches!(
+        context.query_selected(ScopeSelection::Exact(request.scope_id), GetAllTestRecords),
+        Err(NodeError::AuthorizationDenied(_))
+    ));
+}
+
+#[test]
+fn foreign_reads_do_not_require_transitive_history_replication() {
+    let writer = allow_all_node();
+    let mut foreign = request(CommandId::new());
+    foreign.service_id = ServiceId::new(OtherService::SERVICE_ID);
+    let executing = writer.admit(foreign.clone()).unwrap().snapshot().updated_at;
+    let input = OtherRecord {
+        id: OtherRecordId::from("input"),
+        value: "private input".to_owned(),
+    };
+    writer
+        .commit(
+            foreign.id,
+            ChangeBatch {
+                id: BatchId::new(),
+                command_id: foreign.id,
+                service_id: foreign.service_id.clone(),
+                scope_id: foreign.scope_id.clone(),
+                causal_parents: vec![executing],
+                changes: vec![ItemMutation::set(&input).unwrap()],
+            },
+            Vec::new(),
+        )
+        .unwrap();
+    let foreign_origin = writer.events_after(None).unwrap().last().unwrap().origin;
+    let mut local = request(CommandId::new());
+    local.resource_claims.push(ResourceClaim {
+        selection: ScopeSelection::Exact(local.scope_id.clone()),
+        kind: ResourceClaimKind::Referenced,
+        source_node: None,
+        service_id: Some(foreign.service_id),
+        item_type: None,
+        item_id: None,
+        required_permissions: vec![FederationPermission::ReadState],
+        required_operations: vec![AccessOperation::ReadItems],
+        required_capabilities: Vec::new(),
+    });
+    writer.submit(local.clone()).unwrap();
+    let context = match writer.begin_command(local.id).unwrap() {
+        TypedCommandAdmission::Execute(context) => Some(context),
+        TypedCommandAdmission::Resume(_) => None,
+    }
+    .unwrap();
+    assert_eq!(context.query(GetAllOtherRecords).unwrap(), vec![input]);
+    let output = TestRecord {
+        id: TestRecordId::from("output"),
+        value: "public result".to_owned(),
+    };
+    context.emit_set(&output).unwrap();
+    context.commit(&()).unwrap();
+    let replica = allow_all_node();
+    for event in writer.events_after(None).unwrap() {
+        if command_from_event(&event.event)
+            .is_some_and(|command| command.request.service_id == local.service_id)
+        {
+            if let NodeEvent::CommandCommitted { batch, .. } = &event.event {
+                assert!(!batch.causal_parents.contains(&foreign_origin));
+            }
+            replica.ingest(event).unwrap();
+        }
+    }
+    assert_eq!(
+        replica
+            .query_items_across_sources_in(&local.scope_id, GetAllTestRecords)
+            .unwrap(),
+        vec![output]
     );
 }
 

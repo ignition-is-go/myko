@@ -1572,7 +1572,7 @@ where
 
 #[cfg(test)]
 mod belongs_to_source_index_tests {
-    use std::any::Any;
+    use std::{any::Any, time::Instant};
 
     use hyphae::{Gettable, Materialize};
     use serde::Serialize;
@@ -1626,6 +1626,15 @@ mod belongs_to_source_index_tests {
         Arc::new(hyphae::CellMap::new())
     }
 
+    fn wait_for_bucket_len(bucket: &AnyItemMap, expected: usize) {
+        let started = Instant::now();
+        while bucket.snapshot().len() != expected
+            && started.elapsed() < std::time::Duration::from_secs(1)
+        {
+            std::thread::yield_now();
+        }
+    }
+
     #[test]
     fn dropped_subscriptions_do_not_leak_across_many_distinct_parents() {
         let _serial = scheduler_test_serial();
@@ -1672,12 +1681,14 @@ mod belongs_to_source_index_tests {
         // Remove the only child — bucket goes empty, but `bucket` is still
         // held here, simulating a live subscriber.
         store.remove_many(vec![id]);
+        wait_for_bucket_len(&bucket, 0);
         assert_eq!(bucket.snapshot().len(), 0);
 
         // A new child arrives under the same parent — the still-held handle
         // must see it, not a disconnected/orphaned bucket.
         let (id2, item2) = child("c2", "parent-x");
         store.insert(id2, item2);
+        wait_for_bucket_len(&bucket, 1);
         assert_eq!(
             bucket.snapshot().len(),
             1,

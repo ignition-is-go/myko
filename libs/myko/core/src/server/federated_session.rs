@@ -25,8 +25,7 @@ use myko_federation::{
     CommandId, CommandResponse, CommandSubmission, DenyAllAccessPolicy, DenyDecision,
     FederationPermission, LiveEventHub, LogPosition, Node, NodeId, PermitDecision, Principal,
     PrincipalId, ReplicationBatch, ReplicationSelection, ResourceClaim, ResourceClaimKind,
-    ResourceVisibility, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
-    SelectedReplicationBatch, ServiceId,
+    ResourceVisibility, ScopeCatalogPage, ScopeId, ScopedReplicationBatch, ServiceId,
 };
 use myko_wire::{HandlerRequest, NodeFrame, NodeRequest, NodeRequestEnvelope};
 use sha2::{Digest, Sha256};
@@ -907,9 +906,9 @@ impl FederatedSession {
         if watch.serving_node != self.node.node_id() {
             return Err("command watch cursor belongs to another serving node".to_owned());
         }
-        let mut events = self
+        let mut command_watch = self
             .node
-            .subscribe(watch.after)
+            .watch_commands(watch.clone())
             .map_err(|error| error.to_string())?;
         emit(
             send,
@@ -946,24 +945,32 @@ impl FederatedSession {
         let mut authorization = self.authorization_pulse();
         loop {
             tokio::select! {
-                event = events.recv_async() => {
-                    let event = event.map_err(|error| error.to_string())?;
+                update = command_watch.recv_async() => {
+                    let mut update = update.map_err(|error| error.to_string())?;
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
-                    if let Some(update) = watch.update_from_envelope(&event) {
-                        let command_id = update.command.request.id.to_string();
+                    let mut allowed = Vec::with_capacity(update.commands.len());
+                    for entry in &update.commands {
+                        let command_id = entry.command.request.id.to_string();
                         if self.command_snapshot_authorized(
                             &principal,
                             &presentation,
                             AccessOperation::WatchCommands,
-                            &update.command,
+                            &entry.command,
                         ) {
-                            visible_commands.insert(command_id, update.command.clone());
-                            emit(send, NodeFrame::CommandUpdate { update: Box::new(update) }).await?;
+                            allowed.push((command_id, entry.clone()));
                         } else if visible_commands.contains_key(&command_id) {
                             return Ok(());
                         }
+                    }
+                    if allowed.is_empty() {
+                        continue;
+                    }
+                    update.commands = allowed.iter().map(|(_, entry)| entry.clone()).collect();
+                    emit(send, NodeFrame::CommandUpdate { update: Box::new(update) }).await?;
+                    for (command_id, entry) in allowed {
+                        visible_commands.insert(command_id, entry.command);
                     }
                 }
                 wake = authorization.changed() => {
@@ -1289,12 +1296,9 @@ impl FederatedSession {
                         return Ok(());
                     }
                     let through = event.position;
-                    let selected = if event
-                        .event
-                        .affected_scope_ids()
-                        .iter()
-                        .all(|affected| affected == &scope_id)
-                    {
+                    let selected = if ReplicationSelection::Scopes(vec![
+                        myko_federation::ScopeSelection::Exact(scope_id.clone()),
+                    ]).includes(&event.event) {
                         vec![event]
                     } else {
                         Vec::new()
@@ -1354,16 +1358,12 @@ impl FederatedSession {
             },
         )
         .await?;
-        let mut topology = self
-            .node
-            .scope_topology()
-            .map_err(|error| error.to_string())?;
         let mut cursor = initial.through;
         let mut authorization = self.authorization_pulse();
         loop {
             tokio::select! {
                 event = events.recv_async() => {
-                    let event = event.map_err(|error| error.to_string())?;
+                    let _event = event.map_err(|error| error.to_string())?;
                     let selection = match self.constrain_replication(
                         &principal,
                         &presentation,
@@ -1377,28 +1377,12 @@ impl FederatedSession {
                             return Ok(());
                         }
                     };
-                    let through = event.position;
-                    topology
-                        .observe_event(&event.event)
+                    let batch = self.node.export_selected(selection, cursor)
                         .map_err(|error| error.to_string())?;
-                    let selected = if selection.includes_in(&event.event, &topology) {
-                        vec![event]
-                    } else {
-                        Vec::new()
-                    };
-                    let topology_proof = topology.proof_for(match &selection {
-                        ReplicationSelection::Scopes(scopes)
-                        | ReplicationSelection::Intersection { scopes, .. } => scopes.as_slice(),
-                        ReplicationSelection::All
-                        | ReplicationSelection::Service(_)
-                        | ReplicationSelection::ServiceScope { .. } => &[],
-                    });
-                    emit(send, NodeFrame::SelectedBatch { batch: Box::new(SelectedReplicationBatch {
-                        source_node: self.node.node_id(), selection, after: cursor,
-                        through: Some(through), topology: topology_proof,
-                        events: selected,
-                    }) }).await?;
-                    cursor = Some(through);
+                    if batch.through != cursor {
+                        cursor = batch.through;
+                        emit(send, NodeFrame::SelectedBatch { batch: Box::new(batch) }).await?;
+                    }
                 }
                 _ = authorization.changed() => {
                     if let Err(decision) = self.constrain_replication(
@@ -2150,8 +2134,10 @@ mod tests {
     };
 
     use myko_federation::{
-        AllowAllAccessPolicy, AuthorityPresentation, CommandRequest, DenyAllAccessPolicy,
-        PrincipalKind, ScopeSelection,
+        AllowAllAccessPolicy, AuthorityPresentation, BatchId, ChangeBatch, CommandRequest,
+        CommandStateRequest, DenyAllAccessPolicy, EventEnvelope, EventId, FrameworkControlEvent,
+        PrincipalKind, RetainedHistoryStatement, ScopeSelection, SignedRetainedHistoryStatement,
+        StorageIncarnationId,
     };
 
     use super::*;
@@ -2185,8 +2171,8 @@ mod tests {
 
         fn build_cell(
             _context: crate::view::ViewBuildArgs<Self>,
-        ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-            hyphae::CellMap::new().lock()
+        ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
+            crate::view::LocalView::new(hyphae::CellMap::new().lock())
         }
     }
 
@@ -2249,6 +2235,21 @@ mod tests {
                         .is_some_and(|deadline| tokio::time::Instant::now() >= deadline))
             {
                 return Err("stored command claims were revoked".to_owned());
+            }
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct SelectiveCatalogPolicy {
+        denied: CommandId,
+    }
+    impl AccessPolicy for SelectiveCatalogPolicy {
+        fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
+            if request.operation == AccessOperation::WatchCommands
+                && request.command_id() == Some(self.denied)
+            {
+                return Err("selected catalog entry is hidden".to_owned());
             }
             Ok(())
         }
@@ -2473,7 +2474,8 @@ mod tests {
         .unwrap();
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
-            Ok(Some(NodeFrame::CommandUpdate { update })) if update.command.request.id == command_id
+            Ok(Some(NodeFrame::CommandUpdate { update }))
+                if update.commands.iter().any(|entry| entry.command.request.id == command_id)
         ));
 
         session
@@ -2486,6 +2488,353 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
             Ok(None)
         ));
+    }
+
+    struct PendingCatalog {
+        node: Node,
+        parent: myko_federation::EventEnvelope,
+        watch: myko_federation::CommandWatchRequest,
+        commands: Vec<CommandId>,
+    }
+
+    fn pending_catalog() -> PendingCatalog {
+        let principal = PrincipalId::new("node:catalog-reader");
+        let scope_id = ScopeId::new("scope:catalog");
+        let service_id = ServiceId::new("test.service");
+        let request = |id| CommandRequest {
+            id,
+            service_id: service_id.clone(),
+            scope_id: scope_id.clone(),
+            principal_id: principal.clone(),
+            authority: AuthorityPresentation::direct_node(principal.clone()),
+            resource_claims: vec![ResourceClaim::scope(
+                scope_id.clone(),
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
+            command_type: "test.command".to_owned(),
+            payload: Vec::new(),
+        };
+        let parent_source = Node::in_memory();
+        let parent = parent_source
+            .admit(request(CommandId::new()))
+            .unwrap()
+            .snapshot()
+            .clone();
+        let parent_envelope = parent_source.events_after(None).unwrap().pop().unwrap();
+        let source = Node::in_memory();
+        let mut command_ids = Vec::new();
+        for _ in 0..2 {
+            let command = request(CommandId::new());
+            command_ids.push(command.id);
+            let executing = source.admit(command.clone()).unwrap().snapshot().clone();
+            source
+                .commit(
+                    command.id,
+                    ChangeBatch {
+                        id: BatchId::new(),
+                        command_id: command.id,
+                        service_id: service_id.clone(),
+                        scope_id: scope_id.clone(),
+                        causal_parents: vec![executing.updated_at, parent.updated_at],
+                        changes: Vec::new(),
+                    },
+                    b"completed".to_vec(),
+                )
+                .unwrap();
+        }
+        let target = Node::in_memory();
+        for event in source.events_after(None).unwrap() {
+            target.ingest(event).unwrap();
+        }
+        let watch = target
+            .command_states(CommandStateRequest {
+                source_node: Some(source.node_id()),
+                service_id: service_id.clone(),
+                scope_id: scope_id.clone(),
+                command_type: "test.command".to_owned(),
+                snapshot_through: None,
+                after_command_id: None,
+                page_size: 32,
+            })
+            .unwrap()
+            .watch_request()
+            .unwrap();
+        PendingCatalog {
+            node: target,
+            parent: parent_envelope,
+            watch,
+            commands: command_ids,
+        }
+    }
+
+    #[tokio::test]
+    async fn catalog_watch_emits_one_frame_for_two_commands_released_by_one_parent() {
+        let fixture = pending_catalog();
+        let session = FederatedSession::new(fixture.node.clone(), Arc::new(AllowAllAccessPolicy));
+        let mut frames = session
+            .open(
+                PrincipalId::new("node:catalog-reader"),
+                NodeRequestEnvelope::connected(NodeRequest::WatchCommands {
+                    request: fixture.watch,
+                }),
+            )
+            .await;
+        assert!(
+            matches!(frames.recv().await, Some(NodeFrame::Authorization { decision }) if matches!(*decision, AuthorizationDecision::Permit(_)))
+        );
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::CommandWatchReady { .. })
+        ));
+        fixture.node.ingest(fixture.parent).unwrap();
+        let frame = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let NodeFrame::CommandUpdate { update } = frame else {
+            panic!("late parent did not release a command catalog batch");
+        };
+        assert_eq!(update.commands.len(), 2);
+        assert!(
+            update
+                .commands
+                .iter()
+                .all(|entry| entry.command.state.is_committed())
+        );
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), frames.recv())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn selected_follow_waits_at_unresolved_history_and_releases_it_after_the_parent() {
+        let fixture = pending_catalog();
+        let session = FederatedSession::new(fixture.node.clone(), Arc::new(AllowAllAccessPolicy));
+        let mut frames = session
+            .open(
+                PrincipalId::new("node:catalog-reader"),
+                NodeRequestEnvelope::connected(NodeRequest::FollowSelected {
+                    selection: ReplicationSelection::All,
+                    after: None,
+                }),
+            )
+            .await;
+        assert!(matches!(frames.recv().await, Some(NodeFrame::Hello { .. })));
+        let Some(NodeFrame::SelectedBatch { batch: initial }) = frames.recv().await else {
+            panic!("selected follow did not send its initial page");
+        };
+        assert_eq!(initial.events.len(), 1);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), frames.recv())
+                .await
+                .is_err()
+        );
+        fixture.node.ingest(fixture.parent).unwrap();
+        let Some(NodeFrame::SelectedBatch { batch: released }) =
+            tokio::time::timeout(Duration::from_secs(1), frames.recv())
+                .await
+                .unwrap()
+        else {
+            panic!("selected follow did not release the pending page");
+        };
+        assert_eq!(released.after, initial.through);
+        assert_eq!(
+            released
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event.event,
+                    myko_federation::NodeEvent::CommandCommitted { .. }
+                ))
+                .count(),
+            2
+        );
+        assert!(released.through > initial.through);
+    }
+
+    #[tokio::test]
+    async fn scope_follow_advances_past_subtree_control_without_leaking_it() {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let node = Node::in_memory();
+            let principal = PrincipalId::new("node:scope-reader");
+            let scope_id = ScopeId::new("scope:retained");
+            node.admit(CommandRequest {
+                id: CommandId::new(),
+                service_id: ServiceId::new("test.service"),
+                scope_id: scope_id.clone(),
+                principal_id: principal.clone(),
+                authority: AuthorityPresentation::direct_node(principal.clone()),
+                resource_claims: vec![ResourceClaim::scope(
+                    scope_id.clone(),
+                    ResourceClaimKind::Primary,
+                )],
+                application_capabilities: Vec::new(),
+                arguments_digest: None,
+                command_type: "test.command".to_owned(),
+                payload: Vec::new(),
+            })
+            .unwrap();
+            let seed = node.events_after(None).unwrap().pop().unwrap();
+            let snapshot = myko_federation::SelectedHistorySnapshot::current(&node).unwrap();
+            let subtree_manifest = snapshot
+                .retained_manifest(&ScopeSelection::Subtree(scope_id.clone()))
+                .unwrap();
+            let exact_manifest = snapshot
+                .retained_manifest(&ScopeSelection::Exact(scope_id.clone()))
+                .unwrap();
+            let control = |origin_node, sequence, signer, signature, manifest| {
+                let statement = RetainedHistoryStatement::new(
+                    node.node_id(),
+                    StorageIncarnationId::new(),
+                    seed.origin,
+                    manifest,
+                )
+                .unwrap();
+                let signed =
+                    SignedRetainedHistoryStatement::from_signature(statement, signer, signature);
+                EventEnvelope {
+                    position: LogPosition::FIRST,
+                    origin: EventId::new(origin_node, LogPosition::new(sequence)),
+                    recorded_at: chrono::Utc::now(),
+                    event: myko_federation::NodeEvent::FrameworkControl(
+                        FrameworkControlEvent::RetainedHistoryStatement(signed),
+                    ),
+                }
+            };
+            let statement_source = NodeId::new();
+            let subtree_control = control(statement_source, 1, [1; 32], [1; 64], &subtree_manifest);
+            let mut exact_control = control(statement_source, 2, [2; 32], [2; 64], &exact_manifest);
+            node.ingest(subtree_control).unwrap();
+            let myko_federation::IngestStatus::Applied { position } =
+                node.ingest(exact_control.clone()).unwrap()
+            else {
+                panic!("exact control fixture was unexpectedly a duplicate");
+            };
+            exact_control.position = position;
+
+            let session = FederatedSession::new(node.clone(), Arc::new(AllowAllAccessPolicy));
+            let mut frames = session
+                .open(
+                    principal,
+                    NodeRequestEnvelope::connected(NodeRequest::FollowScope {
+                        scope_id: scope_id.clone(),
+                        after: None,
+                    }),
+                )
+                .await;
+            assert!(matches!(
+                frames.recv().await,
+                Some(NodeFrame::Authorization { decision })
+                    if matches!(*decision, AuthorizationDecision::Permit(_))
+            ));
+            assert!(matches!(frames.recv().await, Some(NodeFrame::Hello { .. })));
+
+            let Some(NodeFrame::ScopedBatch { batch: seed_batch }) = frames.recv().await else {
+                panic!("scope follow did not replay the seeded command");
+            };
+            assert_eq!(seed_batch.after, None);
+            assert_eq!(seed_batch.events, vec![seed]);
+
+            let Some(NodeFrame::ScopedBatch {
+                batch: subtree_batch,
+            }) = frames.recv().await
+            else {
+                panic!("scope follow did not advance past the subtree control record");
+            };
+            assert_eq!(subtree_batch.after, seed_batch.through);
+            assert!(
+                subtree_batch
+                    .through
+                    .is_some_and(|through| Some(through) > seed_batch.through)
+            );
+            assert!(subtree_batch.events.is_empty());
+
+            let Some(NodeFrame::ScopedBatch { batch: exact_batch }) = frames.recv().await else {
+                panic!("scope follow did not deliver the exact control record");
+            };
+            assert_eq!(exact_batch.after, subtree_batch.through);
+            assert_eq!(exact_batch.events, vec![exact_control]);
+        })
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn catalog_watch_filters_a_release_batch_and_refetches_after_authority_changes() {
+        let fixture = pending_catalog();
+        let watch = fixture.watch;
+        let denied = *fixture.commands.get(1).unwrap();
+        let session = FederatedSession::new(
+            fixture.node.clone(),
+            Arc::new(SelectiveCatalogPolicy { denied }),
+        );
+        let mut frames = session
+            .open(
+                PrincipalId::new("node:catalog-reader"),
+                NodeRequestEnvelope::connected(NodeRequest::WatchCommands {
+                    request: watch.clone(),
+                }),
+            )
+            .await;
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::Authorization { decision })
+                if matches!(*decision, AuthorizationDecision::Permit(_))
+        ));
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::CommandWatchReady { .. })
+        ));
+
+        fixture.node.ingest(fixture.parent).unwrap();
+        let update = tokio::time::timeout(Duration::from_secs(1), frames.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let NodeFrame::CommandUpdate { update } = update else {
+            panic!("late causal parent did not release a command-catalog batch");
+        };
+        assert_eq!(update.commands.len(), 1);
+        assert!(
+            update
+                .commands
+                .iter()
+                .all(|entry| entry.command.state.is_committed()
+                    && entry.command.request.id != denied)
+        );
+        session
+            .set_access_policy(Arc::new(AllowAllAccessPolicy))
+            .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
+            Ok(None)
+        ));
+        let mut refetched = session
+            .open(
+                PrincipalId::new("node:catalog-reader"),
+                NodeRequestEnvelope::connected(NodeRequest::CommandState {
+                    request: CommandStateRequest {
+                        source_node: Some(watch.source_node),
+                        service_id: watch.service_id,
+                        scope_id: watch.scope_id,
+                        command_type: watch.command_type,
+                        snapshot_through: None,
+                        after_command_id: None,
+                        page_size: 32,
+                    },
+                }),
+            )
+            .await;
+        assert!(
+            matches!(refetched.recv().await, Some(NodeFrame::Authorization { decision }) if matches!(*decision, AuthorizationDecision::Permit(_)))
+        );
+        assert!(
+            matches!(refetched.recv().await, Some(NodeFrame::CommandState { page }) if page.commands.len() == 2)
+        );
     }
 
     #[tokio::test]
@@ -2544,7 +2893,8 @@ mod tests {
         ));
         assert!(matches!(
             frames.recv().await,
-            Some(NodeFrame::CommandUpdate { update }) if update.command.request.id == command_id
+            Some(NodeFrame::CommandUpdate { update })
+                if update.commands.iter().any(|entry| entry.command.request.id == command_id)
         ));
         assert!(matches!(
             tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,

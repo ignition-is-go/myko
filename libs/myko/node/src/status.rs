@@ -98,12 +98,14 @@ impl ViewHandler for NodeStatusView {
 
     fn build_cell(
         context: ViewBuildArgs<Self>,
-    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-        context
-            .resource::<NodeStatusViewState>()
-            .expect("node status resource is installed")
-            .nodes
-            .clone()
+    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
+        myko::view::LocalView::new({
+            context
+                .resource::<NodeStatusViewState>()
+                .expect("node status resource is installed")
+                .nodes
+                .clone()
+        })
     }
 }
 

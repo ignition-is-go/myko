@@ -14,7 +14,7 @@ use hyphae::{
 };
 use parking_lot::Mutex;
 
-use crate::LogPosition;
+use crate::{LivePublication, LivePublicationStream, LogPosition, publication::PublicationSource};
 
 /// Whether a live subscription currently represents authoritative state.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -927,6 +927,7 @@ where
     C: hyphae::CellValue,
 {
     state: Cell<LiveSubscriptionState<T, C>, CellImmutable>,
+    publication: Cell<LivePublication<LiveSubscriptionState<T, C>>, CellImmutable>,
 }
 
 /// A retained driver for one typed reactive value projection.
@@ -975,6 +976,29 @@ where
         &self.state
     }
 
+    /// Returns ordered immutable value, cursor, and liveness publications.
+    ///
+    /// Sequences belong to this output, not the durable journal. They may skip
+    /// during reactive coalescing; a consumer must reject older or duplicate
+    /// publications rather than reconstructing state from unsequenced diffs.
+    #[must_use]
+    pub const fn publication(
+        &self,
+    ) -> &Cell<LivePublication<LiveSubscriptionState<T, C>>, CellImmutable> {
+        &self.publication
+    }
+
+    /// Opens an ordered current-then-live stream without a snapshot/listener gap.
+    ///
+    /// The subscriber is installed before its seed is accepted. Older or
+    /// duplicate publications cannot overwrite a newer observed version.
+    /// A slow consumer receives the latest complete snapshot and may skip
+    /// intermediate publications; this is not a lossless event stream.
+    #[must_use]
+    pub fn watch_publications(&self) -> LivePublicationStream<LiveSubscriptionState<T, C>> {
+        LivePublicationStream::from_cell(&self.publication)
+    }
+
     /// Takes a coherent snapshot without subscribing.
     #[must_use]
     pub fn current(&self) -> LiveSubscriptionState<T, C> {
@@ -985,10 +1009,45 @@ where
     ///
     /// Transport adapters normally use [`live_subscription`]. Report and view
     /// handlers use this constructor after composing their dependency cells so
-    /// the resulting value retains the same subscription surface.
+    /// the resulting value retains the same subscription surface. This assigns
+    /// local observation sequences; it does not validate durable completeness
+    /// or recover ordering information absent from the supplied state cell.
+    /// Native retained handlers must preserve their source publications instead.
+    ///
+    /// Exhausting the local sequence publishes an invalid terminal revision.
     #[must_use]
-    pub const fn from_state_cell(state: Cell<LiveSubscriptionState<T, C>, CellImmutable>) -> Self {
-        Self { state }
+    pub fn from_state_cell(state: Cell<LiveSubscriptionState<T, C>, CellImmutable>) -> Self {
+        let sequence = AtomicU64::new(0);
+        let publication = state
+            .map(move |state| {
+                let next = sequence.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                    value.checked_add(1)
+                });
+                let mut state = state.clone();
+                let sequence = match next {
+                    Ok(sequence) => sequence,
+                    Err(sequence) => {
+                        state.liveness = SubscriptionLiveness::Invalid {
+                            reason: "live subscription publication sequence exhausted".to_owned(),
+                        };
+                        sequence
+                    }
+                };
+                LivePublication { sequence, state }
+            })
+            .materialize();
+        Self::from_publication_cell(publication)
+    }
+
+    fn from_publication_cell(
+        publication: Cell<LivePublication<LiveSubscriptionState<T, C>>, CellImmutable>,
+    ) -> Self {
+        let state = publication
+            .clone()
+            .map(|publication| publication.state.clone())
+            .materialize()
+            .with_name("myko.live_subscription.state");
+        Self { state, publication }
     }
 
     /// Derives another live value while preserving cursor and liveness.
@@ -1001,29 +1060,43 @@ where
         U: hyphae::CellValue,
         F: Fn(&T) -> U + Send + Sync + 'static,
     {
-        let initial_source = self.current();
+        let initial_publication = self.publication.get();
+        let initial_source = initial_publication.state;
         let initial_mapped = LiveSubscriptionState {
             value: initial_source.value.as_ref().map(&transform),
             through: initial_source.through.clone(),
             liveness: initial_source.liveness.clone(),
         };
-        let state = self
-            .state
+        let publication = self
+            .publication
             .clone()
             .scan(
-                (initial_source.value, initial_mapped),
-                move |(previous_source, previous_mapped), source| {
+                (
+                    initial_source.value,
+                    LivePublication {
+                        sequence: initial_publication.sequence,
+                        state: initial_mapped,
+                    },
+                ),
+                move |(previous_source, previous_mapped), publication| {
+                    if publication.sequence <= previous_mapped.sequence {
+                        return (previous_source.clone(), previous_mapped.clone());
+                    }
+                    let source = &publication.state;
                     let value = if source.value == *previous_source {
-                        previous_mapped.value.clone()
+                        previous_mapped.state.value.clone()
                     } else {
                         source.value.as_ref().map(&transform)
                     };
                     (
                         source.value.clone(),
-                        LiveSubscriptionState {
-                            value,
-                            through: source.through.clone(),
-                            liveness: source.liveness.clone(),
+                        LivePublication {
+                            sequence: publication.sequence,
+                            state: LiveSubscriptionState {
+                                value,
+                                through: source.through.clone(),
+                                liveness: source.liveness.clone(),
+                            },
                         },
                     )
                 },
@@ -1031,7 +1104,7 @@ where
             .map(|(_, state)| state.clone())
             .materialize()
             .with_name("myko.live_subscription.map_value");
-        LiveSubscription::from_state_cell(state)
+        LiveSubscription::from_publication_cell(publication)
     }
 
     /// Joins dependencies that advance through the same authoritative cursor stream.
@@ -1216,13 +1289,14 @@ where
 ///
 /// Storage and transport crates retain this half. Applications only receive
 /// the immutable Hyphae cell, so they cannot forge cursor or liveness changes.
+/// Sequence exhaustion terminates the publication cell with an error.
 #[derive(Clone)]
 pub struct LiveSubscriptionWriter<T, C = LogPosition>
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
 {
-    state: Cell<LiveSubscriptionState<T, C>, CellMutable>,
+    source: PublicationSource<LiveSubscriptionState<T, C>>,
 }
 
 impl<T, C> LiveSubscriptionWriter<T, C>
@@ -1237,12 +1311,22 @@ where
     /// narrower [`Self::publish`], [`Self::resynchronizing`], and
     /// [`Self::invalidate`] operations.
     pub fn replace(&self, state: LiveSubscriptionState<T, C>) {
-        self.state.set(state);
+        self.update(|_| state);
+    }
+
+    /// Captures and replaces a snapshot in this writer's acceptance order.
+    ///
+    /// Adapters use this when an external notification is only a wakeup and
+    /// its source must be read before assigning the next publication sequence.
+    /// The reader runs under the acceptance lock and must not reenter this
+    /// writer. Subscriber callbacks run after that lock is released.
+    pub fn replace_with(&self, read: impl FnOnce() -> LiveSubscriptionState<T, C>) {
+        self.update(|_| read());
     }
 
     /// Publishes an authoritative snapshot or atomic update.
     pub fn publish(&self, value: T, through: Option<C>) {
-        self.state.set(LiveSubscriptionState {
+        self.replace(LiveSubscriptionState {
             value: Some(value),
             through,
             liveness: SubscriptionLiveness::Current,
@@ -1256,17 +1340,18 @@ where
     /// Keeping this distinct from [`Self::publish`] lets drivers express that
     /// progress without rebuilding application state.
     pub fn advance_through(&self, through: Option<C>) {
-        let mut state = self.state.get();
-        state.through = through;
-        self.state.set(state);
+        self.update(|previous| LiveSubscriptionState {
+            value: previous.value.clone(),
+            through,
+            liveness: previous.liveness.clone(),
+        });
     }
 
     /// Retains the last value while an adapter reconnects and resynchronizes.
     pub fn resynchronizing(&self, reason: impl Into<String>) {
-        let previous = self.state.get();
-        self.state.set(LiveSubscriptionState {
-            value: previous.value,
-            through: previous.through,
+        self.update(|previous| LiveSubscriptionState {
+            value: previous.value.clone(),
+            through: previous.through.clone(),
             liveness: SubscriptionLiveness::Resynchronizing {
                 reason: reason.into(),
             },
@@ -1275,14 +1360,22 @@ where
 
     /// Marks the subscription unusable while retaining its last stale value.
     pub fn invalidate(&self, reason: impl Into<String>) {
-        let previous = self.state.get();
-        self.state.set(LiveSubscriptionState {
-            value: previous.value,
-            through: previous.through,
+        self.update(|previous| LiveSubscriptionState {
+            value: previous.value.clone(),
+            through: previous.through.clone(),
             liveness: SubscriptionLiveness::Invalid {
                 reason: reason.into(),
             },
         });
+    }
+
+    fn update(
+        &self,
+        update: impl FnOnce(&LiveSubscriptionState<T, C>) -> LiveSubscriptionState<T, C>,
+    ) {
+        if let Err(error) = self.source.update(update) {
+            self.source.fail(error);
+        }
     }
 }
 
@@ -1295,12 +1388,9 @@ where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
 {
-    let state = Cell::new(initial).with_name("myko.live_subscription");
-    let readable = state.clone().lock();
-    (
-        LiveSubscriptionWriter { state },
-        LiveSubscription { state: readable },
-    )
+    let source = PublicationSource::new(initial);
+    let readable = LiveSubscription::from_publication_cell(source.publication());
+    (LiveSubscriptionWriter { source }, readable)
 }
 
 #[cfg(test)]
@@ -1530,6 +1620,90 @@ mod tests {
                 .iter()
                 .any(|state| state.through == Some(LogPosition::new(9)))
         }));
+    }
+
+    #[test]
+    fn batched_reconnection_retains_the_latest_accepted_snapshot() {
+        let (writer, subscription) = live_subscription(LiveSubscriptionState {
+            value: Some("old".to_owned()),
+            through: Some(LogPosition::new(1)),
+            liveness: SubscriptionLiveness::Current,
+        });
+
+        hyphae::batch(|| {
+            writer.publish("new".to_owned(), Some(LogPosition::new(2)));
+            writer.resynchronizing("connection ended after update");
+        });
+        wait_until(|| {
+            matches!(
+                subscription.current().liveness,
+                SubscriptionLiveness::Resynchronizing { .. }
+            )
+        });
+
+        let state = subscription.current();
+        assert_eq!(state.value.as_deref(), Some("new"));
+        assert_eq!(state.through, Some(LogPosition::new(2)));
+    }
+
+    #[test]
+    fn batched_cursor_advance_retains_the_latest_accepted_value() {
+        let (writer, subscription) = live_subscription(LiveSubscriptionState {
+            value: Some("old".to_owned()),
+            through: Some(LogPosition::new(1)),
+            liveness: SubscriptionLiveness::Current,
+        });
+
+        hyphae::batch(|| {
+            writer.publish("new".to_owned(), Some(LogPosition::new(2)));
+            writer.advance_through(Some(LogPosition::new(3)));
+        });
+        wait_until(|| subscription.current().through == Some(LogPosition::new(3)));
+
+        assert_eq!(subscription.current().value.as_deref(), Some("new"));
+    }
+
+    #[test]
+    fn mapped_publications_advance_metadata_without_recomputing_the_value() {
+        let (writer, source) = live_subscription(LiveSubscriptionState::<String, u64> {
+            value: Some("value".to_owned()),
+            through: Some(1),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_map = Arc::clone(&calls);
+        let mapped = source.map_value(move |value| {
+            calls_for_map.fetch_add(1, Ordering::Relaxed);
+            value.len()
+        });
+        let mut stream = mapped.watch_publications();
+        let mut next = || {
+            let mut publication = None;
+            wait_until(|| {
+                publication = stream.try_recv().ok();
+                publication.is_some()
+            });
+            publication
+        };
+        let initial = next();
+        assert_eq!(initial.as_ref().map(|p| p.sequence), Some(0));
+        assert_eq!(initial.and_then(|p| p.state.value), Some(5));
+
+        writer.advance_through(Some(2));
+        let progressed = next();
+        assert_eq!(progressed.as_ref().map(|p| p.sequence), Some(1));
+        assert_eq!(progressed.as_ref().and_then(|p| p.state.value), Some(5));
+        assert_eq!(progressed.and_then(|p| p.state.through), Some(2));
+
+        writer.invalidate("source disconnected");
+        let invalid = next();
+        assert_eq!(invalid.as_ref().map(|p| p.sequence), Some(2));
+        assert_eq!(invalid.as_ref().and_then(|p| p.state.value), Some(5));
+        assert!(matches!(
+            invalid.map(|p| p.state.liveness),
+            Some(SubscriptionLiveness::Invalid { .. })
+        ));
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
     }
 
     #[test]

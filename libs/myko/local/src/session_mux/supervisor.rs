@@ -213,6 +213,9 @@ impl ClientRoute {
         if let (PeerRequest::WatchCommands { request }, PeerFrame::CommandUpdate { update }) =
             (request, frame)
         {
+            // A CommandUpdate is one atomic causal release, even when it
+            // contains several commands. Persist its cursor only after the
+            // complete frame has reached the route.
             request.after = Some(update.through);
         }
     }
@@ -852,4 +855,87 @@ async fn connect_client_generation(
         reader: OwnedTask::new(reader_task),
         writer: OwnedTask::new(writer_task),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use myko_federation::{
+        AuthorityPresentation, CommandId, CommandRequest, CommandStateEntry, CommandStateUpdate,
+        CommandWatchRequest, LogPosition, Node, PrincipalId, ResourceClaim, ResourceClaimKind,
+        ScopeId, ServiceId,
+    };
+
+    fn admitted_command(
+        node: &Node,
+        principal: &PrincipalId,
+        scope: &ScopeId,
+    ) -> Result<CommandStateEntry, myko_federation::NodeError> {
+        let command = node
+            .admit(CommandRequest {
+                id: CommandId::new(),
+                service_id: ServiceId::new("test.local"),
+                scope_id: scope.clone(),
+                principal_id: principal.clone(),
+                authority: AuthorityPresentation::direct_node(principal.clone()),
+                resource_claims: vec![ResourceClaim::scope(
+                    scope.clone(),
+                    ResourceClaimKind::Primary,
+                )],
+                application_capabilities: Vec::new(),
+                arguments_digest: None,
+                command_type: "test.command".to_owned(),
+                payload: Vec::new(),
+            })?
+            .snapshot()
+            .clone();
+        Ok(CommandStateEntry {
+            admitted_at: command.updated_at.sequence,
+            last_changed_at: command.updated_at.sequence,
+            command,
+        })
+    }
+
+    #[test]
+    fn command_catalog_batch_advances_reopen_cursor_once() -> Result<(), myko_federation::NodeError>
+    {
+        let node = Node::in_memory();
+        let principal = PrincipalId::new("node:local-client");
+        let scope = ScopeId::new("scope:local-catalog");
+        let through = LogPosition::new(42);
+        let mut request = PeerRequest::WatchCommands {
+            request: CommandWatchRequest {
+                serving_node: node.node_id(),
+                source_node: node.node_id(),
+                service_id: ServiceId::new("test.local"),
+                scope_id: scope.clone(),
+                command_type: "test.command".to_owned(),
+                after: None,
+            },
+        };
+        let update = CommandStateUpdate {
+            through,
+            commands: vec![
+                admitted_command(&node, &principal, &scope)?,
+                admitted_command(&node, &principal, &scope)?,
+            ],
+        };
+
+        ClientRoute::observe_command_progress(
+            &mut request,
+            &PeerFrame::CommandUpdate {
+                update: Box::new(update),
+            },
+        );
+
+        if !matches!(
+            request,
+            PeerRequest::WatchCommands { request } if request.after == Some(through)
+        ) {
+            return Err(myko_federation::NodeError::InvalidCommandState(
+                "batch did not advance the reconnect cursor".to_owned(),
+            ));
+        }
+        Ok(())
+    }
 }

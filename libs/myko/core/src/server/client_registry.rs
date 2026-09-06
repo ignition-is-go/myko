@@ -165,7 +165,7 @@ pub fn try_client_registry() -> Option<Arc<ClientRegistry>> {
 #[cfg(test)]
 mod liveness_tests {
     use super::*;
-    use hyphae::Gettable;
+    use hyphae::{Gettable, Watchable};
 
     use crate::server::client_session::SessionSink;
     use crate::test_util::scheduler_test_serial;
@@ -189,10 +189,20 @@ mod liveness_tests {
         let registry = ClientRegistry::new();
         let client_id = Arc::<str>::from("a");
         let connected = registry.watch_connected(&client_id);
+        let (changes, observed) = std::sync::mpsc::channel();
+        let _subscription = connected.subscribe(move |signal| {
+            if let hyphae::Signal::Value(value) = signal {
+                let _sent = changes.send(**value);
+            }
+        });
+        let timeout = std::time::Duration::from_secs(1);
+        assert_eq!(observed.recv_timeout(timeout), Ok(false));
         assert!(!connected.get());
         registry.register("a".into(), Arc::new(NullWriter));
+        assert_eq!(observed.recv_timeout(timeout), Ok(true));
         assert!(connected.get());
         registry.unregister("a");
+        assert_eq!(observed.recv_timeout(timeout), Ok(false));
         assert!(!connected.get());
     }
 }

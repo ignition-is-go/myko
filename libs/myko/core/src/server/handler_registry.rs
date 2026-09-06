@@ -12,7 +12,7 @@ use crate::{
     item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
     query::{QueryCellFactory, QueryParseFn, QueryRegistration, QueryWindowCellFactory},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
-    view::{ViewCellFactory, ViewParseFn, ViewRegistration},
+    view::{RegisteredViewOutput, ViewCellFactory, ViewParseFn, ViewRegistration},
 };
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -423,7 +423,7 @@ impl HandlerRegistry {
         request: Arc<crate::request::RequestContext>,
         server: Arc<crate::server::MykoServerContext>,
         source: crate::server::federated_source::FederatedRequest,
-    ) -> Result<crate::view::FilteredViewCellMap, String> {
+    ) -> Result<RegisteredViewOutput, String> {
         let registration = self
             .view_data
             .get(view_id)

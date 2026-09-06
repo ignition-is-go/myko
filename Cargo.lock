@@ -5254,6 +5254,7 @@ name = "myko-authority"
 version = "7.0.0-alpha.1"
 dependencies = [
  "chrono",
+ "ed25519-dalek",
  "flume 0.11.1",
  "hyphae",
  "myko",
@@ -5297,6 +5298,7 @@ name = "myko-federation"
 version = "7.0.0-alpha.1"
 dependencies = [
  "chrono",
+ "ed25519-dalek",
  "flume 0.11.1",
  "hyphae",
  "myko-items",
@@ -5445,6 +5447,7 @@ dependencies = [
 name = "myko-redb"
 version = "7.0.0-alpha.1"
 dependencies = [
+ "ed25519-dalek",
  "myko-federation",
  "rayon",
  "redb",

@@ -393,14 +393,14 @@ impl ViewHandler for PeersView {
         Some(peer_scope(self.source_node))
     }
 
-    fn build_cell(
-        ctx: ViewBuildArgs<Self>,
-    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-        myko::item::typed_map_arc_from_any_item::<Peer>(
-            ctx.federated_items::<Peer>()
-                .expect("validated peer federation source"),
-            "PeersView",
-        )
+    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
+        myko::view::LocalView::new({
+            myko::item::typed_map_arc_from_any_item::<Peer>(
+                ctx.federated_items::<Peer>()
+                    .expect("validated peer federation source"),
+                "PeersView",
+            )
+        })
     }
 }
 
@@ -420,14 +420,14 @@ impl ViewHandler for AdvertisedServicesView {
         Some(peer_scope(self.source_node))
     }
 
-    fn build_cell(
-        ctx: ViewBuildArgs<Self>,
-    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-        myko::item::typed_map_arc_from_any_item::<AdvertisedService>(
-            ctx.federated_items::<AdvertisedService>()
-                .expect("validated advertised-service federation source"),
-            "AdvertisedServicesView",
-        )
+    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
+        myko::view::LocalView::new({
+            myko::item::typed_map_arc_from_any_item::<AdvertisedService>(
+                ctx.federated_items::<AdvertisedService>()
+                    .expect("validated advertised-service federation source"),
+                "AdvertisedServicesView",
+            )
+        })
     }
 }
 

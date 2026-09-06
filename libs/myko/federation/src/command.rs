@@ -35,6 +35,12 @@ pub enum CommandState {
     Retrying {
         reason: String,
     },
+    /// Handler effects were durably frozen before effect authorization. On
+    /// restart the framework reuses this exact body instead of running the
+    /// handler again.
+    AuthorizationPrepared {
+        effect: Box<PreparedCommandEffect>,
+    },
     /// Handler effects were computed and bound to a durable authority
     /// challenge. The command is not executable again until that exact
     /// challenge is approved through an authenticated session.
@@ -248,7 +254,9 @@ impl CommandStateRequest {
 /// One current command plus durable ordering metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandStateEntry {
+    /// Earliest observed lifecycle sequence at the command's source node.
     pub admitted_at: LogPosition,
+    /// Serving-node position of the event supplying the current lifecycle.
     pub last_changed_at: LogPosition,
     pub command: CommandSnapshot,
 }
@@ -283,11 +291,11 @@ pub struct CommandWatchRequest {
     pub after: Option<LogPosition>,
 }
 
-/// One matching durable command transition on a catalog stream.
+/// All command entries released at one serving-log cut, applied atomically.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandStateUpdate {
     pub through: LogPosition,
-    pub command: CommandSnapshot,
+    pub commands: Vec<CommandStateEntry>,
 }
 
 /// Client-side materializer for a snapshot-then-live command catalog.
@@ -411,24 +419,6 @@ impl CommandStateSnapshot {
     }
 }
 
-impl CommandWatchRequest {
-    /// Filters one durable envelope into this exact command contract.
-    #[must_use]
-    pub fn update_from_envelope(&self, envelope: &EventEnvelope) -> Option<CommandStateUpdate> {
-        if envelope.origin.node_id != self.source_node {
-            return None;
-        }
-        let command = command_from_event(&envelope.event);
-        (command.request.service_id == self.service_id
-            && command.request.scope_id.equivalent_to(&self.scope_id)
-            && command.request.command_type == self.command_type)
-            .then(|| CommandStateUpdate {
-                through: envelope.position,
-                command: command.clone(),
-            })
-    }
-}
-
 impl CommandStateStream {
     /// Starts a live materializer from a completed command snapshot.
     ///
@@ -480,7 +470,7 @@ impl CommandStateStream {
         }
     }
 
-    /// Applies one matching durable transition atomically.
+    /// Validates and applies a complete release batch before advancing its cursor.
     ///
     /// # Errors
     ///
@@ -489,31 +479,37 @@ impl CommandStateStream {
         &mut self,
         update: &CommandStateUpdate,
     ) -> Result<CommandStateSnapshot, NodeError> {
-        if self
-            .through
-            .is_some_and(|through| update.through <= through)
+        if update.commands.is_empty()
+            || self
+                .through
+                .is_some_and(|through| update.through <= through)
         {
             return Err(NodeError::InvalidCommandState(
                 "command stream did not advance its serving cursor".to_owned(),
             ));
         }
-        validate_command_update(&self.request, update)?;
-        let key = update.command.request.id.to_string();
-        if let Some(entry) = self.commands.get_mut(&key) {
-            entry.admitted_at = entry.admitted_at.min(update.command.updated_at.sequence);
-            if command_transition_is_newer(&entry.command, &update.command) {
-                entry.last_changed_at = update.through;
-                entry.command = update.command.clone();
+        let mut seen = HashSet::new();
+        for entry in &update.commands {
+            validate_command_state_entry(&self.request, Some(update.through), entry)?;
+            if !seen.insert(entry.command.request.id) {
+                return Err(NodeError::InvalidCommandState(
+                    "command release contains a duplicate command ID".to_owned(),
+                ));
             }
-        } else {
-            self.commands.insert(
-                key,
-                CommandStateEntry {
-                    admitted_at: update.command.updated_at.sequence,
-                    last_changed_at: update.through,
-                    command: update.command.clone(),
-                },
-            );
+            if let Some(existing) = self.commands.get(&entry.command.request.id.to_string())
+                && (entry.command.request != existing.command.request
+                    || (entry.command != existing.command
+                        && !command_snapshot_supersedes(&existing.command, &entry.command)))
+            {
+                return Err(NodeError::InvalidCommandState(
+                    "command release changed an accepted request or regressed its lifecycle"
+                        .to_owned(),
+                ));
+            }
+        }
+        for entry in &update.commands {
+            self.commands
+                .insert(entry.command.request.id.to_string(), entry.clone());
         }
         self.through = Some(update.through);
         Ok(self.current())
@@ -522,6 +518,7 @@ impl CommandStateStream {
 
 /// Gap-free current-then-live watch for one durable command lifecycle.
 pub struct CommandWatch {
+    pub(super) node: Node,
     pub(super) command_id: CommandId,
     pub(super) current: CommandSnapshot,
     pub(super) events: EventSubscription,
@@ -542,12 +539,8 @@ impl CommandWatch {
     pub fn recv(&mut self) -> Result<CommandSnapshot, NodeError> {
         loop {
             let envelope = self.events.recv()?;
-            let command = command_from_event(&envelope.event);
-            if command.request.id == self.command_id
-                && command_transition_is_newer(&self.current, command)
-            {
-                self.current = command.clone();
-                return Ok(self.current.clone());
+            if let Some(command) = self.update_through(envelope.position)? {
+                return Ok(command);
             }
         }
     }
@@ -560,14 +553,75 @@ impl CommandWatch {
     pub async fn recv_async(&mut self) -> Result<CommandSnapshot, NodeError> {
         loop {
             let envelope = self.events.recv_async().await?;
-            let command = command_from_event(&envelope.event);
-            if command.request.id == self.command_id
-                && command_transition_is_newer(&self.current, command)
-            {
-                self.current = command.clone();
-                return Ok(self.current.clone());
+            if let Some(command) = self.update_through(envelope.position)? {
+                return Ok(command);
             }
         }
+    }
+
+    fn update_through(
+        &mut self,
+        through: LogPosition,
+    ) -> Result<Option<CommandSnapshot>, NodeError> {
+        if let Some(command) = self.node.command_through(self.command_id, Some(through))?
+            && command != self.current
+        {
+            self.current = command.clone();
+            return Ok(Some(command));
+        }
+        Ok(None)
+    }
+}
+
+/// Causally ready catalog changes, with one atomic batch per consumed log cut.
+pub struct CommandCatalogWatch {
+    pub(super) node: Node,
+    pub(super) request: CommandWatchRequest,
+    pub(super) current: BTreeMap<String, CommandStateEntry>,
+    pub(super) events: EventSubscription,
+}
+
+impl CommandCatalogWatch {
+    /// Waits for the next nonempty release batch.
+    ///
+    /// # Errors
+    /// Returns an error when history or the event subscription is unavailable.
+    pub fn recv(&mut self) -> Result<CommandStateUpdate, NodeError> {
+        loop {
+            let envelope = self.events.recv()?;
+            if let Some(update) = self.update_through(envelope.position)? {
+                return Ok(update);
+            }
+        }
+    }
+
+    /// Asynchronously waits for the next nonempty release batch.
+    ///
+    /// # Errors
+    /// Returns an error when history or the event subscription is unavailable.
+    pub async fn recv_async(&mut self) -> Result<CommandStateUpdate, NodeError> {
+        loop {
+            let envelope = self.events.recv_async().await?;
+            if let Some(update) = self.update_through(envelope.position)? {
+                return Ok(update);
+            }
+        }
+    }
+
+    fn update_through(
+        &mut self,
+        through: LogPosition,
+    ) -> Result<Option<CommandStateUpdate>, NodeError> {
+        let current = self
+            .node
+            .command_catalog_through(&self.request, Some(through))?;
+        let commands = current
+            .iter()
+            .filter(|(key, entry)| self.current.get(*key) != Some(*entry))
+            .map(|(_, entry)| entry.clone())
+            .collect::<Vec<_>>();
+        self.current = current;
+        Ok((!commands.is_empty()).then_some(CommandStateUpdate { through, commands }))
     }
 }
 

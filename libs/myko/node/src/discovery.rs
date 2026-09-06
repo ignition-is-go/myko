@@ -178,12 +178,14 @@ impl ViewHandler for NearbyNodesView {
 
     fn build_cell(
         context: ViewBuildArgs<Self>,
-    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-        context
-            .resource::<DiscoveryViewState>()
-            .expect("discovery view resource is installed")
-            .nearby
-            .clone()
+    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
+        myko::view::LocalView::new({
+            context
+                .resource::<DiscoveryViewState>()
+                .expect("discovery view resource is installed")
+                .nearby
+                .clone()
+        })
     }
 }
 

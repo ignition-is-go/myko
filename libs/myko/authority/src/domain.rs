@@ -128,13 +128,15 @@ impl ViewHandler for AuthorityGrantsView {
     #[allow(clippy::expect_used)]
     fn build_cell(
         context: ViewBuildArgs<Self>,
-    ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-        myko::item::typed_map_arc_from_any_item::<GrantRecord>(
-            context
-                .federated_items::<GrantRecord>()
-                .expect("validated authority-grant federation source"),
-            "AuthorityGrantsView",
-        )
+    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
+        myko::view::LocalView::new({
+            myko::item::typed_map_arc_from_any_item::<GrantRecord>(
+                context
+                    .federated_items::<GrantRecord>()
+                    .expect("validated authority-grant federation source"),
+                "AuthorityGrantsView",
+            )
+        })
     }
 }
 

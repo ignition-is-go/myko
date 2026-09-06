@@ -30,11 +30,13 @@ pub struct GetDemoTasksWithStatus {}
 impl ViewHandler for GetDemoTasksWithStatus {
     fn build_cell(
         ctx: ViewBuildArgs<Self>,
-    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-        joined_demo_tasks(
-            ctx.view_context.query_map_by_str(GetDemoTasks {}),
-            ctx.view_context.query_map_by_str(GetDemoStatuses {}),
-        )
+    ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
+        crate::view::LocalView::new({
+            joined_demo_tasks(
+                ctx.view_context.query_map_by_str(GetDemoTasks {}),
+                ctx.view_context.query_map_by_str(GetDemoStatuses {}),
+            )
+        })
     }
 }
 

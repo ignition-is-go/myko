@@ -17,7 +17,13 @@
 
 #![forbid(unsafe_code)]
 
+mod attestation;
 mod pairing;
+
+pub use attestation::{
+    RetainedHistorySignatureError, sign_retained_history_statement,
+    verify_retained_history_statement,
+};
 
 pub use pairing::{
     MYKO_PAIRING_ALPN, MYKO_PAIRING_OFFER_ALPN, PairingInvitation, PairingReceipt,

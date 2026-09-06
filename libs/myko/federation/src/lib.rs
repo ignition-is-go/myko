@@ -11,10 +11,28 @@
 // boxing it would make every policy consumer allocate merely to propagate it.
 #![allow(clippy::result_large_err)]
 
+mod attestation;
 mod authority;
+mod causal;
+mod control;
+mod control_chain;
+pub mod control_quorum;
+mod prepared_effect;
+mod publication;
 mod reactive;
+mod selected;
+mod signed_statement;
 
+pub use attestation::RetainedHistoryStatement;
 pub use authority::*;
+pub use causal::causal_replay;
+pub use control::FrameworkControlEvent;
+pub use control_chain::{
+    CertifiedControlChain, CertifiedControlContext, ControlAnchor, ControlTransition,
+};
+pub use prepared_effect::PreparedCommandEffect;
+pub use publication::{LivePublication, LivePublicationStream};
+pub use signed_statement::SignedRetainedHistoryStatement;
 
 pub use reactive::{
     CollectionPlan, CompositeFrontier, LiveCollection, LiveCollectionError, LiveCollectionHandle,
@@ -62,12 +80,19 @@ pub use access::*;
 mod command;
 pub use command::*;
 
+mod commitment;
+pub use commitment::*;
+
 #[allow(clippy::redundant_pub_crate)]
 mod history;
 pub use history::*;
 use history::{
     DURABLE_EVENT_PAGE_LIMIT, DURABLE_EVENT_PAGE_SIZE, DurableReplay, command_from_event,
-    command_transition_is_newer, materialize_pending_local_commands,
+    command_snapshot_supersedes, materialize_command_snapshot, materialize_pending_local_commands,
+};
+use selected::SelectedQueryRead;
+pub use selected::{
+    SelectedHistoryManifest, SelectedHistoryManifestError, SelectedHistorySnapshot,
 };
 
 #[allow(clippy::redundant_pub_crate)]
@@ -76,7 +101,6 @@ pub use item::*;
 use item::{
     SelectedQueryWake, materialize_command_state_entries, materialize_item_state_entries,
     next_command_state_request, validate_command_state_entry, validate_command_state_request,
-    validate_command_update,
 };
 
 #[allow(clippy::redundant_pub_crate)]
@@ -85,7 +109,8 @@ mod node;
 use node::DeclaredCommand;
 pub use node::*;
 use node::{
-    apply_item_envelope, decode_declared_body, decode_typed_command_state, validate_change_batch,
+    apply_item_envelope, decode_declared_body, decode_typed_command_state, project_item_history,
+    validate_change_batch,
 };
 
 #[allow(clippy::redundant_pub_crate)]

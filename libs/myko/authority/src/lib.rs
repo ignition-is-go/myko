@@ -57,6 +57,10 @@ use evaluator::{deny, evaluate};
 mod policy;
 pub use policy::*;
 
+mod decision_records;
+
+pub mod certified;
+
 #[cfg(test)]
 #[allow(
     clippy::arithmetic_side_effects,

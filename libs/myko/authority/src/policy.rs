@@ -441,9 +441,12 @@ impl AccessPolicy for AuthorityPolicy {
                     ScopeSelection::Exact(scope) => {
                         vec![ScopeSelection::Exact(scope.clone())]
                     }
-                    ScopeSelection::Subtree(root) => std::iter::once(root.clone())
-                        .chain(topology.descendants(root))
-                        .map(ScopeSelection::Exact)
+                    ScopeSelection::Subtree(root) => std::iter::once(selection.clone())
+                        .chain(
+                            std::iter::once(root.clone())
+                                .chain(topology.descendants(root))
+                                .map(ScopeSelection::Exact),
+                        )
                         .collect(),
                 })
                 .collect(),
@@ -465,7 +468,7 @@ impl AccessPolicy for AuthorityPolicy {
                 })?
                 .into_iter()
                 .filter(|event| event.origin.node_id == self.application.node_id())
-                .filter(|event| event.event.service_id() == service)
+                .filter(|event| event.event.service_id() == Some(service))
                 .flat_map(|event| event.event.affected_scope_ids())
                 .map(ScopeSelection::Exact)
                 .collect(),

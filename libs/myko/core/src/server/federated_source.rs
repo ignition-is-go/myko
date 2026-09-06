@@ -8,8 +8,9 @@ use std::{
 
 use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable as _, MapDiff, Mutable as _};
 use myko_federation::{
-    EventEnvelope, LogPosition, MutationOperation, Node, NodeEvent, NodeId, ScopeId,
-    ScopeSelection, ScopeTopology, ServiceId, SubscriptionLiveness,
+    EventEnvelope, LiveSubscription, LiveSubscriptionWriter, LogPosition, MutationOperation, Node,
+    NodeEvent, NodeId, ScopeId, ScopeSelection, ScopeTopology, SelectedHistorySnapshot, ServiceId,
+    SubscriptionLiveness, live_subscription,
 };
 
 use crate::{
@@ -75,15 +76,52 @@ pub struct SourcedItemKey<I> {
 pub type SourcedItemMap<T> =
     CellMap<SourcedItemKey<<T as MykoItem>::Id>, Arc<SourcedItem<T>>, CellImmutable>;
 
-type SourcedProjection<T> = BTreeMap<SourcedItemKey<<T as MykoItem>::Id>, SourcedItem<T>>;
+/// One immutable accepted-history projection retaining event-origin identity.
+pub type SourcedItemSnapshot<T> = BTreeMap<SourcedItemKey<<T as MykoItem>::Id>, SourcedItem<T>>;
+type SourcedProjection<T> = SourcedItemSnapshot<T>;
 type SourcedProjectionDiff<T> = MapDiff<SourcedItemKey<<T as MykoItem>::Id>, Arc<SourcedItem<T>>>;
+
+struct SourcedDriver<T>
+where
+    T: MykoItem,
+{
+    writer: LiveSubscriptionWriter<SourcedProjection<T>>,
+    armed: bool,
+}
+
+impl<T> SourcedDriver<T>
+where
+    T: MykoItem,
+{
+    fn replace(&self, state: myko_federation::LiveSubscriptionState<SourcedProjection<T>>) {
+        self.writer.replace(state);
+    }
+
+    fn invalidate(&mut self, reason: impl Into<String>) {
+        self.writer.invalidate(reason);
+        self.armed = false;
+    }
+}
+
+impl<T> Drop for SourcedDriver<T>
+where
+    T: MykoItem,
+{
+    fn drop(&mut self) {
+        if self.armed {
+            self.writer
+                .invalidate("multi-source projection driver stopped");
+        }
+    }
+}
 
 struct SourcedMapSource<T>
 where
     T: MykoItem,
 {
+    snapshots: LiveSubscription<SourcedProjection<T>>,
     rows: SourcedItemMap<T>,
-    task: Option<tokio::task::JoinHandle<()>>,
+    tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl<T> SourcedMapSource<T>
@@ -95,59 +133,135 @@ where
         selection: ScopeSelection,
         executor: &tokio::runtime::Handle,
     ) -> Result<Self, String> {
-        let history = node.events_after(None).map_err(|error| error.to_string())?;
-        let through = history.last().map(|event| event.position);
-        let topology = node.scope_topology().map_err(|error| error.to_string())?;
-        let mut items = BTreeMap::new();
-        for envelope in &history {
-            let _diff = apply_sourced_item_event::<T>(&mut items, &selection, &topology, envelope)?;
-        }
+        let initial_snapshot =
+            SelectedHistorySnapshot::current(node).map_err(|error| error.to_string())?;
+        let through = initial_snapshot.through();
+        let initial = selected_snapshot_state::<T>(&initial_snapshot, &selection)?;
+        let (writer, snapshots) = live_subscription(initial);
         let rows_writer = CellMap::<SourcedItemKey<T::Id>, Arc<SourcedItem<T>>, CellMutable>::new()
             .with_name("myko.federated.sourced_rows");
-        rows_writer.replace_all(
-            items
-                .iter()
-                .map(|(key, item)| (key.clone(), Arc::new(item.clone())))
-                .collect::<Vec<_>>(),
-        );
         let rows = rows_writer.clone().lock();
+        let mut publications = snapshots.watch_publications();
+        let initial_publication = publications.recv().map_err(|error| error.to_string())?;
+        replace_sourced_rows(&rows_writer, &initial_publication.state);
         let mut events = node.subscribe(through).map_err(|error| error.to_string())?;
         let task_node = node.clone();
+        let mut driver = SourcedDriver {
+            writer,
+            armed: true,
+        };
+        let rows_task = executor.spawn(async move {
+            while let Ok(publication) = publications.recv_async().await {
+                replace_sourced_rows(&rows_writer, &publication.state);
+            }
+        });
         let task = executor.spawn(async move {
             loop {
                 let envelope = match events.recv_async().await {
                     Ok(envelope) => envelope,
                     Err(error) => {
                         tracing::error!(%error, "multi-source item projection disconnected");
+                        driver.invalidate(error.to_string());
                         return;
                     }
                 };
-                let topology = match task_node.scope_topology() {
-                    Ok(topology) => topology,
+                let snapshot = match SelectedHistorySnapshot::at(
+                    &task_node,
+                    Some(envelope.position),
+                ) {
+                    Ok(snapshot) => snapshot,
                     Err(error) => {
-                        tracing::error!(%error, "multi-source item topology became unavailable");
+                        tracing::error!(%error, "multi-source causal snapshot became unavailable");
+                        driver.invalidate(error.to_string());
                         return;
                     }
                 };
-                match apply_sourced_item_event::<T>(&mut items, &selection, &topology, &envelope) {
-                    Ok(Some(diff)) => rows_writer.apply_diff_owned(diff),
-                    Ok(None) => {}
+                let next = match selected_snapshot_state::<T>(&snapshot, &selection) {
+                    Ok(next) => next,
                     Err(error) => {
-                        tracing::error!(%error, "multi-source item projection failed");
+                        tracing::error!(%error, "multi-source causal projection became unavailable");
+                        driver.invalidate(error);
                         return;
                     }
-                }
+                };
+                driver.replace(next);
             }
         });
         Ok(Self {
+            snapshots,
             rows,
-            task: Some(task),
+            tasks: vec![task, rows_task],
         })
     }
 
     fn rows(&self) -> SourcedItemMap<T> {
         self.rows.clone()
     }
+
+    fn snapshots(&self) -> LiveSubscription<SourcedProjection<T>> {
+        self.snapshots.clone()
+    }
+}
+
+pub(crate) fn selected_snapshot_state<T>(
+    snapshot: &SelectedHistorySnapshot,
+    selection: &ScopeSelection,
+) -> Result<myko_federation::LiveSubscriptionState<SourcedProjection<T>>, String>
+where
+    T: MykoItem,
+{
+    let items = sourced_projection::<T>(snapshot.ready(), selection)?;
+    let liveness = if snapshot.has_pending_in::<T>(selection) {
+        SubscriptionLiveness::Resynchronizing {
+            reason: "selected accepted history has unresolved causal dependencies".to_owned(),
+        }
+    } else {
+        SubscriptionLiveness::Current
+    };
+    Ok(myko_federation::LiveSubscriptionState {
+        value: Some(items),
+        through: snapshot.through(),
+        liveness,
+    })
+}
+
+fn replace_sourced_rows<T>(
+    rows: &CellMap<SourcedItemKey<T::Id>, Arc<SourcedItem<T>>, CellMutable>,
+    snapshot: &myko_federation::LiveSubscriptionState<SourcedProjection<T>>,
+) where
+    T: MykoItem,
+{
+    let entries = snapshot
+        .value
+        .as_ref()
+        .map(|items| {
+            items
+                .iter()
+                .map(|(key, item)| (key.clone(), Arc::new(item.clone())))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    rows.replace_all(entries);
+}
+
+fn sourced_projection<T>(
+    history: &[EventEnvelope],
+    selection: &ScopeSelection,
+) -> Result<SourcedProjection<T>, String>
+where
+    T: MykoItem,
+{
+    let mut topology = ScopeTopology::default();
+    for envelope in history {
+        topology
+            .observe_event(&envelope.event)
+            .map_err(|error| error.to_string())?;
+    }
+    let mut items = BTreeMap::new();
+    for envelope in history {
+        let _diff = apply_sourced_item_event::<T>(&mut items, selection, &topology, envelope)?;
+    }
+    Ok(items)
 }
 
 impl<T> Drop for SourcedMapSource<T>
@@ -155,7 +269,7 @@ where
     T: MykoItem,
 {
     fn drop(&mut self) {
-        if let Some(task) = self.task.take() {
+        for task in self.tasks.drain(..) {
             task.abort();
         }
     }
@@ -464,6 +578,36 @@ impl FederatedRuntime {
     where
         T: MykoItem + Eventable + AnyItem,
     {
+        self.sourced_source_selected::<T>(selection)
+            .map(|source| source.rows())
+    }
+
+    /// Return canonical accepted-history snapshots for an exact scope or subtree.
+    ///
+    /// This reports local dependency completeness at each fixed cut. It is not
+    /// evidence that another replica is current or holds custody for the scope.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the source cache or selected history is unavailable.
+    pub fn sourced_snapshots_selected<T>(
+        &self,
+        selection: ScopeSelection,
+    ) -> Result<LiveSubscription<SourcedItemSnapshot<T>>, String>
+    where
+        T: MykoItem + Eventable + AnyItem,
+    {
+        self.sourced_source_selected::<T>(selection)
+            .map(|source| source.snapshots())
+    }
+
+    fn sourced_source_selected<T>(
+        &self,
+        selection: ScopeSelection,
+    ) -> Result<Arc<SourcedMapSource<T>>, String>
+    where
+        T: MykoItem + Eventable + AnyItem,
+    {
         let key = SourcedSourceKey {
             item: TypeId::of::<T>(),
             selection: selection.clone(),
@@ -475,7 +619,6 @@ impl FederatedRuntime {
         if let Some(source) = sources.get(&key) {
             return Arc::clone(source)
                 .downcast::<SourcedMapSource<T>>()
-                .map(|source| source.rows())
                 .map_err(|_| "federated sourced-item cache type mismatch".to_owned());
         }
         let source = Arc::new(SourcedMapSource::<T>::start(
@@ -486,7 +629,7 @@ impl FederatedRuntime {
         let erased: Arc<dyn Any + Send + Sync> = source.clone();
         sources.insert(key, erased);
         drop(sources);
-        Ok(source.rows())
+        Ok(source)
     }
 
     /// Return whether every opened source for this selection is current at
@@ -692,6 +835,7 @@ mod tests {
     use super::*;
     use crate::{
         ApplicationHost, MykoApplication, MykoService,
+        common::with_id::WithId as _,
         core::capability::Viewing as _,
         myko_item, myko_query, myko_report, myko_report_output, myko_service, myko_view,
         request::RequestContext,
@@ -762,12 +906,43 @@ mod tests {
 
         fn build_cell(
             ctx: crate::view::ViewBuildArgs<Self>,
-        ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-            crate::item::typed_map_arc_from_any_item::<ProjectionRecord>(
-                ctx.federated_items::<ProjectionRecord>()
-                    .expect("test federation source is configured"),
-                "ProjectionRecordView",
-            )
+        ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
+            crate::view::LocalView::new({
+                crate::item::typed_map_arc_from_any_item::<ProjectionRecord>(
+                    ctx.federated_items::<ProjectionRecord>()
+                        .expect("test federation source is configured"),
+                    "ProjectionRecordView",
+                )
+            })
+        }
+    }
+
+    #[myko_view(ProjectionRecord, item = ProjectionRecord)]
+    #[derive(PartialEq, Eq)]
+    pub struct RetainedProjectionRecordView;
+
+    impl crate::view::ViewHandler for RetainedProjectionRecordView {
+        fn scope_id(&self, _local_node: NodeId) -> Option<ScopeId> {
+            Some(ScopeId::for_item::<ProjectionRecord>(
+                &ProjectionRecordId::from("record"),
+            ))
+        }
+
+        fn build_cell(
+            ctx: crate::view::ViewBuildArgs<Self>,
+        ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
+            let selection = ScopeSelection::Exact(ScopeId::for_item::<ProjectionRecord>(
+                &ProjectionRecordId::from("record"),
+            ));
+            let publication = ctx
+                .sourced_snapshots_selected::<ProjectionRecord>(selection)
+                .expect("test federation source is configured")
+                .map_value(|rows| {
+                    rows.values()
+                        .map(|row| (row.item.id(), Arc::new(row.item.clone())))
+                        .collect()
+                });
+            crate::view::RetainedView::new(publication)
         }
     }
 
@@ -778,8 +953,12 @@ mod tests {
     impl crate::view::ViewHandler for NestedProjectionRecordView {
         fn build_cell(
             ctx: crate::view::ViewBuildArgs<Self>,
-        ) -> impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
-            ctx.view_context.view(ProjectionRecordView)
+        ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
+            crate::view::LocalView::new(
+                ctx.view_context
+                    .view(ProjectionRecordView)
+                    .expect("nested test view is a local map"),
+            )
         }
     }
 
@@ -830,6 +1009,14 @@ mod tests {
     }
 
     fn commit(node: &Node, item: Option<&ProjectionRecord>) -> Result<(), String> {
+        commit_after(node, item, Vec::new())
+    }
+
+    fn commit_after(
+        node: &Node,
+        item: Option<&ProjectionRecord>,
+        causal_parents: Vec<myko_federation::EventId>,
+    ) -> Result<(), String> {
         let scope_id = ScopeId::for_item::<ProjectionRecord>(&ProjectionRecordId::from("record"));
         let command = CommandRequest {
             id: CommandId::new(),
@@ -859,7 +1046,7 @@ mod tests {
                 command_id: command.id,
                 service_id: command.service_id,
                 scope_id,
-                causal_parents: Vec::new(),
+                causal_parents,
                 changes: vec![change],
             },
             Vec::new(),
@@ -999,7 +1186,327 @@ mod tests {
         assert_eq!(updated.first_changed_at(), first_changed_at);
         assert!(updated.last_changed_at() > first_changed_at);
         assert_eq!(updated.change_index(), 0);
+        commit(&local, None)?;
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while rows.get_value(&local_key).is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| "local sourced deletion did not arrive".to_owned())?;
+        assert_eq!(rows.get_value(&remote_key), Some(remote_row));
         runtime.shutdown().await;
+        Ok(())
+    }
+
+    fn unrelated_dependency_event() -> Result<EventEnvelope, String> {
+        let dependency_source = Node::in_memory();
+        let dependency_request = CommandRequest {
+            id: CommandId::new(),
+            service_id: ServiceId::new(ProjectionService::SERVICE_ID),
+            scope_id: ScopeId::new("dependency:scope"),
+            principal_id: PrincipalId::new("test:dependency"),
+            authority: AuthorityPresentation::direct_node(PrincipalId::new("test:dependency")),
+            resource_claims: Vec::new(),
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
+            command_type: "dependency".to_owned(),
+            payload: Vec::new(),
+        };
+        dependency_source
+            .admit(dependency_request)
+            .map_err(|error| error.to_string())?;
+        dependency_source
+            .events_after(None)
+            .map_err(|error| error.to_string())?
+            .pop()
+            .ok_or_else(|| "dependency event is missing".to_owned())
+    }
+
+    #[tokio::test]
+    async fn sourced_projection_withholds_a_write_until_its_causal_parent_arrives()
+    -> Result<(), String> {
+        let dependency_envelope = unrelated_dependency_event()?;
+        let dependency = dependency_envelope.origin;
+
+        let node = Node::in_memory();
+        let record_id = ProjectionRecordId::from("record");
+        let scope_id = ScopeId::for_item::<ProjectionRecord>(&record_id);
+        let command = CommandRequest {
+            id: CommandId::new(),
+            service_id: ServiceId::new(ProjectionService::SERVICE_ID),
+            scope_id: scope_id.clone(),
+            principal_id: PrincipalId::new("test:owner"),
+            authority: AuthorityPresentation::direct_node(PrincipalId::new("test:owner")),
+            resource_claims: vec![ResourceClaim::scope(
+                scope_id.clone(),
+                ResourceClaimKind::Primary,
+            )],
+            application_capabilities: Vec::new(),
+            arguments_digest: None,
+            command_type: "projection.record".to_owned(),
+            payload: Vec::new(),
+        };
+        node.admit(command.clone())
+            .map_err(|error| error.to_string())?;
+        let record = ProjectionRecord {
+            id: record_id.clone(),
+            value: 7,
+        };
+        node.commit(
+            command.id,
+            ChangeBatch {
+                id: BatchId::new(),
+                command_id: command.id,
+                service_id: command.service_id,
+                scope_id: command.scope_id,
+                causal_parents: vec![dependency],
+                changes: vec![ItemMutation::set(&record).map_err(|error| error.to_string())?],
+            },
+            Vec::new(),
+        )
+        .map_err(|error| error.to_string())?;
+        let write_position = node
+            .events_after(None)
+            .map_err(|error| error.to_string())?
+            .last()
+            .map(|event| event.position.get())
+            .ok_or_else(|| "pending write is missing".to_owned())?;
+
+        let source = SourcedMapSource::<ProjectionRecord>::start(
+            &node,
+            ScopeSelection::Exact(scope_id),
+            &tokio::runtime::Handle::current(),
+        )?;
+        let rows = source.rows();
+        assert!(rows.snapshot().is_empty());
+
+        node.ingest(dependency_envelope)
+            .map_err(|error| error.to_string())?;
+        let key = SourcedItemKey {
+            source_node: node.node_id(),
+            item_id: record_id,
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while rows.get_value(&key).is_none() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| "released write did not reach sourced map".to_owned())?;
+        let released = rows
+            .get_value(&key)
+            .ok_or_else(|| "released sourced row is missing".to_owned())?;
+        assert_eq!(released.item, record);
+        assert_eq!(released.last_changed_at(), write_position);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sourced_deletion_waits_for_its_parent_without_changing_an_earlier_cut()
+    -> Result<(), String> {
+        let node = Node::in_memory();
+        let record = ProjectionRecord {
+            id: ProjectionRecordId::from("record"),
+            value: 1,
+        };
+        commit(&node, Some(&record))?;
+        let dependency = unrelated_dependency_event()?;
+        commit_after(&node, None, vec![dependency.origin])?;
+        let selection = ScopeSelection::Exact(ScopeId::for_item::<ProjectionRecord>(&record.id));
+        let (pending_cut, pending_history) =
+            node.causal_snapshot().map_err(|error| error.to_string())?;
+        let pending_cut = pending_cut.ok_or_else(|| "pending cut is missing".to_owned())?;
+        let before = sourced_projection::<ProjectionRecord>(&pending_history, &selection)?;
+        let key = SourcedItemKey {
+            source_node: node.node_id(),
+            item_id: record.id.clone(),
+        };
+        assert_eq!(before.get(&key).map(|row| &row.item), Some(&record));
+
+        let source = SourcedMapSource::<ProjectionRecord>::start(
+            &node,
+            selection.clone(),
+            &tokio::runtime::Handle::current(),
+        )?;
+        let mut snapshots = source.snapshots().watch_publications();
+        let pending =
+            tokio::time::timeout(std::time::Duration::from_secs(1), snapshots.recv_async())
+                .await
+                .map_err(|_| "pending sourced snapshot was not published".to_owned())?
+                .map_err(|error| error.to_string())?
+                .state;
+        assert_eq!(pending.through, Some(pending_cut));
+        assert!(matches!(
+            pending.liveness,
+            SubscriptionLiveness::Resynchronizing { .. }
+        ));
+        assert_eq!(
+            pending.value.as_ref().and_then(|items| items.get(&key)),
+            before.get(&key)
+        );
+        let rows = source.rows();
+        assert_eq!(
+            rows.get_value(&key).map(|row| row.item.clone()),
+            Some(record)
+        );
+        node.ingest(dependency).map_err(|error| error.to_string())?;
+        let released =
+            tokio::time::timeout(std::time::Duration::from_secs(1), snapshots.recv_async())
+                .await
+                .map_err(|_| "released sourced snapshot was not published".to_owned())?
+                .map_err(|error| error.to_string())?
+                .state;
+        assert!(released.through.is_some_and(|cut| cut > pending_cut));
+        assert_eq!(released.liveness, SubscriptionLiveness::Current);
+        assert!(released.value.is_some_and(|items| items.is_empty()));
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            while !rows.snapshot().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| "released deletion did not reach sourced map".to_owned())?;
+        let old_history = node
+            .causal_events_through(pending_cut)
+            .map_err(|error| error.to_string())?;
+        assert_eq!(
+            sourced_projection::<ProjectionRecord>(&old_history, &selection)?,
+            before
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn application_snapshot_reports_pending_then_released_selected_history() -> Result<(), String> {
+        let node = Node::in_memory();
+        let record = ProjectionRecord {
+            id: ProjectionRecordId::from("record"),
+            value: 1,
+        };
+        commit(&node, Some(&record))?;
+        let dependency = unrelated_dependency_event()?;
+        commit_after(&node, None, vec![dependency.origin])?;
+        let selection = ScopeSelection::Exact(ScopeId::for_item::<ProjectionRecord>(&record.id));
+        let application = MykoApplication::builder()
+            .service::<ProjectionService>()
+            .build();
+        let host = ApplicationHost::new(node.clone(), application)?;
+        let runtime = host
+            .server()
+            .federated()
+            .ok_or_else(|| "application has no federation runtime".to_owned())?;
+        assert!(
+            runtime
+                .sourced_sources
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        );
+
+        let pending =
+            host.snapshot_items_across_sources_selected::<ProjectionRecord>(&selection)?;
+        assert!(matches!(
+            pending.liveness,
+            SubscriptionLiveness::Resynchronizing { .. }
+        ));
+        let pending_rows = pending
+            .value
+            .ok_or_else(|| "pending snapshot has no retained rows".to_owned())?;
+        let key = SourcedItemKey {
+            source_node: node.node_id(),
+            item_id: record.id.clone(),
+        };
+        assert_eq!(pending_rows.get(&key).map(|row| &row.item), Some(&record));
+        assert!(
+            runtime
+                .sourced_sources
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        );
+
+        node.ingest(dependency).map_err(|error| error.to_string())?;
+        let released =
+            host.snapshot_items_across_sources_selected::<ProjectionRecord>(&selection)?;
+        assert_eq!(released.liveness, SubscriptionLiveness::Current);
+        assert!(released.value.is_some_and(|rows| rows.is_empty()));
+        assert!(
+            runtime
+                .sourced_sources
+                .lock()
+                .map_err(|error| error.to_string())?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn sourced_snapshot_advances_cut_when_rows_do_not_change() -> Result<(), String> {
+        let node = Node::in_memory();
+        let selection = ScopeSelection::Exact(ScopeId::for_item::<ProjectionRecord>(
+            &ProjectionRecordId::from("record"),
+        ));
+        let source = SourcedMapSource::<ProjectionRecord>::start(
+            &node,
+            selection,
+            &tokio::runtime::Handle::current(),
+        )?;
+        let mut snapshots = source.snapshots().watch_publications();
+        let initial = snapshots
+            .recv_async()
+            .await
+            .map_err(|error| error.to_string())?
+            .state;
+        assert_eq!(initial.through, None);
+        assert!(initial.value.is_some_and(|items| items.is_empty()));
+
+        node.ingest(unrelated_dependency_event()?)
+            .map_err(|error| error.to_string())?;
+        let advanced =
+            tokio::time::timeout(std::time::Duration::from_secs(1), snapshots.recv_async())
+                .await
+                .map_err(|_| "metadata-only sourced snapshot was not published".to_owned())?
+                .map_err(|error| error.to_string())?
+                .state;
+        assert!(advanced.through.is_some());
+        assert_eq!(advanced.liveness, SubscriptionLiveness::Current);
+        assert!(advanced.value.is_some_and(|items| items.is_empty()));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn stopping_sourced_driver_invalidates_and_retains_its_payload() -> Result<(), String> {
+        let node = Node::in_memory();
+        let record = ProjectionRecord {
+            id: ProjectionRecordId::from("record"),
+            value: 9,
+        };
+        commit(&node, Some(&record))?;
+        let source = SourcedMapSource::<ProjectionRecord>::start(
+            &node,
+            ScopeSelection::Exact(ScopeId::for_item::<ProjectionRecord>(&record.id)),
+            &tokio::runtime::Handle::current(),
+        )?;
+        let mut snapshots = source.snapshots().watch_publications();
+        let initial = snapshots
+            .recv_async()
+            .await
+            .map_err(|error| error.to_string())?
+            .state;
+        drop(source);
+
+        let invalid =
+            tokio::time::timeout(std::time::Duration::from_secs(1), snapshots.recv_async())
+                .await
+                .map_err(|_| "stopped sourced driver remained current".to_owned())?
+                .map_err(|error| error.to_string())?
+                .state;
+        assert_eq!(invalid.value, initial.value);
+        assert!(matches!(
+            invalid.liveness,
+            SubscriptionLiveness::Invalid { .. }
+        ));
         Ok(())
     }
 
@@ -1097,16 +1604,19 @@ mod tests {
             server.host_id,
             chrono::Utc::now().to_rfc3339(),
         ));
-        let rows = server.handler_registry.open_federated_view(
-            "ProjectionRecordView",
-            serde_json::json!({}),
-            request,
-            Arc::clone(&server),
-            FederatedRequest {
-                source_node: Some(node.node_id()),
-                scope_id: Some(scope_id),
-            },
-        )?;
+        let rows = server
+            .handler_registry
+            .open_federated_view(
+                "ProjectionRecordView",
+                serde_json::json!({}),
+                request,
+                Arc::clone(&server),
+                FederatedRequest {
+                    source_node: Some(node.node_id()),
+                    scope_id: Some(scope_id),
+                },
+            )?
+            .into_local_map()?;
         assert_eq!(rows.snapshot().len(), 1);
 
         commit(&node, None)?;
@@ -1137,16 +1647,19 @@ mod tests {
             server.host_id,
             "test",
         ));
-        let rows = server.handler_registry.open_federated_view(
-            "NestedProjectionRecordView",
-            serde_json::json!({}),
-            request,
-            Arc::clone(&server),
-            FederatedRequest {
-                source_node: Some(node.node_id()),
-                scope_id: Some(ScopeId::new("outer-scope")),
-            },
-        )?;
+        let rows = server
+            .handler_registry
+            .open_federated_view(
+                "NestedProjectionRecordView",
+                serde_json::json!({}),
+                request,
+                Arc::clone(&server),
+                FederatedRequest {
+                    source_node: Some(node.node_id()),
+                    scope_id: Some(ScopeId::new("outer-scope")),
+                },
+            )?
+            .into_local_map()?;
 
         assert_eq!(rows.snapshot().len(), 1);
         Ok(())
@@ -1245,6 +1758,17 @@ mod tests {
         )?;
 
         assert_eq!(session.subscription_count(), 1);
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let arrived = !frames.lock().map_err(|_| "test sink poisoned")?.is_empty();
+                if arrived {
+                    return Ok::<(), String>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| "initial handler frame did not arrive".to_owned())??;
         assert!(frames.lock().map_err(|_| "test sink poisoned")?.iter().any(
             |frame| matches!(frame, myko_wire::NodeFrame::HandlerState { state, .. }
                 if state.row_keys.as_ref().is_some_and(|keys| keys == &["record"])),
@@ -1252,5 +1776,121 @@ mod tests {
         session.cancel_all();
         host.shutdown().await;
         Ok(())
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn registered_retained_view_gates_cached_output_and_preserves_publications()
+    -> Result<(), String> {
+        let node = Node::in_memory();
+        let record = ProjectionRecord {
+            id: ProjectionRecordId::from("record"),
+            value: 1,
+        };
+        commit(&node, Some(&record))?;
+        let application = MykoApplication::builder()
+            .service::<ProjectionService>()
+            .build();
+        let host = ApplicationHost::new(node.clone(), application)?;
+        let request = myko_wire::HandlerRequest {
+            kind: myko_federation::HandlerKind::View,
+            handler_id: "RetainedProjectionRecordView".to_owned(),
+            source_node: Some(node.node_id()),
+            scope_id: Some(ScopeId::for_item::<ProjectionRecord>(&record.id)),
+            params: serde_json::json!({}),
+        };
+
+        let priming_frames = Arc::new(Mutex::new(Vec::new()));
+        let mut priming_session = crate::server::ClientSession::new(
+            Arc::from("retained-prime"),
+            NodeFrameSink(Arc::clone(&priming_frames)),
+        );
+        host.open_handler(
+            &mut priming_session,
+            Arc::from("retained-prime"),
+            request.clone(),
+        )?;
+
+        let dependency = unrelated_dependency_event()?;
+        commit_after(&node, None, vec![dependency.origin])?;
+        let pending_cut = node
+            .local_history_cut()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "pending history cut is missing".to_owned())?;
+        let frames = Arc::new(Mutex::new(Vec::new()));
+        let mut session = crate::server::ClientSession::new(
+            Arc::from("retained-consumer"),
+            NodeFrameSink(Arc::clone(&frames)),
+        );
+        host.open_handler(&mut session, Arc::from("retained-consumer"), request)?;
+        assert!(frames.lock().map_err(|_| "test sink poisoned")?.is_empty());
+
+        wait_for_frames(&frames, 1).await?;
+        let pending = frames.lock().map_err(|_| "test sink poisoned")?.clone();
+        assert!(matches!(
+            pending.first(),
+            Some(myko_wire::NodeFrame::HandlerState { state, .. })
+                if state.through == Some(serde_json::json!(pending_cut.get()))
+                    && matches!(
+                        state.liveness,
+                        SubscriptionLiveness::Resynchronizing { .. }
+                    )
+                    && state.row_keys.as_deref() == Some(&["record".to_owned()])
+                    && state.value == Some(serde_json::json!([record]))
+        ));
+
+        node.ingest(dependency).map_err(|error| error.to_string())?;
+        wait_for_frames(&frames, 2).await?;
+        let released_cut = node
+            .local_history_cut()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "released history cut is missing".to_owned())?;
+        let released = frames.lock().map_err(|_| "test sink poisoned")?.clone();
+        assert!(matches!(
+            released.get(1),
+            Some(myko_wire::NodeFrame::HandlerViewDelta { delta, .. })
+                if delta.through == Some(serde_json::json!(released_cut.get()))
+                    && delta.liveness == SubscriptionLiveness::Current
+                    && delta.deletes == ["record"]
+                    && delta.upserts.is_empty()
+        ));
+
+        node.ingest(unrelated_dependency_event()?)
+            .map_err(|error| error.to_string())?;
+        wait_for_frames(&frames, 3).await?;
+        let metadata_cut = node
+            .local_history_cut()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "metadata history cut is missing".to_owned())?;
+        let metadata = frames.lock().map_err(|_| "test sink poisoned")?.clone();
+        assert!(matches!(
+            metadata.get(2),
+            Some(myko_wire::NodeFrame::HandlerViewDelta { delta, .. })
+                if delta.through == Some(serde_json::json!(metadata_cut.get()))
+                    && delta.liveness == SubscriptionLiveness::Current
+                    && delta.upserts.is_empty()
+                    && delta.deletes.is_empty()
+                    && delta.order.is_none()
+        ));
+
+        session.cancel_all();
+        priming_session.cancel_all();
+        host.shutdown().await;
+        Ok(())
+    }
+
+    async fn wait_for_frames(
+        frames: &Mutex<Vec<myko_wire::NodeFrame>>,
+        count: usize,
+    ) -> Result<(), String> {
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if frames.lock().map_err(|_| "test sink poisoned")?.len() >= count {
+                    return Ok::<(), String>(());
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .map_err(|_| format!("expected {count} retained handler frames"))?
     }
 }

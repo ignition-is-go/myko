@@ -1533,11 +1533,10 @@ mod tests {
         let second = client.watch_query(GetAllClients {});
 
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
-        let query_frames = transport
-            .sent_frames()
-            .into_iter()
-            .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\"")))
-            .collect::<Vec<_>>();
+        let query_frames = transport.wait_for_sent_frames(
+            1,
+            |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query\"")),
+        );
         assert_eq!(query_frames.len(), 1);
         let Some(WsFrame::Text(frame)) = query_frames.first() else {
             return;
@@ -1597,6 +1596,12 @@ mod tests {
     fn windowed_query_watch_shares_orders_and_moves_one_live_subscription() {
         let transport = Arc::new(MockTransport::new());
         let client = MykoClient::with_transport(transport.clone());
+        let observe = |condition: &dyn Fn() -> bool| {
+            let started = std::time::Instant::now();
+            while !condition() && started.elapsed() < std::time::Duration::from_secs(1) {
+                std::thread::yield_now();
+            }
+        };
         let initial_window = QueryWindow {
             offset: 0,
             limit: 1,
@@ -1658,6 +1663,25 @@ mod tests {
             }
         });
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        observe(&|| {
+            let state = first.state().get();
+            first.ready().get()
+                && second.ready().get()
+                && state
+                    .items
+                    .first()
+                    .is_some_and(|item| item.id.as_ref() == "client-b")
+                && state.total_count == Some(3)
+                && state.window
+                    == Some(QueryWindow {
+                        offset: 0,
+                        limit: 1,
+                    })
+                && state.page_index == Some(0)
+                && state.page_count == Some(3)
+                && !state.has_previous_page
+                && state.has_next_page
+        });
         assert!(first.ready().get());
         assert!(second.ready().get());
         assert!(
@@ -1738,6 +1762,23 @@ mod tests {
             }
         });
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(moved.to_string()));
+        observe(&|| {
+            let state = second.state().get();
+            first
+                .items()
+                .get()
+                .first()
+                .is_some_and(|item| item.id.as_ref() == "client-c")
+                && state.window
+                    == Some(QueryWindow {
+                        offset: 1,
+                        limit: 1,
+                    })
+                && state.page_index == Some(1)
+                && state.page_count == Some(3)
+                && state.has_previous_page
+                && state.has_next_page
+        });
         assert!(
             first
                 .items()
@@ -1781,6 +1822,7 @@ mod tests {
         transport.set_status(SocketConnectionStatus::Connected(
             "ws://reconnected".to_owned(),
         ));
+        observe(&|| !first.state().get().ready);
         assert!(!first.state().get().ready);
         let frames = transport.sent_frames();
         let resumed = frames.iter().rev().find_map(|frame| {
@@ -1814,6 +1856,7 @@ mod tests {
             }
         });
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
+        observe(&|| first.state().get().ready);
         assert!(first.state().get().ready);
 
         drop(first);

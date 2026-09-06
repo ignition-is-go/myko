@@ -558,7 +558,7 @@ impl IrohCommandStateSubscription {
         self.stream.current()
     }
 
-    /// Receives and applies the next matching durable command transition.
+    /// Receives and atomically applies the next durable command-catalog release.
     ///
     /// # Errors
     ///

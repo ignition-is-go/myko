@@ -91,7 +91,7 @@ pub use crate::{
 };
 // Server-only re-exports (tokio-free types only; MykoServer lives in myko-server)
 #[cfg(not(target_arch = "wasm32"))]
-pub use crate::server::{SourcedItem, SourcedItemKey, SourcedItemMap};
+pub use crate::server::{SourcedItem, SourcedItemKey, SourcedItemMap, SourcedItemSnapshot};
 #[cfg(not(target_arch = "wasm32"))]
 pub use crate::{
     query::{

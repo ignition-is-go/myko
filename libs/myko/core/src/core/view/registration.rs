@@ -6,8 +6,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::{
-    cell::{FilteredViewCellMap, erase_typed_view_map},
     context::{ViewBuildContext, ViewContext},
+    output::{RegisteredViewOutput, ViewBuildOutput},
     request::ViewRequest,
     traits::{AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams},
 };
@@ -30,7 +30,7 @@ pub type ViewCellFactory = fn(
     Arc<RequestContext>,
     Arc<MykoServerContext>,
     Option<crate::server::federated_source::FederatedRequest>,
-) -> Result<FilteredViewCellMap, String>;
+) -> Result<RegisteredViewOutput, String>;
 
 /// Registration entry for a view type.
 /// Collected via inventory for automatic discovery.
@@ -78,7 +78,7 @@ pub trait ViewFactory: ViewParams {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> Result<FilteredViewCellMap, String>;
+    ) -> Result<RegisteredViewOutput, String>;
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Resolve typed source, scope, claims, and capabilities before opening.
@@ -132,7 +132,7 @@ where
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> Result<FilteredViewCellMap, String> {
+    ) -> Result<RegisteredViewOutput, String> {
         // Bounded cardinality (one span per view registration), matching
         // `myko.query`/`myko.command`.
         let _span =
@@ -169,6 +169,6 @@ where
             "ViewFactory::cell_factory using build_cell view_id={}",
             V::view_id_static()
         );
-        Ok(erase_typed_view_map(hyphae::MapQuery::materialize(built)))
+        Ok(built.into_registered())
     }
 }

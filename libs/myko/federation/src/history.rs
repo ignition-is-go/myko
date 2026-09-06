@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 
 /// One immutable entry in node history.
@@ -31,8 +33,8 @@ pub struct ReplicationBatch {
 /// Parent relationships between concrete, service-qualified scope roots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopeTopology {
-    parents: HashMap<ScopeId, ScopeId>,
-    known: HashSet<ScopeId>,
+    parents: BTreeMap<ScopeId, ScopeId>,
+    known: BTreeSet<ScopeId>,
 }
 
 impl ScopeTopology {
@@ -51,6 +53,9 @@ impl ScopeTopology {
     /// Returns an error when the event reparents a scope, creates a cycle, or
     /// places a nested root outside the scope identified by that root.
     pub fn observe_event(&mut self, event: &NodeEvent) -> Result<(), NodeError> {
+        if matches!(event, NodeEvent::FrameworkControl(_)) {
+            return Ok(());
+        }
         self.known.extend(event.affected_scope_ids());
         let NodeEvent::CommandCommitted { batch, .. } = event else {
             return Ok(());
@@ -285,14 +290,17 @@ impl ReplicationSelection {
     /// Returns whether this selector includes an event.
     #[must_use]
     pub fn includes(&self, event: &NodeEvent) -> bool {
+        if let NodeEvent::FrameworkControl(control) = event {
+            return self.includes_control(control, &ScopeTopology::default());
+        }
         match self {
             Self::All => true,
-            Self::Service(service_id) => event.service_id() == service_id,
+            Self::Service(service_id) => event.service_id() == Some(service_id),
             Self::ServiceScope {
                 service_id,
                 scope_id,
             } => {
-                event.service_id() == service_id
+                event.service_id() == Some(service_id)
                     && event
                         .affected_scope_ids()
                         .iter()
@@ -319,6 +327,9 @@ impl ReplicationSelection {
     /// nested-scope topology.
     #[must_use]
     pub fn includes_in(&self, event: &NodeEvent, topology: &ScopeTopology) -> bool {
+        if let NodeEvent::FrameworkControl(control) = event {
+            return self.includes_control(control, topology);
+        }
         match self {
             Self::Scopes(selections) => event.affected_scope_ids().iter().all(|scope_id| {
                 selections.iter().any(|selection| match selection {
@@ -338,6 +349,22 @@ impl ReplicationSelection {
                     })
             }
             Self::All | Self::Service(_) | Self::ServiceScope { .. } => self.includes(event),
+        }
+    }
+
+    fn includes_control(&self, control: &FrameworkControlEvent, topology: &ScopeTopology) -> bool {
+        match self {
+            Self::All => true,
+            Self::Service(_) | Self::ServiceScope { .. } => false,
+            Self::Scopes(scopes) => scopes
+                .iter()
+                .any(|scope| scope.covers_in(&control.selection(), topology)),
+            Self::Intersection { requested, scopes } => {
+                requested.includes_control(control, topology)
+                    && scopes
+                        .iter()
+                        .any(|scope| scope.covers_in(&control.selection(), topology))
+            }
         }
     }
 
@@ -590,6 +617,7 @@ impl ReplicationCheckpoint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NodeEvent {
+    FrameworkControl(FrameworkControlEvent),
     CommandLifecycle(CommandSnapshot),
     CommandCommitted {
         command: CommandSnapshot,
@@ -600,30 +628,38 @@ pub enum NodeEvent {
 impl NodeEvent {
     /// Returns the application service that owns this event.
     #[must_use]
-    pub const fn service_id(&self) -> &ServiceId {
+    pub const fn service_id(&self) -> Option<&ServiceId> {
         match self {
             Self::CommandLifecycle(command) | Self::CommandCommitted { command, .. } => {
-                &command.request.service_id
+                Some(&command.request.service_id)
             }
+            Self::FrameworkControl(_) => None,
         }
     }
 
-    /// Returns the application-owned scope affected by this event.
+    /// Returns the primary command scope or the control selection's root.
+    /// A control root does not describe its full authorization footprint.
     #[must_use]
     pub const fn scope_id(&self) -> &ScopeId {
         match self {
+            Self::FrameworkControl(control) => control.scope_id(),
             Self::CommandLifecycle(command) | Self::CommandCommitted { command, .. } => {
                 &command.request.scope_id
             }
         }
     }
 
-    /// Returns every concrete scope touched by this atomic service event.
+    /// Returns concrete scopes touched by an application event.
+    /// Controls have no application mutations and return an empty set. Use
+    /// selection-aware replication methods to authorize their full selection.
     #[must_use]
     pub fn affected_scope_ids(&self) -> Vec<ScopeId> {
+        let Some(command) = command_from_event(self) else {
+            return Vec::new();
+        };
         let mut scopes = HashSet::from([self.scope_id().clone()]);
         scopes.extend(
-            command_from_event(self)
+            command
                 .request
                 .resource_claims
                 .iter()
@@ -643,30 +679,79 @@ impl NodeEvent {
     }
 }
 
-pub(super) const fn command_from_event(event: &NodeEvent) -> &CommandSnapshot {
+pub(super) const fn command_from_event(event: &NodeEvent) -> Option<&CommandSnapshot> {
     match event {
         NodeEvent::CommandLifecycle(command) | NodeEvent::CommandCommitted { command, .. } => {
-            command
+            Some(command)
         }
+        NodeEvent::FrameworkControl(_) => None,
     }
 }
 
-pub(super) const fn command_transition_is_newer(
+pub(super) fn command_snapshot_supersedes(
     current: &CommandSnapshot,
     candidate: &CommandSnapshot,
 ) -> bool {
-    candidate.updated_at.node_id.as_uuid().as_u128()
-        == current.updated_at.node_id.as_uuid().as_u128()
-        && candidate.updated_at.sequence.get() > current.updated_at.sequence.get()
+    let newer_at_source = candidate.updated_at.node_id == current.updated_at.node_id
+        && candidate.updated_at.sequence > current.updated_at.sequence;
+    if current.state.is_committed() {
+        return candidate.state.is_committed() && newer_at_source;
+    }
+    if candidate.state.is_committed() {
+        return true;
+    }
+    let terminal_rank = |state: &CommandState| match state {
+        CommandState::Cancelled { .. } => 2,
+        CommandState::Rejected { .. } => 1,
+        _ => 0,
+    };
+    let current_rank = terminal_rank(&current.state);
+    let candidate_rank = terminal_rank(&candidate.state);
+    if current_rank != candidate_rank {
+        return candidate_rank > current_rank;
+    }
+    if current_rank > 0 {
+        return (candidate.updated_at.node_id, candidate.updated_at.sequence)
+            > (current.updated_at.node_id, current.updated_at.sequence);
+    }
+    newer_at_source
+}
+
+pub(super) fn materialize_command_snapshot<'a>(
+    history: impl IntoIterator<Item = &'a EventEnvelope>,
+    command_id: CommandId,
+) -> Option<CommandSnapshot> {
+    let mut current: Option<&CommandSnapshot> = None;
+    for envelope in history {
+        let Some(candidate) = command_from_event(&envelope.event) else {
+            continue;
+        };
+        if candidate.request.id == command_id
+            && current.is_none_or(|existing| command_snapshot_supersedes(existing, candidate))
+        {
+            current = Some(candidate);
+        }
+    }
+    current.cloned()
 }
 
 /// Errors raised by the command/history substrate.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum NodeError {
+    #[error("retained-history recording requires a durable journal")]
+    DurableJournalRequired,
+    #[error("invalid retained-history statement: {0}")]
+    InvalidRetainedHistoryStatement(String),
+    #[error("event origin {0:?} was reused with different immutable content")]
+    EventConflict(EventId),
+    #[error("required event origin {0:?} is absent from retained history")]
+    MissingRetainedEvent(EventId),
     #[error("command ID {0} was reused with different content")]
     CommandConflict(CommandId),
     #[error("unknown command ID {0}")]
     UnknownCommand(CommandId),
+    #[error("command ID {0} is retained but its committed history is not yet causally complete")]
+    CommandHistoryIncomplete(CommandId),
     #[error("command ID {command_id} was rejected: {reason}")]
     CommandRejected {
         command_id: CommandId,
@@ -720,6 +805,11 @@ pub enum NodeError {
     Poisoned,
     #[error("node log position space is exhausted")]
     PositionExhausted,
+    #[error("history cut {requested:?} exceeds the available local cut {available:?}")]
+    HistoryCutUnavailable {
+        requested: LogPosition,
+        available: Option<LogPosition>,
+    },
     #[error("event subscription is disconnected")]
     SubscriptionDisconnected,
     #[error("live-event hub state is poisoned")]
@@ -734,6 +824,10 @@ pub enum NodeError {
     InvalidReplicationBatch(String),
     #[error("command authorization denied: {0}")]
     AuthorizationDenied(String),
+    #[error("control vote rejected: {0}")]
+    ControlVote(#[from] crate::control_quorum::ControlQuorumError),
+    #[error("durable history differs from live state; reopen the node before voting")]
+    DurableHistoryChanged,
 }
 
 /// Durable append-only storage used by the reference event-sourced backend.
@@ -749,6 +843,17 @@ pub trait EventJournal: Send + Sync + 'static {
     /// Returns an error if journal metadata cannot be read.
     fn node_id(&self) -> Result<NodeId, NodeError>;
 
+    /// Returns this store's persisted incarnation identity.
+    ///
+    /// The identity must remain stable across reopen and differ for independently
+    /// initialized stores. Copying or restoring the complete store can preserve
+    /// this identity, so it does not prove freshness or detect rollback.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the persisted identity cannot be read or decoded.
+    fn storage_incarnation(&self) -> Result<StorageIncarnationId, NodeError>;
+
     /// Replays every locally observed event in node-local position order.
     ///
     /// # Errors
@@ -762,6 +867,39 @@ pub trait EventJournal: Send + Sync + 'static {
     ///
     /// Returns an error unless the event has been durably committed.
     fn append(&self, event: &EventEnvelope) -> Result<(), NodeError>;
+
+    /// Verifies exact immutable-event inclusion in this durable journal.
+    ///
+    /// Receiver-local positions are deliberately ignored. This proves only
+    /// that every supplied origin, timestamp, and event body is retained. It
+    /// does not prove scope completeness, causal closure, authority,
+    /// currentness, a signature, or continuing custody.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::MissingRetainedEvent`] when a required origin is
+    /// absent, [`NodeError::EventConflict`] when the same origin has different
+    /// immutable content, or a backend error when durable replay fails.
+    fn verify_retained_history(&self, required: &[EventEnvelope]) -> Result<(), NodeError> {
+        let replay = self.replay()?;
+        let mut retained: HashMap<EventId, &EventEnvelope> = HashMap::new();
+        for event in &replay {
+            if let Some(previous) = retained.insert(event.origin, event)
+                && (previous.recorded_at != event.recorded_at || previous.event != event.event)
+            {
+                return Err(NodeError::EventConflict(event.origin));
+            }
+        }
+        for event in required {
+            let Some(actual) = retained.get(&event.origin) else {
+                return Err(NodeError::MissingRetainedEvent(event.origin));
+            };
+            if actual.recorded_at != event.recorded_at || actual.event != event.event {
+                return Err(NodeError::EventConflict(event.origin));
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Node-local durable checkpoints for transport replication followers.
@@ -1115,7 +1253,7 @@ impl PendingCommandSubscription {
         if envelope.origin.node_id != self.local_node {
             return None;
         }
-        let command = command_from_event(&envelope.event);
+        let command = command_from_event(&envelope.event)?;
         if self
             .service_id
             .as_ref()
@@ -1146,7 +1284,9 @@ pub(super) fn materialize_pending_local_commands(
         if envelope.origin.node_id != local_node {
             continue;
         }
-        let command = command_from_event(&envelope.event);
+        let Some(command) = command_from_event(&envelope.event) else {
+            continue;
+        };
         if service_id.is_some_and(|expected| command.request.service_id != *expected)
             || command_type.is_some_and(|expected| command.request.command_type != expected)
         {
@@ -1157,7 +1297,7 @@ pub(super) fn materialize_pending_local_commands(
                 entry.insert((envelope.position, command.clone()));
             }
             Entry::Occupied(mut entry) => {
-                if command_transition_is_newer(&entry.get().1, command) {
+                if command_snapshot_supersedes(&entry.get().1, command) {
                     entry.get_mut().1 = command.clone();
                 }
             }
