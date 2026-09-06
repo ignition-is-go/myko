@@ -23,7 +23,7 @@ mod rotation;
 pub use coordinator::{
     AuthorityControllerPrincipal, AuthorityCoordinatorPeer, AuthorityDecisionCoordinator,
     AuthorityRequestSource, CertifiedAuthorityControlEndpoint, CertifiedAuthorityRequest,
-    CoordinatedAuthorityDecision, LocalAuthorityPeer,
+    CoordinatedAuthorityDecision, CoordinatedAuthorityRevalidation, LocalAuthorityPeer,
 };
 pub use history::{
     AuthorityAnchor, AuthorityDecisionRevalidation, AuthorityDecisionRoot,

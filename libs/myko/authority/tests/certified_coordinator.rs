@@ -10,7 +10,7 @@ use myko::{
     },
 };
 use myko_authority::{
-    AuthorityPolicy, authority_realm_scope,
+    AuthorityPolicy, RevocationKind, authority_realm_scope,
     certified::{
         AuthorityAnchor, AuthorityController, AuthorityControllerPrincipal,
         AuthorityCoordinatorPeer, AuthorityDecisionCoordinator, AuthorityDecisionRoot,
@@ -676,6 +676,100 @@ impl NativeControlHarness {
 }
 
 #[tokio::test]
+async fn revalidation_advances_past_prior_checks_and_revocation() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("fresh-a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("fresh-b.redb"))?;
+    let (grant_head, reader, scope) = install_grant(&a, &b)?;
+    let command_id = CommandId::new();
+    let request = prepare_command_evidence(&a, &b, reader, scope, command_id)?;
+    let coordinator = coordinator(&a, &b)?;
+    let original = coordinator
+        .decide(grant_head, 2, CommandId::new(), command_id, request.clone())
+        .await?;
+    let first = coordinator
+        .revalidate(original.head(), 3, command_id, request.clone())
+        .await?;
+    let first_head = first.head();
+    if !first.into_decision()?.is_permit() {
+        return Err("fresh revalidation denied the original consumed effect".into());
+    }
+    let second = coordinator
+        .revalidate(original.head(), 5, command_id, request.clone())
+        .await?;
+    let second_head = second.head();
+    if second_head == first_head || !second.into_decision()?.is_permit() {
+        return Err(
+            "new call reused an older revalidation instead of certifying a new check".into(),
+        );
+    }
+    certify_grant_revocation(&a, &b, second_head)?;
+    let after_revocation = coordinator
+        .revalidate(original.head(), 8, command_id, request)
+        .await?;
+    if !matches!(
+        after_revocation.into_decision()?,
+        myko_federation::AuthorizationDecision::Deny(_)
+    ) {
+        return Err("fresh revalidation from an old head bypassed intervening revocation".into());
+    }
+    Ok(())
+}
+
+fn certify_grant_revocation(
+    a: &Node,
+    b: &Node,
+    head: ControlHead,
+) -> Result<ControlHead, Box<dyn Error>> {
+    let policy = Arc::new(AuthorityPolicy::new(
+        ApplicationHost::new(a.clone(), AuthorityPolicy::install(MykoApplication::new())?)?,
+        realm(),
+    ));
+    a.set_command_access_policy(policy.clone())?;
+    let before = a.local_history_cut()?;
+    let admin = Principal::new(PrincipalId::new("admin"), PrincipalKind::Node);
+    policy.revoke(
+        admin.clone(),
+        AuthorityPresentation::direct(admin),
+        RevocationKind::Grant,
+        "single-use".to_owned(),
+    )?;
+    let value =
+        AuthoritySelection::new(CommandId::new(), &a.events_after(before)?)?.control_value()?;
+    let [a_key, b_key] = keys();
+    let revoked_head = choose_selection_with_anchor(a, b, anchor()?, &a_key, &b_key, head, &value)?;
+    drop(policy);
+    Ok(revoked_head)
+}
+
+#[tokio::test]
+async fn revalidation_rejects_changed_effect_without_writing_control_history() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("changed-a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("changed-b.redb"))?;
+    let (grant_head, reader, scope) = install_grant(&a, &b)?;
+    let command_id = CommandId::new();
+    let request = prepare_command_evidence(&a, &b, reader, scope, command_id)?;
+    let coordinator = coordinator(&a, &b)?;
+    let original = coordinator
+        .decide(grant_head, 2, CommandId::new(), command_id, request.clone())
+        .await?;
+    let mut changed = request.request().clone();
+    changed.effect_digest = Some("different-effect".to_owned());
+    let changed = AuthorityRequestSource::new(a.clone()).current_request(changed)?;
+    let before = a.events_after(None)?;
+    if coordinator
+        .revalidate(original.head(), 3, command_id, changed)
+        .await
+        .is_ok()
+        || a.events_after(None)? != before
+    {
+        return Err("changed effect was revalidated or appended control history".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn coordinator_recovers_chosen_decision_from_old_predecessor() -> TestResult {
     let directory = tempfile::tempdir()?;
     let a_path = directory.path().join("a.redb");
@@ -1065,6 +1159,67 @@ async fn endpoint_reports_retained_evidence_failures_as_unavailable() -> TestRes
         .ok_or("endpoint prepared despite invalid retained evidence")?;
     if failure != AuthorizationFailure::Unavailable(AuthorityUnavailable::HistoryUnavailable) {
         return Err("retained evidence failure was exposed as an authorization denial".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_coordinator_certifies_fresh_revalidation() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("native-fresh-a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("native-fresh-b.redb"))?;
+    let (grant_head, reader, scope) = install_grant(&a, &b)?;
+    let command_id = CommandId::new();
+    let (request, _) = prepare_command_evidence_at(&a, reader, scope.clone(), command_id)?;
+    let harness =
+        NativeControlHarness::start(a.clone(), b.clone(), authority_realm_scope(&realm()), scope)
+            .await?;
+    let original = harness
+        .decide(
+            &a,
+            grant_head,
+            2,
+            CommandId::new(),
+            command_id,
+            request.clone(),
+        )
+        .await?;
+    let coordinator = AuthorityDecisionCoordinator::new(
+        anchor()?,
+        a.clone(),
+        harness.a_binding.clone(),
+        harness.peers(),
+    )?;
+    let fresh = coordinator
+        .revalidate(original.head(), 3, command_id, request)
+        .await?;
+    if fresh.head() == original.head() || !fresh.into_decision()?.is_permit() {
+        return Err("native endpoints did not certify a fresh check of the consumed effect".into());
+    }
+    drop(coordinator);
+    harness.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn revalidation_requires_a_controller_majority() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("fresh-quorum-a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("fresh-quorum-b.redb"))?;
+    let [a_key, b_key, _c_key] = keys3();
+    let (grant_head, reader, scope) =
+        install_grant_with_anchor(&a, &b, &anchor3()?, &a_key, &b_key)?;
+    let command_id = CommandId::new();
+    let request = prepare_command_evidence(&a, &b, reader, scope, command_id)?;
+    let original = coordinator_with_unavailable_minority(&a, &b, Arc::new(UnavailableEvidence))?
+        .decide(grant_head, 2, CommandId::new(), command_id, request.clone())
+        .await?;
+    if coordinator_with_unavailable_majority(&a)?
+        .revalidate(original.head(), 3, command_id, request)
+        .await
+        .is_ok()
+    {
+        return Err("fresh revalidation succeeded without a controller majority".into());
     }
     Ok(())
 }

@@ -72,6 +72,15 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+The coordinator now certifies a fresh revalidation for each call. It follows
+intervening accepted checks and revocations, rejects changed effect evidence,
+and requires a controller majority. Native Iroh coverage exercises the same
+path. Consuming the result rechecks time-dependent validity against its certified
+snapshot only as a veto. The result cannot be cached as later permission and
+does not observe revocations chosen after the call. Runtime integration must
+consume it at the release boundary. Runtime policy, head and ballot ownership,
+approval rounds, and custody remain unfinished.
+
 Certified revalidation now rechecks an original permitted effect against a later
 certified predecessor without creating another grant use or lease. It excludes
 only the exact original use records from evaluation, retains the original

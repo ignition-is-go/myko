@@ -28,6 +28,9 @@ use super::{
 const DEFAULT_MAX_COORDINATION_ROUNDS: usize = 8;
 const DEFAULT_MAX_EVALUATION_SKEW_SECONDS: i64 = 300;
 
+mod revalidation;
+pub use revalidation::CoordinatedAuthorityRevalidation;
+
 /// Framework-owned source for evidence used by certified coordination.
 #[derive(Clone)]
 pub struct AuthorityRequestSource {
@@ -1012,6 +1015,18 @@ impl AuthorityDecisionCoordinator {
     ) -> Result<RoundResult, String> {
         self.synchronize().await?;
         let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        let desired = Self::plan_value(&history, head, operation, root, request.clone())?;
+        let (chosen_head, evidence) = self.choose_value(&history, head, ballot, desired).await?;
+        self.recover_or_advance(head, chosen_head, root, &request, evidence)
+    }
+
+    async fn choose_value(
+        &self,
+        history: &AuthorityHistory,
+        head: ControlHead,
+        ballot: ControlBallot,
+        desired: ControlValue,
+    ) -> Result<(ControlHead, ChosenRoundEvidence), String> {
         let verifier = history.context_at(head)?.verifier()?;
         if self.proposer.controller != ballot.proposer {
             return Err("authority ballot proposer does not match coordinator identity".to_owned());
@@ -1025,7 +1040,6 @@ impl AuthorityDecisionCoordinator {
         let prepared = verifier
             .verify_prepare(ballot, &promises)
             .map_err(|error| error.to_string())?;
-        let desired = Self::plan_value(&history, head, operation, root, request.clone())?;
         let value = prepared.select_value(desired);
         let proposal = self
             .propose_value(&self.proposer.principal, head, ballot, &promises, &value)
@@ -1038,17 +1052,14 @@ impl AuthorityDecisionCoordinator {
             .map_err(|error| error.to_string())?;
         let chosen_head = chosen.head().map_err(|error| error.to_string())?;
         self.synchronize().await?;
-        self.recover_or_advance(
-            head,
+        Ok((
             chosen_head,
-            root,
-            &request,
             ChosenRoundEvidence {
                 proposal,
                 promises,
                 accepts,
             },
-        )
+        ))
     }
 
     fn plan_value(
