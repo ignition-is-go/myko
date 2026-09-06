@@ -25,6 +25,7 @@ uuid.workspace = true
 [dev-dependencies]
 myko-iroh.workspace = true
 myko-local.workspace = true
+myko-node.workspace = true
 myko-redb.workspace = true
 myko-wire.workspace = true
 tempfile = "3"

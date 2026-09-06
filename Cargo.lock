@@ -5264,6 +5264,7 @@ dependencies = [
  "myko-iroh",
  "myko-items",
  "myko-local",
+ "myko-node",
  "myko-redb",
  "myko-wire",
  "serde",

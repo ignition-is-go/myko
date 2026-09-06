@@ -6,8 +6,8 @@ use tokio::task::JoinHandle;
 
 use super::{AuthorityDecisionCoordinator, PreparedAuthorityRuntime};
 
-/// Owns application dispatch and certified effect recovery together.
-/// Drop requests cancellation; `shutdown` also waits until neither can execute.
+/// Owns certified effect recovery and, when installed together, application dispatch.
+/// Drop requests cancellation; `shutdown` joins the owned tasks.
 #[must_use = "retain the guard while the application is serving commands"]
 pub struct PreparedAuthorityGuard {
     dispatch: Option<CommandDispatchGuard>,
@@ -61,6 +61,24 @@ impl Drop for PreparedAuthorityGuard {
 }
 
 impl PreparedAuthorityRuntime {
+    /// Start recovery when the embedding runtime already owns command dispatch.
+    /// Install the policy returned by `new` on that runtime before serving commands.
+    /// Dropping this guard closes the policy's effect wake channel.
+    ///
+    /// # Errors
+    /// Returns an error when no Tokio runtime is available.
+    pub fn start(
+        self,
+        report: impl FnMut(Result<CommandSnapshot, String>) + Send + 'static,
+    ) -> Result<PreparedAuthorityGuard, String> {
+        let executor = tokio::runtime::Handle::try_current()
+            .map_err(|error| format!("prepared authority requires a Tokio runtime: {error}"))?;
+        Ok(PreparedAuthorityGuard {
+            dispatch: None,
+            worker: Some(executor.spawn(self.run(report))),
+        })
+    }
+
     /// Install the effect policy and start both command dispatch and recovery.
     /// Retain the returned guard and shut it down before replacing this policy.
     /// Admission, reads, and administration still use `non_effect_policy`.

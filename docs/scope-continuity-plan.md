@@ -72,6 +72,28 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+`PreparedAuthorityRuntime::start` starts only certified effect recovery. The
+native node retains ownership of its existing command dispatcher. The combined
+`install` method remains available for an application that needs both tasks.
+
+The native lifecycle test uses a Redb-backed `myko-node` and authenticated Iroh
+controller endpoints. It verifies release of an exact prepared item effect, then
+shuts down the authority worker. A later command still reaches preparation through
+native dispatch, but its effect policy reports unavailable. The first parallel
+run caught a setup race while controller binding temporarily replaced the policy.
+The test now completes controller setup before submitting any application command.
+The repeated authority gate passed all 77 tests, strict Clippy, and formatting.
+Evidence is in `/tmp/myko-native-authority-lifecycle-gate-2.log`,
+`/tmp/myko-native-authority-lifecycle-strict-final.log`, and
+`/tmp/myko-native-authority-lifecycle-fmt-check.log`. Forrest's locked all-target
+check passed in `/tmp/forrest-native-authority-lifecycle-check.log`.
+
+This test does not install a production controller configuration. It establishes
+the worker-ownership path needed for that installation. All C01-C18 rows remain
+open, including native incoming-client and node-churn proof.
+
+### Previous retained-selection checkpoint
+
 The coordinator now certifies existing authority records through
 `certify_selection`. Construct an `AuthoritySelection` with a stable operation
 identity and retained events, then submit it to the coordinator. Exact retries
