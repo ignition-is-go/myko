@@ -41,6 +41,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 mod certified_access;
 #[path = "support/certified_approval.rs"]
 mod certified_approval;
+#[path = "support/certified_streams.rs"]
+mod certified_streams;
 #[path = "support/prepared_authority_lifecycle.rs"]
 mod prepared_lifecycle;
 #[path = "support/prepared_authority_runtime.rs"]
@@ -293,8 +295,17 @@ fn install_obligated_grant(
             grantor: admin,
             grantee: reader.clone(),
             selection: ScopeSelection::Exact(scope.clone()),
-            permissions: vec![FederationPermission::ReadState, FederationPermission::Write],
-            operations: vec![AccessOperation::ReadItems, AccessOperation::SubmitCommand],
+            permissions: vec![
+                FederationPermission::ReadState,
+                FederationPermission::Write,
+                FederationPermission::Subscribe,
+            ],
+            operations: vec![
+                AccessOperation::ReadItems,
+                AccessOperation::SubmitCommand,
+                AccessOperation::FollowItems,
+                AccessOperation::FollowHandler,
+            ],
             capabilities: Vec::new(),
             constraints: AuthorityConstraints::default(),
             obligations: obligation_ids,

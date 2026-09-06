@@ -52,7 +52,7 @@ pub mod report_cache_stats;
 mod retained_evidence;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
-pub use client_session::{ClientSession, PendingQueryResponse, SessionSink};
+pub use client_session::{ClientSession, NodeFrameSend, PendingQueryResponse, SessionSink};
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 #[cfg(not(target_arch = "wasm32"))]

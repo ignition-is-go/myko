@@ -761,7 +761,7 @@ impl ApplicationHost {
                     Arc::clone(&self.server),
                     source,
                 )?;
-                session.subscribe_node_handler_report(tx, report);
+                session.subscribe_node_handler_report(tx, report)?;
             }
             myko_federation::HandlerKind::Command => {
                 return Err("commands are admitted through SubmitCommand".to_owned());

@@ -861,12 +861,14 @@ mod tests {
         ) {
         }
 
-        fn send_node_frame(&self, frame: myko_wire::NodeFrame) -> Result<(), String> {
-            self.0
-                .lock()
-                .map_err(|_| "test node frame sink is poisoned".to_owned())?
-                .push(frame);
-            Ok(())
+        fn send_node_frame(&self, frame: myko_wire::NodeFrame) -> crate::server::NodeFrameSend<'_> {
+            Box::pin(async move {
+                self.0
+                    .lock()
+                    .map_err(|_| "test node frame sink is poisoned".to_owned())?
+                    .push(frame);
+                Ok(())
+            })
         }
     }
 

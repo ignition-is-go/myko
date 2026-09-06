@@ -297,7 +297,7 @@ async fn item_read_controllers_reject_request_carried_topology() -> TestResult {
     );
     request.topology = Some(forged.clone());
     let trusted = AuthorityRequestSource::new(a.clone()).current_request(request.clone())?;
-    if trusted.topology() != &a.scope_topology()? {
+    if trusted.topology() != &a.scope_topology()?.proof_for(&request.scope_selections()) {
         return Err("request source accepted caller topology".into());
     }
     let value = AuthorityHistory::replay(&a, anchor()?)?

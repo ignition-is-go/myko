@@ -49,7 +49,7 @@ impl AuthorityRequestSource {
         Self { node }
     }
 
-    /// Build a request using topology derived from dependency-complete node history.
+    /// Build a request with its claimed-resource topology proof from dependency-complete history.
     ///
     /// This ignores `request.topology`. Transport input cannot authenticate
     /// topology merely by carrying bytes, even though serde skips that field.
@@ -60,12 +60,12 @@ impl AuthorityRequestSource {
         &self,
         request: AccessAttempt,
     ) -> Result<CertifiedAuthorityRequest, String> {
-        Ok(Self::trusted_request(
-            request,
-            self.node
-                .scope_topology()
-                .map_err(|error| error.to_string())?,
-        ))
+        let topology = self
+            .node
+            .scope_topology()
+            .map_err(|error| error.to_string())?
+            .proof_for(&request.scope_selections());
+        Ok(Self::trusted_request(request, topology))
     }
 
     /// Build an effect request from a retained prepared command.
@@ -421,12 +421,15 @@ impl CertifiedAuthorityControlEndpoint {
             self.node
                 .prepared_command_access(revalidation.root().request_id())
                 .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
-        } else if access::is_initial_item_read(original.request()) && !original.is_continuation() {
+        } else if access::is_initial_scoped_access(original.request())
+            && !original.is_continuation()
+        {
             let mut request = original.request().clone();
             request.topology = Some(
                 self.node
                     .scope_topology()
-                    .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?,
+                    .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
+                    .proof_for(&request.scope_selections()),
             );
             request
         } else {
@@ -996,6 +999,8 @@ pub struct AuthorityDecisionCoordinator {
     proposer: AuthorityControllerPrincipal,
     peers: Vec<AuthorityCoordinatorPeer>,
     max_rounds: usize,
+    // One configured proposer must not race its own ballots across access and effect tasks.
+    proposal_turn: tokio::sync::Mutex<()>,
 }
 
 impl AuthorityDecisionCoordinator {
@@ -1024,6 +1029,7 @@ impl AuthorityDecisionCoordinator {
             proposer,
             peers,
             max_rounds: DEFAULT_MAX_COORDINATION_ROUNDS,
+            proposal_turn: tokio::sync::Mutex::new(()),
         })
     }
 
@@ -1050,9 +1056,13 @@ impl AuthorityDecisionCoordinator {
         request_id: CommandId,
         request: CertifiedAuthorityRequest,
     ) -> Result<CoordinatedAuthorityDecision, String> {
+        let _turn = self.proposal_turn.lock().await;
+        self.synchronize().await?;
+        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        history.context_at(head)?;
         let root = request.root(self.anchor.realm_id(), request_id)?;
-        let mut head = head;
-        let mut counter = counter;
+        let mut head = history.retained_head()?;
+        let mut counter = counter.max(runtime::next_counter(&history, head)?);
         for _ in 0..self.max_rounds {
             let Some(next_counter) = counter.checked_add(1) else {
                 return Err("authority ballot counter overflowed".to_owned());

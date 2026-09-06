@@ -32,6 +32,7 @@ impl AuthorityDecisionCoordinator {
         &self,
         command_id: CommandId,
     ) -> Result<Option<AuthorityDecisionTransition>, String> {
+        let _turn = self.proposal_turn.lock().await;
         let request = AuthorityRequestSource::new(self.observer.clone())
             .prepared_command_request(command_id)?;
         let root = request.root(self.anchor.realm_id(), command_id)?;
@@ -91,6 +92,7 @@ impl AuthorityDecisionCoordinator {
         challenge: &ChallengeId,
         approved: bool,
     ) -> Result<ApprovalDecision, AuthorizationFailure> {
+        let _turn = self.proposal_turn.lock().await;
         let request = myko_federation::AccessAttempt::scoped(
             authenticated_executor.clone(),
             presentation.clone(),

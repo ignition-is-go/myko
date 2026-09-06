@@ -4,6 +4,90 @@ use super::*;
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn native_frame_sink_yields_under_backpressure_and_observes_disconnect() -> TestResult {
+    use crate::server::SessionSink as _;
+
+    let (send, receive) = flume::bounded(1);
+    let sink = NodeFrameSink(send);
+    let frame = NodeFrame::AuthorityUnavailable {
+        reason: AuthorityUnavailable::PolicyUnavailable,
+    };
+    sink.send_node_frame(frame.clone()).await?;
+    let mut pending = sink.send_node_frame(frame);
+    if tokio::time::timeout(Duration::from_millis(10), &mut pending)
+        .await
+        .is_ok()
+    {
+        return Err("full native frame queue did not suspend delivery".into());
+    }
+    drop(receive);
+    if tokio::time::timeout(Duration::from_secs(2), pending)
+        .await?
+        .is_ok()
+    {
+        return Err("native frame sink accepted a frame after disconnect".into());
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct IdentityPolicy(flume::Sender<(Option<CommandId>, AuthorizationPhase)>);
+
+impl AccessPolicy for IdentityPolicy {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> PolicyDecision<'a> {
+        if self
+            .0
+            .send((request.admission_id, request.authorization_phase))
+            .is_err()
+        {
+            return Err(AuthorityUnavailable::PolicyUnavailable).into();
+        }
+        Ok(AuthorizationDecision::from_rule(request, Ok(()))).into()
+    }
+}
+
+#[tokio::test]
+async fn stream_admission_identity_is_stable_and_not_shared_between_opens() -> TestResult {
+    let (send, seen) = flume::unbounded();
+    let node = Node::in_memory();
+    let request = NodeRequestEnvelope::connected(NodeRequest::FollowItems {
+        request: myko_federation::ItemFollowRequest {
+            serving_node: node.node_id(),
+            source_node: node.node_id(),
+            service_id: ServiceId::new("identity"),
+            scope_id: ScopeId::new("identity:scope"),
+            item_type: "Record".to_owned(),
+            schema_version: 1,
+            after: None,
+        },
+    });
+    let session = FederatedSession::new(node, Arc::new(IdentityPolicy(send)));
+    let first = session
+        .open(PrincipalId::new("reader"), request.clone())
+        .await;
+    let admission = tokio::time::timeout(Duration::from_secs(2), seen.recv_async()).await??;
+    let continuation = tokio::time::timeout(Duration::from_secs(2), seen.recv_async()).await??;
+    if admission.0.is_none()
+        || admission.1 != AuthorizationPhase::Admission
+        || continuation != (admission.0, AuthorizationPhase::Continuation)
+    {
+        return Err("stream continuation did not retain its admission identity".into());
+    }
+    drop(first);
+    let _second = session.open(PrincipalId::new("reader"), request).await;
+    loop {
+        let next = tokio::time::timeout(Duration::from_secs(2), seen.recv_async()).await??;
+        if next.1 == AuthorizationPhase::Admission {
+            if next.0.is_none() || next.0 == admission.0 {
+                return Err("separate opens shared an admission identity".into());
+            }
+            break;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 enum Outcome {
     Permit,

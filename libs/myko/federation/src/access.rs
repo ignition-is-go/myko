@@ -597,6 +597,10 @@ impl ScopeGrantPolicy {
 /// Authenticated operation used for authorization before node access.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AccessAttempt {
+    /// Framework-created identity for one live access admission and its continuations.
+    /// A transport must not copy this identity from a client presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_id: Option<CommandId>,
     /// Cryptographically authenticated transport identity. This is never
     /// replaced by a principal asserted inside the wire presentation.
     pub principal_id: PrincipalId,
@@ -638,6 +642,7 @@ impl AccessAttempt {
     ) -> Self {
         Self {
             principal_id,
+            admission_id: None,
             presentation,
             operation,
             target: AccessTarget::Scope(scope_id.clone()),

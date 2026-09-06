@@ -17,6 +17,7 @@ impl IrohCommandClient {
     ) -> Result<Self, AuthorizationFailure> {
         let actual = endpoint_principal_id(self.replicator.address().id);
         let request = AccessAttempt {
+            admission_id: None,
             principal_id: actual.clone(),
             presentation: presentation.clone(),
             operation: AccessOperation::AdministerAuthority,

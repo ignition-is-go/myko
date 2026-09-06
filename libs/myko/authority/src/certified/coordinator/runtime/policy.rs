@@ -7,7 +7,7 @@ use myko_federation::{
     ReplicationSelection, ScopeTopology,
 };
 
-/// Certifies initial scoped item reads and defers effects to the certified worker.
+/// Certifies scoped item reads and item/handler streams, and defers effects to the worker.
 /// Other operations use the explicitly supplied policy without certified semantics.
 #[derive(Debug)]
 pub struct CertifiedRuntimePolicy {
@@ -32,12 +32,27 @@ impl CertifiedRuntimePolicy {
 
 impl AccessPolicy for CertifiedRuntimePolicy {
     fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
-        if request.operation == AccessOperation::ReadItems {
-            if !super::super::access::is_initial_item_read(request) {
+        if matches!(
+            request.operation,
+            AccessOperation::ReadItems
+                | AccessOperation::FollowItems
+                | AccessOperation::FollowHandler
+        ) {
+            let mut initial = request.clone();
+            if matches!(
+                request.operation,
+                AccessOperation::FollowItems | AccessOperation::FollowHandler
+            ) && request.authorization_phase == AuthorizationPhase::Continuation
+            {
+                initial.authorization_phase = AuthorizationPhase::Admission;
+            }
+            if !super::super::access::is_initial_scoped_access(&initial) {
                 return Err(AuthorityUnavailable::PolicyUnavailable).into();
             }
             return myko_federation::PolicyDecision::coordinated(async move {
-                self.coordinator.authorize_item_read(request.clone()).await
+                self.coordinator
+                    .authorize_scoped_access(request.clone())
+                    .await
             });
         }
         if request.authorization_phase != AuthorizationPhase::Effect {

@@ -666,6 +666,7 @@ impl AccessPolicy for AuthorityPolicy {
                     })
                     .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
                 let effect_request = AccessAttempt {
+                    admission_id: None,
                     principal_id: binding.executor.id.clone(),
                     presentation: command_presentation,
                     operation: binding.operation,

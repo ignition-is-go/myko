@@ -78,10 +78,13 @@ pub trait SessionSink: Send + Sync + 'static {
     ///
     /// Returns an error when this sink cannot deliver native node frames.
     #[cfg(not(target_arch = "wasm32"))]
-    fn send_node_frame(&self, _frame: myko_wire::NodeFrame) -> Result<(), String> {
-        Err("session sink does not support node frames".to_owned())
+    fn send_node_frame(&self, _frame: myko_wire::NodeFrame) -> NodeFrameSend<'_> {
+        Box::pin(async { Err("session sink does not support node frames".to_owned()) })
     }
 }
+
+pub type NodeFrameSend<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send + 'a>>;
 
 #[cfg(not(target_arch = "wasm32"))]
 static NEXT_HANDLER_EPOCH: AtomicU64 = AtomicU64::new(1);
@@ -156,15 +159,20 @@ enum SubscriptionEntry {
     },
     #[cfg(not(target_arch = "wasm32"))]
     NativeMap {
-        _task: NativeMapTask,
+        _task: NativeHandlerTask,
+    },
+    #[cfg(not(target_arch = "wasm32"))]
+    NativeReport {
+        _task: NativeHandlerTask,
+        _guard: SubscriptionGuard,
     },
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct NativeMapTask(tokio::task::JoinHandle<()>);
+struct NativeHandlerTask(tokio::task::JoinHandle<()>);
 
 #[cfg(not(target_arch = "wasm32"))]
-impl Drop for NativeMapTask {
+impl Drop for NativeHandlerTask {
     fn drop(&mut self) {
         self.0.abort();
     }
@@ -514,7 +522,7 @@ impl<W: SessionSink> ClientSession<W> {
                 }
                 match state.apply_snapshot(&publication.state) {
                     Ok(frame) => {
-                        if let Err(error) = writer.send_node_frame(frame) {
+                        if let Err(error) = writer.send_node_frame(frame).await {
                             tracing::error!(%error, "node handler frame delivery failed");
                             return;
                         }
@@ -529,45 +537,68 @@ impl<W: SessionSink> ClientSession<W> {
         self.subscriptions.insert(
             tx,
             SubscriptionEntry::NativeMap {
-                _task: NativeMapTask(task),
+                _task: NativeHandlerTask(task),
             },
         );
         Ok(())
     }
 
     /// Subscribe a prepared scalar handler to the retained report runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when no Tokio executor is available to deliver frames.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn subscribe_node_handler_report(
         &mut self,
         tx: Arc<str>,
         cell: Cell<Arc<dyn AnyOutput>, CellImmutable>,
-    ) {
+    ) -> Result<(), String> {
+        let executor = tokio::runtime::Handle::try_current()
+            .map_err(|error| format!("native report requires an executor: {error}"))?;
         let writer = Arc::clone(&self.writer);
         let epoch = NEXT_HANDLER_EPOCH.fetch_add(1, Ordering::Relaxed);
-        let sequence = Arc::new(AtomicU64::new(0));
-        let callback_sequence = Arc::clone(&sequence);
+        let (updates, mut latest) = tokio::sync::watch::channel(None::<Arc<dyn AnyOutput>>);
         let guard = cell.subscribe(move |signal| {
-            let Signal::Value(output) = signal else {
-                return;
-            };
-            let value = output.to_value();
-            let sequence = callback_sequence.fetch_add(1, Ordering::Relaxed);
-            let frame = myko_wire::NodeFrame::HandlerState {
-                revision: myko_wire::HandlerStreamRevision { epoch, sequence },
-                state: Box::new(myko_wire::ErasedHandlerState {
-                    value: Some(value),
-                    through: None,
-                    liveness: myko_federation::SubscriptionLiveness::Current,
-                    row_keys: None,
-                }),
-            };
-            if let Err(error) = writer.send_node_frame(frame) {
-                tracing::error!(%error, "node report frame delivery failed");
+            if let Signal::Value(output) = signal {
+                updates.send_replace(Some(Arc::clone(output.as_ref())));
+            }
+        });
+        let task = executor.spawn(async move {
+            let mut sequence = 0_u64;
+            while latest.changed().await.is_ok() {
+                let output = latest.borrow_and_update().clone();
+                let Some(output) = output else {
+                    continue;
+                };
+                let frame = myko_wire::NodeFrame::HandlerState {
+                    revision: myko_wire::HandlerStreamRevision { epoch, sequence },
+                    state: Box::new(myko_wire::ErasedHandlerState {
+                        value: Some(output.to_value()),
+                        through: None,
+                        liveness: myko_federation::SubscriptionLiveness::Current,
+                        row_keys: None,
+                    }),
+                };
+                if let Err(error) = writer.send_node_frame(frame).await {
+                    tracing::error!(%error, "node report frame delivery failed");
+                    return;
+                }
+                let Some(next) = sequence.checked_add(1) else {
+                    return;
+                };
+                sequence = next;
             }
         });
         drop(cell);
-        self.subscriptions
-            .insert(tx, SubscriptionEntry::Guard { _guard: guard });
+        self.subscriptions.insert(
+            tx,
+            SubscriptionEntry::NativeReport {
+                _task: NativeHandlerTask(task),
+                _guard: guard,
+            },
+        );
+        Ok(())
     }
 
     /// Update window for an active query subscription.
@@ -1368,20 +1399,22 @@ mod tests {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        fn send_node_frame(&self, frame: myko_wire::NodeFrame) -> Result<(), String> {
-            self.node_frames
-                .lock()
-                .map_err(|_| "node frame sink is poisoned".to_owned())?
-                .push(frame);
-            let hook = self
-                .node_frame_hook
-                .lock()
-                .map_err(|_| "node frame hook is poisoned".to_owned())?
-                .take();
-            if let Some(hook) = hook {
-                hook();
-            }
-            Ok(())
+        fn send_node_frame(&self, frame: myko_wire::NodeFrame) -> NodeFrameSend<'_> {
+            Box::pin(async move {
+                self.node_frames
+                    .lock()
+                    .map_err(|_| "node frame sink is poisoned".to_owned())?
+                    .push(frame);
+                let hook = self
+                    .node_frame_hook
+                    .lock()
+                    .map_err(|_| "node frame hook is poisoned".to_owned())?
+                    .take();
+                if let Some(hook) = hook {
+                    hook();
+                }
+                Ok(())
+            })
         }
     }
 
@@ -1403,7 +1436,7 @@ mod tests {
         }
 
         #[cfg(not(target_arch = "wasm32"))]
-        fn send_node_frame(&self, frame: myko_wire::NodeFrame) -> Result<(), String> {
+        fn send_node_frame(&self, frame: myko_wire::NodeFrame) -> NodeFrameSend<'_> {
             self.0.send_node_frame(frame)
         }
     }
@@ -1443,6 +1476,117 @@ mod tests {
             id: id.into(),
             name: name.to_string(),
         })
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    struct BoundedNodeWriter {
+        frames: flume::Sender<myko_wire::NodeFrame>,
+        attempted: flume::Sender<()>,
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    impl SessionSink for BoundedNodeWriter {
+        fn send(&self, _msg: MykoMessage) {}
+
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: EncodedCommandMessage,
+        ) {
+        }
+
+        fn send_node_frame(&self, frame: myko_wire::NodeFrame) -> NodeFrameSend<'_> {
+            Box::pin(async move {
+                self.attempted.send(()).map_err(|error| error.to_string())?;
+                self.frames
+                    .send_async(frame)
+                    .await
+                    .map_err(|error| error.to_string())
+            })
+        }
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn dropping_native_map_cancels_a_backpressured_producer() -> anyhow::Result<()> {
+        let _serial = scheduler_test_serial();
+        let (frames, received) = flume::bounded(1);
+        let (attempted, attempts) = flume::unbounded();
+        let mut session = ClientSession::new(
+            "bounded-map".into(),
+            BoundedNodeWriter { frames, attempted },
+        );
+        let map = hyphae::CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
+        let output = super::super::native_map::NativeMapOutput::new(map.clone().lock())
+            .map_err(anyhow::Error::msg)?;
+        session
+            .subscribe_node_handler_map("map".into(), output, None)
+            .map_err(anyhow::Error::msg)?;
+        let deadline = std::time::Duration::from_secs(2);
+        tokio::time::timeout(deadline, attempts.recv_async()).await??;
+        map.insert("a".into(), make_entity("a", "Alice"));
+        tokio::time::timeout(deadline, attempts.recv_async()).await??;
+        anyhow::ensure!(
+            received.len() == 1,
+            "map producer did not fill the bounded queue"
+        );
+        drop(session);
+        tokio::task::yield_now().await;
+        anyhow::ensure!(
+            matches!(
+                received.recv_async().await?,
+                myko_wire::NodeFrame::HandlerState { .. }
+            ),
+            "map did not deliver its initial state"
+        );
+        anyhow::ensure!(
+            tokio::time::timeout(deadline, received.recv_async())
+                .await?
+                .is_err(),
+            "map producer survived session drop"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn native_reports_coalesce_backpressure_and_cancel_on_drop() -> anyhow::Result<()> {
+        let _serial = scheduler_test_serial();
+        let (frames, received) = flume::bounded(1);
+        let (attempted, attempts) = flume::unbounded();
+        let mut session = ClientSession::new(
+            "bounded-report".into(),
+            BoundedNodeWriter { frames, attempted },
+        );
+        let output = |value| -> Arc<dyn AnyOutput> { Arc::new(serde_json::json!(value)) };
+        let cell = Cell::new(output(0));
+        session
+            .subscribe_node_handler_report("report".into(), cell.clone().lock())
+            .map_err(anyhow::Error::msg)?;
+        let deadline = std::time::Duration::from_secs(2);
+        tokio::time::timeout(deadline, attempts.recv_async()).await??;
+        cell.set(output(1));
+        tokio::time::timeout(deadline, attempts.recv_async()).await??;
+        for value in 2..=100 {
+            cell.set(output(value));
+        }
+        for (sequence, expected) in [0, 1, 100].into_iter().enumerate() {
+            let frame = tokio::time::timeout(deadline, received.recv_async()).await??;
+            anyhow::ensure!(
+                matches!(frame, myko_wire::NodeFrame::HandlerState { revision, state }
+                if revision.sequence == u64::try_from(sequence)? && state.value == Some(serde_json::json!(expected))),
+                "report lost its latest value or emitted a noncontiguous sequence"
+            );
+        }
+        drop(session);
+        anyhow::ensure!(
+            tokio::time::timeout(deadline, received.recv_async())
+                .await?
+                .is_err(),
+            "report producer survived session drop"
+        );
+        Ok(())
     }
 
     #[test]

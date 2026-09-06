@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd -- "$(dirname -- "$0")/.."
 cargo test -p myko-federation --lib -j 4 --target-dir target/agent
-cargo test -p myko --lib server::federated_session -j 4 --target-dir target/agent
+cargo test -p myko --lib server:: -j 4 --target-dir target/agent
 cargo test -p myko --test prepared_command_recovery -j 4 --target-dir target/agent
 cargo test -p myko-redb --test authority_unavailable --test prepared_live_boundary --test prepared_effect_integrity -j 4 --target-dir target/agent
 cargo test -p myko-authority --lib --test certified_history -j 4 --target-dir target/agent

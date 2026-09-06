@@ -253,8 +253,13 @@ impl crate::server::SessionSink for NodeFrameSink {
     ) {
     }
 
-    fn send_node_frame(&self, frame: NodeFrame) -> Result<(), String> {
-        self.0.send(frame).map_err(|error| error.to_string())
+    fn send_node_frame(&self, frame: NodeFrame) -> crate::server::NodeFrameSend<'_> {
+        Box::pin(async move {
+            self.0
+                .send_async(frame)
+                .await
+                .map_err(|error| error.to_string())
+        })
     }
 }
 
@@ -335,6 +340,7 @@ pub trait AuthorityControlEndpoint: std::fmt::Debug + Send + Sync + 'static {
 /// Shared semantic endpoint behind every Myko transport adapter.
 #[derive(Clone)]
 pub struct FederatedSession {
+    admission_id: CommandId,
     node: Node,
     application: Arc<RwLock<Option<crate::ApplicationHost>>>,
     live_events: LiveEventHub,
@@ -387,6 +393,7 @@ impl FederatedSession {
         let (policy_revision, _) = watch::channel(0);
         Self {
             node,
+            admission_id: CommandId::new(),
             application: Arc::new(RwLock::new(application)),
             live_events,
             access_policy: Arc::new(RwLock::new(access_policy)),
@@ -560,7 +567,8 @@ impl FederatedSession {
             "node ready; opening session request"
         );
         let (send, receive) = flume::bounded(SESSION_FRAME_CAPACITY);
-        let service = self.clone();
+        let mut service = self.clone();
+        service.admission_id = CommandId::new();
         let span = tracing::debug_span!(
             "myko.session.request",
             node_id = %self.node.node_id(),
@@ -1137,6 +1145,7 @@ impl FederatedSession {
     ) -> Result<bool, AuthorityUnavailable> {
         let request = &command.request;
         let access = AccessAttempt {
+            admission_id: Some(self.admission_id),
             principal_id: principal.clone(),
             presentation: presentation.clone(),
             operation,
@@ -1259,14 +1268,21 @@ impl FederatedSession {
         let mut authorization = self.authorization_pulse();
         loop {
             tokio::select! {
-                event = events.recv_async() => {
-                    let event = event.map_err(|error| error.to_string())?;
+                biased;
+                update = async {
+                    loop {
+                        let event = events.recv_async().await.map_err(|error| error.to_string())?;
+                        if let Some(update) = follow.update_from_envelope(&event).map_err(|error| error.to_string())? {
+                            break Ok::<_, String>(update);
+                        }
+                        tokio::task::coop::consume_budget().await;
+                    }
+                } => {
+                    let update = update?;
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
                         return Ok(());
                     }
-                    if let Some(update) = follow.update_from_envelope(&event).map_err(|error| error.to_string())? {
-                        emit(send, NodeFrame::ItemUpdate { update: Box::new(update) }).await?;
-                    }
+                    emit(send, NodeFrame::ItemUpdate { update: Box::new(update) }).await?;
                 }
                 _ = authorization.changed() => {
                     if !self.stream_authorized(&principal, &presentation, &request, send).await? {
@@ -1591,9 +1607,10 @@ impl FederatedSession {
             .ok_or_else(|| "this node does not expose a Myko application".to_owned())?;
         let opened = std::time::Instant::now();
         let tx: Arc<str> = Arc::from(uuid::Uuid::new_v4().to_string());
+        let (handler_send, handler_frames) = flume::bounded(SESSION_FRAME_CAPACITY);
         let mut session = crate::server::ClientSession::new(
             Arc::from(principal.as_str()),
-            NodeFrameSink(send.clone()),
+            NodeFrameSink(handler_send),
         );
         application.open_handler(&mut session, tx, handler.clone())?;
         tracing::debug!(
@@ -1604,8 +1621,11 @@ impl FederatedSession {
         debug_initial_handler_progress(&handler, "handler_opened", opened.elapsed(), None);
         let mut authorization = self.authorization_pulse();
         loop {
-            let _wake = authorization.changed().await;
-            tracing::trace!("handler subscription woke for authority change");
+            let frame = tokio::select! {
+                biased;
+                frame = handler_frames.recv_async() => Some(frame.map_err(|error| error.to_string())?),
+                _ = authorization.changed() => None,
+            };
             if !self
                 .stream_authorized(&principal, &presentation, &request, send)
                 .await?
@@ -1616,6 +1636,9 @@ impl FederatedSession {
                     "handler subscription authorization ended"
                 );
                 return Ok(());
+            }
+            if let Some(frame) = frame {
+                emit(send, frame).await?;
             }
         }
     }
@@ -1934,6 +1957,7 @@ impl FederatedSession {
             )
         })?;
         let mut access = AccessAttempt {
+            admission_id: Some(self.admission_id),
             principal_id: principal.clone(),
             presentation: presentation.clone(),
             operation: prepared.operation,
@@ -2879,6 +2903,60 @@ mod tests {
                     .contains(&FederationPermission::ReadState)
         }));
         drop(seen);
+    }
+
+    #[derive(Debug)]
+    struct AdmissionOnlyPolicy;
+
+    impl AccessPolicy for AdmissionOnlyPolicy {
+        fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+            let rule = if request.authorization_phase == AuthorizationPhase::Admission {
+                Ok(())
+            } else {
+                Err("revoked before handler frame".to_owned())
+            };
+            Ok(AuthorizationDecision::from_rule(request, rule)).into()
+        }
+    }
+
+    #[tokio::test]
+    async fn handler_frames_require_authority_after_admission()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let node = Node::in_memory();
+        let source_node = node.node_id();
+        let scope_id = ScopeId::new("protected:handler");
+        let application = crate::ApplicationHost::new(node, crate::MykoApplication::new())?;
+        let session = FederatedSession::for_application(application, Arc::new(AdmissionOnlyPolicy));
+        let mut frames = session
+            .open(
+                PrincipalId::new("reader"),
+                NodeRequestEnvelope::connected(NodeRequest::FollowHandler {
+                    request: HandlerRequest {
+                        kind: myko_federation::HandlerKind::View,
+                        handler_id: "ProtectedHandlerView".to_owned(),
+                        source_node: Some(source_node),
+                        scope_id: Some(scope_id.clone()),
+                        params: serde_json::to_value(ProtectedHandlerView {
+                            source_node,
+                            scope_id,
+                        })?,
+                    },
+                }),
+            )
+            .await;
+        if !matches!(frames.recv().await, Some(NodeFrame::Authorization { decision }) if decision.is_permit())
+        {
+            return Err("handler admission was not permitted".into());
+        }
+        if !matches!(tokio::time::timeout(Duration::from_secs(2), frames.recv()).await?,
+            Some(NodeFrame::Authorization { decision }) if matches!(*decision, AuthorizationDecision::Deny(_)))
+        {
+            return Err("handler data bypassed continuation authorization".into());
+        }
+        if frames.recv().await.is_some() {
+            return Err("denied handler forwarded queued frames".into());
+        }
+        Ok(())
     }
 
     #[tokio::test]

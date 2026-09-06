@@ -72,6 +72,47 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+This checkpoint extends certified access to scoped item and handler streams.
+The server gives each open a new admission identity. Continuations recover that
+certified admission and freshly revalidate it without spending another grant use.
+Changed requests, wrong leases, revocation, and unavailable controllers do not
+release application frames. Topology binding includes the requested scopes and
+their ancestors, not unrelated scopes that happen to become known later.
+
+The coordinator serializes its own proposal operations and refreshes the retained
+head after waiting. This avoids competing ballots from one configured proposer;
+it does not replace controller quorum checks. Item streams drain irrelevant
+control records before selecting another authorization timer, avoiding feedback
+that previously prevented real updates from progressing.
+
+Handler frames pass a continuation check before forwarding. Native frame sinks
+are asynchronous, and dropping a subscription aborts its producer even with a
+full queue. Scalar report snapshots coalesce to the latest value under pressure;
+map deltas do not use that coalescing path. The item stream drain loop yields
+cooperatively so irrelevant records cannot monopolize its executor.
+
+The expanded verification script passed 380 test executions, including all 39
+coordinator tests, and the five-crate strict check. Its final node check caught
+an enum-size lint caused by the larger session. Boxing the concrete command
+clients and updating their two explicit trait calls fixed it. Redb/node strict,
+all 15 durable-node tests, and formatting then passed. The final core server
+rerun passed all 84 tests after the cooperative-yield adjustment. Evidence is
+in `/tmp/myko-certified-streams-gate.log`,
+`/tmp/myko-certified-streams-core-final.log`,
+`/tmp/myko-certified-streams-node-strict-2.log`, and
+`/tmp/myko-certified-streams-node-final.log`. These are combined results; the
+original script ended at the corrected enum-size lint, not exit zero.
+
+Forrest passed 160 locked workspace test executions, strict Clippy, and formatting.
+Its final locked all-target check also passed after the client boxing change.
+The Mac SSH preflight still timed out. The stream test uses native Iroh controller
+coordination with an in-process incoming session, not a native incoming client.
+Handler forwarding is covered by core session tests. Production Forrest still
+does not install this certified policy. Other access operations, custody, the
+earlier parallel core graph-window failure, and all C01-C18 rows remain open.
+
+The following paragraphs describe the preceding committed checkpoint.
+
 `AccessPolicy::decide` now returns one `PolicyDecision`: either an immediate result
 or lazy asynchronous coordination. Synchronous local command APIs reject pending
 coordination without polling it. Network access awaits the result without holding

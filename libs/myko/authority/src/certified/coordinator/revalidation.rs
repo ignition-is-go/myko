@@ -74,12 +74,16 @@ impl AuthorityDecisionCoordinator {
         request_id: CommandId,
         request: CertifiedAuthorityRequest,
     ) -> Result<CoordinatedAuthorityRevalidation, String> {
+        let _turn = self.proposal_turn.lock().await;
+        self.synchronize().await?;
+        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        history.context_at(head)?;
         let root = request.root(self.anchor.realm_id(), request_id)?;
         let mut expected = request.request.clone();
         expected.topology = Some(request.topology.clone());
         let operation = CommandId::new();
-        let mut head = head;
-        let mut counter = counter;
+        let mut head = history.retained_head()?;
+        let mut counter = counter.max(super::runtime::next_counter(&history, head)?);
         for _ in 0..self.max_rounds {
             self.synchronize().await?;
             let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;

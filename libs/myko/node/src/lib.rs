@@ -195,10 +195,10 @@ pub struct NodeCommandClient {
 #[derive(Clone)]
 enum NodeCommandTransport {
     Embedded {
-        client: ApplicationHost,
+        client: Box<ApplicationHost>,
         authority: Option<AuthorityPresentation>,
     },
-    Iroh(IrohCommandClient),
+    Iroh(Box<IrohCommandClient>),
 }
 
 /// Current-then-live lifecycle returned by [`NodeCommandClient`].
@@ -313,7 +313,7 @@ impl CommandWatchingClient for NodeCommandClient {
         Box::pin(async move {
             match &self.transport {
                 NodeCommandTransport::Embedded { client, .. } => {
-                    CommandWatchingClient::watch_command(client, command_id)
+                    CommandWatchingClient::watch_command(client.as_ref(), command_id)
                         .await
                         .map(|subscription| NodeCommandSubscription {
                             transport: NodeCommandSubscriptionTransport::Embedded(subscription),
@@ -321,7 +321,7 @@ impl CommandWatchingClient for NodeCommandClient {
                         .map_err(NodeError::Federation)
                 }
                 NodeCommandTransport::Iroh(client) => {
-                    CommandWatchingClient::watch_command(client, command_id)
+                    CommandWatchingClient::watch_command(client.as_ref(), command_id)
                         .await
                         .map(|subscription| NodeCommandSubscription {
                             transport: NodeCommandSubscriptionTransport::Iroh(subscription),
@@ -1404,7 +1404,7 @@ impl Node {
         if source_node == self.federation.node_id() {
             return Ok(NodeCommandClient {
                 transport: NodeCommandTransport::Embedded {
-                    client: self.application.clone(),
+                    client: Box::new(self.application.clone()),
                     authority,
                 },
             });
@@ -1415,10 +1415,10 @@ impl Node {
             .map_err(NodeError::Route)?;
         let client = self.replicator.command_client(peer);
         Ok(NodeCommandClient {
-            transport: NodeCommandTransport::Iroh(match authority {
+            transport: NodeCommandTransport::Iroh(Box::new(match authority {
                 Some(authority) => client.with_authority(authority),
                 None => client,
-            }),
+            })),
         })
     }
 
