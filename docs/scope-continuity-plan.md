@@ -72,6 +72,16 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Certified revalidation now rechecks an original permitted effect against a later
+certified predecessor without creating another grant use or lease. It excludes
+only the exact original use records from evaluation, retains the original
+contributors, and preserves the original lease deadline. Replay validates the
+new control value. Controller endpoints require fresh time and matching prepared
+evidence for a new proposal, while recovering required accepted values unchanged.
+Persistence tests cover restart, consumed grants, revocation, forged permits,
+and lease expiry. Live coordinator release and runtime policy integration remain
+unfinished; this historical protocol does not itself release a command.
+
 The authority coordinator now tolerates unavailable minority peers during
 evidence refresh. Two healthy controllers in a three-controller electorate can
 certify a decision and recover the same decision after both stores reopen.

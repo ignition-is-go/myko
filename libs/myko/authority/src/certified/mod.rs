@@ -26,8 +26,8 @@ pub use coordinator::{
     CoordinatedAuthorityDecision, LocalAuthorityPeer,
 };
 pub use history::{
-    AuthorityAnchor, AuthorityDecisionRoot, AuthorityDecisionTransition, AuthorityHistory,
-    AuthoritySelection,
+    AuthorityAnchor, AuthorityDecisionRevalidation, AuthorityDecisionRoot,
+    AuthorityDecisionTransition, AuthorityHistory, AuthoritySelection,
 };
 pub use issuer::AuthorityController;
 pub use rotation::AuthorityRotation;

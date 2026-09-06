@@ -6,15 +6,16 @@ use myko::{ApplicationHost, MykoApplication};
 use myko_authority::{
     AuthorityPolicy, RevocationKind, authority_realm_scope,
     certified::{
-        AuthorityAnchor, AuthorityController, AuthorityDecisionRoot, AuthorityHistory,
-        AuthoritySelection,
+        AuthorityAnchor, AuthorityController, AuthorityDecisionRevalidation, AuthorityDecisionRoot,
+        AuthorityHistory, AuthoritySelection,
     },
 };
 use myko_federation::{
     AccessAttempt, AccessOperation, AccessTarget, AuthorityConstraints, AuthorityGrant,
-    AuthorityGrantId, AuthorityPresentation, AuthorityRealmId, AuthorizationDecision,
-    AuthorizationPhase, CommandId, EventEnvelope, FederationPermission, Node, NodeEvent, Principal,
-    PrincipalId, PrincipalKind, ScopeId, ScopeSelection, ScopeTopology, ServiceId,
+    AuthorityGrantId, AuthorityLeaseRequest, AuthorityPresentation, AuthorityRealmId,
+    AuthorizationDecision, AuthorizationPhase, CommandId, EventEnvelope, FederationPermission,
+    Node, NodeEvent, Principal, PrincipalId, PrincipalKind, ScopeId, ScopeSelection, ScopeTopology,
+    ServiceId,
     control_quorum::{ControlBallot, ControlEpochId, ControlHead, ControlValue, ControllerId},
 };
 use myko_redb::RedbJournal;
@@ -389,4 +390,162 @@ fn decision_planned_after_certified_revocation_is_denied() -> TestResult {
 
 fn fixed_time() -> Result<DateTime<Utc>, Box<dyn Error>> {
     DateTime::<Utc>::from_timestamp(1_700_000_000, 0).ok_or_else(|| "invalid time".into())
+}
+
+fn chosen_permit(
+    fixture: &Fixture,
+    a: &Node,
+    b: &Node,
+    lease: Option<AuthorityLeaseRequest>,
+) -> Result<(ControlHead, AuthorityDecisionRoot, AccessAttempt), Box<dyn Error>> {
+    let request_id = CommandId::new();
+    let mut request = access_request(
+        fixture.reader.clone(),
+        fixture.scope.clone(),
+        "sha256:revalidate",
+    );
+    request.lease = lease;
+    let original = AuthorityHistory::replay(a, anchor()?)?.plan_decision_at(
+        fixture.grant_head,
+        CommandId::new(),
+        request_id,
+        request.clone(),
+        fixed_time()?,
+        ScopeTopology::default(),
+    )?;
+    if !original.decision().is_permit() {
+        return Err("revalidation fixture did not obtain an original permit".into());
+    }
+    let head = choose(a, b, fixture.grant_head, &original.control_value()?)?;
+    Ok((
+        head,
+        AuthorityDecisionRoot::new(realm(), request_id, AuthorizationPhase::Effect)?,
+        request,
+    ))
+}
+
+#[test]
+fn revalidation_reuses_only_the_original_consumption_after_reopen() -> TestResult {
+    let fixture = fixture()?;
+    let a = RedbJournal::open_node(&fixture.a_path)?;
+    let b = RedbJournal::open_node(&fixture.b_path)?;
+    let (head, root, request) = chosen_permit(&fixture, &a, &b, None)?;
+    drop(a);
+    drop(b);
+    let a = RedbJournal::open_node(&fixture.a_path)?;
+    let b = RedbJournal::open_node(&fixture.b_path)?;
+    let history = AuthorityHistory::replay(&a, anchor()?)?;
+    let original = history.decision_at(head, &root)?;
+    let later = fixed_time()?
+        .checked_add_signed(Duration::seconds(1))
+        .ok_or("time overflow")?;
+    let revalidation = history.plan_revalidation_at(head, CommandId::new(), &root, later)?;
+    if !revalidation.decision().is_permit() {
+        return Err("exact effect could not reuse its already consumed grant".into());
+    }
+    let next = choose(&a, &b, head, &revalidation.control_value()?)?;
+    let history = AuthorityHistory::replay(&a, anchor()?)?;
+    if history.decision_at(next, &root)? != original {
+        return Err("revalidation changed the original decision".into());
+    }
+    if history
+        .assess_at(next, &request, later, ScopeTopology::default())?
+        .decision_at_head()
+        .is_permit()
+    {
+        return Err("revalidation replenished a consumed grant".into());
+    }
+    let repeated = history.plan_revalidation_at(next, CommandId::new(), &root, later)?;
+    if repeated.decision() != revalidation.decision() {
+        return Err("revalidation spent the original effect's allowance again".into());
+    }
+    choose(&a, &b, next, &repeated.control_value()?)?;
+    Ok(())
+}
+
+#[test]
+fn revalidation_observes_certified_revocation() -> TestResult {
+    let fixture = fixture()?;
+    let a = RedbJournal::open_node(&fixture.a_path)?;
+    let b = RedbJournal::open_node(&fixture.b_path)?;
+    let (head, root, _) = chosen_permit(&fixture, &a, &b, None)?;
+    let policy = Arc::new(AuthorityPolicy::new(
+        ApplicationHost::new(a.clone(), AuthorityPolicy::install(MykoApplication::new())?)?,
+        realm(),
+    ));
+    a.set_command_access_policy(policy.clone())?;
+    let before = a.local_history_cut()?;
+    let admin = Principal::new(PrincipalId::new("admin"), PrincipalKind::Node);
+    policy.revoke(
+        admin.clone(),
+        AuthorityPresentation::direct(admin),
+        RevocationKind::Grant,
+        "single-use-grant".to_owned(),
+    )?;
+    let revoked = choose(
+        &a,
+        &b,
+        head,
+        &AuthoritySelection::new(CommandId::new(), &a.events_after(before)?)?.control_value()?,
+    )?;
+    let revalidation = AuthorityHistory::replay(&a, anchor()?)?.plan_revalidation_at(
+        revoked,
+        CommandId::new(),
+        &root,
+        Utc::now(),
+    )?;
+    if !matches!(revalidation.decision(), AuthorizationDecision::Deny(_)) {
+        return Err("revalidation ignored a certified revocation".into());
+    }
+    let mut forged = serde_json::to_value(&revalidation)?;
+    let original = AuthorityHistory::replay(&a, anchor()?)?
+        .decision_at(head, &root)?
+        .ok_or("missing original")?;
+    *forged
+        .get_mut("decision")
+        .ok_or("revalidation decision field missing")? = serde_json::to_value(original.decision())?;
+    let forged: AuthorityDecisionRevalidation = serde_json::from_value(forged)?;
+    if choose(&a, &b, revoked, &forged.control_value()?).is_ok() {
+        return Err("controllers signed a forged permit after revocation".into());
+    }
+    choose(&a, &b, revoked, &revalidation.control_value()?)?;
+    drop(policy);
+    Ok(())
+}
+
+#[test]
+fn revalidation_preserves_the_original_lease_and_rejects_expiry() -> TestResult {
+    let fixture = fixture()?;
+    let a = RedbJournal::open_node(&fixture.a_path)?;
+    let b = RedbJournal::open_node(&fixture.b_path)?;
+    let (head, root, _) = chosen_permit(
+        &fixture,
+        &a,
+        &b,
+        Some(AuthorityLeaseRequest {
+            duration_seconds: 10,
+            offline: false,
+        }),
+    )?;
+    let history = AuthorityHistory::replay(&a, anchor()?)?;
+    let original = history
+        .decision_at(head, &root)?
+        .ok_or("missing original")?;
+    let later = fixed_time()?
+        .checked_add_signed(Duration::seconds(1))
+        .ok_or("time overflow")?;
+    let revalidation = history.plan_revalidation_at(head, CommandId::new(), &root, later)?;
+    match (original.decision(), revalidation.decision()) {
+        (AuthorizationDecision::Permit(original), AuthorizationDecision::Permit(rechecked))
+            if original.lease.is_some() && original.lease == rechecked.lease => {}
+        _ => return Err("revalidation renewed or lost the original lease".into()),
+    }
+    let expiry = fixed_time()?
+        .checked_add_signed(Duration::seconds(10))
+        .ok_or("time overflow")?;
+    let expired = history.plan_revalidation_at(head, CommandId::new(), &root, expiry)?;
+    if !matches!(expired.decision(), AuthorizationDecision::Deny(_)) {
+        return Err("revalidation revived an expired lease".into());
+    }
+    Ok(())
 }

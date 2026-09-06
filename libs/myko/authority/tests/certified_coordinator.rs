@@ -952,6 +952,15 @@ async fn endpoint_rejects_new_expired_decision_but_recovers_accepted_one() -> Te
     let command_id = CommandId::new();
     let request = prepare_command_evidence(&a, &b, reader, scope, command_id)?;
     let old_value = expired_value(&a, grant_head, command_id, &request)?;
+    assert_expired_value_recovery(&a, &b, grant_head, old_value).await
+}
+
+async fn assert_expired_value_recovery(
+    a: &Node,
+    b: &Node,
+    grant_head: ControlHead,
+    old_value: ControlValue,
+) -> TestResult {
     let [a_key, b_key] = keys();
     let a_principal = Principal::node(PrincipalId::new("node:controller-a"));
     let a_binding = AuthorityControllerPrincipal::new(a_principal.clone(), controller_id(&a_key));
@@ -981,7 +990,7 @@ async fn endpoint_rejects_new_expired_decision_but_recovers_accepted_one() -> Te
         old_value.clone(),
     )
     .await?;
-    persist_raw_accepted_value(&a, &b, grant_head, &old_value, &a_key, &b_key)?;
+    persist_raw_accepted_value(a, b, grant_head, &old_value, &a_key, &b_key)?;
     let recovery_ballot = ControlBallot {
         counter: 4,
         proposer: controller_id(&a_key),
@@ -1003,10 +1012,29 @@ async fn endpoint_rejects_new_expired_decision_but_recovers_accepted_one() -> Te
         grant_head,
     };
     recover_accepted_value(&quorum, recovery_ballot, recovery_promises, old_value).await?;
-    drop(a);
-    drop(b);
-    drop(directory);
     Ok(())
+}
+
+#[tokio::test]
+async fn endpoint_rejects_new_expired_revalidation_but_recovers_accepted_one() -> TestResult {
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("revalidation-a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("revalidation-b.redb"))?;
+    let (grant_head, reader, scope) = install_grant(&a, &b)?;
+    let command_id = CommandId::new();
+    let request = prepare_command_evidence(&a, &b, reader, scope, command_id)?;
+    let old_value = expired_value(&a, grant_head, command_id, &request)?;
+    let [a_key, b_key] = keys();
+    let head =
+        choose_selection_with_anchor(&a, &b, anchor()?, &a_key, &b_key, grant_head, &old_value)?;
+    let history = AuthorityHistory::replay(&a, anchor()?)?;
+    let root = AuthorityDecisionRoot::new(realm(), command_id, AuthorizationPhase::Effect)?;
+    let original = history
+        .decision_at(head, &root)?
+        .ok_or("original decision absent")?;
+    let revalidation =
+        history.plan_revalidation_at(head, CommandId::new(), &root, *original.evaluated_at())?;
+    assert_expired_value_recovery(&a, &b, head, revalidation.control_value()?).await
 }
 
 #[tokio::test]

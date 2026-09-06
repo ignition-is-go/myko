@@ -21,6 +21,9 @@ use super::{AuthorityRotation, CertifiedAuthorityFact, project_facts};
 const SELECTION_DOMAIN: &[u8] = b"myko/certified-authority-selection/v1\0";
 const DECISION_DOMAIN: &[u8] = b"myko/certified-authority-decision/v1\0";
 
+mod revalidation;
+pub use revalidation::AuthorityDecisionRevalidation;
+
 #[derive(Debug, Clone)]
 pub struct AuthorityAnchor {
     realm: AuthorityRealmKey,
@@ -267,6 +270,11 @@ impl AuthorityDecisionTransition {
     #[must_use]
     pub const fn evaluated_at(&self) -> &DateTime<Utc> {
         &self.evaluated_at
+    }
+
+    pub(super) fn matches_prepared_request(&self, mut request: AccessAttempt) -> bool {
+        let topology = request.topology.take();
+        canonical_request(request) == self.request && topology.as_ref() == Some(&self.topology)
     }
 
     fn records(&self) -> &[DecisionRecord] {
@@ -538,6 +546,27 @@ impl AuthorityHistory {
         Ok(None)
     }
 
+    /// Plan a new certified check of an already consumed, exact effect.
+    /// No additional use or lease is created. This historical plan is not a
+    /// live permit until quorum coordination and use-time checks succeed.
+    ///
+    /// # Errors
+    /// Rejects absent decisions, invalid history, non-permits, and time reversal.
+    pub fn plan_revalidation_at(
+        &self,
+        head: ControlHead,
+        operation: CommandId,
+        root: &AuthorityDecisionRoot,
+        evaluated_at: DateTime<Utc>,
+    ) -> Result<AuthorityDecisionRevalidation, String> {
+        let original = self
+            .decision_at(head, root)?
+            .ok_or_else(|| "authority revalidation has no original decision".to_owned())?;
+        let facts = self.selected_at(head)?;
+        let state = project_facts(&facts, self.realm_id(), original.topology.clone())?;
+        AuthorityDecisionRevalidation::plan(operation, &original, evaluated_at, state)
+    }
+
     pub(super) fn selected_at(
         &self,
         head: ControlHead,
@@ -607,6 +636,19 @@ impl<'a> AuthorityFactReplay<'a> {
         }
         if payload.0.starts_with(DECISION_DOMAIN) {
             return self.apply_decision(*operation, payload);
+        }
+        if let Some(revalidation) = AuthorityDecisionRevalidation::from_retained_payload(payload)? {
+            if revalidation.operation() != *operation {
+                return Err(
+                    "authority revalidation operation differs from control transition".to_owned(),
+                );
+            }
+            let original = self
+                .decisions
+                .get(&revalidation.root().key())
+                .ok_or_else(|| "authority revalidation has no original decision".to_owned())?;
+            let state = project_facts(&self.output, self.realm, original.topology.clone())?;
+            return revalidation.validate_against(original, state);
         }
         Err("control retain payload is not a certified authority value".to_owned())
     }

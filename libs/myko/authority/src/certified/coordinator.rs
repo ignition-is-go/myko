@@ -21,8 +21,8 @@ use myko_federation::{
 use crate::{AuthorityRealmKey, AuthorityService, authority_realm_scope};
 
 use super::{
-    AuthorityAnchor, AuthorityController, AuthorityDecisionRoot, AuthorityDecisionTransition,
-    AuthorityHistory,
+    AuthorityAnchor, AuthorityController, AuthorityDecisionRevalidation, AuthorityDecisionRoot,
+    AuthorityDecisionTransition, AuthorityHistory,
 };
 
 const DEFAULT_MAX_COORDINATION_ROUNDS: usize = 8;
@@ -296,6 +296,22 @@ impl CertifiedAuthorityControlEndpoint {
         promises: &[SignedControlVote],
         value: &ControlValue,
     ) -> Result<(), AuthorizationFailure> {
+        let transition = ControlTransition::from_control_value(value).map_err(|_| {
+            control_denial_for_message(presentation, "authority control value is malformed")
+        })?;
+        if let ControlTransition::Retain { payload, .. } = &transition
+            && let Some(revalidation) =
+                AuthorityDecisionRevalidation::from_retained_payload(payload).map_err(|_| {
+                    control_denial_for_message(
+                        presentation,
+                        "authority revalidation payload is malformed",
+                    )
+                })?
+        {
+            return self
+                .validate_revalidation(presentation, head, ballot, promises, value, &revalidation)
+                .await;
+        }
         let Some(decision) = decision_transition(presentation, value)? else {
             return Ok(());
         };
@@ -329,6 +345,85 @@ impl CertifiedAuthorityControlEndpoint {
             return Err(control_denial_for_message(
                 presentation,
                 "authority proposal does not match trusted prepared command evidence",
+            ));
+        }
+        Ok(())
+    }
+
+    async fn validate_revalidation(
+        &self,
+        presentation: &AuthorityPresentation,
+        head: ControlHead,
+        ballot: ControlBallot,
+        promises: &[SignedControlVote],
+        value: &ControlValue,
+        revalidation: &AuthorityDecisionRevalidation,
+    ) -> Result<(), AuthorizationFailure> {
+        let history = AuthorityHistory::replay(&self.node, self.anchor.clone())
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        let verifier = history
+            .context_at(head)
+            .and_then(|context| context.verifier())
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        verifier.verify_prepare(ballot, promises).map_err(|_| {
+            control_denial_for_message(
+                presentation,
+                "authority revalidation prepare proof is invalid",
+            )
+        })?;
+        if let Some(required) = required_accepted_value(promises) {
+            if required != value {
+                return Err(control_denial_for_message(
+                    presentation,
+                    "authority revalidation differs from required accepted value",
+                ));
+            }
+            return history.validate_transition_at(head, value).map_err(|_| {
+                control_denial_for_message(
+                    presentation,
+                    "required authority revalidation is invalid",
+                )
+            });
+        }
+        self.validate_evaluation_time(presentation, revalidation.evaluated_at())?;
+        let original = history
+            .decision_at(head, revalidation.root())
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
+            .ok_or_else(|| {
+                control_denial_for_message(
+                    presentation,
+                    "authority revalidation has no original decision",
+                )
+            })?;
+        self.refresh_command_evidence(presentation, original.request())
+            .await?;
+        let request = self
+            .node
+            .prepared_command_access(revalidation.root().request_id())
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        if request.authorization_phase != AuthorizationPhase::Effect
+            || !original.matches_prepared_request(request)
+        {
+            return Err(control_denial_for_message(
+                presentation,
+                "authority revalidation differs from prepared effect",
+            ));
+        }
+        let planned = history
+            .plan_revalidation_at(
+                head,
+                revalidation.operation(),
+                revalidation.root(),
+                *revalidation.evaluated_at(),
+            )
+            .and_then(|planned| planned.control_value())
+            .map_err(|_| {
+                control_denial_for_message(presentation, "authority revalidation cannot be planned")
+            })?;
+        if &planned != value {
+            return Err(control_denial_for_message(
+                presentation,
+                "authority revalidation differs from trusted evaluation",
             ));
         }
         Ok(())
