@@ -119,6 +119,25 @@ workspace Clippy, and formatting pass in
 These new tool tests use in-memory persistence;
 they do not establish disk recovery, abrupt-loss safety, or distributed fencing.
 
+Daemon tool registration, paired replication, invitation creation, LAN discovery,
+and peer imports now await typed retained commands. The mobile tool-registration
+caller uses the same async API. The focused startup regression failed before the
+migration and passes afterward, as does paired-replication startup. Workspace
+strict Clippy passes in `/tmp/forrest-startup-commands-strict.log`. The full
+workspace run exposed an approval-resumption failure: a stale empty tool view
+caused another model batch to be staged. The worker now loads pending tools from
+an authoritative scoped query after claiming the task, instead of caching that
+view. All 27 agent-pool tests and workspace strict Clippy pass in
+`/tmp/forrest-authoritative-tool-tests.log` and
+`/tmp/forrest-authoritative-tool-strict.log`. The approval regression also
+passes 30 consecutive runs in `/tmp/forrest-approval-repeat-tests.log`.
+All 188 workspace tests and formatting pass in
+`/tmp/forrest-startup-recovery-workspace-tests.log` and
+`/tmp/forrest-startup-recovery-workspace-fmt.log`. Administrative grant issuance and
+revocation still use synchronous authority methods, so this is not certified
+startup activation. The Mac could not be synced because SSH to `10.0.1.110`
+timed out before any remote command ran.
+
 Native nodes can install certified authority on their existing Iroh transport
 and command dispatcher. Configuration keeps the original controller electorate
 separate from current authenticated routes. The node owns and stops its
