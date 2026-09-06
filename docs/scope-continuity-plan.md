@@ -72,7 +72,17 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
-The native integration checkpoint passes all 708 tests in
+Prepared commands now recover automatically through the application command
+driver after durable reopen. Temporary authority unavailability defers the
+command without stopping independent work. Real-Redb tests verify that recovery
+appends the exact saved batch and result once without rerunning the handler.
+Commands awaiting approval remain parked. The affected core and federation gate
+passes 471 tests, formatting, and strict Clippy. Forrest's workspace tests,
+formatting, and strict Clippy also pass against this change. A list-watch test
+now waits for readiness and query resends before asserting response epochs.
+This is recovery scheduling, not live certified-policy integration or custody.
+
+The preceding native integration checkpoint at `a776937a` passed all 708 tests in
 `scripts/verify_certified_consumption.sh`, formatting, and strict Clippy. This
 includes the native-FFI feature set, server consumers, and the native continuity
 regression. The full Myko Flux check also passes, with 14 Svelte warnings.

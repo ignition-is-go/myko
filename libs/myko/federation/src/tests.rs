@@ -2162,6 +2162,91 @@ fn local_pending_discovery_never_executes_a_replicated_submission() {
 }
 
 #[test]
+fn pending_discovery_includes_prepared_effects_but_not_handler_bodies() {
+    let node = Node::in_memory();
+    let policy = install_allow_all(&node);
+    let command = DeclaredCommand::new(
+        CommandId::new(),
+        ScopeId::new("session:test"),
+        PrincipalId::new("human:test"),
+        PutRecord {
+            id: "prepared".to_owned(),
+            value: "saved effect".to_owned(),
+        },
+    );
+    node.submit(command.request().unwrap()).unwrap();
+    let mut live = node.watch_pending_typed::<PutRecord>().unwrap();
+    assert_eq!(live.recv().unwrap().request.id, command.id);
+    let context = match node.begin_command(command.id).unwrap() {
+        TypedCommandAdmission::Execute(context) => Some(context),
+        TypedCommandAdmission::Resume(_) => None,
+    }
+    .unwrap();
+    drop(policy);
+    assert!(matches!(
+        context.commit(&true),
+        Err(NodeError::AuthorityUnavailable(
+            AuthorityUnavailable::PolicyUnavailable
+        ))
+    ));
+    let prepared = node.command(command.id).unwrap().unwrap();
+    assert!(matches!(
+        prepared.state,
+        CommandState::AuthorizationPrepared { .. }
+    ));
+    assert_eq!(
+        node.pending_local_application_commands().unwrap(),
+        vec![prepared.clone()]
+    );
+    assert_eq!(
+        live.recv_timeout(Duration::from_millis(20)).unwrap(),
+        Some(prepared.clone())
+    );
+    let mut reopened = node.watch_pending_local_application_commands().unwrap();
+    assert_eq!(
+        reopened.recv_timeout(Duration::from_millis(20)).unwrap(),
+        Some(prepared)
+    );
+    assert!(node.pending_typed::<PutRecord>().unwrap().is_empty());
+}
+
+#[test]
+fn pending_discovery_does_not_release_challenged_effects() {
+    let node = allow_all_node();
+    let policy = Arc::new(ChallengeFirstEffectPolicy {
+        challenge_id: ChallengeId::new("pending-discovery-challenge"),
+        effect: std::sync::Mutex::new(None),
+    });
+    node.set_command_access_policy(policy.clone()).unwrap();
+    let request = request(CommandId::new());
+    node.submit(request.clone()).unwrap();
+    let context = match node.begin_command(request.id).unwrap() {
+        TypedCommandAdmission::Execute(context) => Some(context),
+        TypedCommandAdmission::Resume(_) => None,
+    }
+    .unwrap();
+    let parked = context.commit(&true).unwrap();
+    assert!(matches!(
+        parked.state,
+        CommandState::AuthorizationPending { .. }
+    ));
+    assert!(
+        node.pending_local_application_commands()
+            .unwrap()
+            .is_empty()
+    );
+    let mut pending = node.watch_pending_local_application_commands().unwrap();
+    assert!(
+        pending
+            .recv_timeout(Duration::from_millis(20))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(node.command(request.id).unwrap(), Some(parked));
+    assert!(policy.effect.lock().unwrap().is_some());
+}
+
+#[test]
 fn declared_pending_watch_replays_current_then_follows_without_polling() {
     let node = allow_all_node();
     let _policy = install_allow_all(&node);

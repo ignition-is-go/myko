@@ -2281,8 +2281,8 @@ impl Node {
         self.backend.command_origin(command_id)
     }
 
-    /// Returns locally originated submitted commands for one stable wire
-    /// contract in their original admission order.
+    /// Returns locally originated submitted, retrying, and prepared commands
+    /// for one stable wire contract in their original admission order.
     ///
     /// Current lifecycle state comes from the backend projection rather than
     /// whichever raw lifecycle event happened to appear last. Replicated
@@ -2304,8 +2304,8 @@ impl Node {
             .collect())
     }
 
-    /// Returns every locally originated submitted command for one service in
-    /// original admission order, preserving order across command types.
+    /// Returns every locally originated submitted, retrying, or prepared command
+    /// for one service in original admission order across command types.
     ///
     /// # Errors
     ///
@@ -2325,9 +2325,8 @@ impl Node {
         .into())
     }
 
-    /// Returns every locally originated submitted application command in its
-    /// original admission order, preserving order across services and command
-    /// types.
+    /// Returns every locally originated submitted, retrying, or prepared
+    /// application command in original admission order across services and types.
     ///
     /// # Errors
     ///
@@ -2341,9 +2340,11 @@ impl Node {
     /// Starts a gap-free work feed for every locally originated command in one
     /// application service.
     ///
-    /// The returned feed first yields commands that were still submitted or
-    /// retrying at the captured history boundary, then follows new admissions
-    /// and retries without polling. Replicated command lifecycles are omitted.
+    /// The returned feed first yields commands that were submitted, retrying, or
+    /// prepared at the captured history boundary, then follows new admissions,
+    /// retries, and prepared effects. Resume prepared effects through command
+    /// admission rather than executing their handlers again. Replicated command
+    /// lifecycles and commands awaiting approval are omitted from the initial queue.
     ///
     /// # Errors
     ///
@@ -2392,10 +2393,12 @@ impl Node {
         )
     }
 
-    /// Returns every locally executable command body of one typed contract.
+    /// Returns submitted or retrying command bodies of one typed contract.
     ///
     /// Myko owns service/type filtering and typed request decoding; application
-    /// code receives typed values instead of rebuilding wire checks.
+    /// code receives typed values instead of rebuilding wire checks. Prepared
+    /// effects are omitted because their handlers must not execute again; use
+    /// the pending snapshot or watch APIs to recover those command IDs.
     ///
     /// # Errors
     ///
@@ -2404,6 +2407,12 @@ impl Node {
     pub fn pending_typed<C: MykoCommand>(&self) -> Result<Vec<C>, NodeError> {
         self.pending_local_commands(C::SERVICE_ID.as_str(), C::COMMAND_TYPE)?
             .iter()
+            .filter(|command| {
+                matches!(
+                    command.state,
+                    CommandState::Submitted | CommandState::Retrying { .. }
+                )
+            })
             .map(|command| command.request.command::<C>())
             .collect()
     }

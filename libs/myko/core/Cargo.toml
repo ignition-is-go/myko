@@ -89,6 +89,8 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 [dev-dependencies]
 ahash = "0.8"
 criterion = { version = "0.5", features = ["html_reports"] }
+myko-redb.workspace = true
+tempfile = "3"
 
 [[bench]]
 name = "dyn_vs_typed"

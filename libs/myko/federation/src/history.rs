@@ -1139,9 +1139,10 @@ const fn event_changes_items(event: &NodeEvent) -> bool {
 /// Gap-free local work feed for one application service or command contract.
 ///
 /// The initial queue is materialized from a bounded history prefix. New local
-/// submissions and durable retries then arrive through the node's lossless
-/// event subscription. Replicated commands are projections and never enter
-/// this executable feed.
+/// submissions, durable retries, and prepared effects then arrive through the
+/// node's lossless event subscription. Prepared effects must resume through
+/// command admission, without reexecuting the handler. Replicated commands are
+/// projections and never enter this executable feed.
 pub struct PendingCommandSubscription {
     pub(super) local_node: NodeId,
     pub(super) service_id: Option<ServiceId>,
@@ -1266,7 +1267,9 @@ impl PendingCommandSubscription {
                 .is_some_and(|expected| command.request.command_type != expected)
             || !matches!(
                 command.state,
-                CommandState::Submitted | CommandState::Retrying { .. }
+                CommandState::Submitted
+                    | CommandState::Retrying { .. }
+                    | CommandState::AuthorizationPrepared { .. }
             )
         {
             return None;
@@ -1310,7 +1313,9 @@ pub(super) fn materialize_pending_local_commands(
         .filter(|(_, command)| {
             matches!(
                 command.state,
-                CommandState::Submitted | CommandState::Retrying { .. }
+                CommandState::Submitted
+                    | CommandState::Retrying { .. }
+                    | CommandState::AuthorizationPrepared { .. }
             )
         })
         .collect::<Vec<_>>();

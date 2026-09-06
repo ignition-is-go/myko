@@ -394,14 +394,18 @@ impl ApplicationHost {
             .map_err(AppError::Node)
     }
 
-    /// Start event-driven dispatch for pending commands owned by this application.
+    /// Start dispatch for pending commands owned by this application.
+    ///
+    /// Temporary authority unavailability defers that command without stopping
+    /// other work. Prepared effects resume from the journal without rerunning
+    /// handlers. The journal also reconstructs deferred work after restart.
     ///
     /// # Errors
     ///
     /// Returns an error when the pending-command watch or dispatch thread
     /// cannot be started.
     pub fn drive_commands(&self) -> Result<CommandDispatchGuard, AppError> {
-        let mut pending = self.node.watch_pending_local_application_commands()?;
+        let pending = self.node.watch_pending_local_application_commands()?;
         let application = self.clone();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
@@ -410,26 +414,10 @@ impl ApplicationHost {
         let thread = std::thread::Builder::new()
             .name("myko-command-dispatch".to_owned())
             .spawn(move || {
-                while !thread_stop.load(std::sync::atomic::Ordering::Acquire) {
-                    match pending.recv_timeout(std::time::Duration::from_millis(50)) {
-                        Ok(Some(command)) => {
-                            if let Err(error) =
-                                application.dispatch_registered_command(command.request.id)
-                            {
-                                if let Ok(mut failure) = thread_failure.write() {
-                                    *failure = Some(error.to_string());
-                                }
-                                return;
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            if let Ok(mut failure) = thread_failure.write() {
-                                *failure = Some(error.to_string());
-                            }
-                            return;
-                        }
-                    }
+                if let Err(error) = application.dispatch_pending_commands(pending, &thread_stop)
+                    && let Ok(mut failure) = thread_failure.write()
+                {
+                    *failure = Some(error.to_string());
                 }
             })
             .map_err(|error| {
@@ -440,6 +428,54 @@ impl ApplicationHost {
             thread: Some(thread),
             failure,
         })
+    }
+
+    fn dispatch_pending_commands(
+        &self,
+        mut pending: myko_federation::PendingCommandSubscription,
+        stop: &std::sync::atomic::AtomicBool,
+    ) -> Result<(), AppError> {
+        use std::time::{Duration, Instant};
+
+        const SHUTDOWN_CHECK: Duration = Duration::from_millis(50);
+        const AUTHORITY_RETRY: Duration = Duration::from_millis(250);
+        let mut queued = BTreeMap::<myko_federation::CommandId, Instant>::new();
+        while !stop.load(std::sync::atomic::Ordering::Acquire) {
+            let timeout = queued.values().min().map_or(SHUTDOWN_CHECK, |next| {
+                next.saturating_duration_since(Instant::now())
+                    .min(SHUTDOWN_CHECK)
+            });
+            if let Some(command) = pending.recv_timeout(timeout)? {
+                // A lifecycle replay must not defeat an existing retry delay.
+                queued
+                    .entry(command.request.id)
+                    .or_insert_with(Instant::now);
+            }
+            let now = Instant::now();
+            let next = queued
+                .iter()
+                .filter(|(_, ready)| **ready <= now)
+                .min_by_key(|(_, ready)| **ready)
+                .map(|(id, _)| *id);
+            let Some(command_id) = next else {
+                continue;
+            };
+            queued.remove(&command_id);
+            match self.dispatch_registered_command(command_id) {
+                Ok(_) => {}
+                Err(AppError::Node(myko_federation::NodeError::AuthorityUnavailable(_))) => {
+                    let retry_at =
+                        Instant::now().checked_add(AUTHORITY_RETRY).ok_or_else(|| {
+                            AppError::State(
+                                "authority retry deadline exceeds clock range".to_owned(),
+                            )
+                        })?;
+                    queued.insert(command_id, retry_at);
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
     }
 
     fn dispatch_typed<C>(
