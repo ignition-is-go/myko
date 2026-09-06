@@ -121,6 +121,17 @@ Local subscription behavior under certified
 policy still needs verification before deciding whether those callers must change.
 No production cutover or C01-C18 completion is claimed.
 
+Network resource monitoring now awaits retained typed reconciliation commands.
+Stopping the monitor preserves a pending update, which can finish afterward;
+unchanged interface snapshots submit no commands. The unused synchronous
+reconciliation wrapper is removed. Initial reconciliation still gates node open,
+so authority installation must preserve startup progress independently of it.
+The four focused tests and the no-default-features check passed. All 172 Forrest
+workspace tests, strict workspace Clippy, and formatting passed in
+`/tmp/forrest-network-workspace.log`, `/tmp/forrest-network-strict.log`, and
+`/tmp/forrest-network-fmt-check.log`. These are raw-authority tests, not evidence
+of certified production startup or scope churn.
+
 The node-effect caller migration passed the full Forrest workspace tests,
 formatting, and strict Clippy. Its focused verifier checks pending acceptance,
 cancellation without changing the retained command, exact completion results,
