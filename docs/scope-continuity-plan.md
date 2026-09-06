@@ -72,6 +72,29 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Controller evidence refresh now has an explicit binding for each authenticated
+proposer. Both authority-history and command-evidence refresh use that binding
+after checking the transport principal, direct presentation, and ballot identity.
+Unknown and duplicate bindings are rejected. An unbound caller can use only
+locally retained evidence; it cannot fall back to another caller's endpoint.
+
+A native test with three Redb stores and Iroh endpoints verifies that controller C
+fetches A's signed history for A and B's signed history for B. A forged B request
+over A's connection cannot fetch history or append a vote. All 79 selected
+authority tests passed. Strict lint then caught a non-Send test temporary spanning
+an await. Limiting that temporary to its synchronous setup block fixed the lint;
+the two focused tests, strict lint, and formatting then passed. Evidence is in
+`/tmp/myko-caller-evidence-gate.log`,
+`/tmp/myko-caller-evidence-tests-final.log`,
+`/tmp/myko-caller-evidence-strict-final-2.log`, and
+`/tmp/myko-caller-evidence-fmt-check.log`. Forrest's locked all-target check passed
+in `/tmp/forrest-caller-evidence-check.log`.
+
+Production controller configuration must supply the required bindings. No
+production cutover or C01-C18 closure is claimed by this change.
+
+### Previous native-lifecycle checkpoint
+
 `PreparedAuthorityRuntime::start` starts only certified effect recovery. The
 native node retains ownership of its existing command dispatcher. The combined
 `install` method remains available for an application that needs both tasks.

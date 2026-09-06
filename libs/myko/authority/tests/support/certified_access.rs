@@ -189,7 +189,7 @@ async fn propose_candidate(
     )
     .await?;
     if let Some(evidence) = evidence {
-        a_endpoint = a_endpoint.with_scoped_evidence_endpoint(evidence);
+        a_endpoint = a_endpoint.with_scoped_evidence_endpoint(principal.id.clone(), evidence)?;
     }
     Ok(a_endpoint
         .propose(

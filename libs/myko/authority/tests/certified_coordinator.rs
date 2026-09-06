@@ -37,6 +37,8 @@ use myko_redb::RedbJournal;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[path = "support/caller_evidence.rs"]
+mod caller_evidence;
 #[path = "support/certified_access.rs"]
 mod certified_access;
 #[path = "support/certified_approval.rs"]
@@ -641,10 +643,13 @@ impl NativeControlHarness {
                 b_key,
                 vec![a_binding.clone()],
             )?
-            .with_scoped_evidence_endpoint(Arc::new(IrohScopedEvidenceEndpoint::new(
-                b_transport.clone(),
-                a_transport.address(),
-            ))),
+            .with_scoped_evidence_endpoint(
+                a_principal.id.clone(),
+                Arc::new(IrohScopedEvidenceEndpoint::new(
+                    b_transport.clone(),
+                    a_transport.address(),
+                )),
+            )?,
         )))?;
         Ok(Self {
             a_transport,
@@ -1212,7 +1217,7 @@ async fn endpoint_reports_retained_evidence_failures_as_unavailable() -> TestRes
         a_key.clone(),
         vec![binding],
     )?
-    .with_scoped_evidence_endpoint(Arc::new(InvalidEvidence));
+    .with_scoped_evidence_endpoint(principal.id.clone(), Arc::new(InvalidEvidence))?;
     let failure = endpoint
         .prepare(
             &principal.id,

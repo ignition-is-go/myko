@@ -33,7 +33,7 @@ fn recovering_coordinator(
     let b_id = controller_id(&b_key);
     let endpoint =
         CertifiedAuthorityControlEndpoint::new(b.clone(), anchor()?, b_key, vec![binding.clone()])?
-            .with_scoped_evidence_endpoint(evidence);
+            .with_scoped_evidence_endpoint(caller.id.clone(), evidence)?;
     let peers = vec![
         AuthorityCoordinatorPeer::local(
             a.clone(),

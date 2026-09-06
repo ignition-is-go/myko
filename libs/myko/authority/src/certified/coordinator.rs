@@ -173,7 +173,7 @@ pub struct CertifiedAuthorityControlEndpoint {
     key: SigningKey,
     controller_id: ControllerId,
     callers: BTreeMap<PrincipalId, AuthorityControllerPrincipal>,
-    inbound_evidence: Option<Arc<dyn ScopedRetainedEvidenceEndpoint>>,
+    inbound_evidence: BTreeMap<PrincipalId, Arc<dyn ScopedRetainedEvidenceEndpoint>>,
     max_evaluation_skew_seconds: i64,
 }
 
@@ -206,7 +206,7 @@ impl CertifiedAuthorityControlEndpoint {
             key,
             controller_id,
             callers: indexed,
-            inbound_evidence: None,
+            inbound_evidence: BTreeMap::new(),
             max_evaluation_skew_seconds: DEFAULT_MAX_EVALUATION_SKEW_SECONDS,
         })
     }
@@ -217,14 +217,23 @@ impl CertifiedAuthorityControlEndpoint {
         self
     }
 
-    /// Attach the local controller's authenticated scoped-history refresh path.
-    #[must_use]
+    /// Bind a registered caller to its authenticated scoped-history refresh path.
+    /// Callers without a path can use only evidence already retained locally.
+    ///
+    /// # Errors
+    /// Rejects unknown callers and duplicate bindings.
     pub fn with_scoped_evidence_endpoint(
         mut self,
+        caller: PrincipalId,
         endpoint: Arc<dyn ScopedRetainedEvidenceEndpoint>,
-    ) -> Self {
-        self.inbound_evidence = Some(endpoint);
-        self
+    ) -> Result<Self, String> {
+        if !self.callers.contains_key(&caller) {
+            return Err("authority evidence source requires a registered caller".to_owned());
+        }
+        if self.inbound_evidence.insert(caller, endpoint).is_some() {
+            return Err("authority evidence source is already bound for this caller".to_owned());
+        }
+        Ok(self)
     }
 
     fn authorize(
@@ -268,9 +277,9 @@ impl CertifiedAuthorityControlEndpoint {
 
     async fn refresh_authority_evidence(
         &self,
-        _presentation: &AuthorityPresentation,
+        presentation: &AuthorityPresentation,
     ) -> Result<(), AuthorizationFailure> {
-        let Some(evidence) = &self.inbound_evidence else {
+        let Some(evidence) = self.inbound_evidence.get(&presentation.executor.id) else {
             return Ok(());
         };
         let scopes = [authority_realm_scope(self.anchor.realm_id())];
@@ -282,10 +291,10 @@ impl CertifiedAuthorityControlEndpoint {
 
     async fn refresh_command_evidence(
         &self,
-        _presentation: &AuthorityPresentation,
+        presentation: &AuthorityPresentation,
         request: &AccessAttempt,
     ) -> Result<(), AuthorizationFailure> {
-        let Some(evidence) = &self.inbound_evidence else {
+        let Some(evidence) = self.inbound_evidence.get(&presentation.executor.id) else {
             return Ok(());
         };
         let scopes = command_scopes_from_attempt(request);
@@ -574,7 +583,7 @@ impl fmt::Debug for CertifiedAuthorityControlEndpoint {
             .debug_struct("CertifiedAuthorityControlEndpoint")
             .field("controller_id", &self.controller_id)
             .field("callers", &self.callers)
-            .field("has_inbound_evidence", &self.inbound_evidence.is_some())
+            .field("inbound_evidence_callers", &self.inbound_evidence.keys())
             .finish_non_exhaustive()
     }
 }
