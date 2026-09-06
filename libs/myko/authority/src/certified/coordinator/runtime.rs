@@ -8,7 +8,9 @@ use myko_federation::{
 
 use super::{AuthorityDecisionCoordinator, AuthorityHistory, AuthorityRequestSource};
 
+mod lifecycle;
 mod policy;
+pub use lifecycle::PreparedAuthorityGuard;
 pub use policy::PreparedEffectPolicy;
 
 /// Async prepared-effect execution. Admission and reads retain their explicitly

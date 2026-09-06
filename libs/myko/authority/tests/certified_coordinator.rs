@@ -2,6 +2,7 @@ use std::{error::Error, sync::Arc};
 
 use chrono::{Duration, Utc};
 use ed25519_dalek::SigningKey;
+pub use myko::prelude;
 use myko::{
     ApplicationHost, MykoApplication,
     server::{
@@ -36,6 +37,8 @@ use myko_redb::RedbJournal;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[path = "support/prepared_authority_lifecycle.rs"]
+mod prepared_lifecycle;
 #[path = "support/prepared_authority_runtime.rs"]
 mod prepared_runtime;
 
@@ -229,6 +232,24 @@ fn install_grant_with_anchor(
     a_key: &SigningKey,
     b_key: &SigningKey,
 ) -> Result<(ControlHead, Principal, ScopeId), Box<dyn Error>> {
+    install_scoped_grant(
+        a,
+        b,
+        selected_anchor,
+        a_key,
+        b_key,
+        ScopeId::new("coordinator:data"),
+    )
+}
+
+fn install_scoped_grant(
+    a: &Node,
+    b: &Node,
+    selected_anchor: &AuthorityAnchor,
+    a_key: &SigningKey,
+    b_key: &SigningKey,
+    scope: ScopeId,
+) -> Result<(ControlHead, Principal, ScopeId), Box<dyn Error>> {
     let app = AuthorityPolicy::install(MykoApplication::new())?;
     let policy = Arc::new(AuthorityPolicy::new(
         ApplicationHost::new(a.clone(), app)?,
@@ -237,7 +258,6 @@ fn install_grant_with_anchor(
     a.set_command_access_policy(policy.clone())?;
     let admin = Principal::new(PrincipalId::new("admin"), PrincipalKind::Node);
     let reader = Principal::new(PrincipalId::new("reader"), PrincipalKind::Node);
-    let scope = ScopeId::new("coordinator:data");
     policy.bootstrap(admin.clone())?;
     policy.issue_grant(
         admin.clone(),

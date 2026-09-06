@@ -72,6 +72,26 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+`PreparedAuthorityRuntime::install` now installs the effect policy and starts
+application command dispatch and certified recovery together. Its guard owns both
+workers. Explicit shutdown stops dispatch, cancels in-flight coordination, and
+joins the worker without rolling back persisted votes or prepared effects.
+The installer checks node identity and executor availability before changing policy.
+
+A registered item-writing handler test blocks authority evidence refresh, joins
+shutdown, reopens both Redb stores, and recovers through native Iroh. The exact
+nonempty saved batch and result commit once, and the handler execution count stays
+at one. A separate missing-executor test preserves the prior policy. All 66 authority
+tests pass, as do both core command-recovery tests, the focused runtime and
+control-chain gate, strict Clippy, and formatting.
+
+Applications can now own this effect runtime through one installation and shutdown
+guard. Forrest production installation still awaits certified non-effect policy
+and approval recovery. Controlled cancellation is not abrupt process-kill proof.
+Custody and all C01-C18 acceptance rows remain open; Mac validation remains unfinished.
+
+The following paragraphs describe preceding checkpoints and their limits.
+
 `PreparedAuthorityRuntime` now connects certified coordination to saved command
 effects. Its synchronous effect policy queues only wakeups and reports typed
 unavailability. The async worker finds pending commands in the journal, derives

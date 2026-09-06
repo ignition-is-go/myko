@@ -5,7 +5,7 @@ use myko_federation::{CommandSnapshot, CommandState, NodeError, TypedCommandAdmi
 
 use super::*;
 
-fn saved_effect(
+pub fn saved_effect(
     node: &Node,
     command_id: CommandId,
 ) -> Result<Box<PreparedCommandEffect>, Box<dyn Error>> {
@@ -15,7 +15,7 @@ fn saved_effect(
     }
 }
 
-fn assert_exact_commit(
+pub fn assert_exact_commit(
     node: &Node,
     command_id: CommandId,
     saved: &PreparedCommandEffect,

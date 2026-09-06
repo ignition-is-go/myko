@@ -25,7 +25,7 @@ pub use coordinator::{
     AuthorityControllerPrincipal, AuthorityCoordinatorPeer, AuthorityDecisionCoordinator,
     AuthorityRequestSource, CertifiedAuthorityControlEndpoint, CertifiedAuthorityRequest,
     CoordinatedAuthorityDecision, CoordinatedAuthorityRevalidation, LocalAuthorityPeer,
-    PreparedAuthorityRuntime, PreparedEffectPolicy,
+    PreparedAuthorityGuard, PreparedAuthorityRuntime, PreparedEffectPolicy,
 };
 pub use history::{
     AuthorityAnchor, AuthorityDecisionRevalidation, AuthorityDecisionRoot,
