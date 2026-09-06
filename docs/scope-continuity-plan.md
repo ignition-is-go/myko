@@ -119,7 +119,10 @@ remote root execution, and remote provider account use. Evidence is in
 `/tmp/forrest-node-effects-verifier-retry.log`.
 Earlier link failures coincided with a full filesystem. Cargo removed generated
 artifacts from the agent build directories before the successful retry.
-No accepted history was removed. Mac SSH still times out.
+No accepted history was removed. Earlier Mac SSH attempts timed out. The latest
+sync succeeded at Myko `2ea81db4` and Forrest `4201531`, preserving the watcher
+lockfile through autostash and leaving both remote worktrees clean. Mac
+validation of this source is still pending.
 
 Verification passed for the federation suite, the authority and native-node
 suites, and strict lint for federation, core, authority, and native node.
@@ -127,7 +130,7 @@ Evidence is in `/tmp/myko-trusted-bootstrap-federation-green.log`,
 `/tmp/myko-native-authority-assembly-gate-fixed.log`, and
 `/tmp/myko-native-authority-assembly-strict-fixed.log`.
 Formatting and Forrest's locked workspace all-target check also passed.
-The Mac inspection timed out, so remote synchronization remains unverified.
+That checkpoint's Mac inspection timed out; the later successful sync is recorded above.
 
 ### Previous local-publication checkpoint
 
