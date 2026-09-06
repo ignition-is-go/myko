@@ -158,6 +158,31 @@ pub struct CertifiedControlChain {
 }
 
 impl CertifiedControlChain {
+    /// Recover anchored historical evidence for one operation through `head`.
+    /// This does not establish current membership or live serving authority.
+    ///
+    /// # Errors
+    /// Rejects unknown, invalid, conflicting, or unanchored heads.
+    pub fn operation_evidence_at(
+        &self,
+        head: ControlHead,
+        operation: CommandId,
+    ) -> Result<Option<&CertifiedControlEvidence>, String> {
+        let mut cursor = head;
+        while cursor != self.anchor.genesis {
+            self.reject_failed_head(cursor)?;
+            let certified = self
+                .heads
+                .get(&cursor.0)
+                .ok_or_else(|| "control head is not certified by this chain".to_owned())?;
+            if certified.transition.operation() == operation {
+                return Ok(Some(&certified.evidence));
+            }
+            cursor = certified.predecessor;
+        }
+        Ok(None)
+    }
+
     /// Replay retained framework control evidence under one anchor.
     /// Unchosen invalid evidence is ignored. Invalid chosen heads remain errors
     /// when requested, without invalidating their historical predecessors.
@@ -299,7 +324,7 @@ impl CertifiedControlChain {
                         return Ok(());
                     }
                     predecessor = candidate.head;
-                    self.heads.insert(candidate.head.0, candidate);
+                    self.heads.insert(candidate.head.0, *candidate);
                 }
             }
         }
@@ -340,13 +365,20 @@ impl CertifiedControlChain {
                 (successor_epoch(head), successor.clone())
             }
         };
-        Ok(Some(CandidateEvidence::Certified(CertifiedTransition {
-            head,
-            predecessor: slot.predecessor,
-            transition,
-            context_epoch,
-            context_controllers,
-        })))
+        Ok(Some(CandidateEvidence::Certified(Box::new(
+            CertifiedTransition {
+                head,
+                evidence: CertifiedControlEvidence {
+                    head,
+                    proposal: proposal.clone(),
+                    accepts: accept_votes,
+                },
+                predecessor: slot.predecessor,
+                transition,
+                context_epoch,
+                context_controllers,
+            },
+        ))))
     }
 
     fn reject_failed_head(&self, head: ControlHead) -> Result<(), String> {
@@ -354,6 +386,31 @@ impl CertifiedControlChain {
             return Err((*reason).to_owned());
         }
         Ok(())
+    }
+}
+
+/// Proposal and votes already verified under their anchored historical electorate.
+#[derive(Debug, Clone)]
+pub struct CertifiedControlEvidence {
+    head: ControlHead,
+    proposal: SignedControlProposal,
+    accepts: Vec<SignedControlVote>,
+}
+
+impl CertifiedControlEvidence {
+    #[must_use]
+    pub const fn head(&self) -> ControlHead {
+        self.head
+    }
+
+    #[must_use]
+    pub const fn proposal(&self) -> &SignedControlProposal {
+        &self.proposal
+    }
+
+    #[must_use]
+    pub fn accepts(&self) -> &[SignedControlVote] {
+        &self.accepts
     }
 }
 
@@ -383,6 +440,7 @@ impl CertifiedControlContext {
 #[derive(Debug, Clone)]
 struct CertifiedTransition {
     head: ControlHead,
+    evidence: CertifiedControlEvidence,
     predecessor: ControlHead,
     transition: ControlTransition,
     context_epoch: ControlEpochId,
@@ -391,7 +449,7 @@ struct CertifiedTransition {
 
 #[derive(Debug, Clone)]
 enum CandidateEvidence {
-    Certified(CertifiedTransition),
+    Certified(Box<CertifiedTransition>),
     Invalid {
         head: ControlHead,
         reason: &'static str,

@@ -37,6 +37,8 @@ use myko_redb::RedbJournal;
 
 type TestResult = Result<(), Box<dyn Error>>;
 
+#[path = "support/certified_access.rs"]
+mod certified_access;
 #[path = "support/certified_approval.rs"]
 mod certified_approval;
 #[path = "support/prepared_authority_lifecycle.rs"]

@@ -72,6 +72,25 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Controller endpoints now certify initial scoped `ReadItems` requests without
+manufacturing a prepared application command. Each voter refreshes scoped evidence
+and supplies its own topology. Unsupported operations and unscoped targets remain
+denied. Missing scoped evidence reports unavailable. This is not yet a live read
+policy installed on application nodes.
+
+Retrying a completed request from a later certified head now recovers the original
+verified proposal and votes. It does not propose the terminal root again or consume
+another grant use. The control chain owns this historical proof, including its
+original electorate. Recovered decisions are not live permission. Prepared effect
+release still requires fresh coordinated revalidation.
+
+The expanded gate passes 34 selected tests, including recovery across disjoint
+controller electorates, and five-crate strict checks. Formatting and Forrest's
+locked workspace build check pass. The Mac SSH preflight still times out.
+Production access-policy integration, custody, abrupt loss, and C01-C18 remain open.
+
+The following paragraphs describe preceding checkpoints and their limits.
+
 Native multi-approval coverage now drives both choices through an authenticated
 Iroh client and both controller endpoints through Iroh RPCs. The second controller
 starts without the prepared command and fetches its evidence over scoped native

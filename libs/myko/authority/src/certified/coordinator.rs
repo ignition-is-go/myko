@@ -29,7 +29,9 @@ use super::{
 const DEFAULT_MAX_COORDINATION_ROUNDS: usize = 8;
 const DEFAULT_MAX_EVALUATION_SKEW_SECONDS: i64 = 300;
 
+mod access;
 mod approval;
+mod recovery;
 mod revalidation;
 mod runtime;
 pub use revalidation::CoordinatedAuthorityRevalidation;
@@ -455,6 +457,11 @@ impl CertifiedAuthorityControlEndpoint {
         decision: &AuthorityDecisionTransition,
     ) -> Result<ControlValue, AuthorizationFailure> {
         self.validate_evaluation_time(presentation, decision.evaluated_at())?;
+        if decision.request().authorization_phase != AuthorizationPhase::Effect {
+            return self
+                .planned_read_value(presentation, history, head, decision)
+                .await;
+        }
         self.refresh_command_evidence(presentation, decision.request())
             .await?;
         let mut request = self
@@ -920,7 +927,8 @@ impl AuthorityCoordinatorPeer {
 
 pub type LocalAuthorityPeer = AuthorityCoordinatorPeer;
 
-/// Certified result of one coordinated authority decision.
+/// Historical certified result, possibly recovered without contacting a quorum.
+/// This is not live permission; release requires a fresh coordinated check.
 #[derive(Debug, Clone)]
 pub struct CoordinatedAuthorityDecision {
     predecessor: ControlHead,
@@ -1063,6 +1071,11 @@ impl AuthorityDecisionCoordinator {
     ) -> Result<RoundResult, String> {
         self.synchronize().await?;
         let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        if let Some(decision) =
+            CoordinatedAuthorityDecision::recover_at(&history, head, root, &request)?
+        {
+            return Ok(RoundResult::Decided(Box::new(decision)));
+        }
         let desired = Self::plan_value(&history, head, operation, root, request.clone())?;
         let (chosen_head, evidence) = self.choose_value(&history, head, ballot, desired).await?;
         self.recover_or_advance(head, chosen_head, root, &request, evidence)

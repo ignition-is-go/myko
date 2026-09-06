@@ -225,6 +225,61 @@ fn retained_transition_replays_from_static_anchor() -> TestResult {
 }
 
 #[test]
+fn recovered_operation_evidence_verifies_under_its_original_electorate() -> TestResult {
+    let old = keys(1);
+    let new = keys(10);
+    let anchor = anchor(&old)?;
+    let transition = ControlTransition::rotate(
+        CommandId::new(),
+        controllers(&new),
+        ControlValue(b"original".to_vec()),
+    )?;
+    let (head, mut events) = choose(&anchor, &old, &transition)?;
+    let chain = CertifiedControlChain::replay(&events, anchor.clone())?;
+    let context = chain.context_at(head)?;
+    let successor =
+        ControlTransition::retain(CommandId::new(), ControlValue(b"successor".to_vec()));
+    let (latest, additional) = choose_in_slot(
+        &context.verifier()?,
+        context.slot().clone(),
+        &new,
+        &successor,
+    )?;
+    events.extend(additional);
+    let chain = CertifiedControlChain::replay(&events, anchor.clone())?;
+    let proof = chain
+        .operation_evidence_at(latest, transition.operation())?
+        .ok_or("missing historical proof")?;
+    let proposal = proof.proposal();
+    proposal.verify_signature()?;
+    let verifier = chain
+        .context_at(proposal.message.slot.predecessor)?
+        .verifier()?;
+    let prepared =
+        verifier.verify_prepare(proposal.message.ballot, &proposal.message.prepare_votes)?;
+    let chosen = prepared.verify_chosen(&proposal.message.value, proof.accepts())?;
+    if proof.head() != head
+        || chosen.head()? != head
+        || proposal.message.value != transition.control_value()?
+    {
+        return Err("recovered evidence does not prove the original operation".into());
+    }
+    if chain
+        .operation_evidence_at(anchor.genesis(), transition.operation())?
+        .is_some()
+        || chain
+            .operation_evidence_at(latest, CommandId::new())?
+            .is_some()
+        || chain
+            .operation_evidence_at(ControlHead([88; 32]), transition.operation())
+            .is_ok()
+    {
+        return Err("historical proof lookup crossed its requested history boundary".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn losing_rotation_and_old_epoch_decision_are_rejected() -> TestResult {
     let old = keys(10);
     let new = keys(20);

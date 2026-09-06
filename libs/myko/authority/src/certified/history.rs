@@ -602,6 +602,27 @@ impl AuthorityHistory {
         Ok(latest)
     }
 
+    pub(super) fn decision_evidence_at(
+        &self,
+        head: ControlHead,
+        root: &AuthorityDecisionRoot,
+    ) -> Result<
+        Option<(
+            AuthorityDecisionTransition,
+            myko_federation::CertifiedControlEvidence,
+        )>,
+        String,
+    > {
+        let Some(decision) = self.decision_at(head, root)? else {
+            return Ok(None);
+        };
+        let evidence = self
+            .chain
+            .operation_evidence_at(head, decision.operation())?
+            .ok_or_else(|| "certified decision has no retained control evidence".to_owned())?;
+        Ok(Some((decision, evidence.clone())))
+    }
+
     /// Plan a new certified check of an already consumed, exact effect.
     /// No additional use or lease is created. This historical plan is not a
     /// live permit until quorum coordination and use-time checks succeed.

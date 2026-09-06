@@ -30,7 +30,8 @@ pub use authority::*;
 pub use causal::causal_replay;
 pub use control::FrameworkControlEvent;
 pub use control_chain::{
-    CertifiedControlChain, CertifiedControlContext, ControlAnchor, ControlTransition,
+    CertifiedControlChain, CertifiedControlContext, CertifiedControlEvidence, ControlAnchor,
+    ControlTransition,
 };
 pub use prepared_effect::PreparedCommandEffect;
 pub use publication::{LivePublication, LivePublicationStream};
