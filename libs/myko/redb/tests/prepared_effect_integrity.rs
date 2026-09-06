@@ -157,11 +157,10 @@ struct CountingPermitPolicy {
 }
 
 impl AccessPolicy for CountingPermitPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn decide(&self, request: &AccessAttempt) -> AuthorizationDecision {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, myko_federation::AuthorityUnavailable> {
         if request.authorization_phase == AuthorizationPhase::Effect {
             self.effect_decisions.fetch_add(1, Ordering::AcqRel);
         }

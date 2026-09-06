@@ -9,16 +9,26 @@ use myko_federation::{
 };
 use myko_items::{ItemProjection, MykoItem};
 
+use crate::decision_records::DecisionRecord;
 use crate::{
     ApprovalRecord, ApprovalUse, AuthorityRealm, AuthorityRealmKey, CapabilityRegistration,
     ChallengeRecord, DecisionAudit, DelegationRecord, DelegationUse, EvaluationState, GrantRecord,
     GrantUse, LeaseRecord, ObligationRecord, evaluate, requires_durable_evaluation,
 };
 
+mod coordinator;
 mod history;
 mod issuer;
 mod rotation;
-pub use history::{AuthorityAnchor, AuthorityHistory, AuthoritySelection};
+pub use coordinator::{
+    AuthorityControllerPrincipal, AuthorityCoordinatorPeer, AuthorityDecisionCoordinator,
+    AuthorityRequestSource, CertifiedAuthorityControlEndpoint, CertifiedAuthorityRequest,
+    CoordinatedAuthorityDecision, LocalAuthorityPeer,
+};
+pub use history::{
+    AuthorityAnchor, AuthorityDecisionRoot, AuthorityDecisionTransition, AuthorityHistory,
+    AuthoritySelection,
+};
 pub use issuer::AuthorityController;
 pub use rotation::AuthorityRotation;
 
@@ -63,8 +73,8 @@ impl AuthorityHistory {
         at: DateTime<Utc>,
         topology: ScopeTopology,
     ) -> Result<HistoricalAuthorityAssessment, String> {
-        let selected = self.selected_at(head)?;
-        let state = project_facts(&selected, self.realm_id(), topology)?;
+        let facts = self.selected_at(head)?;
+        let state = project_facts(&facts, self.realm_id(), topology)?;
         let outcome = evaluate(&state, request, at);
         let requires_certified_effect = requires_durable_evaluation(&state, request, &outcome);
         Ok(HistoricalAuthorityAssessment {
@@ -75,8 +85,14 @@ impl AuthorityHistory {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(super) enum CertifiedAuthorityFact {
+    Event(EventEnvelope),
+    Decision(DecisionRecord),
+}
+
 fn project<T: MykoItem>(
-    events: &[EventEnvelope],
+    facts: &[CertifiedAuthorityFact],
     realm: &AuthorityRealmKey,
 ) -> Result<Vec<T>, String> {
     let mut projection = ItemProjection::<T>::default();
@@ -88,45 +104,83 @@ fn project<T: MykoItem>(
     ]
     .contains(&T::ITEM_TYPE);
     let mut seen = BTreeSet::new();
-    for event in events {
-        let NodeEvent::CommandCommitted { batch, .. } = &event.event else {
-            continue;
-        };
-        for mutation in &batch.changes {
-            if mutation.item_type == T::ITEM_TYPE {
-                if immutable
-                    && (mutation.operation != MutationOperation::Set
-                        || !seen.insert(mutation.item_id.clone()))
-                {
-                    return Err(
-                        "certified authority reused or removed an immutable use or audit"
-                            .to_owned(),
-                    );
-                }
-                if mutation.operation == MutationOperation::Set {
-                    let item = mutation
-                        .decode_set::<T>()
-                        .map_err(|error| error.to_string())?;
-                    if item.scope_id().as_ref() != realm.as_str() {
-                        return Err(
-                            "certified authority payload belongs to another realm".to_owned()
-                        );
-                    }
+    for fact in facts {
+        match fact {
+            CertifiedAuthorityFact::Event(event) => {
+                let NodeEvent::CommandCommitted { batch, .. } = &event.event else {
+                    continue;
+                };
+                for mutation in &batch.changes {
+                    project_mutation::<T>(&mut projection, &mut seen, immutable, mutation, realm)?;
                 }
             }
-            projection
-                .apply(mutation)
-                .map_err(|error| error.to_string())?;
+            CertifiedAuthorityFact::Decision(record) if record.item_type() == T::ITEM_TYPE => {
+                let mutation = record.mutation()?;
+                project_mutation::<T>(&mut projection, &mut seen, immutable, &mutation, realm)?;
+            }
+            CertifiedAuthorityFact::Decision(_) => {}
         }
     }
     Ok(projection.values().cloned().collect())
 }
 
+fn project_mutation<T: MykoItem>(
+    projection: &mut ItemProjection<T>,
+    seen: &mut BTreeSet<String>,
+    immutable: bool,
+    mutation: &myko_federation::ItemMutation,
+    realm: &AuthorityRealmKey,
+) -> Result<(), String> {
+    if mutation.item_type == T::ITEM_TYPE {
+        if immutable
+            && (mutation.operation != MutationOperation::Set
+                || !seen.insert(mutation.item_id.clone()))
+        {
+            return Err(
+                "certified authority reused or removed an immutable use or audit".to_owned(),
+            );
+        }
+        if mutation.operation == MutationOperation::Set {
+            let item = mutation
+                .decode_set::<T>()
+                .map_err(|error| error.to_string())?;
+            if item.scope_id().as_ref() != realm.as_str() {
+                return Err("certified authority payload belongs to another realm".to_owned());
+            }
+        }
+    }
+    projection
+        .apply(mutation)
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn project_facts(
-    events: &[EventEnvelope],
+    facts: &[CertifiedAuthorityFact],
     realm: &AuthorityRealmKey,
     topology: ScopeTopology,
 ) -> Result<EvaluationState, String> {
+    validate_supported_fact_types(facts)?;
+    project::<DecisionAudit>(facts, realm)?;
+    let state = EvaluationState {
+        realm: project::<AuthorityRealm>(facts, realm)?.into_iter().next(),
+        capabilities: project::<CapabilityRegistration>(facts, realm)?,
+        grants: project::<GrantRecord>(facts, realm)?,
+        delegations: project::<DelegationRecord>(facts, realm)?,
+        obligations: project::<ObligationRecord>(facts, realm)?,
+        challenges: project::<ChallengeRecord>(facts, realm)?,
+        approvals: project::<ApprovalRecord>(facts, realm)?,
+        grant_uses: project::<GrantUse>(facts, realm)?,
+        delegation_uses: project::<DelegationUse>(facts, realm)?,
+        approval_uses: project::<ApprovalUse>(facts, realm)?,
+        leases: project::<LeaseRecord>(facts, realm)?,
+        topology,
+    };
+    validate_fact_realms(&state, realm)?;
+    Ok(state)
+}
+
+fn validate_supported_fact_types(facts: &[CertifiedAuthorityFact]) -> Result<(), String> {
     let supported = [
         AuthorityRealm::ITEM_TYPE,
         CapabilityRegistration::ITEM_TYPE,
@@ -141,67 +195,97 @@ fn project_facts(
         ApprovalUse::ITEM_TYPE,
         DecisionAudit::ITEM_TYPE,
     ];
-    for event in events {
-        let NodeEvent::CommandCommitted { batch, .. } = &event.event else {
-            continue;
-        };
-        if batch
-            .changes
-            .iter()
-            .any(|change| !supported.contains(&change.item_type.as_str()))
-        {
-            return Err("certified authority record contains an unknown item type".to_owned());
+    for fact in facts {
+        match fact {
+            CertifiedAuthorityFact::Event(event) => {
+                let NodeEvent::CommandCommitted { batch, .. } = &event.event else {
+                    continue;
+                };
+                if batch
+                    .changes
+                    .iter()
+                    .any(|change| !supported.contains(&change.item_type.as_str()))
+                {
+                    return Err(
+                        "certified authority record contains an unknown item type".to_owned()
+                    );
+                }
+            }
+            CertifiedAuthorityFact::Decision(record)
+                if !supported.contains(&record.item_type()) =>
+            {
+                return Err(
+                    "certified authority decision contains an unknown record type".to_owned(),
+                );
+            }
+            CertifiedAuthorityFact::Decision(_) => {}
         }
     }
-    project::<DecisionAudit>(events, realm)?;
-    let state = EvaluationState {
-        realm: project::<AuthorityRealm>(events, realm)?.into_iter().next(),
-        capabilities: project::<CapabilityRegistration>(events, realm)?,
-        grants: project::<GrantRecord>(events, realm)?,
-        delegations: project::<DelegationRecord>(events, realm)?,
-        obligations: project::<ObligationRecord>(events, realm)?,
-        challenges: project::<ChallengeRecord>(events, realm)?,
-        approvals: project::<ApprovalRecord>(events, realm)?,
-        grant_uses: project::<GrantUse>(events, realm)?,
-        delegation_uses: project::<DelegationUse>(events, realm)?,
-        approval_uses: project::<ApprovalUse>(events, realm)?,
-        leases: project::<LeaseRecord>(events, realm)?,
-        topology,
-    };
+    Ok(())
+}
+
+fn validate_fact_realms(state: &EvaluationState, realm: &AuthorityRealmKey) -> Result<(), String> {
     let mut fact_realms = state
         .grants
         .iter()
-        .map(|record| &record.grant.realm_id)
+        .map(|record| record.grant.realm_id.as_str())
         .chain(
             state
                 .delegations
                 .iter()
-                .map(|record| &record.delegation.realm_id),
+                .map(|record| record.delegation.realm_id.as_str()),
         )
         .chain(
             state
                 .obligations
                 .iter()
-                .map(|record| &record.obligation.realm_id),
+                .map(|record| record.obligation.realm_id.as_str()),
         )
         .chain(
             state
                 .challenges
                 .iter()
-                .map(|record| &record.challenge.realm_id),
+                .map(|record| record.challenge.realm_id.as_str()),
         )
         .chain(
             state
                 .approvals
                 .iter()
-                .map(|record| &record.decision.realm_id),
+                .map(|record| record.decision.realm_id.as_str()),
+        )
+        .chain(
+            state
+                .grant_uses
+                .iter()
+                .map(|record| record.authority_realm_id.as_ref()),
+        )
+        .chain(
+            state
+                .delegation_uses
+                .iter()
+                .map(|record| record.authority_realm_id.as_ref()),
+        )
+        .chain(
+            state
+                .approval_uses
+                .iter()
+                .map(|record| record.authority_realm_id.as_ref()),
+        )
+        .chain(
+            state
+                .leases
+                .iter()
+                .map(|record| record.authority_realm_id.as_ref()),
         );
-    if fact_realms.any(|fact_realm| fact_realm != realm) {
+    if fact_realms.any(|fact_realm| fact_realm != realm.as_str()) {
         return Err("certified authority fact names another realm".to_owned());
     }
-    Ok(state)
+    Ok(())
 }
 
-fn validate_facts(events: &[EventEnvelope], realm: &AuthorityRealmKey) -> Result<(), String> {
-    project_facts(events, realm, ScopeTopology::default()).map(|_| ())
+fn validate_facts(
+    facts: &[CertifiedAuthorityFact],
+    realm: &AuthorityRealmKey,
+) -> Result<(), String> {
+    project_facts(facts, realm, ScopeTopology::default()).map(|_| ())
 }

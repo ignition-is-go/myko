@@ -389,7 +389,7 @@ impl ApplicationHost {
         )?;
         self.node
             .prepare_command(principal_id, request)
-            .map_err(|decision| AppError::State(decision.public_message()))?
+            .map_err(myko_federation::NodeError::from)?
             .submit()
             .map_err(AppError::Node)
     }
@@ -535,7 +535,7 @@ impl ApplicationHost {
         let submitted = self
             .node
             .prepare_command(authenticated_executor, request)
-            .map_err(|decision| AppError::State(decision.public_message()))?
+            .map_err(myko_federation::NodeError::from)?
             .submit()?;
         let result = self.dispatch_typed::<C>(submitted.request.id, false)?;
         result
@@ -952,9 +952,7 @@ impl myko_federation::CommandClient for ApplicationHost {
             let command = self
                 .node
                 .prepare_command(principal, request)
-                .map_err(|decision| {
-                    myko_federation::NodeError::AuthorizationDenied(decision.public_message())
-                })?
+                .map_err(myko_federation::NodeError::from)?
                 .submit()?;
             Ok(myko_federation::CommandResponse {
                 source_node: self.node.node_id(),
@@ -1012,9 +1010,7 @@ impl ApplicationHost {
         let command = self
             .node
             .prepare_command(authenticated_executor, request)
-            .map_err(|decision| {
-                myko_federation::NodeError::AuthorizationDenied(decision.public_message())
-            })?
+            .map_err(myko_federation::NodeError::from)?
             .submit()?;
         Ok(myko_federation::CommandResponse {
             source_node: self.node.node_id(),
@@ -1178,5 +1174,194 @@ impl MykoApplication {
 impl From<MykoApplicationBuilder> for MykoApplication {
     fn from(builder: MykoApplicationBuilder) -> Self {
         builder.build()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use myko_federation::{
+        AccessAttempt, AccessPolicy, AuthorityPresentation, AuthorityUnavailable,
+        AuthorizationDecision, CommandClient as _, Node, NodeError, PrincipalId, PrincipalKind,
+    };
+
+    use super::*;
+    use crate::{CommandContext, command::CommandError, prelude::*};
+
+    #[derive(Debug)]
+    struct UnavailablePolicy;
+
+    impl AccessPolicy for UnavailablePolicy {
+        fn decide(
+            &self,
+            _request: &AccessAttempt,
+        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+            Err(AuthorityUnavailable::StateNotCurrent)
+        }
+    }
+
+    #[myko_service(UnavailableRoot)]
+    pub struct UnavailableService;
+
+    #[myko_item(service = UnavailableService, scope_root)]
+    pub struct UnavailableRoot {
+        label: String,
+    }
+
+    #[myko_command(bool, item = UnavailableRoot)]
+    pub struct UnavailableCommand {
+        id: UnavailableRootId,
+    }
+
+    impl CommandHandler for UnavailableCommand {
+        fn scope(&self, _node_id: myko_federation::NodeId) -> UnavailableRootId {
+            self.id.clone()
+        }
+
+        fn execute(self, _ctx: CommandContext) -> Result<bool, CommandError> {
+            Ok(true)
+        }
+    }
+
+    fn unavailable_host() -> Result<ApplicationHost, AppError> {
+        ApplicationHost::new(
+            Node::in_memory(),
+            MykoApplication::builder()
+                .service::<UnavailableService>()
+                .build(),
+        )
+        .map_err(AppError::State)?
+        .with_access_policy(Arc::new(UnavailablePolicy))
+    }
+
+    fn unavailable_command() -> UnavailableCommand {
+        UnavailableCommand {
+            id: UnavailableRootId::from("unavailable-root"),
+        }
+    }
+
+    fn assert_unavailable_node_error(error: NodeError) -> Result<(), String> {
+        match error {
+            NodeError::AuthorityUnavailable(AuthorityUnavailable::StateNotCurrent) => Ok(()),
+            NodeError::AuthorizationDenied(message) => Err(format!(
+                "unavailable authority became authorization denial: {message}"
+            )),
+            other => Err(format!("unexpected node error: {other:?}")),
+        }
+    }
+
+    fn assert_unavailable_app_error(error: AppError) -> Result<(), String> {
+        match error {
+            AppError::Node(error) => assert_unavailable_node_error(error),
+            AppError::State(message) => Err(format!(
+                "unavailable authority became application state error: {message}"
+            )),
+            other => Err(format!("unexpected application error: {other:?}")),
+        }
+    }
+
+    fn assert_no_durable_events(host: &ApplicationHost) -> Result<(), String> {
+        if host
+            .node()
+            .events_after(None)
+            .map_err(|error| error.to_string())?
+            .is_empty()
+        {
+            Ok(())
+        } else {
+            Err("unavailable command admission wrote durable history".to_owned())
+        }
+    }
+
+    #[test]
+    fn authenticated_command_submission_preserves_unavailable_without_rejection()
+    -> Result<(), String> {
+        let host = unavailable_host().map_err(|error| error.to_string())?;
+        let command = unavailable_command();
+
+        let Err(error) =
+            host.submit_authenticated_command(PrincipalId::new("node:caller"), &command)
+        else {
+            return Err("unavailable authority submitted a command".to_owned());
+        };
+
+        assert_unavailable_app_error(error)?;
+        assert_no_durable_events(&host)
+    }
+
+    #[test]
+    fn authorized_command_execution_preserves_unavailable_without_rejection() -> Result<(), String>
+    {
+        let host = unavailable_host().map_err(|error| error.to_string())?;
+        let command = unavailable_command();
+        let principal =
+            myko_federation::Principal::new(PrincipalId::new("node:caller"), PrincipalKind::Node);
+
+        let Err(error) = host.exec_authorized_command(
+            principal.id.clone(),
+            AuthorityPresentation::direct(principal),
+            command,
+        ) else {
+            return Err("unavailable authority executed a command".to_owned());
+        };
+
+        assert_unavailable_app_error(error)?;
+        assert_no_durable_events(&host)
+    }
+
+    #[tokio::test]
+    async fn command_client_submission_preserves_unavailable_without_rejection()
+    -> Result<(), String> {
+        let host = unavailable_host().map_err(|error| error.to_string())?;
+        let command = unavailable_command();
+        let submission = myko_federation::CommandSubmission::for_command(&command)
+            .map_err(|error| error.to_string())?;
+        let command_id = submission.id;
+
+        let Err(error) = host.submit_submission(submission).await else {
+            return Err("unavailable authority submitted through command client".to_owned());
+        };
+
+        assert_unavailable_node_error(error)?;
+        if host
+            .node()
+            .command(command_id)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err(
+                "unavailable command client submission wrote a durable lifecycle".to_owned(),
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn authorized_submission_preserves_unavailable_without_rejection() -> Result<(), String> {
+        let host = unavailable_host().map_err(|error| error.to_string())?;
+        let command = unavailable_command();
+        let submission = myko_federation::CommandSubmission::for_command(&command)
+            .map_err(|error| error.to_string())?;
+        let command_id = submission.id;
+        let principal =
+            myko_federation::Principal::new(PrincipalId::new("node:caller"), PrincipalKind::Node);
+
+        let Err(error) =
+            host.submit_authorized_submission(AuthorityPresentation::direct(principal), submission)
+        else {
+            return Err("unavailable authority submitted through authorized facade".to_owned());
+        };
+
+        assert_unavailable_node_error(error)?;
+        if host
+            .node()
+            .command(command_id)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Err("unavailable authorized submission wrote a durable lifecycle".to_owned());
+        }
+        Ok(())
     }
 }

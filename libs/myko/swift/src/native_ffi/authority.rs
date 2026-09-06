@@ -1,24 +1,131 @@
 //! Native authority administration backed by Myko's durable authority service.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use chrono::{DateTime, Utc};
-use hyphae::MapDiff;
+use hyphae::{Signal, SubscriptionGuard, Watchable as _};
 use myko_authority::{AuthorityGrantsView, GrantRecord, RevocationKind};
 use myko_federation::{
     AccessOperation, AuthorityConstraints, AuthorityGrant, AuthorityGrantId, CapabilityId,
-    FederationPermission, LiveCollectionRevision, LogPosition, ObligationId, Principal,
-    PrincipalId, PrincipalKind, ScopeId, ScopeSelection,
+    FederationPermission, LiveSubscription, LiveSubscriptionState, LogPosition, ObligationId,
+    Principal, PrincipalId, PrincipalKind, ScopeId, ScopeSelection,
 };
-
-use crate::BlockingCollectionSubscription;
 
 use super::federation::parse_node_id;
 use super::{
     MykoFederationError, NativeAuthorityAccess, NativeAuthorityContext, authority_error,
     transport_error,
 };
+
+type RetainedGrantRows = BTreeMap<Arc<str>, Arc<dyn myko::item::AnyItem>>;
+type RetainedGrantState = LiveSubscriptionState<RetainedGrantRows, LogPosition>;
+
+struct RetainedGrantPublicationQueue {
+    state: Arc<RetainedGrantQueueState>,
+    changes: Mutex<Option<SubscriptionGuard>>,
+    cancelled: AtomicBool,
+}
+
+struct RetainedGrantQueueState {
+    pending: Mutex<RetainedGrantPending>,
+    changed: Condvar,
+}
+
+#[derive(Default)]
+struct RetainedGrantPending {
+    next: Option<RetainedGrantState>,
+    cancelled: bool,
+}
+
+impl RetainedGrantPublicationQueue {
+    fn new(subscription: &LiveSubscription<RetainedGrantRows, LogPosition>) -> Self {
+        let state = Arc::new(RetainedGrantQueueState {
+            pending: Mutex::new(RetainedGrantPending::default()),
+            changed: Condvar::new(),
+        });
+        let callback_state = Arc::clone(&state);
+        let initial = AtomicBool::new(true);
+        let changes = subscription.publication().subscribe(move |signal| {
+            if let Signal::Value(publication) = signal
+                && !initial.swap(false, Ordering::AcqRel)
+            {
+                let should_notify = {
+                    let mut pending = callback_state
+                        .pending
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if pending.cancelled {
+                        false
+                    } else {
+                        pending.next = Some(publication.state.clone());
+                        true
+                    }
+                };
+                if should_notify {
+                    callback_state.changed.notify_all();
+                }
+            }
+        });
+        Self {
+            state,
+            changes: Mutex::new(Some(changes)),
+            cancelled: AtomicBool::new(false),
+        }
+    }
+
+    fn next(&self) -> Result<RetainedGrantState, crate::SubscriptionCancelled> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(crate::SubscriptionCancelled);
+        }
+        let mut pending = self
+            .state
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            if pending.cancelled {
+                return Err(crate::SubscriptionCancelled);
+            }
+            if let Some(state) = pending.next.take() {
+                return Ok(state);
+            }
+            pending = self
+                .state
+                .changed
+                .wait(pending)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+        }
+    }
+
+    fn discard_pending(&self) {
+        if let Ok(mut pending) = self.state.pending.lock() {
+            pending.next = None;
+        }
+    }
+
+    fn cancel(&self) {
+        if self.cancelled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if let Ok(mut changes) = self.changes.lock() {
+            drop(changes.take());
+        }
+        {
+            let mut pending = self
+                .state
+                .pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            pending.cancelled = true;
+            pending.next = None;
+        }
+        self.state.changed.notify_all();
+    }
+}
 
 /// Principal kinds accepted by Myko's generated native authority API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, uniffi::Enum)]
@@ -151,7 +258,8 @@ pub struct MykoAuthorityGrantsUpdate {
 /// Long-lived grant-state subscription for one authority realm.
 #[derive(uniffi::Object)]
 pub struct MykoAuthorityGrantsSubscription {
-    subscription: BlockingCollectionSubscription<GrantRecord, LogPosition>,
+    subscription: LiveSubscription<RetainedGrantRows, LogPosition>,
+    publications: RetainedGrantPublicationQueue,
 }
 
 /// Reusable generated authority surface for a composed native Myko node.
@@ -174,18 +282,41 @@ impl MykoAuthority {
     fn grant_subscription(
         &self,
         source_node: myko_federation::NodeId,
-        realm_id: myko_federation::AuthorityRealmId,
+        realm_id: &myko_federation::AuthorityRealmId,
     ) -> Result<Arc<MykoAuthorityGrantsSubscription>, MykoFederationError> {
-        let subscription = self
-            .application
-            .application()?
-            .watch_view_live(&AuthorityGrantsView {
-                source_node,
-                realm_id,
-            })
+        let application = self.application.application()?;
+        let request = Arc::new(myko::core::request::RequestContext::internal(
+            Arc::from("native-authority-grants"),
+            application.server().host_id,
+            "native-authority",
+        ));
+        let output = application
+            .server()
+            .handler_registry
+            .open_federated_view(
+                <AuthorityGrantsView as myko::view::ViewIdStatic>::view_id_static().as_ref(),
+                serde_json::to_value(AuthorityGrantsView {
+                    source_node,
+                    realm_id: realm_id.clone(),
+                })
+                .map_err(|error| authority_error(&error))?,
+                request,
+                Arc::clone(application.server()),
+                myko::server::federated_source::FederatedRequest {
+                    source_node: Some(source_node),
+                    scope_id: Some(myko_authority::authority_realm_scope(realm_id)),
+                },
+            )
             .map_err(|error| authority_error(&error))?;
+        let myko::view::RegisteredViewOutput::RetainedPublication(subscription) = output else {
+            return Err(authority_error(
+                "authority grants view did not return a retained publication",
+            ));
+        };
+        let publications = RetainedGrantPublicationQueue::new(&subscription);
         Ok(Arc::new(MykoAuthorityGrantsSubscription {
-            subscription: BlockingCollectionSubscription::new(subscription.clone(), &subscription),
+            subscription,
+            publications,
         }))
     }
 }
@@ -205,7 +336,7 @@ impl MykoAuthority {
     ) -> Result<Arc<MykoAuthorityGrantsSubscription>, MykoFederationError> {
         let application = self.application.application()?;
         let context = self.context()?;
-        self.grant_subscription(application.node_id(), context.realm_id)
+        self.grant_subscription(application.node_id(), &context.realm_id)
     }
 
     /// Watches every durable grant record for one source node and realm.
@@ -221,10 +352,8 @@ impl MykoAuthority {
         realm_id: String,
     ) -> Result<Arc<MykoAuthorityGrantsSubscription>, MykoFederationError> {
         let source_node = parse_node_id(&source_node_id)?;
-        self.grant_subscription(
-            source_node,
-            myko_federation::AuthorityRealmId::new(realm_id),
-        )
+        let realm_id = myko_federation::AuthorityRealmId::new(realm_id);
+        self.grant_subscription(source_node, &realm_id)
     }
 
     /// Issues one immutable grant as the application-authenticated authority.
@@ -288,77 +417,62 @@ impl MykoAuthority {
     }
 }
 
-crate::export_blocking_collection_subscription! {
-    MykoAuthorityGrantsSubscription => MykoAuthorityGrantsUpdate,
-    field = subscription,
-    error = MykoFederationError,
-    transport_error = transport_error,
-    map = |revision, _owner| Ok(authority_grants_update(revision)),
+#[uniffi::export]
+impl MykoAuthorityGrantsSubscription {
+    /// Returns a complete retained grant snapshot plus the latest lifecycle.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority bridge error if the retained publication contains a
+    /// row with the wrong registered item type.
+    pub fn current(&self) -> Result<MykoAuthorityGrantsUpdate, MykoFederationError> {
+        self.publications.discard_pending();
+        authority_grants_snapshot_update(self.subscription.current())
+    }
+
+    /// Waits for the next retained grant snapshot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an authority bridge error when the stream is cancelled or if the
+    /// retained publication contains a row with the wrong registered item type.
+    pub fn next(&self) -> Result<MykoAuthorityGrantsUpdate, MykoFederationError> {
+        self.publications
+            .next()
+            .map_err(|error| transport_error(&error))
+            .and_then(authority_grants_snapshot_update)
+    }
+
+    /// Cancels the subscription and wakes a blocked [`Self::next`] call.
+    pub fn cancel(&self) {
+        self.publications.cancel();
+    }
 }
 
-fn authority_grants_update(
-    revision: LiveCollectionRevision<GrantRecord, LogPosition>,
-) -> MykoAuthorityGrantsUpdate {
-    let (lifecycle, reason) = crate::project_subscription_liveness(&revision.state.liveness);
-    let mut reset = false;
-    let mut changes = BTreeMap::new();
-    if let Some(diff) = revision.diff {
-        project_grant_diff(diff, &mut reset, &mut changes);
-    }
+fn authority_grants_snapshot_update(
+    state: RetainedGrantState,
+) -> Result<MykoAuthorityGrantsUpdate, MykoFederationError> {
+    let (lifecycle, reason) = crate::project_subscription_liveness(&state.liveness);
     let mut upserts = Vec::new();
-    let mut removed_grant_ids = Vec::new();
-    for (grant_id, change) in changes {
-        match change {
-            Some(grant) => upserts.push(grant_record(grant)),
-            None => removed_grant_ids.push(grant_id),
+    if let Some(rows) = state.value {
+        for value in rows.into_values() {
+            let record = value
+                .as_any()
+                .downcast_ref::<GrantRecord>()
+                .ok_or_else(|| {
+                    authority_error("authority grants publication contained a non-grant row")
+                })?;
+            upserts.push(grant_record(record.clone()));
         }
     }
     upserts.sort_by(|left, right| left.grant.id.cmp(&right.grant.id));
-    MykoAuthorityGrantsUpdate {
+    Ok(MykoAuthorityGrantsUpdate {
         lifecycle,
         reason,
-        reset,
+        reset: true,
         upserts,
-        removed_grant_ids,
-    }
-}
-
-fn project_grant_diff(
-    diff: MapDiff<Arc<str>, Arc<GrantRecord>>,
-    reset: &mut bool,
-    changes: &mut BTreeMap<String, Option<GrantRecord>>,
-) {
-    match diff {
-        MapDiff::Initial { entries } => {
-            *reset = true;
-            changes.clear();
-            for (_, record) in entries {
-                changes.insert(record.grant.id.to_string(), Some(record.as_ref().clone()));
-            }
-        }
-        MapDiff::Insert { value, .. } => {
-            changes.insert(value.grant.id.to_string(), Some(value.as_ref().clone()));
-        }
-        MapDiff::Remove { old_value, .. } => {
-            changes.insert(old_value.grant.id.to_string(), None);
-        }
-        MapDiff::Update {
-            old_value,
-            new_value,
-            ..
-        } => {
-            changes.insert(old_value.grant.id.to_string(), None);
-            changes.insert(
-                new_value.grant.id.to_string(),
-                Some(new_value.as_ref().clone()),
-            );
-        }
-        MapDiff::Batch { changes: batch } => {
-            for diff in batch {
-                project_grant_diff(diff, reset, changes);
-            }
-        }
-    }
+        removed_grant_ids: Vec::new(),
+    })
 }
 
 fn grant_record(record: GrantRecord) -> MykoAuthorityGrantRecord {
@@ -644,5 +758,70 @@ mod tests {
                 allow_offline: true,
             }
         );
+    }
+
+    #[test]
+    fn authority_grant_subscription_cancel_wakes_blocked_next() {
+        let (_writer, live) = myko_federation::live_subscription(LiveSubscriptionState {
+            value: Some(RetainedGrantRows::new()),
+            through: None,
+            liveness: myko_federation::SubscriptionLiveness::Current,
+        });
+        let subscription = Arc::new(MykoAuthorityGrantsSubscription {
+            subscription: live.clone(),
+            publications: RetainedGrantPublicationQueue::new(&live),
+        });
+        let blocked = Arc::clone(&subscription);
+        let (started_tx, started_rx) = flume::bounded(1);
+        let (done_tx, done_rx) = flume::bounded(1);
+        let worker = std::thread::spawn(move || {
+            let _started = started_tx.send(());
+            let result = blocked.next();
+            let _done = done_tx.send(matches!(
+                result,
+                Err(MykoFederationError::Unavailable { .. })
+            ));
+        });
+
+        assert_eq!(
+            started_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(())
+        );
+        subscription.cancel();
+        assert_eq!(
+            done_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(true)
+        );
+        assert!(worker.join().is_ok());
+    }
+
+    #[test]
+    fn authority_grant_subscription_cancel_does_not_block_with_pending_update() {
+        let (writer, live) = myko_federation::live_subscription(LiveSubscriptionState {
+            value: Some(RetainedGrantRows::new()),
+            through: None,
+            liveness: myko_federation::SubscriptionLiveness::Current,
+        });
+        let subscription = Arc::new(MykoAuthorityGrantsSubscription {
+            subscription: live.clone(),
+            publications: RetainedGrantPublicationQueue::new(&live),
+        });
+        writer.replace(LiveSubscriptionState {
+            value: Some(RetainedGrantRows::new()),
+            through: Some(LogPosition::new(1)),
+            liveness: myko_federation::SubscriptionLiveness::Current,
+        });
+        let cancel_target = Arc::clone(&subscription);
+        let (done_tx, done_rx) = flume::bounded(1);
+        let worker = std::thread::spawn(move || {
+            cancel_target.cancel();
+            let _done = done_tx.send(());
+        });
+
+        assert_eq!(
+            done_rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(())
+        );
+        assert!(worker.join().is_ok());
     }
 }

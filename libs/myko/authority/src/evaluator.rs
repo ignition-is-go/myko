@@ -33,26 +33,35 @@ pub(super) fn deny(
     message: &str,
 ) -> EvaluationOutcome {
     EvaluationOutcome {
-        decision: AuthorizationDecision::Deny(DenyDecision {
-            report: AuthorizationReport {
-                evaluated_at: now,
-                principal: request.presentation.principal.clone(),
-                executor: request.presentation.executor.clone(),
-                operation: request.operation,
-                explanations: vec![AuthorizationExplanation {
-                    code: code.to_owned(),
-                    message: message.to_owned(),
-                    grant_id: None,
-                    delegation_id: None,
-                    obligation_id: None,
-                    constraint: None,
-                }],
-            },
-            visibility: ResourceVisibility::Unauthorized,
-        }),
+        decision: AuthorizationDecision::Deny(denial(request, now, code, message)),
         grants: BTreeSet::new(),
         delegations: BTreeSet::new(),
         approvals: BTreeSet::new(),
+    }
+}
+
+pub(super) fn denial(
+    request: &AccessAttempt,
+    now: DateTime<Utc>,
+    code: &str,
+    message: &str,
+) -> DenyDecision {
+    DenyDecision {
+        report: AuthorizationReport {
+            evaluated_at: now,
+            principal: request.presentation.principal.clone(),
+            executor: request.presentation.executor.clone(),
+            operation: request.operation,
+            explanations: vec![AuthorizationExplanation {
+                code: code.to_owned(),
+                message: message.to_owned(),
+                grant_id: None,
+                delegation_id: None,
+                obligation_id: None,
+                constraint: None,
+            }],
+        },
+        visibility: ResourceVisibility::Unauthorized,
     }
 }
 

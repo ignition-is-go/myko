@@ -50,6 +50,21 @@ use uuid::Uuid;
 
 use crate::blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING};
 
+type LegacyViewCellMap =
+    hyphae::CellMap<Arc<str>, Arc<dyn myko::item::AnyItem>, hyphae::CellImmutable>;
+
+fn legacy_view_cellmap(
+    output: myko::view::RegisteredViewOutput,
+) -> Result<LegacyViewCellMap, String> {
+    match output {
+        myko::view::RegisteredViewOutput::LocalMap(cellmap) => Ok(cellmap),
+        myko::view::RegisteredViewOutput::RetainedPublication(_) => Err(
+            "retained view output is not supported by the legacy websocket view protocol"
+                .to_owned(),
+        ),
+    }
+}
+
 struct WsBenchmarkStats {
     message_count: AtomicU64,
     total_bytes: AtomicU64,
@@ -1124,7 +1139,8 @@ impl WsHandler {
                 let priority = message_context.priority_tx.clone();
                 let logger = message_context.drop_logger.clone();
                 WS_SUBSCRIPTION_BLOCKING.spawn("view-subscription", move || {
-                    match factory(view, registry, request, ctx, None) {
+                    match factory(view, registry, request, ctx, None).and_then(legacy_view_cellmap)
+                    {
                         Ok(cellmap) => {
                             let _ = sender.blocking_send(SubscriptionReady::View {
                                 tx_id,
@@ -1786,6 +1802,21 @@ mod tests {
                 is_view: false,
             })
         ));
+    }
+
+    #[test]
+    fn legacy_websocket_views_reject_retained_output() {
+        let (_writer, publication) =
+            myko_federation::live_subscription(myko_federation::LiveSubscriptionState {
+                value: Some(std::collections::BTreeMap::new()),
+                through: None,
+                liveness: myko_federation::SubscriptionLiveness::Current,
+            });
+        let output = myko::view::RegisteredViewOutput::RetainedPublication(publication);
+
+        let result = legacy_view_cellmap(output);
+
+        assert!(matches!(result, Err(message) if message.contains("retained view output")));
     }
 
     #[test]

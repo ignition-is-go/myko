@@ -3494,6 +3494,14 @@ mod tests {
         assert_eq!(persister.calls.load(Ordering::Relaxed), items.len());
         assert!(persister.all_after_reduce.load(Ordering::Relaxed));
         assert!(persister.all_before_reactive_drain.load(Ordering::Relaxed));
+        let drain_deadline = std::time::Instant::now()
+            .checked_add(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        while !reactive_drained.load(Ordering::Relaxed)
+            && std::time::Instant::now() < drain_deadline
+        {
+            std::thread::yield_now();
+        }
         assert!(reactive_drained.load(Ordering::Relaxed));
         assert_eq!(
             registry

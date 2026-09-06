@@ -36,8 +36,11 @@ struct ChallengeFirstEffectPolicy {
 }
 
 impl AccessPolicy for NestedScopePolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
-        if request
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        let rule = if request
             .topology
             .as_ref()
             .is_some_and(|topology| topology.is_descendant_of(&self.child, &self.parent))
@@ -45,16 +48,16 @@ impl AccessPolicy for NestedScopePolicy {
             Ok(())
         } else {
             Err("scope is not established beneath the granted parent".to_owned())
-        }
+        };
+        Ok(AuthorizationDecision::from_rule(request, rule))
     }
 }
 
 impl AccessPolicy for ChallengeFirstEffectPolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
-        AllowAllAccessPolicy.authorize(request)
-    }
-
-    fn decide(&self, request: &AccessAttempt) -> AuthorizationDecision {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
         if request.authorization_phase != AuthorizationPhase::Effect {
             return AllowAllAccessPolicy.decide(request);
         }
@@ -64,10 +67,10 @@ impl AccessPolicy for ChallengeFirstEffectPolicy {
         }
         *effect = Some(request.clone());
         drop(effect);
-        let AuthorizationDecision::Permit(permit) = AllowAllAccessPolicy.decide(request) else {
+        let AuthorizationDecision::Permit(permit) = AllowAllAccessPolicy.decide(request)? else {
             return AllowAllAccessPolicy.decide(request);
         };
-        AuthorizationDecision::Challenge {
+        Ok(AuthorizationDecision::Challenge {
             challenge: AuthorityChallenge {
                 id: self.challenge_id.clone(),
                 realm_id: AuthorityRealmId::new("test-realm"),
@@ -79,13 +82,16 @@ impl AccessPolicy for ChallengeFirstEffectPolicy {
                 expires_at: chrono::Utc::now(),
             },
             report: permit.report,
-        }
+        })
     }
 }
 
 impl AccessPolicy for SelectedScopesPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Ok(())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        AllowAllAccessPolicy.decide(request)
     }
 
     fn constrain_replication(
@@ -93,7 +99,7 @@ impl AccessPolicy for SelectedScopesPolicy {
         request: &AccessAttempt,
         selection: &ReplicationSelection,
         topology: &ScopeTopology,
-    ) -> Result<ReplicationSelection, AuthorizationDecision> {
+    ) -> Result<ReplicationSelection, AuthorizationFailure> {
         let requested_selections = request.scope_selections();
         let requested = requested_selections.first();
         let scopes = self
@@ -143,14 +149,14 @@ fn scope_grants_are_directional_and_require_subscription_explicitly() {
         AccessOperation::ReadItems,
         scope_id,
     );
-    assert!(policy.authorize(&read).is_ok());
+    assert!(policy.decide(&read).unwrap().is_permit());
 
     let mut follow = read.clone();
     follow.operation = AccessOperation::FollowItems;
-    assert!(policy.authorize(&follow).is_err());
+    assert!(!policy.decide(&follow).unwrap().is_permit());
     let mut wrong_principal = read;
     wrong_principal.principal_id = PrincipalId::new("iroh:node-c");
-    assert!(policy.authorize(&wrong_principal).is_err());
+    assert!(!policy.decide(&wrong_principal).unwrap().is_permit());
 }
 
 #[test]
@@ -215,7 +221,9 @@ fn composite_scope_access_requires_coverage_for_every_selection() {
     ];
     assert!(
         ScopeGrantPolicy::new(grants.clone())
-            .authorize(&request)
+            .decide(&request)
+            .unwrap()
+            .into_permit()
             .is_err()
     );
 
@@ -225,7 +233,12 @@ fn composite_scope_access_requires_coverage_for_every_selection() {
         grantee: principal,
         permissions,
     });
-    assert!(ScopeGrantPolicy::new(grants).authorize(&request).is_ok());
+    assert!(
+        ScopeGrantPolicy::new(grants)
+            .decide(&request)
+            .unwrap()
+            .is_permit()
+    );
 }
 
 #[test]
@@ -1818,8 +1831,9 @@ fn command_effects_fail_closed_without_an_installed_policy() {
     let request = request(CommandId::new());
     assert!(matches!(
         node.submit(request.clone()),
-        Err(NodeError::AuthorizationDenied(reason))
-            if reason.contains("does not serve application or federation data")
+        Err(NodeError::AuthorityUnavailable(
+            AuthorityUnavailable::PolicyUnavailable
+        ))
     ));
     assert!(node.command(request.id).unwrap().is_none());
     assert!(
@@ -2979,18 +2993,19 @@ fn selected_queries_use_authorized_view_and_node_owned_completeness() {
     let principal = PrincipalId::new("node:selected-reader");
     let presentation = AuthorityPresentation::direct_node(principal.clone());
 
-    let unbound = Node::in_memory()
-        .query_items_selected(
-            principal.clone(),
-            presentation.clone(),
-            source.node_id(),
-            &requested,
-            GetAllFederationSceneElements,
-        )
-        .unwrap();
-    assert_eq!(unbound.visibility, ResourceVisibility::Unbound);
-    assert!(unbound.value.is_none());
-    assert!(!unbound.complete);
+    let unavailable = Node::in_memory().query_items_selected(
+        principal.clone(),
+        presentation.clone(),
+        source.node_id(),
+        &requested,
+        GetAllFederationSceneElements,
+    );
+    assert!(matches!(
+        unavailable,
+        Err(NodeError::AuthorityUnavailable(
+            AuthorityUnavailable::PolicyUnavailable
+        ))
+    ));
 
     let policy: Arc<dyn AccessPolicy> = Arc::new(SelectedScopesPolicy {
         allowed: allowed.clone(),

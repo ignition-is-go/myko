@@ -103,12 +103,13 @@ code does not import authority record types.
   client request identities, and live enforcement remain required. A manually
   driven historical test does not satisfy those requirements.
 
-The current synchronous `AccessPolicy::decide` cannot distinguish denial from
-temporary authority unavailability. The live migration must return a typed
-`Result`, preserve prepared effects on unavailable authority, and carry retry
-status through session responses. Adding a fourth authorization decision or
-mapping unavailability to a string that callers treat as denial would preserve
-the wrong behavior. Migrate callers together rather than retaining that fallback.
+`AccessPolicy::decide` now returns a typed `Result` that separates denial from
+temporary authority unavailability. Prepared effects survive unavailable
+authorization without a durable rejection. Session responses carry typed retry
+status, and retained handler clients resubscribe. Real storage and local socket
+tests cover those paths. Retained item recovery and in-process submission error
+propagation are being verified alongside the controller integration. Unavailable
+authority is an error, not a fourth authorization decision.
 
 ## Implementation sequence
 
@@ -127,6 +128,31 @@ tests. They do not make live authorization certified. All C01-C18 requirements
 remain open.
 
 ## Verified checkpoint and recovery limits
+
+The native integration checkpoint has four passing coordinator tests,
+including authenticated Iroh control requests and authorized exact-scope history
+transfer. The native test shuts down normally, reopens both Redb stores, and
+recovers the same chosen decision without another grant use. Removing manual
+endpoint cleanup exposed a retained-router ownership cycle. The production
+evidence adapter now retains the node and endpoint without retaining the router.
+The same recovery test and authority strict Clippy pass after that fix.
+
+This proves recovery of a historical decision, not permission to release an
+effect now. Live certified policy enforcement, approval rounds, custody, and the
+C01-C18 fault matrix remain unfinished. The integrated native-FFI gate also
+exposed dropped Swift collection revisions. Writer event delivery now passes
+15 Swift native-FFI tests and 19 reactive tests, including cancellation and
+reentrant publication-order regressions. Focused strict Clippy also passes.
+The complete integrated gate now passes all 708 tests, formatting, and strict
+Clippy, including the native continuity regression and server consumers.
+
+Forrest now treats typed authority outages as retryable invocation failures and
+keeps authorization denial permanent. Its regression, frozen-source workspace
+tests, formatting, and strict Clippy pass. The matching fix is `ae2eaa5`.
+Wire version 11 requires coordinated peer rebuilds. Mac verification remains
+unfinished because SSH to the other machine timed out.
+
+The following results describe the earlier committed checkpoint.
 
 The current checkpoint passes 275 affected Myko tests, strict Clippy, formatting,
 and the native founder-replacement regression. Forrest passes its full workspace

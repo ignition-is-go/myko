@@ -1,3 +1,4 @@
+use super::evaluator::denial;
 use super::{
     AccessAttempt, AccessOperation, AccessPolicy, AccessTarget, AppError, ApplicationCapability,
     ApplicationHost, ApprovalDecision, Arc, AtomicU64, AuthorityDelegation, AuthorityFactSources,
@@ -8,8 +9,9 @@ use super::{
     Obligation, Ordering, Principal, PrincipalId, PutCapability, PutDelegation, PutObligation,
     ReplicationSelection, ResourceClaim, ResourceClaimKind, RevocationKind, RevokeAuthorityFact,
     ScopeId, ScopeSelection, ScopeTopology, SubscriptionGuard, Utc, authority_presentation,
-    authority_realm_scope, deny, evaluate, fmt, load_state, requires_durable_evaluation,
+    authority_realm_scope, evaluate, fmt, load_state, requires_durable_evaluation,
 };
+use myko_federation::{AuthorityUnavailable, AuthorizationFailure, NodeError};
 
 /// Policy backed exclusively by the local projection of [`AuthorityService`].
 /// Replicated copies of authority entities are never consulted.
@@ -181,7 +183,7 @@ impl AuthorityPolicy {
             })
             .collect();
         request.topology = self.application.node().scope_topology().ok();
-        let decision = self.evaluate(request);
+        let decision = self.evaluate(request).map_err(NodeError::from)?;
         if !decision.is_permit() {
             return Err(AppError::State(decision.public_message()));
         }
@@ -304,36 +306,31 @@ impl AuthorityPolicy {
         Ok(())
     }
 
-    fn evaluate(&self, request: AccessAttempt) -> AuthorizationDecision {
+    fn evaluate(
+        &self,
+        request: AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
         let now = Utc::now();
         let scope = authority_realm_scope(&self.realm_id);
         let authoritative_through = self
             .application
             .node()
             .authoritative_position_in::<AuthorityService>(&scope)
-            .ok()
-            .flatten();
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
         let state = self.current_state(&scope, authoritative_through);
         let Some(mut state) = state else {
-            return deny(
-                &request,
-                now,
-                "authority_projection_not_current",
-                "authoritative authority projection is not current",
-            )
-            .decision;
+            return Err(AuthorityUnavailable::StateNotCurrent);
         };
         if let Some(topology) = &request.topology {
             state.topology.clone_from(topology);
         }
         let outcome = evaluate(&state, &request, now);
         if request.authorization_phase == myko_federation::AuthorizationPhase::Continuation {
-            return outcome.decision;
+            return Ok(outcome.decision);
         }
         if !requires_durable_evaluation(&state, &request, &outcome) {
-            return outcome.decision;
+            return Ok(outcome.decision);
         }
-        let request_for_error = request.clone();
         let topology_proof = request
             .topology
             .as_ref()
@@ -351,15 +348,7 @@ impl AuthorityPolicy {
                     now,
                 },
             )
-            .unwrap_or_else(|error| {
-                deny(
-                    &request_for_error,
-                    Utc::now(),
-                    "durable_evaluation_failed",
-                    &format!("durable authority evaluation failed: {error}"),
-                )
-                .decision
-            })
+            .map_err(|_| AuthorityUnavailable::PersistenceUnavailable)
     }
 
     pub(super) fn current_state(
@@ -390,14 +379,10 @@ impl AuthorityPolicy {
 }
 
 impl AccessPolicy for AuthorityPolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
-        match self.decide(request) {
-            AuthorizationDecision::Permit(_) => Ok(()),
-            decision => Err(decision.public_message()),
-        }
-    }
-
-    fn decide(&self, request: &AccessAttempt) -> AuthorizationDecision {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
         self.evaluate(request.clone())
     }
 
@@ -411,15 +396,15 @@ impl AccessPolicy for AuthorityPolicy {
         request: &AccessAttempt,
         requested: &ReplicationSelection,
         topology: &ScopeTopology,
-    ) -> Result<ReplicationSelection, AuthorizationDecision> {
+    ) -> Result<ReplicationSelection, AuthorizationFailure> {
         if request.lease.is_some() || request.presentation.active_lease.is_some() {
-            return Err(deny(
+            return Err(denial(
                 request,
                 Utc::now(),
                 "replication_lease_unsupported",
                 "selected replication does not issue or accept offline leases",
             )
-            .decision);
+            .into());
         }
         let requested_filter = match requested {
             ReplicationSelection::Intersection { requested, .. } => requested.as_ref(),
@@ -427,13 +412,13 @@ impl AccessPolicy for AuthorityPolicy {
         };
         let mut selections = match requested_filter {
             ReplicationSelection::Scopes(selections) if selections.is_empty() => {
-                return Err(deny(
+                return Err(denial(
                     request,
                     Utc::now(),
                     "replication_empty",
                     "requested replication selection is empty",
                 )
-                .decision);
+                .into());
             }
             ReplicationSelection::Scopes(selections) => selections
                 .iter()
@@ -457,15 +442,7 @@ impl AccessPolicy for AuthorityPolicy {
                 .application
                 .node()
                 .events_after(None)
-                .map_err(|error| {
-                    deny(
-                        request,
-                        Utc::now(),
-                        "topology_unavailable",
-                        &error.to_string(),
-                    )
-                    .decision
-                })?
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
                 .into_iter()
                 .filter(|event| event.origin.node_id == self.application.node_id())
                 .filter(|event| event.event.service_id() == Some(service))
@@ -476,15 +453,7 @@ impl AccessPolicy for AuthorityPolicy {
                 .application
                 .node()
                 .events_after(None)
-                .map_err(|error| {
-                    deny(
-                        request,
-                        Utc::now(),
-                        "topology_unavailable",
-                        &error.to_string(),
-                    )
-                    .decision
-                })?
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
                 .into_iter()
                 .filter(|event| event.origin.node_id == self.application.node_id())
                 .flat_map(|event| event.event.affected_scope_ids())
@@ -501,15 +470,8 @@ impl AccessPolicy for AuthorityPolicy {
         }
         selections.sort_unstable_by(|left, right| left.root().as_str().cmp(right.root().as_str()));
         selections.dedup();
-        let state = load_state(self.application.node(), &self.realm_id).map_err(|error| {
-            deny(
-                request,
-                Utc::now(),
-                "replication_projection_failed",
-                &error.to_string(),
-            )
-            .decision
-        })?;
+        let state = load_state(self.application.node(), &self.realm_id)
+            .map_err(|_| AuthorityUnavailable::StateNotCurrent)?;
         let now = Utc::now();
         let authorized = selections
             .iter()
@@ -553,12 +515,12 @@ impl AccessPolicy for AuthorityPolicy {
             .cloned()
             .collect::<Vec<_>>();
         if authorized.is_empty() {
-            return Err(deny(
+            return Err(denial(
                 request,
                 now,
                 "replication_no_authorized_scopes",
                 "no requested history scopes are authorized for this peer; pairing does not grant replication access",
-            ).decision);
+            ).into());
         }
         let mut scoped = request.clone();
         scoped.target = AccessTarget::ScopeSet(authorized.clone());
@@ -592,15 +554,11 @@ impl AccessPolicy for AuthorityPolicy {
                     .map_or_else(Vec::new, |claim| claim.required_capabilities.clone()),
             })
             .collect();
-        let decision = self.evaluate(scoped);
-        if decision.is_permit() {
-            Ok(ReplicationSelection::Intersection {
-                requested: Box::new(requested_filter.clone()),
-                scopes: authorized,
-            })
-        } else {
-            Err(decision)
-        }
+        self.evaluate(scoped)?.into_permit()?;
+        Ok(ReplicationSelection::Intersection {
+            requested: Box::new(requested_filter.clone()),
+            scopes: authorized,
+        })
     }
 
     #[allow(clippy::too_many_lines)] // Approval binding and idempotent persistence are one operation.
@@ -610,12 +568,12 @@ impl AccessPolicy for AuthorityPolicy {
         presentation: &AuthorityPresentation,
         challenge_id: &ChallengeId,
         approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationDecision> {
+    ) -> Result<ApprovalDecision, AuthorizationFailure> {
         if authenticated_executor != &presentation.executor.id
             || presentation.principal != presentation.executor
             || !presentation.provenance.is_empty()
         {
-            return Err(deny(
+            return Err(denial(
                 &AccessAttempt::scoped(
                     authenticated_executor.clone(),
                     presentation.clone(),
@@ -626,7 +584,7 @@ impl AccessPolicy for AuthorityPolicy {
                 "approval_executor_mismatch",
                 "approval requires a directly authenticated approver",
             )
-            .decision);
+            .into());
         }
         let internal = authority_presentation(&self.application);
         let decision = self
@@ -642,7 +600,17 @@ impl AccessPolicy for AuthorityPolicy {
                 },
             )
             .map_err(|error| {
-                deny(
+                if !matches!(
+                    &error,
+                    AppError::Node(
+                        NodeError::CommandRejected { .. } | NodeError::AuthorizationDenied(_)
+                    )
+                ) {
+                    return AuthorizationFailure::Unavailable(
+                        AuthorityUnavailable::PersistenceUnavailable,
+                    );
+                }
+                denial(
                     &AccessAttempt::scoped(
                         authenticated_executor.clone(),
                         presentation.clone(),
@@ -653,7 +621,7 @@ impl AccessPolicy for AuthorityPolicy {
                     "approval_failed",
                     &error.to_string(),
                 )
-                .decision
+                .into()
             })?;
         if approved && let Some(command_id) = decision.binding.command_id {
             let binding = &decision.binding;
@@ -661,34 +629,8 @@ impl AccessPolicy for AuthorityPolicy {
                 .application
                 .node()
                 .command(command_id)
-                .map_err(|error| {
-                    deny(
-                        &AccessAttempt::scoped(
-                            authenticated_executor.clone(),
-                            presentation.clone(),
-                            AccessOperation::ApproveAuthority,
-                            authority_realm_scope(&self.realm_id),
-                        ),
-                        Utc::now(),
-                        "approval_pending_command_failed",
-                        &error.to_string(),
-                    )
-                    .decision
-                })?
-                .ok_or_else(|| {
-                    deny(
-                        &AccessAttempt::scoped(
-                            authenticated_executor.clone(),
-                            presentation.clone(),
-                            AccessOperation::ApproveAuthority,
-                            authority_realm_scope(&self.realm_id),
-                        ),
-                        Utc::now(),
-                        "approval_pending_command_missing",
-                        "the challenged command is not present",
-                    )
-                    .decision
-                })?;
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
+                .ok_or(AuthorityUnavailable::HistoryUnavailable)?;
             let CommandState::AuthorizationPending {
                 challenge_id: pending_challenge,
                 approvals,
@@ -724,20 +666,7 @@ impl AccessPolicy for AuthorityPolicy {
                     topology.merge_proof(&binding.topology_proof)?;
                     Ok(topology)
                 })
-                .map_err(|error| {
-                    deny(
-                        &AccessAttempt::scoped(
-                            authenticated_executor.clone(),
-                            presentation.clone(),
-                            AccessOperation::ApproveAuthority,
-                            authority_realm_scope(&self.realm_id),
-                        ),
-                        Utc::now(),
-                        "approval_topology_failed",
-                        &error.to_string(),
-                    )
-                    .decision
-                })?;
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
             let effect_request = AccessAttempt {
                 principal_id: binding.executor.id.clone(),
                 presentation: command_presentation,
@@ -751,7 +680,7 @@ impl AccessPolicy for AuthorityPolicy {
                 authorization_phase: myko_federation::AuthorizationPhase::Effect,
                 topology: Some(topology),
             };
-            let next = self.evaluate(effect_request);
+            let next = self.evaluate(effect_request)?;
             let transition = match next {
                 AuthorizationDecision::Permit(_) => self.application.node().resume_authorization(
                     command_id,
@@ -766,22 +695,9 @@ impl AccessPolicy for AuthorityPolicy {
                         decision.id.clone(),
                     )
                 }
-                denied @ AuthorizationDecision::Deny(_) => return Err(denied),
+                AuthorizationDecision::Deny(denied) => return Err(denied.into()),
             };
-            transition.map_err(|error| {
-                deny(
-                    &AccessAttempt::scoped(
-                        authenticated_executor.clone(),
-                        presentation.clone(),
-                        AccessOperation::ApproveAuthority,
-                        authority_realm_scope(&self.realm_id),
-                    ),
-                    Utc::now(),
-                    "approval_resume_failed",
-                    &error.to_string(),
-                )
-                .decision
-            })?;
+            transition.map_err(|_| AuthorityUnavailable::PersistenceUnavailable)?;
         }
         Ok(decision)
     }

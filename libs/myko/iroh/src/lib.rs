@@ -68,6 +68,9 @@ use myko_federation::{
     ReplicationReport, ReplicationSelection, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
     ScopedReplicationCheckpoint, ScopedReplicationReport, SelectedReplicationBatch,
     SelectedReplicationCheckpoint, SelectedReplicationReport, SubscriptionLiveness,
+    control_quorum::{
+        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+    },
     live_subscription,
 };
 use myko_wire::{
@@ -86,6 +89,10 @@ pub use peer::*;
 
 mod client;
 pub use client::*;
+
+mod control_client;
+mod evidence_client;
+pub use evidence_client::IrohScopedEvidenceEndpoint;
 
 mod protocol;
 #[cfg(test)]

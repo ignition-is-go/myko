@@ -53,6 +53,9 @@ impl IrohLiveEventSubscription {
         match read_frame(&mut self.receive).await? {
             ReplicationFrame::Live { event } => Ok(*event),
             ReplicationFrame::Authorization { decision } => Err(authorization_error(decision)),
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                Err(IrohReplicationError::AuthorityUnavailable(reason))
+            }
             ReplicationFrame::Error { message } => Err(IrohReplicationError::Stream(format!(
                 "remote live subscription failed: {message}"
             ))),
@@ -70,7 +73,9 @@ impl IrohLiveEventSubscription {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
-            | ReplicationFrame::Approval { .. } => Err(IrohReplicationError::Stream(
+            | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. } => Err(IrohReplicationError::Stream(
                 "peer sent a non-live frame on a live subscription".to_owned(),
             )),
         }

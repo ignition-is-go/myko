@@ -447,7 +447,7 @@ fn in_process_execute_view(
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 
-    let cellmap = (view_data.cell_factory)(
+    let output = (view_data.cell_factory)(
         parsed,
         ctx.registry.clone(),
         request_context,
@@ -456,11 +456,7 @@ fn in_process_execute_view(
     )
     .map_err(|e| format!("Failed to build view cell: {e}"))?;
 
-    let items: Vec<Value> = cellmap
-        .snapshot()
-        .into_iter()
-        .map(|(_, item)| serde_json::to_value(&*item).unwrap_or(Value::Null))
-        .collect();
+    let (items, through, liveness) = view_output_snapshot(output);
     drop(ctx);
 
     Ok(json!({
@@ -468,7 +464,41 @@ fn in_process_execute_view(
         "item_type": registration.view_item_type,
         "count": items.len(),
         "items": items,
+        "through": through,
+        "liveness": liveness,
     }))
+}
+
+fn view_output_snapshot(output: myko::view::RegisteredViewOutput) -> (Vec<Value>, Value, Value) {
+    match output {
+        myko::view::RegisteredViewOutput::LocalMap(cellmap) => {
+            let items = cellmap
+                .snapshot()
+                .into_iter()
+                .map(|(_, item)| serde_json::to_value(&*item).unwrap_or(Value::Null))
+                .collect();
+            (
+                items,
+                Value::Null,
+                serde_json::to_value(myko_federation::SubscriptionLiveness::Current)
+                    .unwrap_or(Value::Null),
+            )
+        }
+        myko::view::RegisteredViewOutput::RetainedPublication(publication) => {
+            let snapshot = publication.current();
+            let items = snapshot
+                .value
+                .unwrap_or_default()
+                .into_values()
+                .map(|item| serde_json::to_value(&*item).unwrap_or(Value::Null))
+                .collect();
+            (
+                items,
+                serde_json::to_value(snapshot.through).unwrap_or(Value::Null),
+                serde_json::to_value(&snapshot.liveness).unwrap_or(Value::Null),
+            )
+        }
+    }
 }
 
 async fn in_process_execute_report(
@@ -564,5 +594,88 @@ fn arguments_object(arguments: Value) -> Value {
         arguments
     } else {
         json!({})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{any::Any, collections::BTreeMap, sync::Arc};
+
+    use hyphae::CellMap;
+    use myko::{common::with_id::WithId, item::AnyItem};
+
+    use super::*;
+
+    #[derive(Clone, Debug, PartialEq, serde::Serialize)]
+    struct TestItem {
+        id: Arc<str>,
+        value: u32,
+    }
+
+    impl WithId for TestItem {
+        fn id(&self) -> Arc<str> {
+            Arc::clone(&self.id)
+        }
+    }
+
+    impl AnyItem for TestItem {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+
+        fn entity_type(&self) -> &'static str {
+            "McpViewOutputTestItem"
+        }
+
+        fn equals(&self, other: &dyn AnyItem) -> bool {
+            other.as_any().downcast_ref::<Self>() == Some(self)
+        }
+    }
+
+    fn item(id: &str, value: u32) -> Arc<dyn AnyItem> {
+        Arc::new(TestItem {
+            id: id.into(),
+            value,
+        })
+    }
+
+    #[test]
+    fn mcp_local_view_output_uses_typed_current_liveness_schema() {
+        let rows = CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
+        rows.insert("local".into(), item("local", 1));
+        let output = myko::view::RegisteredViewOutput::LocalMap(rows.lock());
+
+        let (items, through, liveness) = view_output_snapshot(output);
+
+        assert_eq!(items, vec![json!({"id": "local", "value": 1})]);
+        assert_eq!(through, Value::Null);
+        assert_eq!(
+            liveness,
+            serde_json::to_value(myko_federation::SubscriptionLiveness::Current)
+                .unwrap_or(Value::Null)
+        );
+    }
+
+    #[test]
+    fn mcp_retained_view_output_preserves_rows_cursor_and_liveness() {
+        let retained_rows = BTreeMap::from([(Arc::from("retained"), item("retained", 7))]);
+        let (_writer, publication) =
+            myko_federation::live_subscription(myko_federation::LiveSubscriptionState {
+                value: Some(retained_rows),
+                through: Some(myko_federation::LogPosition::new(9)),
+                liveness: myko_federation::SubscriptionLiveness::Resynchronizing {
+                    reason: "waiting for parent".to_owned(),
+                },
+            });
+        let output = myko::view::RegisteredViewOutput::RetainedPublication(publication);
+
+        let (items, through, liveness) = view_output_snapshot(output);
+
+        assert_eq!(items, vec![json!({"id": "retained", "value": 7})]);
+        assert_eq!(through, json!(9));
+        assert_eq!(
+            liveness,
+            json!({"resynchronizing": {"reason": "waiting for parent"}})
+        );
     }
 }

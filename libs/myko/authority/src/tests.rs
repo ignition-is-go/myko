@@ -275,21 +275,32 @@ fn planned_challenges_are_recorded_once_and_leases_keep_exact_binding() -> Resul
     Ok(())
 }
 
-fn wait_for_grant_record(
-    view: &myko::view::TypedViewCellMap<GrantRecord>,
+fn wait_for_retained_grant_record(
+    publication: &myko_federation::LiveSubscription<
+        std::collections::BTreeMap<Arc<str>, Arc<dyn myko::item::AnyItem>>,
+    >,
     grant_id: &str,
     revoked: bool,
 ) -> Result<(), String> {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     loop {
-        if view.snapshot().iter().any(|(_, record)| {
-            record.grant.id.as_str() == grant_id && record.revoked_at.is_some() == revoked
-        }) {
+        let state = publication.current();
+        let matched = state
+            .value
+            .as_ref()
+            .into_iter()
+            .flat_map(|rows| rows.values())
+            .filter_map(|record| record.as_any().downcast_ref::<GrantRecord>())
+            .any(|record| {
+                record.grant.id.as_str() == grant_id && record.revoked_at.is_some() == revoked
+            });
+        if matched {
             return Ok(());
         }
         if std::time::Instant::now() >= deadline {
             return Err(format!(
-                "grant view did not observe {grant_id} with revoked={revoked}"
+                "retained grant publication did not observe {grant_id} with revoked={revoked}; liveness={:?}",
+                state.liveness
             ));
         }
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -346,6 +357,9 @@ fn retained_authority_facts_open_at_the_authoritative_frontier() -> Result<(), S
 
 #[test]
 fn authority_grants_view_keeps_revoked_records_live() -> Result<(), String> {
+    use myko::core::request::RequestContext;
+    use myko::view::{RegisteredViewOutput, ViewIdStatic as _};
+
     let (application, policy, administrator) = open(Node::in_memory())?;
     let retained = ApplicationHost::new(
         application.node().clone(),
@@ -353,10 +367,28 @@ fn authority_grants_view_keeps_revoked_records_live() -> Result<(), String> {
             .service::<AuthorityService>()
             .build(),
     )?;
-    let view = retained.watch_view(&AuthorityGrantsView {
-        source_node: application.node_id(),
-        realm_id: AuthorityRealmKey::new("main"),
-    })?;
+    let request = Arc::new(RequestContext::internal(
+        Arc::from("authority-grants-view-test"),
+        retained.server().host_id,
+        "test",
+    ));
+    let output = retained.server().handler_registry.open_federated_view(
+        AuthorityGrantsView::view_id_static().as_ref(),
+        serde_json::to_value(AuthorityGrantsView {
+            source_node: application.node_id(),
+            realm_id: AuthorityRealmKey::new("main"),
+        })
+        .map_err(|error| error.to_string())?,
+        request,
+        Arc::clone(retained.server()),
+        myko::server::federated_source::FederatedRequest {
+            source_node: Some(application.node_id()),
+            scope_id: Some(authority_realm_scope(&AuthorityRealmKey::new("main"))),
+        },
+    )?;
+    let RegisteredViewOutput::RetainedPublication(publication) = output else {
+        return Err("authority grants view returned a local map".to_owned());
+    };
     let issued = grant(
         "grant:native-view",
         node_principal("node:peer"),
@@ -366,7 +398,7 @@ fn authority_grants_view_keeps_revoked_records_live() -> Result<(), String> {
     );
     put_grant(&policy, &administrator, issued)?;
 
-    wait_for_grant_record(&view, "grant:native-view", false)?;
+    wait_for_retained_grant_record(&publication, "grant:native-view", false)?;
 
     policy
         .revoke(
@@ -376,7 +408,7 @@ fn authority_grants_view_keeps_revoked_records_live() -> Result<(), String> {
             "grant:native-view".to_owned(),
         )
         .map_err(|error| error.to_string())?;
-    wait_for_grant_record(&view, "grant:native-view", true)?;
+    wait_for_retained_grant_record(&publication, "grant:native-view", true)?;
     Ok(())
 }
 
@@ -392,7 +424,9 @@ fn default_deny_and_bootstrap_is_one_time() -> Result<(), String> {
     ));
     let user = node_principal("node:user");
     assert!(matches!(
-        policy.decide(&request(user, "scope:a", AccessOperation::ReadItems)),
+        policy
+            .decide(&request(user, "scope:a", AccessOperation::ReadItems))
+            .unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     let installed: Arc<dyn AccessPolicy> = policy.clone();
@@ -463,7 +497,7 @@ fn grants_compose_dimensions_but_claims_are_all_or_nothing() -> Result<(), Strin
     authorized
         .application_capabilities
         .push(capability.id.clone());
-    let permit = match policy.decide(&authorized) {
+    let permit = match policy.decide(&authorized).unwrap() {
         AuthorizationDecision::Permit(permit) => permit,
         decision => return Err(format!("expected composed permit, found {decision:?}")),
     };
@@ -490,7 +524,7 @@ fn grants_compose_dimensions_but_claims_are_all_or_nothing() -> Result<(), Strin
         claim.required_operations.push(AccessOperation::ReadItems);
     }
     assert!(matches!(
-        policy.decide(&authorized),
+        policy.decide(&authorized).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     Ok(())
@@ -534,12 +568,12 @@ fn prospective_nested_scope_is_authorized_only_by_its_proven_parent() -> Result<
         ScopeSelection::Exact(parent.clone()),
         ScopeSelection::Exact(child.clone()),
     ]);
-    assert!(policy.decide(&admission).is_permit());
+    assert!(policy.decide(&admission).unwrap().is_permit());
 
     let mut effect = admission;
     effect.authorization_phase = myko_federation::AuthorizationPhase::Effect;
     assert!(matches!(
-        policy.decide(&effect),
+        policy.decide(&effect).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
 
@@ -549,7 +583,7 @@ fn prospective_nested_scope_is_authorized_only_by_its_proven_parent() -> Result<
     }))
     .map_err(|error| error.to_string())?;
     effect.topology = Some(proven_topology);
-    assert!(policy.decide(&effect).is_permit());
+    assert!(policy.decide(&effect).unwrap().is_permit());
 
     let unrelated_topology = serde_json::from_value::<ScopeTopology>(serde_json::json!({
         "parents": { (child.as_str()): unrelated.as_str() },
@@ -558,7 +592,7 @@ fn prospective_nested_scope_is_authorized_only_by_its_proven_parent() -> Result<
     .map_err(|error| error.to_string())?;
     effect.topology = Some(unrelated_topology);
     assert!(matches!(
-        policy.decide(&effect),
+        policy.decide(&effect).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     Ok(())
@@ -625,7 +659,7 @@ fn approval_is_bound_and_single_use() -> Result<(), String> {
     put_grant(&policy, &administrator, guarded)?;
     let mut access = request(user, "scope:a", AccessOperation::ReadItems);
     access.arguments_digest = Some("sha256:arguments".to_owned());
-    let AuthorizationDecision::Challenge { challenge, .. } = policy.decide(&access) else {
+    let AuthorizationDecision::Challenge { challenge, .. } = policy.decide(&access).unwrap() else {
         return Err("expected challenge".to_owned());
     };
     let approval = policy
@@ -637,15 +671,15 @@ fn approval_is_bound_and_single_use() -> Result<(), String> {
         )
         .map_err(|decision| decision.public_message())?;
     access.presentation.approvals.push(approval.id.clone());
-    assert!(policy.decide(&access).is_permit());
+    assert!(policy.decide(&access).unwrap().is_permit());
     assert!(matches!(
-        policy.decide(&access),
+        policy.decide(&access).unwrap(),
         AuthorizationDecision::Challenge { .. }
     ));
     let mut rebound = access;
     rebound.arguments_digest = Some("sha256:different".to_owned());
     assert!(matches!(
-        policy.decide(&rebound),
+        policy.decide(&rebound).unwrap(),
         AuthorizationDecision::Challenge { .. }
     ));
     Ok(())
@@ -684,7 +718,7 @@ fn approval_cannot_rebind_a_command_result_effect() -> Result<(), String> {
     let mut exact = request(user, "scope:effect", AccessOperation::SubmitCommand);
     exact.authorization_phase = myko_federation::AuthorizationPhase::Effect;
     exact.effect_digest = Some("sha256:batch-and-result-a".to_owned());
-    let AuthorizationDecision::Challenge { challenge, .. } = policy.decide(&exact) else {
+    let AuthorizationDecision::Challenge { challenge, .. } = policy.decide(&exact).unwrap() else {
         return Err("expected effect challenge".to_owned());
     };
     let approval = policy
@@ -699,10 +733,10 @@ fn approval_cannot_rebind_a_command_result_effect() -> Result<(), String> {
     let mut rebound_result = exact.clone();
     rebound_result.effect_digest = Some("sha256:batch-and-result-b".to_owned());
     assert!(matches!(
-        policy.decide(&rebound_result),
+        policy.decide(&rebound_result).unwrap(),
         AuthorizationDecision::Challenge { .. }
     ));
-    assert!(policy.decide(&exact).is_permit());
+    assert!(policy.decide(&exact).unwrap().is_permit());
     Ok(())
 }
 
@@ -758,17 +792,19 @@ fn provenance_is_store_bound_and_never_grants_ambient_authority() -> Result<(), 
     let mut delegated = request(person, "scope:a", AccessOperation::ReadItems);
     delegated.principal_id = agent.id.clone();
     delegated.presentation = delegated.presentation.forward(hop.clone());
-    assert!(policy.decide(&delegated).is_permit());
+    assert!(policy.decide(&delegated).unwrap().is_permit());
     let mut forged = delegated;
     forged.presentation.provenance[0].operation = ProvenanceOperation::TaskInvocation {
         task_id: "forged".to_owned(),
     };
     assert!(matches!(
-        policy.decide(&forged),
+        policy.decide(&forged).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     assert!(matches!(
-        policy.decide(&request(agent, "scope:a", AccessOperation::ReadItems)),
+        policy
+            .decide(&request(agent, "scope:a", AccessOperation::ReadItems))
+            .unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     Ok(())
@@ -891,7 +927,7 @@ fn delegation_binds_issuer_and_exact_parent_obligations() -> Result<(), String> 
     delegated.principal_id = agent.id;
     delegated.presentation = delegated.presentation.forward(hop);
     assert!(matches!(
-        policy.decide(&delegated),
+        policy.decide(&delegated).unwrap(),
         AuthorizationDecision::Challenge { challenge, report }
             if challenge.obligation_id == obligation.id
                 && report.explanations.iter().any(|explanation| {
@@ -907,7 +943,7 @@ fn delegation_binds_issuer_and_exact_parent_obligations() -> Result<(), String> 
         )
         .map_err(|error| error.to_string())?;
     assert!(matches!(
-        policy.decide(&delegated),
+        policy.decide(&delegated).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     Ok(())
@@ -937,6 +973,7 @@ fn bounded_uses_survive_redb_restart() -> Result<(), String> {
                     "scope:a",
                     AccessOperation::ReadItems
                 ))
+                .unwrap()
                 .is_permit()
         );
     }
@@ -948,7 +985,9 @@ fn bounded_uses_survive_redb_restart() -> Result<(), String> {
         AuthorityRealmKey::new("main"),
     );
     assert!(matches!(
-        policy.decide(&request(user, "scope:a", AccessOperation::ReadItems)),
+        policy
+            .decide(&request(user, "scope:a", AccessOperation::ReadItems))
+            .unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     Ok(())
@@ -1034,7 +1073,7 @@ fn retained_foreign_grants_do_not_become_local_authority_after_restart() -> Resu
                 vec![AccessOperation::ReadItems],
             ),
         )?;
-        if !policy.decide(&foreign_access).is_permit() {
+        if !policy.decide(&foreign_access).unwrap().is_permit() {
             return Err("source did not authorize its own grant".to_owned());
         }
         application
@@ -1078,11 +1117,12 @@ fn retained_foreign_grants_do_not_become_local_authority_after_restart() -> Resu
     );
     if !policy
         .decide(&request(user, "scope:local", AccessOperation::ReadItems))
+        .unwrap()
         .is_permit()
     {
         return Err("reopened local authority was not ready or lost its grant".to_owned());
     }
-    let AuthorizationDecision::Deny(denial) = policy.decide(&foreign_access) else {
+    let AuthorizationDecision::Deny(denial) = policy.decide(&foreign_access).unwrap() else {
         return Err("retaining a foreign grant created local authority".to_owned());
     };
     if !denial
@@ -1179,7 +1219,7 @@ fn ungranted_replication_reports_no_authorized_scopes() -> Result<(), String> {
     else {
         return Err("ungranted replication must be denied".to_owned());
     };
-    let AuthorizationDecision::Deny(denial) = decision else {
+    let myko_federation::AuthorizationFailure::Deny(denial) = decision else {
         return Err("ungranted replication did not return a denial".to_owned());
     };
     assert!(
@@ -1295,7 +1335,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
         duration_seconds: 1,
         offline: false,
     });
-    let online_lease = match policy.decide(&online_request) {
+    let online_lease = match policy.decide(&online_request).unwrap() {
         AuthorizationDecision::Permit(PermitDecision {
             lease: Some(lease), ..
         }) => lease,
@@ -1306,7 +1346,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
     online_continuation.lease = None;
     online_continuation.presentation =
         AuthorityPresentation::direct(online_user.clone()).with_lease(online_lease.id);
-    assert!(policy.decide(&online_continuation).is_permit());
+    assert!(policy.decide(&online_continuation).unwrap().is_permit());
     application
         .exec_authenticated_command(
             administrator.id.clone(),
@@ -1319,7 +1359,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
         )
         .map_err(|error| error.to_string())?;
     assert!(matches!(
-        policy.decide(&online_continuation),
+        policy.decide(&online_continuation).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
 
@@ -1343,7 +1383,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
         duration_seconds: 1,
         offline: true,
     });
-    let offline_lease = match policy.decide(&offline_request) {
+    let offline_lease = match policy.decide(&offline_request).unwrap() {
         AuthorizationDecision::Permit(PermitDecision {
             lease: Some(lease), ..
         }) => lease,
@@ -1359,7 +1399,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
     wrong_binding.presentation =
         AuthorityPresentation::direct(wrong_user).with_lease(offline_lease.id.clone());
     assert!(matches!(
-        policy.decide(&wrong_binding),
+        policy.decide(&wrong_binding).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     let mut wrong_scope = request(
@@ -1370,7 +1410,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
     wrong_scope.presentation =
         AuthorityPresentation::direct(offline_user.clone()).with_lease(offline_lease.id.clone());
     assert!(matches!(
-        policy.decide(&wrong_scope),
+        policy.decide(&wrong_scope).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
 
@@ -1389,7 +1429,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
     reconnect.lease = None;
     reconnect.presentation =
         AuthorityPresentation::direct(offline_user.clone()).with_lease(offline_lease.id.clone());
-    let reconnect_permit = match policy.decide(&reconnect) {
+    let reconnect_permit = match policy.decide(&reconnect).unwrap() {
         AuthorizationDecision::Permit(permit) => permit,
         decision => {
             return Err(format!(
@@ -1408,7 +1448,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
     );
     std::thread::sleep(std::time::Duration::from_millis(1_100));
     assert!(matches!(
-        policy.decide(&reconnect),
+        policy.decide(&reconnect).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
 
@@ -1418,7 +1458,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
         offline: true,
     });
     assert!(matches!(
-        policy.decide(&forbidden_offline),
+        policy.decide(&forbidden_offline).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     let mut excessive = offline_request;
@@ -1427,7 +1467,7 @@ fn leases_enforce_online_revocation_offline_expiry_and_exact_binding() -> Result
         offline: true,
     });
     assert!(matches!(
-        policy.decide(&excessive),
+        policy.decide(&excessive).unwrap(),
         AuthorizationDecision::Deny(_)
     ));
     Ok(())

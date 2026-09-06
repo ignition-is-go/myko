@@ -29,6 +29,8 @@ pub enum LocalPeerError {
     Protocol(String),
     #[error("local peer authorization decision: {}", .0.public_message())]
     Authorization(Box<AuthorizationDecision>),
+    #[error("local peer authority unavailable: {0}")]
+    AuthorityUnavailable(AuthorityUnavailable),
 }
 
 /// Protected local peer endpoint for one Myko node.
@@ -766,8 +768,14 @@ impl LocalItemClient {
         Q: ItemQuery + Send + 'static,
         ItemQueryResult<Q>: hyphae::CellValue,
     {
-        let (initial, subscription) = self.watch_request(request, query).await?;
-        Ok(drive_reactive(initial, subscription))
+        let (initial, subscription) = self.watch_request(request.clone(), query.clone()).await?;
+        Ok(drive_reactive(
+            initial,
+            subscription,
+            self.clone(),
+            request,
+            query,
+        ))
     }
 
     async fn watch_request<Q>(
@@ -965,6 +973,103 @@ impl LocalCommandClient {
             PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
             _ => Err(LocalPeerError::Protocol(
                 "local peer returned a non-approval frame".to_owned(),
+            )),
+        }
+    }
+
+    /// Requests a durable prepare vote from an authenticated controller endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket is unavailable, authorization is denied,
+    /// authority coordination is unavailable, or the response is malformed.
+    pub async fn prepare_control(
+        &self,
+        head: ControlHead,
+        ballot: ControlBallot,
+    ) -> Result<SignedControlVote, LocalPeerError> {
+        let mut subscription = open_local(
+            &self.session,
+            self.envelope(PeerRequest::ControlPrepare { head, ballot }),
+        )
+        .await?;
+        match read_authorized_mux_frame(&mut subscription).await? {
+            PeerFrame::ControlVote { vote } => Ok(*vote),
+            PeerFrame::Authorization { decision } => Err(LocalPeerError::Authorization(decision)),
+            PeerFrame::AuthorityUnavailable { reason } => {
+                Err(LocalPeerError::AuthorityUnavailable(reason))
+            }
+            PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
+            _ => Err(LocalPeerError::Protocol(
+                "local peer returned a non-control-vote frame".to_owned(),
+            )),
+        }
+    }
+
+    /// Requests a durable proposal from an authenticated controller endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket is unavailable, authorization is denied,
+    /// authority coordination is unavailable, or the response is malformed.
+    pub async fn propose_control(
+        &self,
+        head: ControlHead,
+        ballot: ControlBallot,
+        promises: Vec<SignedControlVote>,
+        value: ControlValue,
+    ) -> Result<SignedControlProposal, LocalPeerError> {
+        let mut subscription = open_local(
+            &self.session,
+            self.envelope(PeerRequest::ControlPropose {
+                head,
+                ballot,
+                promises,
+                value,
+            }),
+        )
+        .await?;
+        match read_authorized_mux_frame(&mut subscription).await? {
+            PeerFrame::ControlProposal { proposal } => Ok(*proposal),
+            PeerFrame::Authorization { decision } => Err(LocalPeerError::Authorization(decision)),
+            PeerFrame::AuthorityUnavailable { reason } => {
+                Err(LocalPeerError::AuthorityUnavailable(reason))
+            }
+            PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
+            _ => Err(LocalPeerError::Protocol(
+                "local peer returned a non-control-proposal frame".to_owned(),
+            )),
+        }
+    }
+
+    /// Requests a durable accept vote from an authenticated controller endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the socket is unavailable, authorization is denied,
+    /// authority coordination is unavailable, or the response is malformed.
+    pub async fn accept_control(
+        &self,
+        head: ControlHead,
+        proposal: SignedControlProposal,
+    ) -> Result<SignedControlVote, LocalPeerError> {
+        let mut subscription = open_local(
+            &self.session,
+            self.envelope(PeerRequest::ControlAccept {
+                head,
+                proposal: Box::new(proposal),
+            }),
+        )
+        .await?;
+        match read_authorized_mux_frame(&mut subscription).await? {
+            PeerFrame::ControlVote { vote } => Ok(*vote),
+            PeerFrame::Authorization { decision } => Err(LocalPeerError::Authorization(decision)),
+            PeerFrame::AuthorityUnavailable { reason } => {
+                Err(LocalPeerError::AuthorityUnavailable(reason))
+            }
+            PeerFrame::Error { message } => Err(LocalPeerError::Protocol(message)),
+            _ => Err(LocalPeerError::Protocol(
+                "local peer returned a non-control-vote frame".to_owned(),
             )),
         }
     }
@@ -1192,6 +1297,9 @@ where
 fn drive_reactive<Q>(
     initial: ItemQuerySnapshot<ItemQueryResult<Q>>,
     mut subscription: LocalItemQuerySubscription<Q>,
+    client: LocalItemClient,
+    request: ItemStateRequest,
+    query: Q,
 ) -> LocalReactiveItemSubscription<ItemQueryResult<Q>>
 where
     Q: ItemQuery + Send + 'static,
@@ -1212,6 +1320,19 @@ where
                 Ok(LocalItemQueryEvent::Resynchronizing { reason }) => {
                     task_writer.resynchronizing(reason.to_string());
                 }
+                Err(LocalPeerError::AuthorityUnavailable(reason)) => {
+                    task_writer.resynchronizing(reason.to_string());
+                    match retry_item_watch(&client, &request, &query).await {
+                        Ok((snapshot, next)) => {
+                            subscription = next;
+                            task_writer.publish(snapshot.value, snapshot.through);
+                        }
+                        Err(error) => {
+                            task_writer.invalidate(error.to_string());
+                            return;
+                        }
+                    }
+                }
                 Err(error) => {
                     task_writer.invalidate(error.to_string());
                     return;
@@ -1220,6 +1341,30 @@ where
         }
     });
     LocalReactiveItemSubscription { live, writer, task }
+}
+
+async fn retry_item_watch<Q: ItemQuery>(
+    client: &LocalItemClient,
+    request: &ItemStateRequest,
+    query: &Q,
+) -> Result<
+    (
+        ItemQuerySnapshot<ItemQueryResult<Q>>,
+        LocalItemQuerySubscription<Q>,
+    ),
+    LocalPeerError,
+> {
+    let policy = client.session.reconnect_policy();
+    let mut delay = policy.initial_delay();
+    loop {
+        tokio::time::sleep(delay).await;
+        match client.watch_request(request.clone(), query.clone()).await {
+            Err(LocalPeerError::AuthorityUnavailable(_)) => {
+                delay = policy.next_delay(delay);
+            }
+            result => return result,
+        }
+    }
 }
 
 pub async fn connect_local_peer(socket_path: &Path, policy: ReconnectPolicy) -> UnixStream {
@@ -1442,6 +1587,13 @@ async fn read_authorized_mux_frame(
                 tracing::warn!(decision = ?decision, "local multiplexed Myko request authorization failed");
                 return Err(LocalPeerError::Authorization(decision));
             }
+            PeerFrame::AuthorityUnavailable { reason } => {
+                tracing::debug!(
+                    ?reason,
+                    "local multiplexed Myko request authority unavailable"
+                );
+                return Err(LocalPeerError::AuthorityUnavailable(reason));
+            }
             frame => {
                 tracing::trace!(frame = frame.kind(), "read local multiplexed Myko frame");
                 return Ok(frame);
@@ -1453,6 +1605,9 @@ async fn read_authorized_mux_frame(
 fn local_mux_error(error: HandlerClientError) -> LocalPeerError {
     match error {
         HandlerClientError::Decode(error) => LocalPeerError::Json(error),
+        HandlerClientError::AuthorityUnavailable(reason) => {
+            LocalPeerError::AuthorityUnavailable(reason)
+        }
         HandlerClientError::MissingConnector => {
             LocalPeerError::Protocol("local Myko session has no connector".to_owned())
         }

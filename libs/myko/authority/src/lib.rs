@@ -52,7 +52,7 @@ use facts::{
 
 #[allow(clippy::redundant_pub_crate)]
 mod evaluator;
-use evaluator::{deny, evaluate};
+use evaluator::evaluate;
 
 mod policy;
 pub use policy::*;

@@ -1,7 +1,10 @@
 use chrono::{DateTime, Utc};
 use myko_federation::{
-    AccessAttempt, AccessOperation, AuthorizationBinding, AuthorizationDecision, AuthorizationPhase,
+    AccessAttempt, AccessOperation, AuthorizationBinding, AuthorizationDecision,
+    AuthorizationPhase, ItemMutation,
 };
+use myko_items::MykoItem;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 use crate::{
@@ -11,7 +14,7 @@ use crate::{
     realm_item_id,
 };
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum DecisionRecord {
     GrantUse(GrantUse),
     DelegationUse(DelegationUse),
@@ -30,6 +33,40 @@ impl DecisionRecord {
             Self::Challenge(record) => context.emit_set(record),
             Self::Lease(record) => context.emit_set(record),
             Self::Audit(record) => context.emit_set(record.as_ref()),
+        }
+    }
+
+    pub(super) fn mutation(&self) -> Result<ItemMutation, String> {
+        match self {
+            Self::GrantUse(record) => ItemMutation::set(record),
+            Self::DelegationUse(record) => ItemMutation::set(record),
+            Self::ApprovalUse(record) => ItemMutation::set(record),
+            Self::Challenge(record) => ItemMutation::set(record),
+            Self::Lease(record) => ItemMutation::set(record),
+            Self::Audit(record) => ItemMutation::set(record.as_ref()),
+        }
+        .map_err(|error| error.to_string())
+    }
+
+    pub(super) const fn item_type(&self) -> &'static str {
+        match self {
+            Self::GrantUse(_) => GrantUse::ITEM_TYPE,
+            Self::DelegationUse(_) => DelegationUse::ITEM_TYPE,
+            Self::ApprovalUse(_) => ApprovalUse::ITEM_TYPE,
+            Self::Challenge(_) => ChallengeRecord::ITEM_TYPE,
+            Self::Lease(_) => LeaseRecord::ITEM_TYPE,
+            Self::Audit(_) => DecisionAudit::ITEM_TYPE,
+        }
+    }
+
+    pub(super) fn item_id(&self) -> &str {
+        match self {
+            Self::GrantUse(record) => record.id.as_ref(),
+            Self::DelegationUse(record) => record.id.as_ref(),
+            Self::ApprovalUse(record) => record.id.as_ref(),
+            Self::Challenge(record) => record.id.as_ref(),
+            Self::Lease(record) => record.id.as_ref(),
+            Self::Audit(record) => record.id.as_ref(),
         }
     }
 }

@@ -3,12 +3,12 @@ use chrono::{Duration as ChronoDuration, Utc};
 use myko::{CommandContext, CommandError, CommandHandler, MykoApplication};
 use myko_federation::{
     AccessAttempt, AccessOperation, AllowAllAccessPolicy, ApprovalDecision, ApprovalId,
-    AuthorityPresentation, AuthorityRealmId, AuthorizationBinding, AuthorizationDecision, BatchId,
-    ChallengeId, ChangeBatch, CommandId, CommandRequest, CommandState, DelegationId,
-    FederationPermission, ItemMutation, MykoItem as _, MykoService as _, ObligationId, Principal,
-    PrincipalId, PrincipalKind, ProjectionCoverage, ProvenanceHop, ProvenanceOperation,
-    ResourceClaim, ResourceClaimKind, ResourceVisibility, ScopeId, ScopeSelection, ScopeTopology,
-    ServiceId,
+    AuthorityPresentation, AuthorityRealmId, AuthorityUnavailable, AuthorizationBinding,
+    AuthorizationDecision, AuthorizationFailure, BatchId, ChallengeId, ChangeBatch, CommandId,
+    CommandRequest, CommandState, DelegationId, FederationPermission, ItemMutation, MykoItem as _,
+    MykoService as _, ObligationId, Principal, PrincipalId, PrincipalKind, ProjectionCoverage,
+    ProvenanceHop, ProvenanceOperation, ResourceClaim, ResourceClaimKind, ResourceVisibility,
+    ScopeId, ScopeSelection, ScopeTopology, ServiceId,
 };
 use myko_items::{myko_command, myko_item, myko_service};
 use myko_redb::RedbJournal;
@@ -43,8 +43,11 @@ async fn bind_with_secret_allow_all(
 struct ApprovalPolicy;
 
 impl AccessPolicy for ApprovalPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Ok(())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        Ok(AuthorizationDecision::from_rule(request, Ok(())))
     }
 
     fn approve(
@@ -53,7 +56,7 @@ impl AccessPolicy for ApprovalPolicy {
         presentation: &AuthorityPresentation,
         challenge_id: &ChallengeId,
         approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationDecision> {
+    ) -> Result<ApprovalDecision, AuthorizationFailure> {
         let now = Utc::now();
         let request = AccessAttempt::scoped(
             authenticated_executor.clone(),
@@ -83,15 +86,20 @@ struct PresentationPolicy {
 }
 
 impl AccessPolicy for PresentationPolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
-        if request.presentation != self.expected {
-            return Err("authority presentation was not preserved".to_owned());
-        }
-        self.operations
-            .lock()
-            .map_err(|_| "presentation-policy lock is poisoned".to_owned())?
-            .push(request.operation);
-        Ok(())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        let rule = if request.presentation == self.expected {
+            self.operations
+                .lock()
+                .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
+                .push(request.operation);
+            Ok(())
+        } else {
+            Err("authority presentation was not preserved".to_owned())
+        };
+        Ok(AuthorizationDecision::from_rule(request, rule))
     }
 }
 
@@ -148,8 +156,11 @@ struct SelectedIntersectionPolicy {
 }
 
 impl AccessPolicy for SelectedIntersectionPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Ok(())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        Ok(AuthorizationDecision::from_rule(request, Ok(())))
     }
 
     fn constrain_replication(
@@ -157,7 +168,7 @@ impl AccessPolicy for SelectedIntersectionPolicy {
         request: &AccessAttempt,
         selection: &ReplicationSelection,
         topology: &ScopeTopology,
-    ) -> Result<ReplicationSelection, AuthorizationDecision> {
+    ) -> Result<ReplicationSelection, AuthorizationFailure> {
         let requested_selections = request.scope_selections();
         let requested = requested_selections.first();
         let scopes = self
@@ -277,7 +288,10 @@ struct ReadOnlyScopePolicy {
 }
 
 impl AccessPolicy for ReadOnlyScopePolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
         let is_read = matches!(
             request.operation,
             AccessOperation::ReadHistory
@@ -289,11 +303,12 @@ impl AccessPolicy for ReadOnlyScopePolicy {
                 | AccessOperation::WatchCommand
                 | AccessOperation::WatchCommands
         );
-        if is_read && request.scope_id() == Some(&self.scope_id) {
+        let rule = if is_read && request.scope_id() == Some(&self.scope_id) {
             Ok(())
         } else {
             Err("peer has read-only access to one scope".to_owned())
-        }
+        };
+        Ok(AuthorizationDecision::from_rule(request, rule))
     }
 }
 
@@ -303,16 +318,20 @@ struct ReadScopeSetPolicy {
 }
 
 impl AccessPolicy for ReadScopeSetPolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
         let permitted = request.operation == AccessOperation::ReadHistory
             && request
                 .scope_id()
                 .is_some_and(|scope_id| self.scope_ids.contains(scope_id));
-        if permitted {
+        let rule = if permitted {
             Ok(())
         } else {
             Err("peer cannot read this scope".to_owned())
-        }
+        };
+        Ok(AuthorizationDecision::from_rule(request, rule))
     }
 }
 
@@ -320,8 +339,14 @@ impl AccessPolicy for ReadScopeSetPolicy {
 struct DenyAllPolicy;
 
 impl AccessPolicy for DenyAllPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Err("test policy revoked access".to_owned())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        Ok(AuthorizationDecision::from_rule(
+            request,
+            Err("test policy revoked access".to_owned()),
+        ))
     }
 }
 

@@ -1777,7 +1777,7 @@ impl Node {
     pub fn submit(&self, request: CommandRequest) -> Result<CommandSnapshot, NodeError> {
         let authenticated_executor = request.authority.executor.id.clone();
         self.prepare_command(authenticated_executor, request)
-            .map_err(|decision| NodeError::AuthorizationDenied(decision.public_message()))?
+            .map_err(NodeError::from)?
             .submit()
     }
 
@@ -1790,19 +1790,19 @@ impl Node {
         &self,
         authenticated_executor: PrincipalId,
         request: CommandRequest,
-    ) -> Result<PreparedCommand, AuthorizationDecision> {
-        match self.command_authorization(
-            &authenticated_executor,
-            &request,
-            AuthorizationPhase::Admission,
-        ) {
-            AuthorizationDecision::Permit(permit) => Ok(PreparedCommand {
-                node: self.clone(),
-                request,
-                permit,
-            }),
-            decision => Err(decision),
-        }
+    ) -> Result<PreparedCommand, AuthorizationFailure> {
+        let permit = self
+            .command_authorization(
+                &authenticated_executor,
+                &request,
+                AuthorizationPhase::Admission,
+            )?
+            .into_permit()?;
+        Ok(PreparedCommand {
+            node: self.clone(),
+            request,
+            permit,
+        })
     }
 
     fn command_authorization(
@@ -1810,7 +1810,7 @@ impl Node {
         authenticated_executor: &PrincipalId,
         request: &CommandRequest,
         phase: AuthorizationPhase,
-    ) -> AuthorizationDecision {
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
         let mut access = AccessAttempt::scoped(
             authenticated_executor.clone(),
             request.authority.clone(),
@@ -1832,7 +1832,10 @@ impl Node {
             .arguments_digest
             .clone_from(&request.arguments_digest);
         access.authorization_phase = phase;
-        access.topology = self.scope_topology().ok();
+        access.topology = Some(
+            self.scope_topology()
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?,
+        );
         if &request.authority.executor.id != authenticated_executor
             || request.authority.principal.id != request.principal_id
         {
@@ -1841,12 +1844,41 @@ impl Node {
         let Some(policy) = self
             .command_access_policy
             .read()
-            .ok()
-            .and_then(|policy| policy.as_ref().and_then(Weak::upgrade))
+            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
+            .as_ref()
+            .and_then(Weak::upgrade)
         else {
-            return DenyAllAccessPolicy.decide(&access);
+            return Err(AuthorityUnavailable::PolicyUnavailable);
         };
         policy.decide(&access)
+    }
+
+    /// Reconstruct the authorization request from a retained prepared command.
+    ///
+    /// Callers supply only its stable ID. Claims, presentation, effect digest,
+    /// and prospective topology come from the recorded command and effect.
+    /// This provides retained evidence, not permission to execute the effect.
+    ///
+    /// # Errors
+    /// Rejects unknown commands, commands not awaiting effect authorization,
+    /// invalid prepared digests, and unavailable command history.
+    pub fn prepared_command_access(
+        &self,
+        command_id: CommandId,
+    ) -> Result<AccessAttempt, NodeError> {
+        let command = self
+            .command(command_id)?
+            .ok_or(NodeError::UnknownCommand(command_id))?;
+        let CommandState::AuthorizationPrepared { effect } = &command.state else {
+            return Err(NodeError::InvalidCommandState(
+                "command is not awaiting prepared-effect authorization".to_owned(),
+            ));
+        };
+        effect.validate_digest()?;
+        Ok(Self::prepared_effect_access_request(
+            &command.request,
+            effect,
+        ))
     }
 
     fn prepared_effect_access_request(
@@ -1890,10 +1922,9 @@ impl Node {
             .as_ref()
             .and_then(Weak::upgrade)
         else {
-            let reason = "no command access policy is installed".to_owned();
-            return self.reject(command.request.id, reason);
+            return Err(AuthorityUnavailable::PolicyUnavailable.into());
         };
-        match policy.decide(&request) {
+        match policy.decide(&request)? {
             AuthorizationDecision::Permit(_) => {
                 self.commit_prepared_authorization(command.request.id, effect.effect_digest())
             }
@@ -1986,7 +2017,7 @@ impl Node {
                 &current.request.authority.executor.id,
                 &current.request,
                 AuthorizationPhase::Continuation,
-            );
+            )?;
             if !decision.is_permit() {
                 return Ok(match self.claim(command_id)? {
                     CommandAdmission::Execute(_) => TypedCommandAdmission::Resume(
@@ -3095,20 +3126,7 @@ impl Node {
             .as_ref()
             .and_then(Weak::upgrade)
         else {
-            return Ok(SelectedQueryResult {
-                value: None,
-                visibility: ResourceVisibility::Unbound,
-                coverage: if source_node == self.node_id() {
-                    ProjectionCoverage::LocalAuthoritative
-                } else {
-                    ProjectionCoverage::ReplicatedIncomplete
-                },
-                through: None,
-                complete: false,
-                requested_fully_authorized: false,
-                authorization: None,
-                included_scopes: Vec::new(),
-            });
+            return Err(AuthorityUnavailable::PolicyUnavailable.into());
         };
         let mut access = AccessAttempt::scoped(
             authenticated_executor,
@@ -3160,6 +3178,7 @@ impl Node {
                 }
             },
             Err(decision) => {
+                let decision = decision.into_decision()?;
                 return Ok(SelectedQueryResult {
                     value: None,
                     visibility: match decision {

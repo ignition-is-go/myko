@@ -824,6 +824,8 @@ pub enum NodeError {
     InvalidReplicationBatch(String),
     #[error("command authorization denied: {0}")]
     AuthorizationDenied(String),
+    #[error(transparent)]
+    AuthorityUnavailable(#[from] AuthorityUnavailable),
     #[error("control vote rejected: {0}")]
     ControlVote(#[from] crate::control_quorum::ControlQuorumError),
     #[error("durable history differs from live state; reopen the node before voting")]

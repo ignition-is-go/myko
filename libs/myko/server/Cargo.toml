@@ -18,6 +18,7 @@ num-traits.workspace = true
 # the real (tantivy-backed) implementation. Consumers that only use myko
 # (e.g. entity crates) skip the tantivy compile by not pulling myko-server.
 myko = { workspace = true, features = ["search"] }
+myko-federation.workspace = true
 
 # Async runtime
 tokio.workspace = true

@@ -10,9 +10,10 @@ use std::{
 
 use hyphae::{
     Cell, CellImmutable, CellMap, CellMutable, DepNode as _, Gettable as _, JoinExt as _, MapDiff,
-    MapExt as _, MapQuery, Materialize as _, Mutable as _, ScanExt as _, Signal, Watchable as _,
+    MapExt as _, MapQuery, Materialize as _, Mutable as _, ScanExt as _, Signal, SubscriptionGuard,
+    Watchable as _,
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, ReentrantMutex};
 
 use crate::{LivePublication, LivePublicationStream, LogPosition, publication::PublicationSource};
 
@@ -78,6 +79,10 @@ where
     pub state: LiveCollectionState<C>,
 }
 
+type LiveCollectionRevisionSubscribers<T, C, K> =
+    Arc<Mutex<Vec<flume::Sender<LiveCollectionRevision<T, C, K>>>>>;
+type LiveCollectionRevisionGate = Arc<ReentrantMutex<()>>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CollectionRevisionFold<T, C, K>
 where
@@ -132,6 +137,35 @@ where
     // mutable lifecycle publication.
     state: Cell<LiveCollectionState<C>, CellImmutable>,
     revision: Cell<LiveCollectionRevision<T, C, K>, CellImmutable>,
+    revision_events: LiveCollectionRevisionSubscribers<T, C, K>,
+    revision_gate: LiveCollectionRevisionGate,
+    lossless_revision_events: bool,
+}
+
+pub struct LiveCollectionRevisionStream<T, C = LogPosition, K = Arc<str>>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq,
+{
+    receiver: flume::Receiver<LiveCollectionRevision<T, C, K>>,
+    _guard: Option<SubscriptionGuard>,
+}
+
+impl<T, C, K> LiveCollectionRevisionStream<T, C, K>
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq,
+{
+    #[must_use]
+    pub const fn receiver(&self) -> &flume::Receiver<LiveCollectionRevision<T, C, K>> {
+        &self.receiver
+    }
+
+    fn discard_pending_revisions(&self) {
+        while self.receiver.try_recv().is_ok() {}
+    }
 }
 
 /// A lazy keyed collection projection together with its authoritative lifecycle.
@@ -234,6 +268,9 @@ where
             rows,
             state,
             revision,
+            revision_events: Arc::new(Mutex::new(Vec::new())),
+            revision_gate: Arc::new(ReentrantMutex::new(())),
+            lossless_revision_events: false,
         }
     }
 }
@@ -355,6 +392,49 @@ where
     #[must_use]
     pub const fn revision(&self) -> &Cell<LiveCollectionRevision<T, C, K>, CellImmutable> {
         &self.revision
+    }
+
+    #[must_use]
+    pub fn subscribe_revisions(&self) -> LiveCollectionRevisionStream<T, C, K> {
+        let (sender, receiver) = flume::unbounded();
+        let guard = if self.lossless_revision_events {
+            self.revision_events.lock().push(sender);
+            None
+        } else {
+            let collection = self.clone();
+            Some(self.revision.subscribe(move |signal| {
+                let Signal::Value(revision) = signal else {
+                    return;
+                };
+                let _revision_gate = collection.revision_gate.lock();
+                let reset = LiveCollectionRevision {
+                    diff: Some(MapDiff::Initial {
+                        entries: collection.rows().snapshot(),
+                    }),
+                    state: revision.state.clone(),
+                };
+                let _ignored = sender.send(reset);
+            }))
+        };
+        LiveCollectionRevisionStream {
+            receiver,
+            _guard: guard,
+        }
+    }
+
+    #[must_use]
+    pub fn current_revision(
+        &self,
+        stream: &LiveCollectionRevisionStream<T, C, K>,
+    ) -> LiveCollectionRevision<T, C, K> {
+        let _revision_gate = self.revision_gate.lock();
+        stream.discard_pending_revisions();
+        LiveCollectionRevision {
+            diff: Some(MapDiff::Initial {
+                entries: self.rows.snapshot(),
+            }),
+            state: self.current_state(),
+        }
     }
 
     /// Takes the current lifecycle revision without subscribing.
@@ -673,6 +753,8 @@ where
 {
     rows: CellMap<K, Arc<T>, CellMutable>,
     revision: Cell<LiveCollectionRevision<T, C, K>, CellMutable>,
+    revision_events: LiveCollectionRevisionSubscribers<T, C, K>,
+    revision_gate: LiveCollectionRevisionGate,
 }
 
 /// Framework-owned keyed source for process-local state.
@@ -848,11 +930,16 @@ where
     }
 
     fn publish_revision(&self, diff: Option<MapDiff<K, Arc<T>>>, state: LiveCollectionState<C>) {
+        let revision = LiveCollectionRevision { diff, state };
+        let _revision_gate = self.revision_gate.lock();
         hyphae::batch(|| {
-            if let Some(diff) = diff.as_ref() {
+            if let Some(diff) = revision.diff.as_ref() {
                 self.rows.apply_diff_owned(diff.clone());
             }
-            self.revision.set(LiveCollectionRevision { diff, state });
+            self.revision.set(revision.clone());
+            self.revision_events
+                .lock()
+                .retain(|sender| sender.send(revision.clone()).is_ok());
         });
     }
 
@@ -892,6 +979,8 @@ where
     C: hyphae::CellValue,
     K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
 {
+    let revision_events = Arc::new(Mutex::new(Vec::new()));
+    let revision_gate = Arc::new(ReentrantMutex::new(()));
     let mutable_rows = CellMap::new().with_name("myko.live_collection.rows");
     mutable_rows.replace_all(rows.clone());
     let mutable_revision = Cell::new(LiveCollectionRevision {
@@ -909,11 +998,16 @@ where
         rows: mutable_rows.clone().lock(),
         state,
         revision,
+        revision_events: Arc::clone(&revision_events),
+        revision_gate: Arc::clone(&revision_gate),
+        lossless_revision_events: true,
     };
     (
         LiveCollectionWriter {
             rows: mutable_rows,
             revision: mutable_revision,
+            revision_events,
+            revision_gate,
         },
         readable,
     )
@@ -1398,8 +1492,9 @@ mod tests {
     use std::{
         sync::{
             Arc, Mutex,
-            atomic::{AtomicUsize, Ordering},
+            atomic::{AtomicBool, AtomicUsize, Ordering},
         },
+        thread,
         time::{Duration, Instant},
     };
 
@@ -2063,6 +2158,150 @@ mod tests {
             "observed revisions: {observed:?}"
         );
         drop(observed);
+    }
+
+    #[test]
+    fn collection_revision_callback_can_read_current_revision_without_deadlock() {
+        let (writer, collection) = live_collection(
+            vec![(Arc::<str>::from("message-1"), Arc::new("one".to_owned()))],
+            LiveCollectionState {
+                through: Some(LogPosition::new(1)),
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        let stream = Arc::new(collection.subscribe_revisions());
+        let collection_for_callback = collection.clone();
+        let stream_for_callback = Arc::clone(&stream);
+        let _guard = collection.revision().subscribe(move |signal| {
+            if let Signal::Value(_) = signal {
+                let _snapshot = collection_for_callback.current_revision(&stream_for_callback);
+            }
+        });
+        let (done_tx, done_rx) = flume::bounded(1);
+        let publisher = thread::spawn(move || {
+            writer.apply(
+                MapDiff::Update {
+                    key: Arc::<str>::from("message-1"),
+                    old_value: Arc::new("one".to_owned()),
+                    new_value: Arc::new("streaming".to_owned()),
+                },
+                Some(LogPosition::new(2)),
+            );
+            let _ignored = done_tx.send(());
+        });
+
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
+        assert!(publisher.join().is_ok());
+    }
+
+    #[test]
+    fn collection_current_revision_in_callback_consumes_matching_publication() {
+        let (writer, collection) = live_collection(
+            vec![(Arc::<str>::from("message-1"), Arc::new("one".to_owned()))],
+            LiveCollectionState {
+                through: Some(LogPosition::new(1)),
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        let stream = Arc::new(collection.subscribe_revisions());
+        let collection_for_callback = collection.clone();
+        let stream_for_callback = Arc::clone(&stream);
+        let (observed_tx, observed_rx) = flume::bounded(1);
+        let initial = Arc::new(AtomicBool::new(true));
+        let initial_for_callback = Arc::clone(&initial);
+        let _guard = collection.revision().subscribe(move |signal| {
+            if let Signal::Value(_) = signal
+                && !initial_for_callback.swap(false, Ordering::AcqRel)
+            {
+                let _snapshot = collection_for_callback.current_revision(&stream_for_callback);
+                let _ignored = observed_tx.send(());
+            }
+        });
+
+        writer.apply(
+            MapDiff::Update {
+                key: Arc::<str>::from("message-1"),
+                old_value: Arc::new("one".to_owned()),
+                new_value: Arc::new("streaming".to_owned()),
+            },
+            Some(LogPosition::new(2)),
+        );
+
+        assert_eq!(observed_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
+        assert!(matches!(
+            stream.receiver().try_recv(),
+            Err(flume::TryRecvError::Empty)
+        ));
+    }
+
+    #[test]
+    fn collection_reentrant_publish_preserves_outer_then_inner_event_order() {
+        let (writer, collection) = live_collection(
+            vec![(Arc::<str>::from("message-1"), Arc::new("one".to_owned()))],
+            LiveCollectionState {
+                through: Some(LogPosition::new(1)),
+                liveness: SubscriptionLiveness::Current,
+            },
+        );
+        let stream = collection.subscribe_revisions();
+        let writer_for_callback = writer.clone();
+        let initial = Arc::new(AtomicBool::new(true));
+        let reentered = Arc::new(AtomicBool::new(false));
+        let initial_for_callback = Arc::clone(&initial);
+        let reentered_for_callback = Arc::clone(&reentered);
+        let (reentered_tx, reentered_rx) = flume::bounded(1);
+        let _guard = collection.revision().subscribe(move |signal| {
+            if let Signal::Value(revision) = signal
+                && !initial_for_callback.swap(false, Ordering::AcqRel)
+                && revision.state.through == Some(LogPosition::new(2))
+                && !reentered_for_callback.swap(true, Ordering::AcqRel)
+            {
+                writer_for_callback.apply(
+                    MapDiff::Update {
+                        key: Arc::<str>::from("message-1"),
+                        old_value: Arc::new("streaming".to_owned()),
+                        new_value: Arc::new("done".to_owned()),
+                    },
+                    Some(LogPosition::new(3)),
+                );
+                let _ignored = reentered_tx.send(());
+            }
+        });
+
+        let (done_tx, done_rx) = flume::bounded(1);
+        let publisher = thread::spawn(move || {
+            writer.apply(
+                MapDiff::Update {
+                    key: Arc::<str>::from("message-1"),
+                    old_value: Arc::new("one".to_owned()),
+                    new_value: Arc::new("streaming".to_owned()),
+                },
+                Some(LogPosition::new(2)),
+            );
+            let _ignored = done_tx.send(());
+        });
+
+        assert_eq!(done_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
+        assert!(publisher.join().is_ok());
+        assert_eq!(reentered_rx.recv_timeout(Duration::from_secs(1)), Ok(()));
+
+        let first = stream.receiver().try_recv();
+        let second = stream.receiver().try_recv();
+        assert!(matches!(
+            first,
+            Ok(LiveCollectionRevision {
+                state,
+                diff: Some(MapDiff::Update { new_value, .. }),
+            }) if state.through == Some(LogPosition::new(2))
+                && new_value.as_str() == "streaming"
+        ));
+        assert!(matches!(
+            second,
+            Ok(LiveCollectionRevision {
+                state,
+                diff: Some(MapDiff::Update { new_value, .. }),
+            }) if state.through == Some(LogPosition::new(3)) && new_value.as_str() == "done"
+        ));
     }
 
     #[test]

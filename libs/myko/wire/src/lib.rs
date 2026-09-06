@@ -15,11 +15,15 @@ pub use handler::{
 use std::fmt;
 
 use myko_federation::{
-    ApprovalDecision, AuthorityPresentation, AuthorizationDecision, ChallengeId, CommandId,
-    CommandResponse, CommandStatePage, CommandStateRequest, CommandStateUpdate, CommandSubmission,
-    CommandWatchRequest, ItemFollowRequest, ItemStatePage, ItemStateRequest, ItemStateUpdate,
-    LiveEvent, LogPosition, NodeId, ProvenanceHop, ReplicationBatch, ReplicationSelection,
-    ScopeCatalogPage, ScopeId, ScopedReplicationBatch, SelectedReplicationBatch,
+    ApprovalDecision, AuthorityPresentation, AuthorityUnavailable, AuthorizationDecision,
+    ChallengeId, CommandId, CommandResponse, CommandStatePage, CommandStateRequest,
+    CommandStateUpdate, CommandSubmission, CommandWatchRequest, ItemFollowRequest, ItemStatePage,
+    ItemStateRequest, ItemStateUpdate, LiveEvent, LogPosition, NodeId, ProvenanceHop,
+    ReplicationBatch, ReplicationSelection, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
+    SelectedReplicationBatch,
+    control_quorum::{
+        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,7 +31,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Transport adapters may version their framing independently, but a peer must
 /// not decode an envelope whose message schema it does not understand.
-pub const WIRE_PROTOCOL_VERSION: u32 = 10;
+pub const WIRE_PROTOCOL_VERSION: u32 = 11;
 
 /// A versioned message envelope for framed transports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -252,6 +256,23 @@ pub enum NodeRequest {
         challenge_id: ChallengeId,
         approved: bool,
     },
+    /// Asks this authenticated controller endpoint to persist a prepare vote.
+    ControlPrepare {
+        head: ControlHead,
+        ballot: ControlBallot,
+    },
+    /// Asks this authenticated controller endpoint to persist a proposal.
+    ControlPropose {
+        head: ControlHead,
+        ballot: ControlBallot,
+        promises: Vec<SignedControlVote>,
+        value: ControlValue,
+    },
+    /// Asks this authenticated controller endpoint to persist an accept vote.
+    ControlAccept {
+        head: ControlHead,
+        proposal: Box<SignedControlProposal>,
+    },
 }
 
 impl NodeRequest {
@@ -278,6 +299,9 @@ impl NodeRequest {
             Self::FollowItems { .. } => "follow_items",
             Self::FollowHandler { .. } => "follow_handler",
             Self::ApproveAuthority { .. } => "approve_authority",
+            Self::ControlPrepare { .. } => "control_prepare",
+            Self::ControlPropose { .. } => "control_propose",
+            Self::ControlAccept { .. } => "control_accept",
         }
     }
 }
@@ -330,8 +354,16 @@ pub enum NodeFrame {
     Authorization {
         decision: Box<AuthorizationDecision>,
     },
+    /// Authority could not evaluate the request; retry may succeed later.
+    AuthorityUnavailable { reason: AuthorityUnavailable },
     /// Immutable approval accepted by the authority journal.
     Approval { decision: Box<ApprovalDecision> },
+    /// Durable controller vote recorded by the authenticated controller endpoint.
+    ControlVote { vote: Box<SignedControlVote> },
+    /// Durable controller proposal recorded by the authenticated controller endpoint.
+    ControlProposal {
+        proposal: Box<SignedControlProposal>,
+    },
     /// Best-effort live event.
     Live { event: Box<LiveEvent> },
     /// Operation failure, represented as a portable diagnostic.
@@ -358,7 +390,10 @@ impl NodeFrame {
             Self::HandlerState { .. } => "handler_state",
             Self::HandlerViewDelta { .. } => "handler_view_delta",
             Self::Authorization { .. } => "authorization",
+            Self::AuthorityUnavailable { .. } => "authority_unavailable",
             Self::Approval { .. } => "approval",
+            Self::ControlVote { .. } => "control_vote",
+            Self::ControlProposal { .. } => "control_proposal",
             Self::Live { .. } => "live",
             Self::Error { .. } => "error",
         }
@@ -376,8 +411,8 @@ mod tests {
     }
 
     #[test]
-    fn prepared_effect_lifecycle_uses_schema_version_ten() {
-        assert_eq!(WIRE_PROTOCOL_VERSION, 10);
+    fn unavailable_authority_uses_schema_version_eleven() {
+        assert_eq!(WIRE_PROTOCOL_VERSION, 11);
     }
 
     #[test]
@@ -407,6 +442,13 @@ mod tests {
             }),
             Ok(serde_json::Value::Object(frame))
                 if frame.get("type") == Some(&serde_json::Value::String("error".to_owned()))
+        ));
+        assert!(matches!(
+            serde_json::to_value(NodeFrame::AuthorityUnavailable {
+                reason: AuthorityUnavailable::StateNotCurrent,
+            }),
+            Ok(serde_json::Value::Object(frame))
+                if frame.get("type") == Some(&serde_json::Value::String("authority_unavailable".to_owned()))
         ));
     }
 

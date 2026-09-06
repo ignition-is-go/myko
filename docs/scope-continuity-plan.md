@@ -72,6 +72,27 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+The native integration checkpoint passes all 708 tests in
+`scripts/verify_certified_consumption.sh`, formatting, and strict Clippy. This
+includes the native-FFI feature set, server consumers, and the native continuity
+regression. The full Myko Flux check also passes, with 14 Svelte warnings.
+Forrest's frozen-source workspace tests, formatting, and strict Clippy pass.
+
+Swift revision tests cover cancellation and reentrant publication ordering.
+Three core tests now wait for their expected publications while retaining their
+readiness, deletion, and persistence-order assertions. All 244 core tests pass
+in the integrated feature set.
+
+Native coordinator tests prove authenticated scoped evidence transfer and recovery
+of the same chosen decision after ordinary shutdown and durable reopen. They do
+not prove live effect-release permission, custody, or automatic replica replacement.
+All C01-C18 rows remain Open. Forrest's matching retry fix is `ae2eaa5`.
+Wire version 11 requires coordinated peer rebuilds. The latest read-only Mac
+SSH preflight timed out without changing remote state, so current-wave Mac
+validation remains unfinished.
+
+The following paragraphs describe earlier checkpoints and their limits.
+
 The prepared-effect checkpoint passes 275 affected Myko tests, the native
 founder-replacement regression, formatting, and strict Clippy. Forrest passes its
 full workspace tests, formatting, and strict Clippy. See

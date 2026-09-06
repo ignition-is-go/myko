@@ -1941,7 +1941,14 @@ mod tests {
         );
         wait_for_node_frames(&mock, 1).await;
         store.remove(&"a".into());
-        wait_for_node_frames(&mock, 2).await;
+        wait_for_node_frame(&mock, |frame| {
+            matches!(
+                frame,
+                myko_wire::NodeFrame::HandlerViewDelta { delta, .. }
+                    if delta.deletes == ["a"]
+            )
+        })
+        .await;
 
         let frames = mock.node_frames();
         assert!(matches!(
@@ -2017,6 +2024,21 @@ mod tests {
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(1),
                 "native handler frames did not arrive"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    async fn wait_for_node_frame(
+        mock: &MockWriter,
+        matches_frame: impl Fn(&myko_wire::NodeFrame) -> bool,
+    ) {
+        let started = std::time::Instant::now();
+        while !mock.node_frames().iter().any(&matches_frame) {
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(1),
+                "native handler frame did not arrive"
             );
             tokio::task::yield_now().await;
         }

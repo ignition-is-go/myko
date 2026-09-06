@@ -23,13 +23,17 @@ use myko::{
     server::FederatedSession,
 };
 use myko_federation::{
-    AccessPolicy, ApprovalDecision, AuthorityPresentation, AuthorizationDecision, ChallengeId,
-    CommandClient, CommandClientFuture, CommandId, CommandResponse, CommandSnapshot,
-    CommandSubmission, CommandSubscription, CommandSubscriptionFuture, CommandWatchFuture,
-    CommandWatchingClient, ItemClient, ItemQuery, ItemQueryResult, ItemQuerySnapshot,
-    ItemQueryStream, ItemQueryUpdate, ItemStatePageFuture, ItemStateRequest, LiveEvent,
-    LiveSubscription, LiveSubscriptionState, Node, NodeError, NodeId, Principal, PrincipalId,
-    ProvenanceHop, ReconnectPolicy, ScopeId, SubscriptionLiveness, live_subscription,
+    AccessPolicy, ApprovalDecision, AuthorityPresentation, AuthorityUnavailable,
+    AuthorizationDecision, ChallengeId, CommandClient, CommandClientFuture, CommandId,
+    CommandResponse, CommandSnapshot, CommandSubmission, CommandSubscription,
+    CommandSubscriptionFuture, CommandWatchFuture, CommandWatchingClient, ItemClient, ItemQuery,
+    ItemQueryResult, ItemQuerySnapshot, ItemQueryStream, ItemQueryUpdate, ItemStatePageFuture,
+    ItemStateRequest, LiveEvent, LiveSubscription, LiveSubscriptionState, Node, NodeError, NodeId,
+    Principal, PrincipalId, ProvenanceHop, ReconnectPolicy, ScopeId, SubscriptionLiveness,
+    control_quorum::{
+        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+    },
+    live_subscription,
 };
 use myko_wire::{
     HandlerRequest, NodeFrame as PeerFrame, NodeRequest as PeerRequest, NodeRequestEnvelope,

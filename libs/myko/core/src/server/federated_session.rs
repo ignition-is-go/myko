@@ -21,11 +21,15 @@ use std::{
 use hyphae::{Cell, CellImmutable, SubscriptionGuard, Watchable as _};
 use myko_federation::{
     AccessAttempt, AccessOperation, AccessPolicy, AccessTarget, AuthorityPresentation,
-    AuthorizationDecision, AuthorizationExplanation, AuthorizationPhase, AuthorizationReport,
-    CommandId, CommandResponse, CommandSubmission, DenyAllAccessPolicy, DenyDecision,
-    FederationPermission, LiveEventHub, LogPosition, Node, NodeId, PermitDecision, Principal,
-    PrincipalId, ReplicationBatch, ReplicationSelection, ResourceClaim, ResourceClaimKind,
-    ResourceVisibility, ScopeCatalogPage, ScopeId, ScopedReplicationBatch, ServiceId,
+    AuthorityUnavailable, AuthorizationDecision, AuthorizationExplanation, AuthorizationFailure,
+    AuthorizationPhase, AuthorizationReport, CommandId, CommandResponse, CommandSubmission,
+    DenyAllAccessPolicy, DenyDecision, FederationPermission, LiveEventHub, LogPosition, Node,
+    NodeId, PermitDecision, Principal, PrincipalId, ReplicationBatch, ReplicationSelection,
+    ResourceClaim, ResourceClaimKind, ResourceVisibility, ScopeCatalogPage, ScopeId,
+    ScopedReplicationBatch, ServiceId,
+    control_quorum::{
+        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+    },
 };
 use myko_wire::{HandlerRequest, NodeFrame, NodeRequest, NodeRequestEnvelope};
 use sha2::{Digest, Sha256};
@@ -278,6 +282,52 @@ pub trait NodeRequestRouter: std::fmt::Debug + Send + Sync + 'static {
     ) -> NodeRouteFuture<'a>;
 }
 
+/// Future returned by an installed certified-control endpoint.
+pub type AuthorityControlFuture<'a, T> =
+    Pin<Box<dyn Future<Output = Result<T, AuthorizationFailure>> + Send + 'a>>;
+
+/// Request body for one certified-control proposal transport call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AuthorityControlProposeRequest {
+    pub head: ControlHead,
+    pub ballot: ControlBallot,
+    pub promises: Vec<SignedControlVote>,
+    pub value: ControlValue,
+}
+
+/// Local authority coordinator behind authenticated controller transport calls.
+///
+/// Transport adapters authenticate the peer and deliver typed requests here.
+/// This endpoint owns certified-history validation, local controller key use,
+/// and the durable [`Node::vote_control`] / [`Node::propose_control`] path.
+pub trait AuthorityControlEndpoint: std::fmt::Debug + Send + Sync + 'static {
+    /// Persist a prepare vote for the certified predecessor head.
+    fn prepare<'a>(
+        &'a self,
+        principal: &'a PrincipalId,
+        presentation: &'a AuthorityPresentation,
+        head: ControlHead,
+        ballot: ControlBallot,
+    ) -> AuthorityControlFuture<'a, SignedControlVote>;
+
+    /// Persist a proposal after validating promise recovery and payload meaning.
+    fn propose<'a>(
+        &'a self,
+        principal: &'a PrincipalId,
+        presentation: &'a AuthorityPresentation,
+        request: AuthorityControlProposeRequest,
+    ) -> AuthorityControlFuture<'a, SignedControlProposal>;
+
+    /// Persist an accept vote for one certified proposal.
+    fn accept<'a>(
+        &'a self,
+        principal: &'a PrincipalId,
+        presentation: &'a AuthorityPresentation,
+        head: ControlHead,
+        proposal: SignedControlProposal,
+    ) -> AuthorityControlFuture<'a, SignedControlVote>;
+}
+
 /// Shared semantic endpoint behind every Myko transport adapter.
 #[derive(Clone)]
 pub struct FederatedSession {
@@ -287,6 +337,7 @@ pub struct FederatedSession {
     access_policy: Arc<RwLock<Arc<dyn AccessPolicy>>>,
     policy_revision: watch::Sender<u64>,
     router: Arc<RwLock<Option<Weak<dyn NodeRequestRouter>>>>,
+    authority_control: Arc<RwLock<Option<Arc<dyn AuthorityControlEndpoint>>>>,
 }
 
 impl std::fmt::Debug for FederatedSession {
@@ -337,6 +388,7 @@ impl FederatedSession {
             access_policy: Arc::new(RwLock::new(access_policy)),
             policy_revision,
             router: Arc::new(RwLock::new(None)),
+            authority_control: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -449,6 +501,24 @@ impl FederatedSession {
         Ok(())
     }
 
+    /// Installs the local certified-control endpoint used by controller peers.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the endpoint slot is poisoned.
+    pub fn set_authority_control(
+        &self,
+        endpoint: Option<Arc<dyn AuthorityControlEndpoint>>,
+    ) -> Result<(), String> {
+        let mut current = self
+            .authority_control
+            .write()
+            .map_err(|_| "authority-control endpoint lock is poisoned".to_owned())?;
+        *current = endpoint;
+        drop(current);
+        Ok(())
+    }
+
     /// Opens one canonical request and returns its finite or long-lived frame
     /// stream. Dropping the stream cancels all associated subscriptions.
     pub async fn open(
@@ -520,6 +590,12 @@ impl FederatedSession {
             }
             if !matches!(request, NodeRequest::Submit { .. })
                 && !matches!(request, NodeRequest::ApproveAuthority { .. })
+                && !matches!(
+                    request,
+                    NodeRequest::ControlPrepare { .. }
+                        | NodeRequest::ControlPropose { .. }
+                        | NodeRequest::ControlAccept { .. }
+                )
             {
                 match service.authorize(&principal, &presentation, &request) {
                     Ok(Some(permit)) => {
@@ -536,13 +612,9 @@ impl FederatedSession {
                     Ok(None) => {
                         tracing::debug!("request does not require an authority decision");
                     }
-                    Err(decision) => {
-                        tracing::warn!(decision = ?decision, "request admission denied");
-                        let _ignored = send
-                            .send_async(NodeFrame::Authorization {
-                                decision: Box::new(decision),
-                            })
-                            .await;
+                    Err(failure) => {
+                        tracing::warn!(failure = ?failure, "request admission failed");
+                        let _ignored = emit_authorization_failure(&send, failure).await;
                         return;
                     }
                 }
@@ -718,6 +790,33 @@ impl FederatedSession {
                 self.approve_authority(&principal, &presentation, &challenge_id, approved, send)
                     .await
             }
+            NodeRequest::ControlPrepare { head, ballot } => {
+                self.control_prepare(&principal, &presentation, head, ballot, send)
+                    .await
+            }
+            NodeRequest::ControlPropose {
+                head,
+                ballot,
+                promises,
+                value,
+            } => {
+                self.control_propose(
+                    &principal,
+                    &presentation,
+                    AuthorityControlProposeRequest {
+                        head,
+                        ballot,
+                        promises,
+                        value,
+                    },
+                    send,
+                )
+                .await
+            }
+            NodeRequest::ControlAccept { head, proposal } => {
+                self.control_accept(&principal, &presentation, head, *proposal, send)
+                    .await
+            }
         }
     }
 
@@ -784,15 +883,7 @@ impl FederatedSession {
             AuthorizationPhase::Admission,
         ) {
             Ok(selection) => selection,
-            Err(decision) => {
-                return emit(
-                    send,
-                    NodeFrame::Authorization {
-                        decision: Box::new(decision),
-                    },
-                )
-                .await;
-            }
+            Err(failure) => return emit_authorization_failure(send, failure).await,
         };
         self.identify(send).await?;
         let batch = self
@@ -827,15 +918,7 @@ impl FederatedSession {
             .with_authority(presentation.clone());
         let prepared = match self.node.prepare_command(principal, command) {
             Ok(prepared) => prepared,
-            Err(decision) => {
-                return emit(
-                    send,
-                    NodeFrame::Authorization {
-                        decision: Box::new(decision),
-                    },
-                )
-                .await;
-            }
+            Err(failure) => return emit_authorization_failure(send, failure).await,
         };
         emit(
             send,
@@ -872,14 +955,23 @@ impl FederatedSession {
             .command_state_page(request)
             .map_err(|error| error.to_string())?;
         let unfiltered_len = page.commands.len();
-        page.commands.retain(|entry| {
-            self.command_snapshot_authorized(
+        let commands = std::mem::take(&mut page.commands);
+        let mut authorized_commands = Vec::with_capacity(commands.len());
+        for entry in commands {
+            match self.command_snapshot_authorized(
                 principal,
                 presentation,
                 AccessOperation::ReadCommands,
                 &entry.command,
-            )
-        });
+            ) {
+                Ok(true) => authorized_commands.push(entry),
+                Ok(false) => {}
+                Err(reason) => {
+                    return emit(send, NodeFrame::AuthorityUnavailable { reason }).await;
+                }
+            }
+        }
+        page.commands = authorized_commands;
         if page.commands.len() != unfiltered_len {
             // A cursor containing a hidden command ID is an existence oracle.
             // Fail closed rather than claim a complete catalog through an
@@ -929,19 +1021,23 @@ impl FederatedSession {
                 page_size: myko_federation::DEFAULT_COMMAND_STATE_PAGE_SIZE,
             })
             .map_err(|error| error.to_string())?;
-        let mut visible_commands = snapshot
-            .commands
-            .into_iter()
-            .filter_map(|entry| {
-                self.command_snapshot_authorized(
-                    &principal,
-                    &presentation,
-                    AccessOperation::WatchCommands,
-                    &entry.command,
-                )
-                .then(|| (entry.command.request.id.to_string(), entry.command))
-            })
-            .collect::<BTreeMap<_, _>>();
+        let mut visible_commands = BTreeMap::new();
+        for entry in snapshot.commands {
+            match self.command_snapshot_authorized(
+                &principal,
+                &presentation,
+                AccessOperation::WatchCommands,
+                &entry.command,
+            ) {
+                Ok(true) => {
+                    visible_commands.insert(entry.command.request.id.to_string(), entry.command);
+                }
+                Ok(false) => {}
+                Err(reason) => {
+                    return emit(send, NodeFrame::AuthorityUnavailable { reason }).await;
+                }
+            }
+        }
         let mut authorization = self.authorization_pulse();
         loop {
             tokio::select! {
@@ -953,15 +1049,19 @@ impl FederatedSession {
                     let mut allowed = Vec::with_capacity(update.commands.len());
                     for entry in &update.commands {
                         let command_id = entry.command.request.id.to_string();
-                        if self.command_snapshot_authorized(
+                        match self.command_snapshot_authorized(
                             &principal,
                             &presentation,
                             AccessOperation::WatchCommands,
                             &entry.command,
                         ) {
-                            allowed.push((command_id, entry.clone()));
-                        } else if visible_commands.contains_key(&command_id) {
-                            return Ok(());
+                            Ok(true) => allowed.push((command_id, entry.clone())),
+                            Ok(false) if visible_commands.contains_key(&command_id) => return Ok(()),
+                            Ok(false) => {}
+                            Err(reason) => {
+                                emit(send, NodeFrame::AuthorityUnavailable { reason }).await?;
+                                return Ok(());
+                            }
                         }
                     }
                     if allowed.is_empty() {
@@ -983,15 +1083,11 @@ impl FederatedSession {
                         // Refetching is the only way to retract stale entries.
                         AuthorizationWake::Revision => return Ok(()),
                         AuthorizationWake::Deadline => {
-                            let stale_entry = visible_commands.values().any(|command| {
-                                !self.command_snapshot_authorized(
-                                    &principal,
-                                    &presentation,
-                                    AccessOperation::WatchCommands,
-                                    command,
-                                )
-                            });
-                            if stale_entry {
+                            if self.has_revoked_visible_command(
+                                &principal,
+                                &presentation,
+                                &visible_commands,
+                            ) {
                                 return Ok(());
                             }
                         }
@@ -1001,13 +1097,32 @@ impl FederatedSession {
         }
     }
 
+    fn has_revoked_visible_command(
+        &self,
+        principal: &PrincipalId,
+        presentation: &AuthorityPresentation,
+        visible_commands: &BTreeMap<String, myko_federation::CommandSnapshot>,
+    ) -> bool {
+        visible_commands.values().any(|command| {
+            !matches!(
+                self.command_snapshot_authorized(
+                    principal,
+                    presentation,
+                    AccessOperation::WatchCommands,
+                    command,
+                ),
+                Ok(true)
+            )
+        })
+    }
+
     fn command_snapshot_authorized(
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
         operation: AccessOperation,
         command: &myko_federation::CommandSnapshot,
-    ) -> bool {
+    ) -> Result<bool, AuthorityUnavailable> {
         let request = &command.request;
         let access = AccessAttempt {
             principal_id: principal.clone(),
@@ -1030,8 +1145,9 @@ impl FederatedSession {
         };
         self.access_policy
             .read()
-            .ok()
-            .is_some_and(|policy| policy.decide(&access).is_permit())
+            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
+            .decide(&access)
+            .map(|decision| matches!(decision, AuthorizationDecision::Permit(_)))
     }
 
     async fn watch_command(
@@ -1194,10 +1310,18 @@ impl FederatedSession {
                     scope_id.clone(),
                 );
                 access.topology = Some(topology.clone());
-                if policy.decide(&access).is_permit() {
-                    scopes.push(scope_id);
-                    if scopes.len() > limit {
-                        break;
+                match policy.decide(&access) {
+                    Ok(AuthorizationDecision::Permit(_)) => {
+                        scopes.push(scope_id);
+                        if scopes.len() > limit {
+                            break;
+                        }
+                    }
+                    Ok(
+                        AuthorizationDecision::Deny(_) | AuthorizationDecision::Challenge { .. },
+                    ) => {}
+                    Err(reason) => {
+                        return emit(send, NodeFrame::AuthorityUnavailable { reason }).await;
                     }
                 }
             }
@@ -1373,7 +1497,7 @@ impl FederatedSession {
                     ) {
                         Ok(selection) => selection,
                         Err(decision) => {
-                            emit(send, NodeFrame::Authorization { decision: Box::new(decision) }).await?;
+                            emit_authorization_failure(send, decision).await?;
                             return Ok(());
                         }
                     };
@@ -1392,7 +1516,7 @@ impl FederatedSession {
                         &requested_selection,
                         AuthorizationPhase::Continuation,
                     ) {
-                        emit(send, NodeFrame::Authorization { decision: Box::new(decision) }).await?;
+                        emit_authorization_failure(send, decision).await?;
                         return Ok(());
                     }
                 }
@@ -1531,16 +1655,103 @@ impl FederatedSession {
                 )
                 .await
             }
-            Err(decision) => {
+            Err(failure) => emit_authorization_failure(send, failure).await,
+        }
+    }
+
+    async fn control_prepare(
+        &self,
+        principal: &PrincipalId,
+        presentation: &AuthorityPresentation,
+        head: ControlHead,
+        ballot: ControlBallot,
+        send: &flume::Sender<NodeFrame>,
+    ) -> Result<(), String> {
+        let endpoint = match self.authority_control_endpoint() {
+            Ok(endpoint) => endpoint,
+            Err(failure) => return emit_authorization_failure(send, failure).await,
+        };
+        match endpoint
+            .prepare(principal, presentation, head, ballot)
+            .await
+        {
+            Ok(vote) => {
                 emit(
                     send,
-                    NodeFrame::Authorization {
-                        decision: Box::new(decision),
+                    NodeFrame::ControlVote {
+                        vote: Box::new(vote),
                     },
                 )
                 .await
             }
+            Err(failure) => emit_authorization_failure(send, failure).await,
         }
+    }
+
+    async fn control_propose(
+        &self,
+        principal: &PrincipalId,
+        presentation: &AuthorityPresentation,
+        request: AuthorityControlProposeRequest,
+        send: &flume::Sender<NodeFrame>,
+    ) -> Result<(), String> {
+        let endpoint = match self.authority_control_endpoint() {
+            Ok(endpoint) => endpoint,
+            Err(failure) => return emit_authorization_failure(send, failure).await,
+        };
+        match endpoint.propose(principal, presentation, request).await {
+            Ok(proposal) => {
+                emit(
+                    send,
+                    NodeFrame::ControlProposal {
+                        proposal: Box::new(proposal),
+                    },
+                )
+                .await
+            }
+            Err(failure) => emit_authorization_failure(send, failure).await,
+        }
+    }
+
+    async fn control_accept(
+        &self,
+        principal: &PrincipalId,
+        presentation: &AuthorityPresentation,
+        head: ControlHead,
+        proposal: SignedControlProposal,
+        send: &flume::Sender<NodeFrame>,
+    ) -> Result<(), String> {
+        let endpoint = match self.authority_control_endpoint() {
+            Ok(endpoint) => endpoint,
+            Err(failure) => return emit_authorization_failure(send, failure).await,
+        };
+        match endpoint
+            .accept(principal, presentation, head, proposal)
+            .await
+        {
+            Ok(vote) => {
+                emit(
+                    send,
+                    NodeFrame::ControlVote {
+                        vote: Box::new(vote),
+                    },
+                )
+                .await
+            }
+            Err(failure) => emit_authorization_failure(send, failure).await,
+        }
+    }
+
+    fn authority_control_endpoint(
+        &self,
+    ) -> Result<Arc<dyn AuthorityControlEndpoint>, AuthorizationFailure> {
+        let endpoint = self
+            .authority_control
+            .read()
+            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
+            .clone()
+            .ok_or(AuthorityUnavailable::CoordinationUnavailable)?;
+        Ok(endpoint)
     }
 
     async fn stream_authorized(
@@ -1552,14 +1763,8 @@ impl FederatedSession {
     ) -> Result<bool, String> {
         match self.authorize_continuation(principal, presentation, request) {
             Ok(_) => Ok(true),
-            Err(decision) => {
-                emit(
-                    send,
-                    NodeFrame::Authorization {
-                        decision: Box::new(decision),
-                    },
-                )
-                .await?;
+            Err(failure) => {
+                emit_authorization_failure(send, failure).await?;
                 Ok(false)
             }
         }
@@ -1570,7 +1775,7 @@ impl FederatedSession {
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
         request: &NodeRequest,
-    ) -> Result<Option<PermitDecision>, AuthorizationDecision> {
+    ) -> Result<Option<PermitDecision>, AuthorizationFailure> {
         self.authorize_with_phase(
             principal,
             presentation,
@@ -1584,7 +1789,7 @@ impl FederatedSession {
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
         request: &NodeRequest,
-    ) -> Result<Option<PermitDecision>, AuthorizationDecision> {
+    ) -> Result<Option<PermitDecision>, AuthorizationFailure> {
         self.authorize_with_phase(
             principal,
             presentation,
@@ -1599,7 +1804,7 @@ impl FederatedSession {
         presentation: &AuthorityPresentation,
         request: &NodeRequest,
         authorization_phase: AuthorizationPhase,
-    ) -> Result<Option<PermitDecision>, AuthorizationDecision> {
+    ) -> Result<Option<PermitDecision>, AuthorizationFailure> {
         if matches!(
             request,
             NodeRequest::Identify | NodeRequest::ListScopes { .. }
@@ -1621,11 +1826,14 @@ impl FederatedSession {
                         NodeRequest::Command { .. } => AccessOperation::ReadCommand,
                         NodeRequest::WatchCommand { .. } => AccessOperation::WatchCommand,
                         NodeRequest::Cancel { .. } => AccessOperation::CancelCommand,
-                        _ => return Err(missing_command_decision),
+                        _ => return Err(decision_to_failure(missing_command_decision)),
                     };
-                    return Err(undiscoverable_command_decision(presentation, operation));
+                    return Err(decision_to_failure(undiscoverable_command_decision(
+                        presentation,
+                        operation,
+                    )));
                 }
-                Err(decision) => return Err(decision),
+                Err(decision) => return Err(decision_to_failure(decision)),
             };
         if let NodeRequest::PullSelected { selection, .. }
         | NodeRequest::FollowSelected { selection, .. } = request
@@ -1646,12 +1854,19 @@ impl FederatedSession {
         let decision = self
             .access_policy
             .read()
-            .map_err(|_| policy_unavailable(principal, presentation, operation))?
+            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
             .decide(&access);
-        trace_authorization_decision(operation, authorization_phase, &decision, started.elapsed());
+        if let Ok(decision) = &decision {
+            trace_authorization_decision(
+                operation,
+                authorization_phase,
+                decision,
+                started.elapsed(),
+            );
+        }
         match decision {
-            AuthorizationDecision::Permit(permit) => Ok(Some(permit)),
-            _decision
+            Ok(AuthorizationDecision::Permit(permit)) => Ok(Some(permit)),
+            Ok(_decision)
                 if matches!(
                     request,
                     NodeRequest::Command { .. }
@@ -1659,12 +1874,18 @@ impl FederatedSession {
                         | NodeRequest::Cancel { .. }
                 ) =>
             {
-                Err(undiscoverable_command_decision(
+                Err(decision_to_failure(undiscoverable_command_decision(
                     presentation,
                     access.operation,
-                ))
+                )))
             }
-            decision => Err(decision),
+            Ok(decision) => match decision.into_permit() {
+                Ok(_) => Err(AuthorizationFailure::Unavailable(
+                    AuthorityUnavailable::PolicyUnavailable,
+                )),
+                Err(failure) => Err(failure),
+            },
+            Err(reason) => Err(AuthorizationFailure::Unavailable(reason)),
         }
     }
 
@@ -1712,19 +1933,21 @@ impl FederatedSession {
         request: &NodeRequest,
         selection: &ReplicationSelection,
         authorization_phase: AuthorizationPhase,
-    ) -> Result<ReplicationSelection, AuthorizationDecision> {
-        let access = self.access_request(principal, presentation, request, authorization_phase)?;
+    ) -> Result<ReplicationSelection, AuthorizationFailure> {
+        let access = self
+            .access_request(principal, presentation, request, authorization_phase)
+            .map_err(decision_to_failure)?;
         let topology = access.topology.clone().ok_or_else(|| {
-            policy_denial(
+            decision_to_failure(policy_denial(
                 principal,
                 presentation,
                 access.operation,
                 "scope topology is incomplete".to_owned(),
-            )
+            ))
         })?;
         self.access_policy
             .read()
-            .map_err(|_| policy_unavailable(principal, presentation, access.operation))?
+            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
             .constrain_replication(&access, selection, &topology)
     }
 
@@ -1799,6 +2022,11 @@ impl FederatedSession {
             NodeRequest::FollowHandler { request } => self.handler_access(request)?,
             NodeRequest::ApproveAuthority { .. } => {
                 return Err("authority approval is handled outside prepared access".to_owned());
+            }
+            NodeRequest::ControlPrepare { .. }
+            | NodeRequest::ControlPropose { .. }
+            | NodeRequest::ControlAccept { .. } => {
+                return Err("authority control is handled outside prepared access".to_owned());
             }
         })
     }
@@ -1885,19 +2113,6 @@ impl Drop for NodeFrameStream {
     }
 }
 
-fn policy_unavailable(
-    principal: &PrincipalId,
-    presentation: &AuthorityPresentation,
-    operation: AccessOperation,
-) -> AuthorizationDecision {
-    policy_denial(
-        principal,
-        presentation,
-        operation,
-        "authority policy is unavailable".to_owned(),
-    )
-}
-
 fn undiscoverable_command_decision(
     presentation: &AuthorityPresentation,
     operation: AccessOperation,
@@ -1950,6 +2165,51 @@ async fn emit(send: &flume::Sender<NodeFrame>, frame: NodeFrame) -> Result<(), S
     send.send_async(frame)
         .await
         .map_err(|_| "client disconnected".to_owned())
+}
+
+async fn emit_authorization_failure(
+    send: &flume::Sender<NodeFrame>,
+    failure: AuthorizationFailure,
+) -> Result<(), String> {
+    match failure {
+        AuthorizationFailure::Deny(denied) => {
+            emit(
+                send,
+                NodeFrame::Authorization {
+                    decision: Box::new(AuthorizationDecision::Deny(*denied)),
+                },
+            )
+            .await
+        }
+        AuthorizationFailure::Challenge { challenge, report } => {
+            emit(
+                send,
+                NodeFrame::Authorization {
+                    decision: Box::new(AuthorizationDecision::Challenge {
+                        challenge: *challenge,
+                        report: *report,
+                    }),
+                },
+            )
+            .await
+        }
+        AuthorizationFailure::Unavailable(reason) => {
+            emit(send, NodeFrame::AuthorityUnavailable { reason }).await
+        }
+    }
+}
+
+fn decision_to_failure(decision: AuthorizationDecision) -> AuthorizationFailure {
+    match decision {
+        AuthorizationDecision::Permit(_) => {
+            AuthorizationFailure::Unavailable(AuthorityUnavailable::PolicyUnavailable)
+        }
+        AuthorizationDecision::Deny(denied) => AuthorizationFailure::Deny(Box::new(denied)),
+        AuthorizationDecision::Challenge { challenge, report } => AuthorizationFailure::Challenge {
+            challenge: Box::new(challenge),
+            report: Box::new(report),
+        },
+    }
 }
 
 const fn preparation(operation: AccessOperation, target: AccessTarget) -> AccessPreparation {
@@ -2138,6 +2398,7 @@ mod tests {
         CommandStateRequest, DenyAllAccessPolicy, EventEnvelope, EventId, FrameworkControlEvent,
         PrincipalKind, RetainedHistoryStatement, ScopeSelection, SignedRetainedHistoryStatement,
         StorageIncarnationId,
+        control_quorum::{ControlSlot, ControlVote, ControlVoteKind, ControllerId},
     };
 
     use super::*;
@@ -2202,20 +2463,89 @@ mod tests {
     }
 
     impl AccessPolicy for CapturingPolicy {
-        fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
+        fn decide(
+            &self,
+            request: &AccessAttempt,
+        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
             self.seen.lock().unwrap().push(request.clone());
-            if !self.allow.load(Ordering::Acquire) {
-                return Err("revoked".to_owned());
-            }
-            if let Some(expected) = self.expected_item_type
+            let rule = if !self.allow.load(Ordering::Acquire) {
+                Err("revoked".to_owned())
+            } else if let Some(expected) = self.expected_item_type
                 && !request
                     .resource_claims
                     .iter()
                     .all(|claim| claim.item_type.as_deref() == Some(expected))
             {
-                return Err("item type constraint rejected".to_owned());
+                Err("item type constraint rejected".to_owned())
+            } else {
+                Ok(())
+            };
+            Ok(AuthorizationDecision::from_rule(request, rule))
+        }
+    }
+
+    #[derive(Debug)]
+    struct RecordingControlEndpoint {
+        seen: Mutex<
+            Vec<(
+                PrincipalId,
+                AuthorityPresentation,
+                ControlHead,
+                ControlBallot,
+            )>,
+        >,
+        vote: SignedControlVote,
+    }
+
+    impl RecordingControlEndpoint {
+        fn new(vote: SignedControlVote) -> Self {
+            Self {
+                seen: Mutex::new(Vec::new()),
+                vote,
             }
-            Ok(())
+        }
+    }
+
+    impl AuthorityControlEndpoint for RecordingControlEndpoint {
+        fn prepare<'a>(
+            &'a self,
+            principal: &'a PrincipalId,
+            presentation: &'a AuthorityPresentation,
+            head: ControlHead,
+            ballot: ControlBallot,
+        ) -> AuthorityControlFuture<'a, SignedControlVote> {
+            self.seen
+                .lock()
+                .unwrap()
+                .push((principal.clone(), presentation.clone(), head, ballot));
+            Box::pin(async move { Ok(self.vote.clone()) })
+        }
+
+        fn propose<'a>(
+            &'a self,
+            _principal: &'a PrincipalId,
+            _presentation: &'a AuthorityPresentation,
+            _request: AuthorityControlProposeRequest,
+        ) -> AuthorityControlFuture<'a, SignedControlProposal> {
+            Box::pin(async move {
+                Err(AuthorizationFailure::Unavailable(
+                    AuthorityUnavailable::CoordinationUnavailable,
+                ))
+            })
+        }
+
+        fn accept<'a>(
+            &'a self,
+            _principal: &'a PrincipalId,
+            _presentation: &'a AuthorityPresentation,
+            _head: ControlHead,
+            _proposal: SignedControlProposal,
+        ) -> AuthorityControlFuture<'a, SignedControlVote> {
+            Box::pin(async move {
+                Err(AuthorizationFailure::Unavailable(
+                    AuthorityUnavailable::CoordinationUnavailable,
+                ))
+            })
         }
     }
 
@@ -2226,17 +2556,22 @@ mod tests {
     }
 
     impl AccessPolicy for CatalogEntryPolicy {
-        fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
-            if request.operation == AccessOperation::WatchCommands
+        fn decide(
+            &self,
+            request: &AccessAttempt,
+        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+            let rule = if request.operation == AccessOperation::WatchCommands
                 && request.command_id().is_some()
                 && (!self.entries_allowed
                     || self
                         .entries_expire_at
                         .is_some_and(|deadline| tokio::time::Instant::now() >= deadline))
             {
-                return Err("stored command claims were revoked".to_owned());
-            }
-            Ok(())
+                Err("stored command claims were revoked".to_owned())
+            } else {
+                Ok(())
+            };
+            Ok(AuthorizationDecision::from_rule(request, rule))
         }
     }
 
@@ -2245,13 +2580,36 @@ mod tests {
         denied: CommandId,
     }
     impl AccessPolicy for SelectiveCatalogPolicy {
-        fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
-            if request.operation == AccessOperation::WatchCommands
+        fn decide(
+            &self,
+            request: &AccessAttempt,
+        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+            let rule = if request.operation == AccessOperation::WatchCommands
                 && request.command_id() == Some(self.denied)
             {
-                return Err("selected catalog entry is hidden".to_owned());
+                Err("selected catalog entry is hidden".to_owned())
+            } else {
+                Ok(())
+            };
+            Ok(AuthorizationDecision::from_rule(request, rule))
+        }
+    }
+
+    #[derive(Debug)]
+    struct TemporarilyUnavailablePolicy {
+        unavailable: AtomicBool,
+    }
+
+    impl AccessPolicy for TemporarilyUnavailablePolicy {
+        fn decide(
+            &self,
+            request: &AccessAttempt,
+        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+            if self.unavailable.load(Ordering::Acquire) {
+                Err(AuthorityUnavailable::StateNotCurrent)
+            } else {
+                Ok(AuthorizationDecision::from_rule(request, Ok(())))
             }
-            Ok(())
         }
     }
 
@@ -2314,6 +2672,98 @@ mod tests {
             tokio::time::timeout(Duration::from_secs(1), frames.recv()).await,
             Ok(None)
         ));
+    }
+
+    #[tokio::test]
+    async fn unavailable_authority_is_retryable_not_a_denial() {
+        let policy = Arc::new(TemporarilyUnavailablePolicy {
+            unavailable: AtomicBool::new(true),
+        });
+        let session = FederatedSession::new(Node::in_memory(), policy.clone());
+        let request = NodeRequestEnvelope::connected(NodeRequest::PullScope {
+            scope_id: ScopeId::new("retryable:scope"),
+            after: None,
+        });
+        let mut unavailable = session
+            .open(PrincipalId::new("node:subscriber"), request.clone())
+            .await;
+        assert!(matches!(
+            unavailable.recv().await,
+            Some(NodeFrame::AuthorityUnavailable {
+                reason: AuthorityUnavailable::StateNotCurrent,
+            })
+        ));
+        assert!(unavailable.recv().await.is_none());
+
+        policy.unavailable.store(false, Ordering::Release);
+        let mut retried = session
+            .open(PrincipalId::new("node:subscriber"), request)
+            .await;
+        assert!(matches!(
+            retried.recv().await,
+            Some(NodeFrame::Authorization { decision })
+                if matches!(*decision, AuthorizationDecision::Permit(_))
+        ));
+        assert!(matches!(
+            retried.recv().await,
+            Some(NodeFrame::Hello { .. })
+        ));
+        assert!(matches!(
+            retried.recv().await,
+            Some(NodeFrame::ScopedBatch { batch }) if batch.events.is_empty()
+        ));
+    }
+
+    #[tokio::test]
+    async fn control_prepare_uses_authenticated_endpoint() {
+        let session = FederatedSession::new(Node::in_memory(), Arc::new(DenyAllAccessPolicy));
+        let head = ControlHead([1; 32]);
+        let ballot = ControlBallot {
+            counter: 7,
+            proposer: ControllerId([2; 32]),
+        };
+        let vote = SignedControlVote {
+            message: ControlVote {
+                slot: ControlSlot {
+                    realm: ScopeId::new("authority-realm"),
+                    epoch: myko_federation::control_quorum::ControlEpochId([3; 32]),
+                    predecessor: head,
+                },
+                ballot,
+                controller: ControllerId([4; 32]),
+                vote: ControlVoteKind::Promise { accepted: None },
+            },
+            signature: [5; 64],
+        };
+        let endpoint = Arc::new(RecordingControlEndpoint::new(vote.clone()));
+        session
+            .set_authority_control(Some(endpoint.clone()))
+            .unwrap();
+        let principal = Principal::new(
+            PrincipalId::new("node:controller-peer"),
+            PrincipalKind::Node,
+        );
+        let mut frames = session
+            .open_authenticated(
+                principal.clone(),
+                NodeRequestEnvelope::connected(NodeRequest::ControlPrepare { head, ballot }),
+            )
+            .await;
+
+        assert!(matches!(
+            frames.recv().await,
+            Some(NodeFrame::ControlVote { vote: actual }) if *actual == vote
+        ));
+        assert!(frames.recv().await.is_none());
+        let seen = endpoint.seen.lock().unwrap().clone();
+        assert_eq!(seen.len(), 1);
+        let Some((seen_principal, seen_presentation, seen_head, seen_ballot)) = seen.first() else {
+            return;
+        };
+        assert_eq!(seen_principal, &principal.id);
+        assert_eq!(seen_presentation.executor, principal);
+        assert_eq!(*seen_head, head);
+        assert_eq!(*seen_ballot, ballot);
     }
 
     #[test]

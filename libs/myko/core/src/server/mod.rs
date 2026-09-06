@@ -48,6 +48,8 @@ pub mod persister;
 mod protocol;
 mod relationship_manager;
 pub mod report_cache_stats;
+#[cfg(not(target_arch = "wasm32"))]
+mod retained_evidence;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
 pub use client_session::{ClientSession, PendingQueryResponse, SessionSink};
@@ -55,6 +57,7 @@ pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 #[cfg(not(target_arch = "wasm32"))]
 pub use federated_session::{
+    AuthorityControlEndpoint, AuthorityControlFuture, AuthorityControlProposeRequest,
     FederatedSession, NodeFrameStream, NodeRequestRouter, NodeRouteFuture,
 };
 #[cfg(not(target_arch = "wasm32"))]
@@ -71,5 +74,9 @@ pub use persister::{
 };
 pub use protocol::{message_to_cbor, message_to_json};
 pub use relationship_manager::RelationshipManager;
+#[cfg(not(target_arch = "wasm32"))]
+pub use retained_evidence::{
+    RetainedEvidenceError, RetainedEvidenceFuture, ScopedRetainedEvidenceEndpoint,
+};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod native_map;

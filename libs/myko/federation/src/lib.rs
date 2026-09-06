@@ -11,6 +11,7 @@
 // boxing it would make every policy consumer allocate merely to propagate it.
 #![allow(clippy::result_large_err)]
 
+mod access_failure;
 mod attestation;
 mod authority;
 mod causal;
@@ -23,6 +24,7 @@ mod reactive;
 mod selected;
 mod signed_statement;
 
+pub use access_failure::{AuthorityUnavailable, AuthorizationFailure};
 pub use attestation::RetainedHistoryStatement;
 pub use authority::*;
 pub use causal::causal_replay;
@@ -36,10 +38,10 @@ pub use signed_statement::SignedRetainedHistoryStatement;
 
 pub use reactive::{
     CollectionPlan, CompositeFrontier, LiveCollection, LiveCollectionError, LiveCollectionHandle,
-    LiveCollectionRevision, LiveCollectionState, LiveCollectionWriter, LiveSubscription,
-    LiveSubscriptionHandle, LiveSubscriptionState, LiveSubscriptionWriter, MapCollectionPlan,
-    RuntimeCollection, SubscriptionLiveness, UnionCollectionPlan, live_collection,
-    live_subscription,
+    LiveCollectionRevision, LiveCollectionRevisionStream, LiveCollectionState,
+    LiveCollectionWriter, LiveSubscription, LiveSubscriptionHandle, LiveSubscriptionState,
+    LiveSubscriptionWriter, MapCollectionPlan, RuntimeCollection, SubscriptionLiveness,
+    UnionCollectionPlan, live_collection, live_subscription,
 };
 
 use std::{

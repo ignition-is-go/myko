@@ -9,10 +9,10 @@ use hyphae::{Signal, Watchable as _};
 use myko::{CommandContext, CommandError, CommandHandler, view::ViewHandler};
 use myko_federation::{
     AccessAttempt, AccessOperation, AllowAllAccessPolicy, ApprovalId, AuthorityPresentation,
-    AuthorityRealmId, AuthorizationBinding, AuthorizationDecision, BatchId, ChangeBatch,
-    CommandRequest, DelegationId, LiveCollectionHandle as _, ObligationId, Principal, PrincipalId,
-    PrincipalKind, ProvenanceOperation, ResourceClaim, ResourceClaimKind, ServiceId,
-    SubscriptionLiveness,
+    AuthorityRealmId, AuthorityUnavailable, AuthorizationBinding, AuthorizationDecision,
+    AuthorizationFailure, BatchId, ChangeBatch, CommandRequest, DelegationId,
+    LiveCollectionHandle as _, ObligationId, Principal, PrincipalId, PrincipalKind,
+    ProvenanceOperation, ResourceClaim, ResourceClaimKind, ServiceId, SubscriptionLiveness,
 };
 use myko_items::{ItemMutation, myko_command, myko_service};
 
@@ -20,8 +20,11 @@ use myko_items::{ItemMutation, myko_command, myko_service};
 struct ApprovalPolicy;
 
 impl AccessPolicy for ApprovalPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Ok(())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        Ok(AuthorizationDecision::from_rule(request, Ok(())))
     }
 
     fn approve(
@@ -30,7 +33,7 @@ impl AccessPolicy for ApprovalPolicy {
         presentation: &AuthorityPresentation,
         challenge_id: &ChallengeId,
         approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationDecision> {
+    ) -> Result<ApprovalDecision, AuthorizationFailure> {
         let now = Utc::now();
         let binding_request = AccessAttempt::scoped(
             authenticated_executor.clone(),
@@ -59,16 +62,48 @@ struct PresentationPolicy {
     operations: Arc<Mutex<Vec<AccessOperation>>>,
 }
 
-impl AccessPolicy for PresentationPolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
-        if request.presentation != self.expected {
-            return Err("authority presentation was not preserved".to_owned());
+#[derive(Debug)]
+struct RecoverableAuthorityPolicy {
+    available: std::sync::atomic::AtomicBool,
+    unavailable_attempts: flume::Sender<(AccessOperation, myko_federation::AuthorizationPhase)>,
+}
+
+impl AccessPolicy for RecoverableAuthorityPolicy {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        if matches!(
+            request.operation,
+            AccessOperation::FollowHandler
+                | AccessOperation::FollowItems
+                | AccessOperation::ReadItems
+        ) && !self.available.load(std::sync::atomic::Ordering::SeqCst)
+        {
+            let _ignored = self
+                .unavailable_attempts
+                .try_send((request.operation, request.authorization_phase));
+            return Err(AuthorityUnavailable::CoordinationUnavailable);
         }
-        self.operations
-            .lock()
-            .map_err(|_| "presentation-policy lock is poisoned".to_owned())?
-            .push(request.operation);
-        Ok(())
+        AllowAllAccessPolicy.decide(request)
+    }
+}
+
+impl AccessPolicy for PresentationPolicy {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        let rule = if request.presentation == self.expected {
+            self.operations
+                .lock()
+                .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
+                .push(request.operation);
+            Ok(())
+        } else {
+            Err("authority presentation was not preserved".to_owned())
+        };
+        Ok(AuthorizationDecision::from_rule(request, rule))
     }
 }
 
@@ -330,6 +365,156 @@ async fn local_handler_connector_follows_retained_query() -> Result<(), LocalPee
         )));
     }
     server.shutdown().await
+}
+
+#[tokio::test]
+async fn retained_query_recovers_from_authority_outage_on_the_same_socket()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("myko.sock");
+    let node = Node::in_memory();
+    let scope = ScopeId::new("local-scope");
+    let first = commit_record(&node, scope.clone(), "record-1")?;
+    let (attempts_tx, attempts_rx) = flume::unbounded();
+    let policy = Arc::new(RecoverableAuthorityPolicy {
+        available: std::sync::atomic::AtomicBool::new(true),
+        unavailable_attempts: attempts_tx,
+    });
+    let probe = LocalServerProbe::default();
+    let server = LocalNodeServer::spawn_application_with_probe(
+        &socket,
+        local_record_application(node.clone())?,
+        PrincipalId::new("local:owner"),
+        policy.clone(),
+        probe.clone(),
+    )
+    .await?;
+    let local = LocalClientSession::new(&socket).with_reconnect_policy(ReconnectPolicy::new(
+        Duration::from_millis(10),
+        Duration::from_millis(20),
+    )?);
+    let query = local
+        .handler_connector()
+        .client()
+        .follow_query_reactive(
+            Some(node.node_id()),
+            scope.clone(),
+            &AllLocalRecordHandlers {},
+        )
+        .await?;
+    let retained = query.live_collection().clone();
+    let items = local
+        .item_client()
+        .watch_serving_items_reactive(scope.clone(), GetAllLocalRecords {})
+        .await?;
+    let (item_updates_tx, item_updates_rx) = flume::unbounded();
+    let _item_guard = items.live().state().subscribe(move |signal| {
+        if let Signal::Value(state) = signal {
+            let _ignored = item_updates_tx.send(state.clone());
+        }
+    });
+    let (updates_tx, updates_rx) = flume::unbounded();
+    let _guard = retained.state().subscribe(move |signal| {
+        if let Signal::Value(state) = signal {
+            let _ignored = updates_tx.send(state.clone());
+        }
+    });
+    policy
+        .available
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let update = updates_rx.recv_async().await?;
+            if matches!(
+                update.liveness,
+                SubscriptionLiveness::Resynchronizing { .. }
+            ) {
+                return Ok::<_, flume::RecvError>(());
+            }
+        }
+    })
+    .await??;
+    assert_items_resynchronizing(&item_updates_rx, &first).await?;
+    assert_unavailable_read_retries(&attempts_rx).await?;
+    let second = commit_record(&node, scope, "record-2")?;
+    policy
+        .available
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let update = updates_rx.recv_async().await?;
+            if update.liveness == SubscriptionLiveness::Current {
+                let rows = retained.rows().snapshot();
+                assert_eq!(rows.len(), 2);
+                assert!(rows.iter().any(|(_, row)| row.as_ref() == &first));
+                assert!(rows.iter().any(|(_, row)| row.as_ref() == &second));
+                return Ok::<_, flume::RecvError>(());
+            }
+        }
+    })
+    .await??;
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let update = item_updates_rx.recv_async().await?;
+            if update.liveness == SubscriptionLiveness::Current {
+                assert_eq!(update.value, Some(vec![first.clone(), second.clone()]));
+                return Ok::<_, flume::RecvError>(());
+            }
+        }
+    })
+    .await??;
+    assert_eq!(probe.accepted(), 1);
+    assert_eq!(probe.peak_active(), 1);
+    server.shutdown().await?;
+    Ok(())
+}
+
+async fn assert_items_resynchronizing(
+    updates: &flume::Receiver<Arc<myko_federation::LiveSubscriptionState<Vec<LocalRecord>>>>,
+    retained: &LocalRecord,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            let update = updates.recv_async().await?;
+            assert!(!matches!(
+                update.liveness,
+                SubscriptionLiveness::Invalid { .. }
+            ));
+            if matches!(
+                update.liveness,
+                SubscriptionLiveness::Resynchronizing { .. }
+            ) {
+                assert_eq!(
+                    update.value.as_deref(),
+                    Some(std::slice::from_ref(retained))
+                );
+                return Ok::<_, flume::RecvError>(());
+            }
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+async fn assert_unavailable_read_retries(
+    attempts: &flume::Receiver<(AccessOperation, myko_federation::AuthorizationPhase)>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut handler_retried = false;
+        let mut items_retried = false;
+        loop {
+            let (operation, phase) = attempts.recv_async().await?;
+            if phase == myko_federation::AuthorizationPhase::Admission {
+                handler_retried |= operation == AccessOperation::FollowHandler;
+                items_retried |= operation == AccessOperation::ReadItems;
+            }
+            if handler_retried && items_retried {
+                return Ok::<_, flume::RecvError>(());
+            }
+        }
+    })
+    .await??;
+    Ok(())
 }
 
 #[tokio::test]

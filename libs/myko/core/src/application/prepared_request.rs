@@ -2,6 +2,9 @@ use myko_federation::{
     AccessTarget, AuthorityPresentation, ChallengeId, CommandId, CommandStateRequest,
     CommandSubmission, CommandWatchRequest, HandlerAccess, ItemFollowRequest, ItemStateRequest,
     LogPosition, NodeId, ProvenanceHop, ReplicationSelection, ScopeId,
+    control_quorum::{
+        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+    },
 };
 use myko_wire::{HandlerRequest, NodeRequest, NodeRequestEnvelope};
 
@@ -48,6 +51,20 @@ pub enum PreparedRequest {
         challenge_id: ChallengeId,
         approved: bool,
     },
+    ControlPrepare {
+        head: ControlHead,
+        ballot: ControlBallot,
+    },
+    ControlPropose {
+        head: ControlHead,
+        ballot: ControlBallot,
+        promises: Vec<SignedControlVote>,
+        value: ControlValue,
+    },
+    ControlAccept {
+        head: ControlHead,
+        proposal: Box<SignedControlProposal>,
+    },
 }
 
 impl PreparedRequest {
@@ -55,7 +72,10 @@ impl PreparedRequest {
     #[must_use]
     pub fn access_target(&self) -> AccessTarget {
         match self {
-            Self::Identify => AccessTarget::NodeIdentity,
+            Self::Identify
+            | Self::ControlPrepare { .. }
+            | Self::ControlPropose { .. }
+            | Self::ControlAccept { .. } => AccessTarget::NodeIdentity,
             Self::ListScopes { .. } => AccessTarget::ScopeCatalog,
             Self::ReadHistory { selection, .. } | Self::FollowHistory { selection, .. } => {
                 AccessTarget::History(match selection {
@@ -174,6 +194,23 @@ impl PreparedEnvelope {
                 challenge_id,
                 approved,
             },
+            NodeRequest::ControlPrepare { head, ballot } => {
+                PreparedRequest::ControlPrepare { head, ballot }
+            }
+            NodeRequest::ControlPropose {
+                head,
+                ballot,
+                promises,
+                value,
+            } => PreparedRequest::ControlPropose {
+                head,
+                ballot,
+                promises,
+                value,
+            },
+            NodeRequest::ControlAccept { head, proposal } => {
+                PreparedRequest::ControlAccept { head, proposal }
+            }
         };
         let access_target = request.access_target();
         Self {

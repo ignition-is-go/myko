@@ -9,10 +9,10 @@ use hyphae::Gettable as _;
 use myko::{CommandContext, CommandError, CommandHandler, MykoApplication};
 use myko_federation::{
     AccessAttempt, AccessOperation, AccessPolicy, AllowAllAccessPolicy, AuthorityPresentation,
-    BatchId, ChangeBatch, CommandClient as _, CommandId, CommandRequest, CommandState,
-    CommandWatchingClient as _, DelegationId, MykoService, Node as FederationNode, NodeId,
-    Principal, PrincipalId, ProvenanceHop, ProvenanceOperation, ReplicationSelection, ScopeId,
-    ServiceId, SubscriptionLiveness,
+    AuthorityUnavailable, AuthorizationDecision, BatchId, ChangeBatch, CommandClient as _,
+    CommandId, CommandRequest, CommandState, CommandWatchingClient as _, DelegationId, MykoService,
+    Node as FederationNode, NodeId, Principal, PrincipalId, ProvenanceHop, ProvenanceOperation,
+    ReplicationSelection, ScopeId, ServiceId, SubscriptionLiveness,
 };
 use myko_iroh::{IrohReplicator, SecretKey, endpoint_principal_id};
 use myko_items::{ItemMutation, myko_command, myko_item, myko_service};
@@ -102,8 +102,14 @@ impl CommandHandler for RemoteLifecycleCommand {
 struct DenyAllPolicy;
 
 impl AccessPolicy for DenyAllPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Err("test policy denies native access".to_owned())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        Ok(AuthorizationDecision::from_rule(
+            request,
+            Err("test policy denies native access".to_owned()),
+        ))
     }
 }
 
@@ -113,12 +119,15 @@ struct RecordingAllowPolicy {
 }
 
 impl AccessPolicy for RecordingAllowPolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
         self.requests
             .lock()
-            .map_err(|_| "recording-policy lock is poisoned".to_owned())?
+            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
             .push(request.clone());
-        Ok(())
+        AllowAllAccessPolicy.decide(request)
     }
 }
 

@@ -789,55 +789,14 @@ impl AccessAttempt {
 
 /// Pluggable authorization decision shared by transport adapters.
 pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
-    /// Authorizes one authenticated request before history or state is exposed.
-    ///
-    /// # Errors
-    ///
-    /// Returns a public-safe denial reason when access is not granted.
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String>;
-
     /// Returns a first-class permit, deny, or durable challenge decision.
     ///
-    /// Simple policies may implement `authorize`; their result is promoted to
-    /// a structured decision and never treats an error as a permit.
-    fn decide(&self, request: &AccessAttempt) -> AuthorizationDecision {
-        match self.authorize(request) {
-            Ok(()) => AuthorizationDecision::Permit(PermitDecision {
-                report: AuthorizationReport {
-                    evaluated_at: Utc::now(),
-                    principal: request.presentation.principal.clone(),
-                    executor: request.presentation.executor.clone(),
-                    operation: request.operation,
-                    explanations: vec![AuthorizationExplanation {
-                        code: "simple_policy_permit".to_owned(),
-                        message: "authorized by the access policy".to_owned(),
-                        grant_id: None,
-                        delegation_id: None,
-                        obligation_id: None,
-                        constraint: None,
-                    }],
-                },
-                lease: None,
-            }),
-            Err(message) => AuthorizationDecision::Deny(DenyDecision {
-                report: AuthorizationReport {
-                    evaluated_at: Utc::now(),
-                    principal: request.presentation.principal.clone(),
-                    executor: request.presentation.executor.clone(),
-                    operation: request.operation,
-                    explanations: vec![AuthorizationExplanation {
-                        code: "simple_policy_deny".to_owned(),
-                        message,
-                        grant_id: None,
-                        delegation_id: None,
-                        obligation_id: None,
-                        constraint: None,
-                    }],
-                },
-                visibility: ResourceVisibility::Unauthorized,
-            }),
-        }
-    }
+    /// # Errors
+    /// Returns unavailable authority separately from any policy decision.
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable>;
 
     /// Returns the shared reactive revision for facts that may alter existing
     /// decisions. Myko subscribes directly to this Hyphae cell; policies do
@@ -858,13 +817,9 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
         request: &AccessAttempt,
         selection: &ReplicationSelection,
         _topology: &ScopeTopology,
-    ) -> Result<ReplicationSelection, AuthorizationDecision> {
-        let decision = self.decide(request);
-        if decision.is_permit() {
-            Ok(selection.clone())
-        } else {
-            Err(decision)
-        }
+    ) -> Result<ReplicationSelection, AuthorizationFailure> {
+        self.decide(request)?.into_permit()?;
+        Ok(selection.clone())
     }
 
     /// Records an approval only when the transport executor and authority
@@ -880,8 +835,8 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
         presentation: &AuthorityPresentation,
         _challenge_id: &ChallengeId,
         _approved: bool,
-    ) -> Result<ApprovalDecision, AuthorizationDecision> {
-        Err(AuthorizationDecision::Deny(DenyDecision {
+    ) -> Result<ApprovalDecision, AuthorizationFailure> {
+        Err(AuthorizationFailure::Deny(Box::new(DenyDecision {
             report: AuthorizationReport {
                 evaluated_at: Utc::now(),
                 principal: presentation.principal.clone(),
@@ -897,7 +852,7 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
                 }],
             },
             visibility: ResourceVisibility::Unbound,
-        }))
+        })))
     }
 
     /// Registers one opaque application capability before grants may cite it.
@@ -916,19 +871,22 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
 }
 
 impl AccessPolicy for ScopeGrantPolicy {
-    fn authorize(&self, request: &AccessAttempt) -> Result<(), String> {
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
         let selections = request.scope_selections();
-        if !selections.is_empty()
+        let rule = if !selections.is_empty()
             && selections.iter().all(|selection| {
                 self.grants
                     .iter()
                     .any(|grant| grant.authorizes_request(request) && grant.covers(selection))
-            })
-        {
+            }) {
             Ok(())
         } else {
             Err("scope grant does not permit this operation".to_owned())
-        }
+        };
+        Ok(AuthorizationDecision::from_rule(request, rule))
     }
 }
 
@@ -941,8 +899,11 @@ impl AccessPolicy for ScopeGrantPolicy {
 pub struct AllowAllAccessPolicy;
 
 impl AccessPolicy for AllowAllAccessPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Ok(())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        Ok(AuthorizationDecision::from_rule(request, Ok(())))
     }
 }
 
@@ -956,7 +917,13 @@ impl AccessPolicy for AllowAllAccessPolicy {
 pub struct DenyAllAccessPolicy;
 
 impl AccessPolicy for DenyAllAccessPolicy {
-    fn authorize(&self, _request: &AccessAttempt) -> Result<(), String> {
-        Err("this Myko node does not serve application or federation data".to_owned())
+    fn decide(
+        &self,
+        request: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        Ok(AuthorizationDecision::from_rule(
+            request,
+            Err("this Myko node does not serve application or federation data".to_owned()),
+        ))
     }
 }

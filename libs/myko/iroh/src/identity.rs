@@ -92,6 +92,8 @@ pub enum IrohReplicationError {
         decision: Box<myko_federation::AuthorizationDecision>,
         message: String,
     },
+    #[error("authority unavailable: {0}")]
+    AuthorityUnavailable(myko_federation::AuthorityUnavailable),
 }
 
 #[must_use]

@@ -3,15 +3,16 @@ use super::{
     CommandId, CommandResponse, CommandSnapshot, CommandStateClient, CommandStatePageFuture,
     CommandStateRequest, CommandStateSnapshot, CommandStateStream, CommandSubmission,
     CommandSubscription, CommandSubscriptionFuture, CommandWatchFuture, CommandWatchingClient,
-    Connection, EndpointAddr, FederatedSession, HandlerClientError, HandlerConnection,
-    HandlerConnector, HandlerFrame, HandlerRequest, IrohReplicationError, ItemClient,
-    ItemProjection, ItemQuery, ItemQueryResult, ItemQuerySnapshot, ItemQueryStream,
-    ItemQueryUpdate, ItemStatePageFuture, ItemStateRequest, ItemStateSnapshot, JoinHandle,
-    LiveSubscription, LiveSubscriptionState, MYKO_REPLICATION_ALPN, MykoClient, Node, NodeId,
-    NodeRequestEnvelope, ProvenanceHop, ReconnectPolicy, RecvStream, ReplicationCursorKey,
-    ReplicationCursorStore, ReplicationFrame, ReplicationRequest, ReplicationSelection, Router,
-    ScopeId, SubscriptionLiveness, authorization_error, live_subscription, pairing,
-    read_command_frame, read_frame, write_request_envelope, write_request_with_authority,
+    Connection, ControlBallot, ControlHead, ControlValue, EndpointAddr, FederatedSession,
+    HandlerClientError, HandlerConnection, HandlerConnector, HandlerFrame, HandlerRequest,
+    IrohReplicationError, ItemClient, ItemProjection, ItemQuery, ItemQueryResult,
+    ItemQuerySnapshot, ItemQueryStream, ItemQueryUpdate, ItemStatePageFuture, ItemStateRequest,
+    ItemStateSnapshot, JoinHandle, LiveSubscription, LiveSubscriptionState, MYKO_REPLICATION_ALPN,
+    MykoClient, Node, NodeId, NodeRequestEnvelope, ProvenanceHop, ReconnectPolicy, RecvStream,
+    ReplicationCursorKey, ReplicationCursorStore, ReplicationFrame, ReplicationRequest,
+    ReplicationSelection, Router, ScopeId, SignedControlProposal, SignedControlVote,
+    SubscriptionLiveness, authorization_error, live_subscription, pairing, read_command_frame,
+    read_frame, write_request_envelope, write_request_with_authority,
 };
 /// Running Iroh endpoint that serves and pulls Myko replication batches.
 #[derive(Debug, Clone)]
@@ -363,9 +364,118 @@ impl IrohCommandClient {
         match frame {
             ReplicationFrame::Approval { decision } => Ok(*decision),
             ReplicationFrame::Authorization { decision } => Err(authorization_error(decision)),
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                Err(IrohReplicationError::AuthorityUnavailable(reason))
+            }
             ReplicationFrame::Error { message } => Err(IrohReplicationError::Stream(message)),
             _ => Err(IrohReplicationError::Stream(
                 "peer returned a non-approval frame".to_owned(),
+            )),
+        }
+    }
+
+    /// Requests a durable prepare vote from an authenticated controller endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the peer is unreachable, authorization is denied,
+    /// authority coordination is unavailable, or the response is malformed.
+    pub async fn prepare_control(
+        &self,
+        head: ControlHead,
+        ballot: ControlBallot,
+    ) -> Result<SignedControlVote, IrohReplicationError> {
+        let frame = self
+            .replicator
+            .remote_single_frame(
+                self.peer.clone(),
+                ReplicationRequest::ControlPrepare { head, ballot },
+                self.authority.clone(),
+            )
+            .await?;
+        match frame {
+            ReplicationFrame::ControlVote { vote } => Ok(*vote),
+            ReplicationFrame::Authorization { decision } => Err(authorization_error(decision)),
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                Err(IrohReplicationError::AuthorityUnavailable(reason))
+            }
+            ReplicationFrame::Error { message } => Err(IrohReplicationError::Stream(message)),
+            _ => Err(IrohReplicationError::Stream(
+                "peer returned a non-control-vote frame".to_owned(),
+            )),
+        }
+    }
+
+    /// Requests a durable proposal from an authenticated controller endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the peer is unreachable, authorization is denied,
+    /// authority coordination is unavailable, or the response is malformed.
+    pub async fn propose_control(
+        &self,
+        head: ControlHead,
+        ballot: ControlBallot,
+        promises: Vec<SignedControlVote>,
+        value: ControlValue,
+    ) -> Result<SignedControlProposal, IrohReplicationError> {
+        let frame = self
+            .replicator
+            .remote_single_frame(
+                self.peer.clone(),
+                ReplicationRequest::ControlPropose {
+                    head,
+                    ballot,
+                    promises,
+                    value,
+                },
+                self.authority.clone(),
+            )
+            .await?;
+        match frame {
+            ReplicationFrame::ControlProposal { proposal } => Ok(*proposal),
+            ReplicationFrame::Authorization { decision } => Err(authorization_error(decision)),
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                Err(IrohReplicationError::AuthorityUnavailable(reason))
+            }
+            ReplicationFrame::Error { message } => Err(IrohReplicationError::Stream(message)),
+            _ => Err(IrohReplicationError::Stream(
+                "peer returned a non-control-proposal frame".to_owned(),
+            )),
+        }
+    }
+
+    /// Requests a durable accept vote from an authenticated controller endpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the peer is unreachable, authorization is denied,
+    /// authority coordination is unavailable, or the response is malformed.
+    pub async fn accept_control(
+        &self,
+        head: ControlHead,
+        proposal: SignedControlProposal,
+    ) -> Result<SignedControlVote, IrohReplicationError> {
+        let frame = self
+            .replicator
+            .remote_single_frame(
+                self.peer.clone(),
+                ReplicationRequest::ControlAccept {
+                    head,
+                    proposal: Box::new(proposal),
+                },
+                self.authority.clone(),
+            )
+            .await?;
+        match frame {
+            ReplicationFrame::ControlVote { vote } => Ok(*vote),
+            ReplicationFrame::Authorization { decision } => Err(authorization_error(decision)),
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                Err(IrohReplicationError::AuthorityUnavailable(reason))
+            }
+            ReplicationFrame::Error { message } => Err(IrohReplicationError::Stream(message)),
+            _ => Err(IrohReplicationError::Stream(
+                "peer returned a non-control-vote frame".to_owned(),
             )),
         }
     }

@@ -3,10 +3,10 @@
 use std::{future::Future, sync::Arc};
 
 use myko_federation::{
-    LiveCollection, LiveCollectionHandle, LiveCollectionState, LiveCollectionWriter,
-    LiveSubscription, LiveSubscriptionHandle, LiveSubscriptionState, LiveSubscriptionWriter,
-    LogPosition, NodeId, ReconnectPolicy, ScopeId, SubscriptionLiveness, live_collection,
-    live_subscription,
+    AuthorityUnavailable, LiveCollection, LiveCollectionHandle, LiveCollectionState,
+    LiveCollectionWriter, LiveSubscription, LiveSubscriptionHandle, LiveSubscriptionState,
+    LiveSubscriptionWriter, LogPosition, NodeId, ReconnectPolicy, ScopeId, SubscriptionLiveness,
+    live_collection, live_subscription,
 };
 use myko_wire::{ErasedHandlerState, ErasedViewDelta, HandlerRequest, HandlerStreamRevision};
 use serde::de::DeserializeOwned;
@@ -35,13 +35,15 @@ pub enum HandlerClientError {
     Transport(String),
     #[error("durable handler protocol failed: {0}")]
     Protocol(String),
+    #[error("authority unavailable: {0}")]
+    AuthorityUnavailable(AuthorityUnavailable),
     #[error("durable handler value decoding failed: {0}")]
     Decode(#[from] serde_json::Error),
 }
 
 impl HandlerClientError {
     const fn is_recoverable(&self) -> bool {
-        matches!(self, Self::Transport(_))
+        matches!(self, Self::Transport(_) | Self::AuthorityUnavailable(_))
     }
 }
 

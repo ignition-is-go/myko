@@ -1135,7 +1135,7 @@ mod tests {
     };
 
     use autosocket::{SocketConnectionStatus, SocketTransport, WsFrame};
-    use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, Mutable};
+    use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, Mutable, Watchable as _};
 
     use super::apply_incremental_map_update;
     #[cfg(feature = "demo")]
@@ -1146,6 +1146,23 @@ mod tests {
         test_util::scheduler_test_serial,
         wire::{QueryWindow, QueryWindowUpdate},
     };
+
+    fn wait_for_readiness(ready: &Cell<bool, CellImmutable>, expected: bool) {
+        let (sender, receiver) = flume::bounded(1);
+        let guard = ready.subscribe(move |signal| {
+            if let hyphae::Signal::Value(value) = signal
+                && **value == expected
+            {
+                let _sent = sender.try_send(());
+            }
+        });
+        assert_eq!(
+            receiver.recv_timeout(std::time::Duration::from_secs(2)),
+            Ok(()),
+            "query readiness did not become {expected}"
+        );
+        drop(guard);
+    }
 
     struct MockTransport {
         _serial: crate::test_util::SchedulerTestPermit,
@@ -1294,6 +1311,7 @@ mod tests {
             }
         });
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(initial.to_string()));
+        wait_for_readiness(watch.ready(), true);
         assert!(watch.ready().get());
         assert_eq!(watch.map().snapshot().len(), 1);
 
@@ -1302,13 +1320,13 @@ mod tests {
         transport.set_status(SocketConnectionStatus::Connected(
             "ws://reconnected".to_owned(),
         ));
+        wait_for_readiness(watch.ready(), false);
         assert!(!watch.ready().get());
 
-        let reconnected_frames = transport
-            .sent_frames()
-            .into_iter()
-            .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query")))
-            .collect::<Vec<_>>();
+        let reconnected_frames = transport.wait_for_sent_frames(
+            2,
+            |frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query")),
+        );
         assert_eq!(reconnected_frames.len(), 2);
         assert!(matches!(
             reconnected_frames.as_slice(),
@@ -1334,6 +1352,7 @@ mod tests {
         });
         MykoClient::handle_frame(&client.inner, &WsFrame::Text(restored.to_string()));
 
+        wait_for_readiness(watch.ready(), true);
         assert!(watch.ready().get());
         let snapshot = watch.map().snapshot();
         assert_eq!(snapshot.len(), 1);

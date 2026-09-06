@@ -1,4 +1,5 @@
 use super::*;
+use myko::common::with_id::WithId as _;
 
 /// Durable authority entities. All records share one realm scope so evaluation
 /// and consumption commit atomically within one Myko service.
@@ -129,14 +130,22 @@ impl ViewHandler for AuthorityGrantsView {
     fn build_cell(
         context: ViewBuildArgs<Self>,
     ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
-        myko::view::LocalView::new({
-            myko::item::typed_map_arc_from_any_item::<GrantRecord>(
-                context
-                    .federated_items::<GrantRecord>()
-                    .expect("validated authority-grant federation source"),
-                "AuthorityGrantsView",
-            )
-        })
+        let source_node = context.view.source_node;
+        let scope = ScopeSelection::Exact(authority_realm_scope(&context.view.realm_id));
+        myko::view::RetainedView::new(
+            context
+                .sourced_snapshots_selected::<GrantRecord>(scope)
+                .expect("validated authority-grant federation source")
+                .map_value(move |rows| {
+                    rows.iter()
+                        .filter(|(key, _record)| key.source_node == source_node)
+                        .map(|(_key, record)| {
+                            let record = Arc::new(record.item.clone());
+                            (record.id(), record)
+                        })
+                        .collect()
+                }),
+        )
     }
 }
 

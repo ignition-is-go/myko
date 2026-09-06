@@ -226,6 +226,9 @@ pub async fn read_frame(
             ReplicationFrame::Authorization { decision } => {
                 return Err(authorization_error(decision));
             }
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                return Err(IrohReplicationError::AuthorityUnavailable(reason));
+            }
             frame => return Ok(frame),
         }
     }
@@ -1017,7 +1020,10 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Authorization { .. }
+            | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a live event before its source identity".to_owned(),
@@ -1094,7 +1100,10 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Authorization { .. }
+            | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent an unexpected frame for a scope catalog".to_owned(),
@@ -1164,7 +1173,10 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Authorization { .. }
+            | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a batch before its source identity".to_owned(),
@@ -1187,7 +1199,10 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Authorization { .. }
+            | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. }
             | ReplicationFrame::Error { .. } => {
                 return Err(IrohReplicationError::Stream(
@@ -1311,6 +1326,23 @@ impl IrohReplicator {
         scope_id: ScopeId,
         checkpoint: Option<ScopedReplicationCheckpoint>,
     ) -> Result<ScopedReplicationReport, IrohReplicationError> {
+        Self::pull_scope_on(
+            &self.node,
+            self.router.endpoint(),
+            peer,
+            scope_id,
+            checkpoint,
+        )
+        .await
+    }
+
+    pub(super) async fn pull_scope_on(
+        node: &Node,
+        endpoint: &Endpoint,
+        peer: EndpointAddr,
+        scope_id: ScopeId,
+        checkpoint: Option<ScopedReplicationCheckpoint>,
+    ) -> Result<ScopedReplicationReport, IrohReplicationError> {
         if checkpoint
             .as_ref()
             .is_some_and(|checkpoint| checkpoint.scope_id != scope_id)
@@ -1320,29 +1352,25 @@ impl IrohReplicator {
             ));
         }
         let after = checkpoint.as_ref().and_then(|value| value.position);
-        let mut batch = self
-            .fetch_scoped_batch(peer.clone(), scope_id.clone(), after)
-            .await?;
+        let mut batch =
+            Self::fetch_scoped_batch(endpoint, peer.clone(), scope_id.clone(), after).await?;
         if checkpoint
             .as_ref()
             .is_some_and(|value| value.source_node != batch.source_node)
         {
-            batch = self.fetch_scoped_batch(peer, scope_id, None).await?;
+            batch = Self::fetch_scoped_batch(endpoint, peer, scope_id, None).await?;
         }
-        self.node
-            .ingest_scoped_batch(batch)
+        node.ingest_scoped_batch(batch)
             .map_err(IrohReplicationError::Ingest)
     }
 
     async fn fetch_scoped_batch(
-        &self,
+        endpoint: &Endpoint,
         peer: EndpointAddr,
         scope_id: ScopeId,
         after: Option<LogPosition>,
     ) -> Result<ScopedReplicationBatch, IrohReplicationError> {
-        let connection = self
-            .router
-            .endpoint()
+        let connection = endpoint
             .connect(peer, MYKO_REPLICATION_ALPN)
             .await
             .map_err(|error| IrohReplicationError::Endpoint(error.to_string()))?;
@@ -1379,7 +1407,10 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Authorization { .. }
+            | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a scoped batch before its source identity".to_owned(),
@@ -1402,7 +1433,10 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Authorization { .. }
+            | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. }
             | ReplicationFrame::Error { .. } => {
                 return Err(IrohReplicationError::Stream(
@@ -1470,6 +1504,9 @@ impl IrohReplicator {
             ReplicationFrame::Authorization { decision } => {
                 return Err(authorization_error(decision));
             }
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                return Err(IrohReplicationError::AuthorityUnavailable(reason));
+            }
             ReplicationFrame::Error { message } => {
                 return Err(IrohReplicationError::Stream(format!(
                     "remote command failed: {message}"
@@ -1489,6 +1526,8 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a replication frame for a command request".to_owned(),
@@ -1539,6 +1578,9 @@ impl IrohReplicator {
             ReplicationFrame::CommandState { page } => *page,
             ReplicationFrame::Authorization { decision } => {
                 return Err(authorization_error(decision));
+            }
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                return Err(IrohReplicationError::AuthorityUnavailable(reason));
             }
             ReplicationFrame::Error { message } => {
                 return Err(IrohReplicationError::Stream(format!(
@@ -1602,6 +1644,9 @@ impl IrohReplicator {
             ReplicationFrame::Authorization { decision } => {
                 return Err(authorization_error(decision));
             }
+            ReplicationFrame::AuthorityUnavailable { reason } => {
+                return Err(IrohReplicationError::AuthorityUnavailable(reason));
+            }
             ReplicationFrame::Hello { .. }
             | ReplicationFrame::Batch { .. }
             | ReplicationFrame::ScopedBatch { .. }
@@ -1616,6 +1661,8 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a replication frame for an item query".to_owned(),
@@ -2047,7 +2094,10 @@ impl IrohReplicator {
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
             | ReplicationFrame::Authorization { .. }
+            | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
+            | ReplicationFrame::ControlVote { .. }
+            | ReplicationFrame::ControlProposal { .. }
             | ReplicationFrame::Live { .. } => {
                 return Err(IrohReplicationError::Stream(
                     "peer sent a batch before its source identity".to_owned(),
