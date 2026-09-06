@@ -152,6 +152,10 @@ Model/tool execution remains synchronous after claims finish, and the public
 pool methods document their blocking-thread requirement. Completion, failure,
 and tool lifecycle commands still need migration. This is not certified-policy
 or persisted scope-recovery evidence.
+The claim change is pushed and synced at Forrest `c9ecc9c` and Myko `18975f14`.
+The expanded retained-completion verifier passed 32 test executions in
+`/tmp/forrest-agent-claim-verifier.log`. All 174 Mac workspace tests, strict
+Clippy, and formatting passed in `/tmp/forrest-agent-claim-mac-validation.log`.
 
 The node-effect caller migration passed the full Forrest workspace tests,
 formatting, and strict Clippy. Its focused verifier checks pending acceptance,
