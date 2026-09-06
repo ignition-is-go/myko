@@ -34,6 +34,7 @@ mod approval;
 mod recovery;
 mod revalidation;
 mod runtime;
+mod selection;
 pub use revalidation::CoordinatedAuthorityRevalidation;
 pub use runtime::{CertifiedRuntimePolicy, PreparedAuthorityGuard, PreparedAuthorityRuntime};
 

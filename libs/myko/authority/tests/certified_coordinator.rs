@@ -41,6 +41,8 @@ type TestResult = Result<(), Box<dyn Error>>;
 mod certified_access;
 #[path = "support/certified_approval.rs"]
 mod certified_approval;
+#[path = "support/certified_selection.rs"]
+mod certified_selection;
 #[path = "support/certified_streams.rs"]
 mod certified_streams;
 #[path = "support/prepared_authority_lifecycle.rs"]
@@ -268,6 +270,26 @@ fn install_obligated_grant(
     scope: ScopeId,
     obligations: impl IntoIterator<Item = myko_federation::Obligation>,
 ) -> Result<(ControlHead, Principal, ScopeId), Box<dyn Error>> {
+    let (reader, scope) = record_obligated_grant(a, scope, obligations)?;
+    let selected = authority_events(a)?;
+    let value = AuthoritySelection::new(CommandId::new(), &selected)?.control_value()?;
+    let head = choose_selection_with_anchor(
+        a,
+        b,
+        selected_anchor.clone(),
+        a_key,
+        b_key,
+        selected_anchor.genesis(),
+        &value,
+    )?;
+    Ok((head, reader, scope))
+}
+
+fn record_obligated_grant(
+    a: &Node,
+    scope: ScopeId,
+    obligations: impl IntoIterator<Item = myko_federation::Obligation>,
+) -> Result<(Principal, ScopeId), Box<dyn Error>> {
     let app = AuthorityPolicy::install(MykoApplication::new())?;
     let policy = Arc::new(AuthorityPolicy::new(
         ApplicationHost::new(a.clone(), app)?,
@@ -316,19 +338,8 @@ fn install_obligated_grant(
             max_uses: Some(1),
         },
     )?;
-    let selected = authority_events(a)?;
-    let value = AuthoritySelection::new(CommandId::new(), &selected)?.control_value()?;
-    let head = choose_selection_with_anchor(
-        a,
-        b,
-        selected_anchor.clone(),
-        a_key,
-        b_key,
-        selected_anchor.genesis(),
-        &value,
-    )?;
     drop(policy);
-    Ok((head, reader, scope))
+    Ok((reader, scope))
 }
 
 fn endpoint(

@@ -72,6 +72,30 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+The coordinator now certifies existing authority records through
+`certify_selection`. Construct an `AuthoritySelection` with a stable operation
+identity and retained events, then submit it to the coordinator. Exact retries
+recover the original historical head, including after later choices and Redb
+reopen. Reusing the operation with different records fails. Certification does
+not rewrite accepted events or grant live serving permission.
+
+Native controller tests cover quorum outage, recovery, immutable record checks,
+missing bodies, causal gaps, wrong realms, and recovery of an earlier accepted
+value before choosing the requested selection. The authority gate passed 75
+tests, strict Clippy, and formatting. Forrest's locked workspace all-target check
+also passed. Evidence is in `/tmp/myko-certified-selection-gate.log`,
+`/tmp/myko-certified-selection-strict-final.log`,
+`/tmp/myko-certified-selection-fmt-check.log`, and
+`/tmp/forrest-certified-selection-check.log`.
+
+This supplies the missing record-selection API for startup. Production still
+uses the node-local authority policy. Controller configuration, startup worker
+ownership, selection of subsequent administration records, and policy installation
+remain unfinished. No C01-C18 requirement is closed by this checkpoint. The Mac
+is reachable again with clean checkouts; checkpoint sync is pending.
+
+### Previous scoped-stream checkpoint
+
 This checkpoint extends certified access to scoped item and handler streams.
 The server gives each open a new admission identity. Continuations recover that
 certified admission and freshly revalidate it without spending another grant use.

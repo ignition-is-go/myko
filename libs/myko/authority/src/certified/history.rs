@@ -623,6 +623,24 @@ impl AuthorityHistory {
         Ok(Some((decision, evidence.clone())))
     }
 
+    pub(super) fn selection_head_at(
+        &self,
+        head: ControlHead,
+        selection: &AuthoritySelection,
+    ) -> Result<Option<ControlHead>, String> {
+        self.context_at(head)?;
+        let Some(evidence) = self
+            .chain
+            .operation_evidence_at(head, selection.operation())?
+        else {
+            return Ok(None);
+        };
+        if evidence.proposal().message.value != selection.control_value()? {
+            return Err("authority operation is already bound to another selection".to_owned());
+        }
+        Ok(Some(evidence.head()))
+    }
+
     /// Plan a new certified check of an already consumed, exact effect.
     /// No additional use or lease is created. This historical plan is not a
     /// live permit until quorum coordination and use-time checks succeed.
