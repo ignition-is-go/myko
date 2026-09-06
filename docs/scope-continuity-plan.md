@@ -131,6 +131,13 @@ workspace tests, strict workspace Clippy, and formatting passed in
 `/tmp/forrest-network-workspace.log`, `/tmp/forrest-network-strict.log`, and
 `/tmp/forrest-network-fmt-check.log`. These are raw-authority tests, not evidence
 of certified production startup or scope churn.
+Both repositories were pushed and synced to the Mac at Forrest `5edd01d` and
+Myko `70489faf`. Its full 172-test workspace run, strict Clippy, and formatting
+also passed in `/tmp/forrest-network-mac-validation.log`; no daemon or watcher
+was manually controlled. The next local regression reproduces model execution
+bypassing retained task-claim dispatch in `/tmp/forrest-agent-retained-claim-red.log`.
+That test is intentionally failing pending the agent worker migration and is
+not part of the pushed network-monitor checkpoint.
 
 The node-effect caller migration passed the full Forrest workspace tests,
 formatting, and strict Clippy. Its focused verifier checks pending acceptance,
