@@ -5,6 +5,25 @@ use myko_federation::{ApprovalId, ChallengeId, CommandSnapshot, CommandState};
 
 use super::*;
 
+#[path = "certified_approval_native.rs"]
+mod native;
+
+fn obligations(approver: &Principal, names: &[&str]) -> Vec<Obligation> {
+    names
+        .iter()
+        .copied()
+        .map(|id| Obligation {
+            id: ObligationId::new(id),
+            realm_id: realm(),
+            challenge_kind: "approval".to_owned(),
+            prompt: id.to_owned(),
+            approvers: vec![approver.clone()],
+            approval_lifetime_seconds: 300,
+            approval_use_count: 1,
+        })
+        .collect()
+}
+
 async fn challenges(
     a: &Node,
     b: &Node,
@@ -12,15 +31,6 @@ async fn challenges(
     names: &[&str],
 ) -> Result<AuthorityChallenge, Box<dyn Error>> {
     let [a_key, b_key] = keys();
-    let obligations = names.iter().copied().map(|id| Obligation {
-        id: ObligationId::new(id),
-        realm_id: realm(),
-        challenge_kind: "approval".to_owned(),
-        prompt: id.to_owned(),
-        approvers: vec![approver.clone()],
-        approval_lifetime_seconds: 300,
-        approval_use_count: 1,
-    });
     let (head, reader, scope) = install_obligated_grant(
         a,
         b,
@@ -28,7 +38,7 @@ async fn challenges(
         &a_key,
         &b_key,
         ScopeId::new("multiple:data"),
-        obligations,
+        obligations(approver, names),
     )?;
     let command_id = CommandId::new();
     let request = prepare_command_evidence(a, b, reader, scope, command_id)?;

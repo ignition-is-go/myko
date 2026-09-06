@@ -72,6 +72,16 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Native multi-approval coverage now drives both choices through an authenticated
+Iroh client and both controller endpoints through Iroh RPCs. The second controller
+starts without the prepared command and fetches its evidence over scoped native
+replication. The test verifies the authenticated approver, unchanged effect binding,
+immutable approval retry, advancement to the second challenge, and exact commit
+once. No production policy was changed for this checkpoint.
+The expanded gate passes 29 selected tests, five-crate strict checks, and formatting.
+This does not yet prove abrupt node loss or certified authorization for production
+reads and administration.
+
 Saved commands now advance through multiple certified approval challenges. Recovery
 walks same-command continuation records and uses the existing guarded pending-state
 transition for each successor. It retains the saved batch and result, records the
