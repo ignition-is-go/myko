@@ -45,7 +45,7 @@ impl AuthorityDecisionCoordinator {
             let previous = history
                 .decision_at(head, &root)?
                 .ok_or_else(|| "authority continuation has no previous challenge".to_owned())?;
-            if !previous.matches_prepared_request(expected.clone()) {
+            if !previous.matches_retained_request(expected.clone()) {
                 return Err("authority continuation differs from the prepared effect".to_owned());
             }
             if !matches!(

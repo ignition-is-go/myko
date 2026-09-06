@@ -17,16 +17,13 @@ struct CrashAtEffectAuthorization {
 }
 
 impl AccessPolicy for CrashAtEffectAuthorization {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<myko_federation::AuthorizationDecision, myko_federation::AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         if request.authorization_phase == AuthorizationPhase::Effect {
-            *self
-                .observed
-                .lock()
-                .map_err(|_| myko_federation::AuthorityUnavailable::PolicyUnavailable)? =
-                Some(request.clone());
+            let Ok(mut observed) = self.observed.lock() else {
+                return Err(myko_federation::AuthorityUnavailable::PolicyUnavailable).into();
+            };
+            *observed = Some(request.clone());
+            drop(observed);
             resume_unwind(Box::new("crash at effect authorization"));
         }
         AllowAllAccessPolicy.decide(request)

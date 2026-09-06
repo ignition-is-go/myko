@@ -12,10 +12,10 @@ mod challenge;
 mod lifecycle;
 mod policy;
 pub use lifecycle::PreparedAuthorityGuard;
-pub use policy::PreparedEffectPolicy;
+pub use policy::CertifiedRuntimePolicy;
 
-/// Async prepared-effect execution. Admission and reads retain their explicitly
-/// supplied policy; this is not a replacement for certified read authorization.
+/// Async prepared-effect execution with a policy that also certifies scoped item reads.
+/// Other admission and read operations retain their explicitly supplied policy.
 pub struct PreparedAuthorityRuntime {
     coordinator: Arc<AuthorityDecisionCoordinator>,
     wake: flume::Receiver<()>,
@@ -28,7 +28,7 @@ impl PreparedAuthorityRuntime {
     pub fn new(
         coordinator: AuthorityDecisionCoordinator,
         non_effect_policy: Arc<dyn myko_federation::AccessPolicy>,
-    ) -> (Self, Arc<PreparedEffectPolicy>) {
+    ) -> (Self, Arc<CertifiedRuntimePolicy>) {
         let (notify, wake) = flume::bounded(1);
         let coordinator = Arc::new(coordinator);
         (
@@ -36,7 +36,7 @@ impl PreparedAuthorityRuntime {
                 coordinator: coordinator.clone(),
                 wake,
             },
-            Arc::new(PreparedEffectPolicy::new(
+            Arc::new(CertifiedRuntimePolicy::new(
                 non_effect_policy,
                 notify,
                 coordinator,
@@ -134,7 +134,7 @@ impl AuthorityDecisionCoordinator {
         let original = if let Some(original) = history.decision_at(head, &root)? {
             let mut expected = request.request().clone();
             expected.topology = Some(request.topology().clone());
-            if !original.matches_prepared_request(expected) {
+            if !original.matches_retained_request(expected) {
                 return Err(
                     "retained authority decision differs from the prepared effect".to_owned(),
                 );

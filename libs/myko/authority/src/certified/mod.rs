@@ -24,8 +24,8 @@ mod rotation;
 pub use coordinator::{
     AuthorityControllerPrincipal, AuthorityCoordinatorPeer, AuthorityDecisionCoordinator,
     AuthorityRequestSource, CertifiedAuthorityControlEndpoint, CertifiedAuthorityRequest,
-    CoordinatedAuthorityDecision, CoordinatedAuthorityRevalidation, LocalAuthorityPeer,
-    PreparedAuthorityGuard, PreparedAuthorityRuntime, PreparedEffectPolicy,
+    CertifiedRuntimePolicy, CoordinatedAuthorityDecision, CoordinatedAuthorityRevalidation,
+    LocalAuthorityPeer, PreparedAuthorityGuard, PreparedAuthorityRuntime,
 };
 pub use history::{
     AuthorityAnchor, AuthorityApprovalTransition, AuthorityDecisionRevalidation,

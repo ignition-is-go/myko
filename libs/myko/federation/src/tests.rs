@@ -36,10 +36,7 @@ struct ChallengeFirstEffectPolicy {
 }
 
 impl AccessPolicy for NestedScopePolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> crate::PolicyDecision<'a> {
         let rule = if request
             .topology
             .as_ref()
@@ -49,15 +46,12 @@ impl AccessPolicy for NestedScopePolicy {
         } else {
             Err("scope is not established beneath the granted parent".to_owned())
         };
-        Ok(AuthorizationDecision::from_rule(request, rule))
+        Ok(AuthorizationDecision::from_rule(request, rule)).into()
     }
 }
 
 impl AccessPolicy for ChallengeFirstEffectPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> crate::PolicyDecision<'a> {
         if request.authorization_phase != AuthorizationPhase::Effect {
             return AllowAllAccessPolicy.decide(request);
         }
@@ -67,7 +61,11 @@ impl AccessPolicy for ChallengeFirstEffectPolicy {
         }
         *effect = Some(request.clone());
         drop(effect);
-        let AuthorizationDecision::Permit(permit) = AllowAllAccessPolicy.decide(request)? else {
+        let AuthorizationDecision::Permit(permit) = AllowAllAccessPolicy
+            .decide(request)
+            .into_immediate()
+            .unwrap()
+        else {
             return AllowAllAccessPolicy.decide(request);
         };
         Ok(AuthorizationDecision::Challenge {
@@ -83,14 +81,12 @@ impl AccessPolicy for ChallengeFirstEffectPolicy {
             },
             report: permit.report,
         })
+        .into()
     }
 }
 
 impl AccessPolicy for SelectedScopesPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> crate::PolicyDecision<'a> {
         AllowAllAccessPolicy.decide(request)
     }
 
@@ -149,14 +145,20 @@ fn scope_grants_are_directional_and_require_subscription_explicitly() {
         AccessOperation::ReadItems,
         scope_id,
     );
-    assert!(policy.decide(&read).unwrap().is_permit());
+    assert!(policy.decide(&read).into_immediate().unwrap().is_permit());
 
     let mut follow = read.clone();
     follow.operation = AccessOperation::FollowItems;
-    assert!(!policy.decide(&follow).unwrap().is_permit());
+    assert!(!policy.decide(&follow).into_immediate().unwrap().is_permit());
     let mut wrong_principal = read;
     wrong_principal.principal_id = PrincipalId::new("iroh:node-c");
-    assert!(!policy.decide(&wrong_principal).unwrap().is_permit());
+    assert!(
+        !policy
+            .decide(&wrong_principal)
+            .into_immediate()
+            .unwrap()
+            .is_permit()
+    );
 }
 
 #[test]
@@ -222,6 +224,7 @@ fn composite_scope_access_requires_coverage_for_every_selection() {
     assert!(
         ScopeGrantPolicy::new(grants.clone())
             .decide(&request)
+            .into_immediate()
             .unwrap()
             .into_permit()
             .is_err()
@@ -236,6 +239,7 @@ fn composite_scope_access_requires_coverage_for_every_selection() {
     assert!(
         ScopeGrantPolicy::new(grants)
             .decide(&request)
+            .into_immediate()
             .unwrap()
             .is_permit()
     );

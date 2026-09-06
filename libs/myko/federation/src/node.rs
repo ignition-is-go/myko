@@ -1839,7 +1839,7 @@ impl Node {
         if &request.authority.executor.id != authenticated_executor
             || request.authority.principal.id != request.principal_id
         {
-            return DenyAllAccessPolicy.decide(&access);
+            return DenyAllAccessPolicy.decide(&access).into_immediate();
         }
         let Some(policy) = self
             .command_access_policy
@@ -1850,7 +1850,7 @@ impl Node {
         else {
             return Err(AuthorityUnavailable::PolicyUnavailable);
         };
-        policy.decide(&access)
+        policy.decide(&access).into_immediate()
     }
 
     /// Reconstruct the authorization request from a retained prepared command.
@@ -1957,7 +1957,7 @@ impl Node {
         else {
             return Err(AuthorityUnavailable::PolicyUnavailable.into());
         };
-        match policy.decide(&request)? {
+        match policy.decide(&request).into_immediate()? {
             AuthorizationDecision::Permit(_) => {
                 self.commit_prepared_authorization(command.request.id, effect.effect_digest())
             }

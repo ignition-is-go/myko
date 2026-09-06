@@ -109,7 +109,7 @@ fn fixture_with_selection_ids(
         service_id: ServiceId::new("test.service"),
         scope_id: scope,
     };
-    if max_uses.is_none() && !policy.decide(&request)?.is_permit() {
+    if max_uses.is_none() && !policy.decide(&request).into_immediate()?.is_permit() {
         return Err("founder did not authorize its own grant".into());
     }
     let records = source
@@ -208,7 +208,11 @@ fn certified_foreign_grant_is_historical_after_founder_loss_and_reopen() -> Test
     let node = RedbJournal::open_node(&path)?;
     let app = AuthorityPolicy::install(MykoApplication::new())?;
     let policy = AuthorityPolicy::new(ApplicationHost::new(node.clone(), app)?, realm());
-    if policy.decide(&fixture.request)?.is_permit() {
+    if policy
+        .decide(&fixture.request)
+        .into_immediate()?
+        .is_permit()
+    {
         return Err("retained certified history silently changed live local authority".into());
     }
     let history = AuthorityHistory::replay(&node, anchor()?)?;
@@ -224,7 +228,11 @@ fn certified_foreign_grant_is_historical_after_founder_loss_and_reopen() -> Test
     {
         return Err("certified retained grant did not reconstruct historical authority".into());
     }
-    if policy.decide(&fixture.request)?.is_permit() {
+    if policy
+        .decide(&fixture.request)
+        .into_immediate()?
+        .is_permit()
+    {
         return Err("historical assessment installed live permission".into());
     }
     let revoked = history.assess_at(

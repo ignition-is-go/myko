@@ -18,6 +18,7 @@ mod causal;
 mod control;
 mod control_chain;
 pub mod control_quorum;
+mod policy_decision;
 mod prepared_effect;
 mod publication;
 mod reactive;
@@ -33,6 +34,7 @@ pub use control_chain::{
     CertifiedControlChain, CertifiedControlContext, CertifiedControlEvidence, ControlAnchor,
     ControlTransition,
 };
+pub use policy_decision::PolicyDecision;
 pub use prepared_effect::PreparedCommandEffect;
 pub use publication::{LivePublication, LivePublicationStream};
 pub use signed_statement::SignedRetainedHistoryStatement;

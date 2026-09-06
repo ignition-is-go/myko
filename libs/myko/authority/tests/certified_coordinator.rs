@@ -363,15 +363,12 @@ impl ScopedHistoryPolicy {
 }
 
 impl AccessPolicy for ScopedHistoryPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         let result = self
             .permits(request)
             .then_some(())
             .ok_or_else(|| "scope history is not granted to this peer".to_owned());
-        Ok(AuthorizationDecision::from_rule(request, result))
+        Ok(AuthorizationDecision::from_rule(request, result)).into()
     }
 }
 

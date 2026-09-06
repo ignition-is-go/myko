@@ -20,11 +20,8 @@ use myko_items::{ItemMutation, myko_command, myko_service};
 struct ApprovalPolicy;
 
 impl AccessPolicy for ApprovalPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
-        Ok(AuthorizationDecision::from_rule(request, Ok(())))
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+        Ok(AuthorizationDecision::from_rule(request, Ok(()))).into()
     }
 
     fn approve<'a>(
@@ -71,10 +68,7 @@ struct RecoverableAuthorityPolicy {
 }
 
 impl AccessPolicy for RecoverableAuthorityPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         if matches!(
             request.operation,
             AccessOperation::FollowHandler
@@ -85,27 +79,24 @@ impl AccessPolicy for RecoverableAuthorityPolicy {
             let _ignored = self
                 .unavailable_attempts
                 .try_send((request.operation, request.authorization_phase));
-            return Err(AuthorityUnavailable::CoordinationUnavailable);
+            return Err(AuthorityUnavailable::CoordinationUnavailable).into();
         }
         AllowAllAccessPolicy.decide(request)
     }
 }
 
 impl AccessPolicy for PresentationPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         let rule = if request.presentation == self.expected {
-            self.operations
-                .lock()
-                .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
-                .push(request.operation);
+            let Ok(mut operations) = self.operations.lock() else {
+                return Err(AuthorityUnavailable::PolicyUnavailable).into();
+            };
+            operations.push(request.operation);
             Ok(())
         } else {
             Err("authority presentation was not preserved".to_owned())
         };
-        Ok(AuthorizationDecision::from_rule(request, rule))
+        Ok(AuthorizationDecision::from_rule(request, rule)).into()
     }
 }
 

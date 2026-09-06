@@ -102,14 +102,12 @@ impl CommandHandler for RemoteLifecycleCommand {
 struct DenyAllPolicy;
 
 impl AccessPolicy for DenyAllPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         Ok(AuthorizationDecision::from_rule(
             request,
             Err("test policy denies native access".to_owned()),
         ))
+        .into()
     }
 }
 
@@ -119,14 +117,11 @@ struct RecordingAllowPolicy {
 }
 
 impl AccessPolicy for RecordingAllowPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
-        self.requests
-            .lock()
-            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
-            .push(request.clone());
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+        let Ok(mut requests) = self.requests.lock() else {
+            return Err(AuthorityUnavailable::PolicyUnavailable).into();
+        };
+        requests.push(request.clone());
         AllowAllAccessPolicy.decide(request)
     }
 }

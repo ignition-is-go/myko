@@ -72,6 +72,43 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+`AccessPolicy::decide` now returns one `PolicyDecision`: either an immediate result
+or lazy asynchronous coordination. Synchronous local command APIs reject pending
+coordination without polling it. Network access awaits the result without holding
+the policy lock and rejects permission from a policy replaced during the wait.
+The existing policy implementations and callers use this contract directly.
+
+`CertifiedRuntimePolicy` now certifies initial scoped item reads, consumes the
+grant through the control log, and freshly revalidates before returning permission
+to the session. Unsupported item-read forms never use the fallback policy. Effects
+still wake the saved-effect worker. Other operations retain their supplied policy.
+The session regression fails before this change and passes afterward. Its native
+controller version also verifies denial after one use and typed unavailability
+without a page when one controller endpoint is removed.
+
+Run `bash scripts/verify_policy_decisions.sh` to verify the changed policy contract,
+session behavior, synchronous command boundaries, native transports, and certified
+runtime. This is not a production Forrest policy replacement. Other access
+operations, custody, abrupt node loss, and C01-C18 remain unfinished.
+
+The verification script passed all 296 test executions and its five-crate strict
+check. Its final Redb strict check caught an assertion-style lint in the new test.
+After replacing those assertions with descriptive errors, all three Redb authority
+tests and strict all-target checks for Redb and the native node passed. Formatting
+also passed. Evidence is in `/tmp/myko-policy-decisions-gate-cleanup.log`,
+`/tmp/myko-policy-decision-redb-final.log`, and
+`/tmp/myko-policy-decision-fmt-final.log`. This combines the script run with the
+corrected final check, not a claim that the entire script exited successfully.
+
+Forrest's locked workspace tests, all-target check, and strict checks passed in
+`/tmp/forrest-policy-decision-tests.log`, `/tmp/forrest-policy-decision-check.log`,
+and `/tmp/forrest-policy-decision-strict.log`. The Mac SSH preflight still times
+out. The earlier parallel core graph-window failure remains unresolved and is
+outside this targeted gate. Coordinator string errors still map broadly to
+`CoordinationUnavailable`; this checkpoint does not improve their diagnostics.
+
+The following paragraphs describe preceding checkpoints and their limits.
+
 Controller endpoints now certify initial scoped `ReadItems` requests without
 manufacturing a prepared application command. Each voter refreshes scoped evidence
 and supplies its own topology. Unsupported operations and unscoped targets remain

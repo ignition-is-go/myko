@@ -9,7 +9,7 @@ use super::{
     CertifiedAuthorityRequest, ChosenRoundEvidence,
 };
 
-/// A fresh coordinated recheck of one previously consumed effect.
+/// A fresh coordinated recheck of one previously consumed access decision.
 /// This is not a credential that may be cached or used for another request.
 pub struct CoordinatedAuthorityRevalidation {
     head: ControlHead,
@@ -60,12 +60,12 @@ impl CoordinatedAuthorityRevalidation {
 }
 
 impl AuthorityDecisionCoordinator {
-    /// Choose a new revalidation for a previously consumed, exact effect.
+    /// Choose a new revalidation for a previously consumed, exact access request.
     /// Intervening accepted decisions are recovered before replanning. A fresh
     /// operation identity prevents an earlier revalidation from satisfying this call.
     ///
     /// # Errors
-    /// Returns an error for mismatched effects, missing history, unavailable
+    /// Returns an error for mismatched requests, missing history, unavailable
     /// quorums, exhausted rounds, or a lease expiring during coordination.
     pub async fn revalidate(
         &self,
@@ -86,9 +86,9 @@ impl AuthorityDecisionCoordinator {
             let original = history
                 .decision_at(head, &root)?
                 .ok_or_else(|| "authority revalidation has no original decision".to_owned())?;
-            if !original.matches_prepared_request(expected.clone()) {
+            if !original.matches_retained_request(expected.clone()) {
                 return Err(
-                    "authority revalidation request differs from original effect".to_owned(),
+                    "authority revalidation request differs from original access".to_owned(),
                 );
             }
             let revalidation = history.plan_revalidation_at(head, operation, &root, Utc::now())?;

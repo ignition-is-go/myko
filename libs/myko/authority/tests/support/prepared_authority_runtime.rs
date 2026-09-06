@@ -77,7 +77,9 @@ async fn prepared_runtime_resumes_the_real_commit_boundary_after_reopen() -> Tes
     let saved = saved_effect(&a, command_id)?;
     let request = a.prepared_command_access(command_id)?;
     for _ in 0..100 {
-        if policy.decide(&request) != Err(AuthorityUnavailable::CoordinationUnavailable) {
+        if policy.decide(&request).into_immediate()
+            != Err(AuthorityUnavailable::CoordinationUnavailable)
+        {
             return Err("repeated dispatch did not coalesce pending wakeups".into());
         }
     }
@@ -97,7 +99,7 @@ async fn prepared_runtime_resumes_the_real_commit_boundary_after_reopen() -> Tes
         return Err("effect was not consumed before the simulated restart".into());
     }
     drop(runtime);
-    if policy.decide(&request) != Err(AuthorityUnavailable::PolicyUnavailable) {
+    if policy.decide(&request).into_immediate() != Err(AuthorityUnavailable::PolicyUnavailable) {
         return Err("stopped worker left an apparently usable effect policy".into());
     }
     drop(policy);

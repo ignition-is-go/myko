@@ -276,7 +276,7 @@ impl AuthorityDecisionTransition {
         &self.evaluated_at
     }
 
-    pub(super) fn matches_prepared_request(&self, mut request: AccessAttempt) -> bool {
+    pub(super) fn matches_retained_request(&self, mut request: AccessAttempt) -> bool {
         let topology = request.topology.take();
         let mut expected = self.request.clone();
         if self.fulfills.is_some()

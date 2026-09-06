@@ -8,9 +8,9 @@ use std::{
 
 use myko_federation::{
     AccessAttempt, AccessPolicy, AccessTarget, AllowAllAccessPolicy, AuthorityPresentation,
-    AuthorityUnavailable, AuthorizationDecision, AuthorizationPhase, CommandId, CommandRequest,
-    CommandState, Node, NodeError, NodeEvent, PrincipalId, ResourceClaim, ResourceClaimKind,
-    ScopeId, ServiceId, TypedCommandAdmission,
+    AuthorityUnavailable, AuthorizationPhase, CommandId, CommandRequest, CommandState, Node,
+    NodeError, NodeEvent, PrincipalId, ResourceClaim, ResourceClaimKind, ScopeId, ServiceId,
+    TypedCommandAdmission,
 };
 use myko_redb::RedbJournal;
 
@@ -21,12 +21,9 @@ struct AuthorityGate {
 }
 
 impl AccessPolicy for AuthorityGate {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         if request.authorization_phase == self.phase && !self.available.load(Ordering::Acquire) {
-            return Err(AuthorityUnavailable::CoordinationUnavailable);
+            return Err(AuthorityUnavailable::CoordinationUnavailable).into();
         }
         AllowAllAccessPolicy.decide(request)
     }
@@ -47,6 +44,48 @@ fn request(node: &Node) -> CommandRequest {
         command_type: "authority-unavailable-command".to_owned(),
         payload: Vec::new(),
     }
+}
+
+#[derive(Debug, Default)]
+struct CoordinatedAuthorityGate {
+    polled: AtomicBool,
+}
+
+impl AccessPolicy for CoordinatedAuthorityGate {
+    fn decide<'a>(&'a self, _request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+        myko_federation::PolicyDecision::coordinated(async move {
+            self.polled.store(true, Ordering::Release);
+            Err(AuthorityUnavailable::HistoryUnavailable)
+        })
+    }
+}
+
+#[test]
+fn synchronous_submission_does_not_poll_coordinated_authority() -> Result<(), Box<dyn Error>> {
+    let directory = tempfile::tempdir()?;
+    let node = RedbJournal::open_node(directory.path().join("coordinated.redb"))?;
+    let policy = Arc::new(CoordinatedAuthorityGate::default());
+    node.set_command_access_policy(policy.clone())?;
+    let request = request(&node);
+    let id = request.id;
+    if !matches!(
+        node.submit(request),
+        Err(NodeError::AuthorityUnavailable(
+            AuthorityUnavailable::CoordinationUnavailable
+        ))
+    ) {
+        return Err("synchronous submission did not report coordination unavailable".into());
+    }
+    if policy.polled.load(Ordering::Acquire) {
+        return Err("synchronous submission polled coordinated authority".into());
+    }
+    if node.command(id)?.is_some() {
+        return Err("unavailable submission retained a command".into());
+    }
+    if !node.events_after(None)?.is_empty() {
+        return Err("unavailable submission wrote journal events".into());
+    }
+    Ok(())
 }
 
 #[test]

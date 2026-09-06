@@ -1219,7 +1219,7 @@ mod tests {
 
     use myko_federation::{
         AccessAttempt, AccessPolicy, AuthorityPresentation, AuthorityUnavailable,
-        AuthorizationDecision, CommandClient as _, Node, NodeError, PrincipalId, PrincipalKind,
+        CommandClient as _, Node, NodeError, PrincipalId, PrincipalKind,
     };
 
     use super::*;
@@ -1229,11 +1229,11 @@ mod tests {
     struct UnavailablePolicy;
 
     impl AccessPolicy for UnavailablePolicy {
-        fn decide(
-            &self,
-            _request: &AccessAttempt,
-        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
-            Err(AuthorityUnavailable::StateNotCurrent)
+        fn decide<'a>(
+            &'a self,
+            _request: &'a AccessAttempt,
+        ) -> myko_federation::PolicyDecision<'a> {
+            Err(AuthorityUnavailable::StateNotCurrent).into()
         }
     }
 

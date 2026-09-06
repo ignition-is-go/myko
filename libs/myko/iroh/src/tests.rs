@@ -43,11 +43,8 @@ async fn bind_with_secret_allow_all(
 struct ApprovalPolicy;
 
 impl AccessPolicy for ApprovalPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
-        Ok(AuthorizationDecision::from_rule(request, Ok(())))
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+        Ok(AuthorizationDecision::from_rule(request, Ok(()))).into()
     }
 
     fn approve<'a>(
@@ -88,20 +85,17 @@ struct PresentationPolicy {
 }
 
 impl AccessPolicy for PresentationPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         let rule = if request.presentation == self.expected {
-            self.operations
-                .lock()
-                .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
-                .push(request.operation);
+            let Ok(mut operations) = self.operations.lock() else {
+                return Err(AuthorityUnavailable::PolicyUnavailable).into();
+            };
+            operations.push(request.operation);
             Ok(())
         } else {
             Err("authority presentation was not preserved".to_owned())
         };
-        Ok(AuthorizationDecision::from_rule(request, rule))
+        Ok(AuthorizationDecision::from_rule(request, rule)).into()
     }
 }
 
@@ -158,11 +152,8 @@ struct SelectedIntersectionPolicy {
 }
 
 impl AccessPolicy for SelectedIntersectionPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
-        Ok(AuthorizationDecision::from_rule(request, Ok(())))
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+        Ok(AuthorizationDecision::from_rule(request, Ok(()))).into()
     }
 
     fn constrain_replication(
@@ -290,10 +281,7 @@ struct ReadOnlyScopePolicy {
 }
 
 impl AccessPolicy for ReadOnlyScopePolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         let is_read = matches!(
             request.operation,
             AccessOperation::ReadHistory
@@ -310,7 +298,7 @@ impl AccessPolicy for ReadOnlyScopePolicy {
         } else {
             Err("peer has read-only access to one scope".to_owned())
         };
-        Ok(AuthorizationDecision::from_rule(request, rule))
+        Ok(AuthorizationDecision::from_rule(request, rule)).into()
     }
 }
 
@@ -320,10 +308,7 @@ struct ReadScopeSetPolicy {
 }
 
 impl AccessPolicy for ReadScopeSetPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         let permitted = request.operation == AccessOperation::ReadHistory
             && request
                 .scope_id()
@@ -333,7 +318,7 @@ impl AccessPolicy for ReadScopeSetPolicy {
         } else {
             Err("peer cannot read this scope".to_owned())
         };
-        Ok(AuthorizationDecision::from_rule(request, rule))
+        Ok(AuthorizationDecision::from_rule(request, rule)).into()
     }
 }
 
@@ -341,14 +326,12 @@ impl AccessPolicy for ReadScopeSetPolicy {
 struct DenyAllPolicy;
 
 impl AccessPolicy for DenyAllPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         Ok(AuthorizationDecision::from_rule(
             request,
             Err("test policy revoked access".to_owned()),
         ))
+        .into()
     }
 }
 

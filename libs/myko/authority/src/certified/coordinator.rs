@@ -35,7 +35,7 @@ mod recovery;
 mod revalidation;
 mod runtime;
 pub use revalidation::CoordinatedAuthorityRevalidation;
-pub use runtime::{PreparedAuthorityGuard, PreparedAuthorityRuntime, PreparedEffectPolicy};
+pub use runtime::{CertifiedRuntimePolicy, PreparedAuthorityGuard, PreparedAuthorityRuntime};
 
 /// Framework-owned source for evidence used by certified coordination.
 #[derive(Clone)]
@@ -417,16 +417,28 @@ impl CertifiedAuthorityControlEndpoint {
             })?;
         self.refresh_command_evidence(presentation, original.request())
             .await?;
-        let request = self
-            .node
-            .prepared_command_access(revalidation.root().request_id())
-            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
-        if request.authorization_phase != AuthorizationPhase::Effect
-            || !original.matches_prepared_request(request)
-        {
+        let request = if original.request().authorization_phase == AuthorizationPhase::Effect {
+            self.node
+                .prepared_command_access(revalidation.root().request_id())
+                .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?
+        } else if access::is_initial_item_read(original.request()) && !original.is_continuation() {
+            let mut request = original.request().clone();
+            request.topology = Some(
+                self.node
+                    .scope_topology()
+                    .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?,
+            );
+            request
+        } else {
             return Err(control_denial_for_message(
                 presentation,
-                "authority revalidation differs from prepared effect",
+                "authority revalidation requires a prepared effect or initial scoped item read",
+            ));
+        };
+        if !original.matches_retained_request(request) {
+            return Err(control_denial_for_message(
+                presentation,
+                "authority revalidation differs from retained request evidence",
             ));
         }
         let planned = history
@@ -491,7 +503,7 @@ impl CertifiedAuthorityControlEndpoint {
                         "authority continuation has no prior challenge",
                     )
                 })?;
-            if !previous.matches_prepared_request(request) {
+            if !previous.matches_retained_request(request) {
                 return Err(control_denial_for_message(
                     presentation,
                     "authority continuation differs from the saved effect",

@@ -14,8 +14,8 @@ pub use myko::*;
 use hyphae::{Cell, CellImmutable, CellMutable, Mutable as _};
 use myko_federation::{
     AccessAttempt, AccessPolicy, AllowAllAccessPolicy, ApplicationCapability, AuthorityConstraints,
-    AuthorityUnavailable, AuthorizationDecision, AuthorizationPhase, CapabilityId, CommandId,
-    CommandSnapshot, CommandState, Node, NodeEvent, PrincipalId,
+    AuthorityUnavailable, AuthorizationPhase, CapabilityId, CommandId, CommandSnapshot,
+    CommandState, Node, NodeEvent, PrincipalId,
 };
 use myko_redb::RedbJournal;
 
@@ -141,14 +141,12 @@ impl EffectGate {
 }
 
 impl AccessPolicy for EffectGate {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
-        if self.blocks(request)? {
-            return Err(AuthorityUnavailable::CoordinationUnavailable);
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+        match self.blocks(request) {
+            Ok(true) => Err(AuthorityUnavailable::CoordinationUnavailable).into(),
+            Ok(false) => AllowAllAccessPolicy.decide(request),
+            Err(reason) => Err(reason).into(),
         }
-        AllowAllAccessPolicy.decide(request)
     }
 
     fn revision_cell(&self) -> Option<Cell<u64, CellImmutable>> {

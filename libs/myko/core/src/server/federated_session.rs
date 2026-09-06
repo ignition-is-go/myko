@@ -40,6 +40,10 @@ use tokio::{
 };
 use tracing::Instrument as _;
 
+#[cfg(test)]
+#[path = "federated_session/coordinated_policy_tests.rs"]
+mod coordinated_policy_tests;
+
 const MAX_SCOPE_CATALOG_PAGE: usize = 1_024;
 const MAX_LIVE_TOPICS: usize = 256;
 const MAX_LIVE_TOPIC_BYTES: usize = 256;
@@ -597,7 +601,7 @@ impl FederatedSession {
                         | NodeRequest::ControlAccept { .. }
                 )
             {
-                match service.authorize(&principal, &presentation, &request) {
+                match service.authorize(&principal, &presentation, &request).await {
                     Ok(Some(permit)) => {
                         if let Some(lease) = permit.lease.as_ref() {
                             presentation.active_lease = Some(lease.id.clone());
@@ -958,12 +962,15 @@ impl FederatedSession {
         let commands = std::mem::take(&mut page.commands);
         let mut authorized_commands = Vec::with_capacity(commands.len());
         for entry in commands {
-            match self.command_snapshot_authorized(
-                principal,
-                presentation,
-                AccessOperation::ReadCommands,
-                &entry.command,
-            ) {
+            match self
+                .command_snapshot_authorized(
+                    principal,
+                    presentation,
+                    AccessOperation::ReadCommands,
+                    &entry.command,
+                )
+                .await
+            {
                 Ok(true) => authorized_commands.push(entry),
                 Ok(false) => {}
                 Err(reason) => {
@@ -1023,19 +1030,20 @@ impl FederatedSession {
             .map_err(|error| error.to_string())?;
         let mut visible_commands = BTreeMap::new();
         for entry in snapshot.commands {
-            match self.command_snapshot_authorized(
-                &principal,
-                &presentation,
-                AccessOperation::WatchCommands,
-                &entry.command,
-            ) {
+            match self
+                .command_snapshot_authorized(
+                    &principal,
+                    &presentation,
+                    AccessOperation::WatchCommands,
+                    &entry.command,
+                )
+                .await
+            {
                 Ok(true) => {
                     visible_commands.insert(entry.command.request.id.to_string(), entry.command);
                 }
                 Ok(false) => {}
-                Err(reason) => {
-                    return emit(send, NodeFrame::AuthorityUnavailable { reason }).await;
-                }
+                Err(reason) => return emit(send, NodeFrame::AuthorityUnavailable { reason }).await,
             }
         }
         let mut authorization = self.authorization_pulse();
@@ -1054,7 +1062,7 @@ impl FederatedSession {
                             &presentation,
                             AccessOperation::WatchCommands,
                             &entry.command,
-                        ) {
+                        ).await {
                             Ok(true) => allowed.push((command_id, entry.clone())),
                             Ok(false) if visible_commands.contains_key(&command_id) => return Ok(()),
                             Ok(false) => {}
@@ -1087,7 +1095,7 @@ impl FederatedSession {
                                 &principal,
                                 &presentation,
                                 &visible_commands,
-                            ) {
+                            ).await {
                                 return Ok(());
                             }
                         }
@@ -1097,26 +1105,30 @@ impl FederatedSession {
         }
     }
 
-    fn has_revoked_visible_command(
+    async fn has_revoked_visible_command(
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
         visible_commands: &BTreeMap<String, myko_federation::CommandSnapshot>,
     ) -> bool {
-        visible_commands.values().any(|command| {
-            !matches!(
+        for command in visible_commands.values() {
+            if !matches!(
                 self.command_snapshot_authorized(
                     principal,
                     presentation,
                     AccessOperation::WatchCommands,
                     command,
-                ),
+                )
+                .await,
                 Ok(true)
-            )
-        })
+            ) {
+                return true;
+            }
+        }
+        false
     }
 
-    fn command_snapshot_authorized(
+    async fn command_snapshot_authorized(
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
@@ -1143,10 +1155,8 @@ impl FederatedSession {
             authorization_phase: AuthorizationPhase::Continuation,
             topology: self.node.scope_topology().ok(),
         };
-        self.access_policy
-            .read()
-            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
-            .decide(&access)
+        self.policy_decision(&access)
+            .await
             .map(|decision| matches!(decision, AuthorizationDecision::Permit(_)))
     }
 
@@ -1281,11 +1291,6 @@ impl FederatedSession {
                 "scope catalog limit must be between 1 and {MAX_SCOPE_CATALOG_PAGE}"
             ));
         }
-        let policy = self
-            .access_policy
-            .read()
-            .map_err(|_| "access-policy lock is poisoned".to_owned())?
-            .clone();
         let topology = self
             .node
             .scope_topology()
@@ -1310,7 +1315,7 @@ impl FederatedSession {
                     scope_id.clone(),
                 );
                 access.topology = Some(topology.clone());
-                match policy.decide(&access) {
+                match self.policy_decision(&access).await {
                     Ok(AuthorizationDecision::Permit(_)) => {
                         scopes.push(scope_id);
                         if scopes.len() > limit {
@@ -1764,7 +1769,10 @@ impl FederatedSession {
         request: &NodeRequest,
         send: &flume::Sender<NodeFrame>,
     ) -> Result<bool, String> {
-        match self.authorize_continuation(principal, presentation, request) {
+        match self
+            .authorize_continuation(principal, presentation, request)
+            .await
+        {
             Ok(_) => Ok(true),
             Err(failure) => {
                 emit_authorization_failure(send, failure).await?;
@@ -1773,7 +1781,27 @@ impl FederatedSession {
         }
     }
 
-    fn authorize(
+    async fn policy_decision(
+        &self,
+        access: &AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        let policy = self
+            .access_policy
+            .read()
+            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
+            .clone();
+        let decision = policy.decide(access).resolve().await;
+        let current = self
+            .access_policy
+            .read()
+            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?;
+        if !Arc::ptr_eq(&policy, &current) {
+            return Err(AuthorityUnavailable::StateNotCurrent);
+        }
+        decision
+    }
+
+    async fn authorize(
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
@@ -1785,9 +1813,10 @@ impl FederatedSession {
             request,
             AuthorizationPhase::Admission,
         )
+        .await
     }
 
-    fn authorize_continuation(
+    async fn authorize_continuation(
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
@@ -1799,9 +1828,10 @@ impl FederatedSession {
             request,
             AuthorizationPhase::Continuation,
         )
+        .await
     }
 
-    fn authorize_with_phase(
+    async fn authorize_with_phase(
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
@@ -1854,11 +1884,7 @@ impl FederatedSession {
         let operation = access.operation;
         trace_authorization_requirements(&access, authorization_phase);
         let started = std::time::Instant::now();
-        let decision = self
-            .access_policy
-            .read()
-            .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
-            .decide(&access);
+        let decision = self.policy_decision(&access).await;
         if let Ok(decision) = &decision {
             trace_authorization_decision(
                 operation,
@@ -2466,10 +2492,7 @@ mod tests {
     }
 
     impl AccessPolicy for CapturingPolicy {
-        fn decide(
-            &self,
-            request: &AccessAttempt,
-        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
             self.seen.lock().unwrap().push(request.clone());
             let rule = if !self.allow.load(Ordering::Acquire) {
                 Err("revoked".to_owned())
@@ -2483,7 +2506,7 @@ mod tests {
             } else {
                 Ok(())
             };
-            Ok(AuthorizationDecision::from_rule(request, rule))
+            Ok(AuthorizationDecision::from_rule(request, rule)).into()
         }
     }
 
@@ -2559,10 +2582,7 @@ mod tests {
     }
 
     impl AccessPolicy for CatalogEntryPolicy {
-        fn decide(
-            &self,
-            request: &AccessAttempt,
-        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
             let rule = if request.operation == AccessOperation::WatchCommands
                 && request.command_id().is_some()
                 && (!self.entries_allowed
@@ -2574,7 +2594,7 @@ mod tests {
             } else {
                 Ok(())
             };
-            Ok(AuthorizationDecision::from_rule(request, rule))
+            Ok(AuthorizationDecision::from_rule(request, rule)).into()
         }
     }
 
@@ -2583,10 +2603,7 @@ mod tests {
         denied: CommandId,
     }
     impl AccessPolicy for SelectiveCatalogPolicy {
-        fn decide(
-            &self,
-            request: &AccessAttempt,
-        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
             let rule = if request.operation == AccessOperation::WatchCommands
                 && request.command_id() == Some(self.denied)
             {
@@ -2594,7 +2611,7 @@ mod tests {
             } else {
                 Ok(())
             };
-            Ok(AuthorizationDecision::from_rule(request, rule))
+            Ok(AuthorizationDecision::from_rule(request, rule)).into()
         }
     }
 
@@ -2604,14 +2621,11 @@ mod tests {
     }
 
     impl AccessPolicy for TemporarilyUnavailablePolicy {
-        fn decide(
-            &self,
-            request: &AccessAttempt,
-        ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
             if self.unavailable.load(Ordering::Acquire) {
-                Err(AuthorityUnavailable::StateNotCurrent)
+                Err(AuthorityUnavailable::StateNotCurrent).into()
             } else {
-                Ok(AuthorizationDecision::from_rule(request, Ok(())))
+                Ok(AuthorizationDecision::from_rule(request, Ok(()))).into()
             }
         }
     }

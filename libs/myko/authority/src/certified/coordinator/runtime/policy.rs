@@ -3,20 +3,20 @@ use std::sync::Arc;
 use hyphae::{Cell, CellImmutable};
 use myko_federation::{
     AccessAttempt, AccessOperation, AccessPolicy, ApplicationCapability, AuthorityPresentation,
-    AuthorityUnavailable, AuthorizationDecision, AuthorizationFailure, AuthorizationPhase,
-    ChallengeId, PrincipalId, ReplicationSelection, ScopeTopology,
+    AuthorityUnavailable, AuthorizationFailure, AuthorizationPhase, ChallengeId, PrincipalId,
+    ReplicationSelection, ScopeTopology,
 };
 
-/// Defers effect authorization to the certified worker. Other operations use
-/// the explicitly supplied policy and do not gain certified authority semantics.
+/// Certifies initial scoped item reads and defers effects to the certified worker.
+/// Other operations use the explicitly supplied policy without certified semantics.
 #[derive(Debug)]
-pub struct PreparedEffectPolicy {
+pub struct CertifiedRuntimePolicy {
     non_effect: Arc<dyn AccessPolicy>,
     notify: flume::Sender<()>,
     coordinator: Arc<super::AuthorityDecisionCoordinator>,
 }
 
-impl PreparedEffectPolicy {
+impl CertifiedRuntimePolicy {
     pub(super) fn new(
         non_effect: Arc<dyn AccessPolicy>,
         notify: flume::Sender<()>,
@@ -30,25 +30,31 @@ impl PreparedEffectPolicy {
     }
 }
 
-impl AccessPolicy for PreparedEffectPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+impl AccessPolicy for CertifiedRuntimePolicy {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+        if request.operation == AccessOperation::ReadItems {
+            if !super::super::access::is_initial_item_read(request) {
+                return Err(AuthorityUnavailable::PolicyUnavailable).into();
+            }
+            return myko_federation::PolicyDecision::coordinated(async move {
+                self.coordinator.authorize_item_read(request.clone()).await
+            });
+        }
         if request.authorization_phase != AuthorizationPhase::Effect {
             return self.non_effect.decide(request);
         }
         if request.operation != AccessOperation::SubmitCommand || request.command_id().is_none() {
-            return Err(AuthorityUnavailable::PolicyUnavailable);
+            return Err(AuthorityUnavailable::PolicyUnavailable).into();
         }
-        match self.notify.try_send(()) {
+        (match self.notify.try_send(()) {
             Ok(()) | Err(flume::TrySendError::Full(())) => {
                 Err(AuthorityUnavailable::CoordinationUnavailable)
             }
             Err(flume::TrySendError::Disconnected(())) => {
                 Err(AuthorityUnavailable::PolicyUnavailable)
             }
-        }
+        })
+        .into()
     }
 
     fn revision_cell(&self) -> Option<Cell<u64, CellImmutable>> {

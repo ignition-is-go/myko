@@ -7,11 +7,11 @@ use std::{
 };
 
 use myko_federation::{
-    AccessAttempt, AccessPolicy, AllowAllAccessPolicy, AuthorityPresentation,
-    AuthorizationDecision, AuthorizationPhase, BatchId, ChangeBatch, CommandAdmission, CommandId,
-    CommandRequest, CommandSnapshot, CommandState, EventEnvelope, EventJournal, Node, NodeError,
-    NodeEvent, PreparedCommandEffect, PrincipalId, ResourceClaim, ResourceClaimKind, ScopeId,
-    ScopeTopology, ServiceId, StorageIncarnationId, TypedCommandAdmission,
+    AccessAttempt, AccessPolicy, AllowAllAccessPolicy, AuthorityPresentation, AuthorizationPhase,
+    BatchId, ChangeBatch, CommandAdmission, CommandId, CommandRequest, CommandSnapshot,
+    CommandState, EventEnvelope, EventJournal, Node, NodeError, NodeEvent, PreparedCommandEffect,
+    PrincipalId, ResourceClaim, ResourceClaimKind, ScopeId, ScopeTopology, ServiceId,
+    StorageIncarnationId, TypedCommandAdmission,
 };
 use myko_redb::RedbJournal;
 
@@ -157,10 +157,7 @@ struct CountingPermitPolicy {
 }
 
 impl AccessPolicy for CountingPermitPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, myko_federation::AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
         if request.authorization_phase == AuthorizationPhase::Effect {
             self.effect_decisions.fetch_add(1, Ordering::AcqRel);
         }

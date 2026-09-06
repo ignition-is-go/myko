@@ -1,13 +1,63 @@
 use myko_federation::{
-    AccessOperation, AccessTarget, AuthorityPresentation, AuthorityUnavailable,
-    AuthorizationFailure, AuthorizationPhase,
+    AccessAttempt, AccessOperation, AccessTarget, AuthorityPresentation, AuthorityUnavailable,
+    AuthorizationDecision, AuthorizationFailure, AuthorizationPhase, CommandId,
     control_quorum::{ControlHead, ControlValue},
 };
 
 use super::{
-    AuthorityDecisionTransition, AuthorityHistory, CertifiedAuthorityControlEndpoint,
-    control_denial_for_message,
+    AuthorityDecisionCoordinator, AuthorityDecisionTransition, AuthorityHistory,
+    AuthorityRequestSource, CertifiedAuthorityControlEndpoint, control_denial_for_message,
+    runtime::next_counter,
 };
+
+pub(super) fn is_initial_item_read(request: &AccessAttempt) -> bool {
+    request.authorization_phase == AuthorizationPhase::Admission
+        && request.operation == AccessOperation::ReadItems
+        && matches!(
+            request.target,
+            AccessTarget::Scope(_) | AccessTarget::ServiceScope { .. } | AccessTarget::Items { .. }
+        )
+}
+
+impl AuthorityDecisionCoordinator {
+    pub(super) async fn authorize_item_read(
+        &self,
+        access: AccessAttempt,
+    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+        self.synchronize()
+            .await
+            .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
+        let request = AuthorityRequestSource::new(self.observer.clone())
+            .current_request(access)
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        let head = history
+            .retained_head()
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        let counter =
+            next_counter(&history, head).map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        let request_id = CommandId::new();
+        let chosen = self
+            .decide(head, counter, CommandId::new(), request_id, request.clone())
+            .await
+            .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
+        if !chosen.decision().is_permit() {
+            return Ok(chosen.decision().clone());
+        }
+        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        let head = history
+            .retained_head()
+            .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        let counter =
+            next_counter(&history, head).map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
+        self.revalidate(head, counter, request_id, request)
+            .await
+            .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?
+            .into_decision()
+    }
+}
 
 impl CertifiedAuthorityControlEndpoint {
     pub(super) async fn planned_read_value(
@@ -18,16 +68,7 @@ impl CertifiedAuthorityControlEndpoint {
         decision: &AuthorityDecisionTransition,
     ) -> Result<ControlValue, AuthorizationFailure> {
         let request = decision.request();
-        if request.authorization_phase != AuthorizationPhase::Admission
-            || request.operation != AccessOperation::ReadItems
-            || !matches!(
-                request.target,
-                AccessTarget::Scope(_)
-                    | AccessTarget::ServiceScope { .. }
-                    | AccessTarget::Items { .. }
-            )
-            || decision.is_continuation()
-        {
+        if !is_initial_item_read(request) || decision.is_continuation() {
             return Err(control_denial_for_message(
                 presentation,
                 "certified access requires an initial scoped item read",

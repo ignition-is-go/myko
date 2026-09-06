@@ -802,10 +802,7 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
     ///
     /// # Errors
     /// Returns unavailable authority separately from any policy decision.
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable>;
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> PolicyDecision<'a>;
 
     /// Returns the shared reactive revision for facts that may alter existing
     /// decisions. Myko subscribes directly to this Hyphae cell; policies do
@@ -827,7 +824,7 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
         selection: &ReplicationSelection,
         _topology: &ScopeTopology,
     ) -> Result<ReplicationSelection, AuthorizationFailure> {
-        self.decide(request)?.into_permit()?;
+        self.decide(request).into_immediate()?.into_permit()?;
         Ok(selection.clone())
     }
 
@@ -882,10 +879,7 @@ pub trait AccessPolicy: fmt::Debug + Send + Sync + 'static {
 }
 
 impl AccessPolicy for ScopeGrantPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> crate::PolicyDecision<'a> {
         let selections = request.scope_selections();
         let rule = if !selections.is_empty()
             && selections.iter().all(|selection| {
@@ -897,7 +891,7 @@ impl AccessPolicy for ScopeGrantPolicy {
         } else {
             Err("scope grant does not permit this operation".to_owned())
         };
-        Ok(AuthorizationDecision::from_rule(request, rule))
+        Ok(AuthorizationDecision::from_rule(request, rule)).into()
     }
 }
 
@@ -910,11 +904,8 @@ impl AccessPolicy for ScopeGrantPolicy {
 pub struct AllowAllAccessPolicy;
 
 impl AccessPolicy for AllowAllAccessPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
-        Ok(AuthorizationDecision::from_rule(request, Ok(())))
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> crate::PolicyDecision<'a> {
+        Ok(AuthorizationDecision::from_rule(request, Ok(()))).into()
     }
 }
 
@@ -928,13 +919,11 @@ impl AccessPolicy for AllowAllAccessPolicy {
 pub struct DenyAllAccessPolicy;
 
 impl AccessPolicy for DenyAllAccessPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> crate::PolicyDecision<'a> {
         Ok(AuthorizationDecision::from_rule(
             request,
             Err("this Myko node does not serve application or federation data".to_owned()),
         ))
+        .into()
     }
 }

@@ -1,6 +1,118 @@
 use super::*;
 
 #[tokio::test]
+async fn installed_policy_certifies_item_reads_instead_of_using_the_local_fallback() -> TestResult {
+    use myko::server::FederatedSession;
+    use myko_authority::certified::PreparedAuthorityRuntime;
+    use myko_federation::ItemStateRequest;
+    use myko_wire::{NodeFrame, NodeRequest, NodeRequestEnvelope};
+
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("b.redb"))?;
+    let (head, reader, scope) = install_grant(&a, &b)?;
+    let harness = NativeControlHarness::start(
+        a.clone(),
+        b.clone(),
+        authority_realm_scope(&realm()),
+        scope.clone(),
+    )
+    .await?;
+    let coordinator = AuthorityDecisionCoordinator::new(
+        anchor()?,
+        a.clone(),
+        harness.a_binding.clone(),
+        harness.peers(),
+    )?;
+    let (_runtime, policy) =
+        PreparedAuthorityRuntime::new(coordinator, Arc::new(AllowAllAccessPolicy));
+    let session = FederatedSession::new(a.clone(), policy);
+    let request = NodeRequestEnvelope::connected(NodeRequest::ItemState {
+        request: ItemStateRequest {
+            source_node: None,
+            service_id: ServiceId::new("item-read"),
+            scope_id: scope,
+            item_type: "Record".to_owned(),
+            schema_version: 1,
+            snapshot_through: None,
+            after_item_id: None,
+            page_size: 1,
+        },
+    });
+    let outcome = async {
+        let mut first = session.open_authenticated(reader.clone(), request.clone()).await;
+        let frame = tokio::time::timeout(std::time::Duration::from_mins(1), first.recv()).await?;
+        if !matches!(frame, Some(NodeFrame::Authorization { decision }) if decision.is_permit()) {
+            return Err("certified item read was not permitted".into());
+        }
+        if !matches!(first.recv().await, Some(NodeFrame::ItemState { .. })) {
+            return Err("certified item read did not serve its page".into());
+        }
+        if AuthorityHistory::replay(&a, anchor()?)?.retained_head()? == head {
+            return Err("item read used local fallback without certified consumption".into());
+        }
+        let mut second = session.open_authenticated(reader.clone(), request.clone()).await;
+        let frame = tokio::time::timeout(std::time::Duration::from_mins(1), second.recv()).await?;
+        if !matches!(frame, Some(NodeFrame::Authorization { decision }) if matches!(*decision, AuthorizationDecision::Deny(_))) {
+            return Err("second item read bypassed the consumed grant through local fallback".into());
+        }
+        if second.recv().await.is_some() {
+            return Err("denied item read leaked a page".into());
+        }
+        let before_outage = AuthorityHistory::replay(&a, anchor()?)?.retained_head()?;
+        harness.b_transport.sessions().set_authority_control(None)?;
+        let mut unavailable = session.open_authenticated(reader, request).await;
+        let frame = tokio::time::timeout(std::time::Duration::from_mins(1), unavailable.recv()).await?;
+        if !matches!(frame, Some(NodeFrame::AuthorityUnavailable { reason: AuthorityUnavailable::CoordinationUnavailable })) {
+            return Err("missing controller fell back to local item permission".into());
+        }
+        if unavailable.recv().await.is_some()
+            || AuthorityHistory::replay(&a, anchor()?)?.retained_head()? != before_outage {
+            return Err("unavailable read served data or advanced certified history".into());
+        }
+        Ok::<(), Box<dyn Error>>(())
+    }.await;
+    harness.shutdown().await?;
+    outcome
+}
+
+#[test]
+fn runtime_policy_rejects_unsupported_read_forms_without_fallback() -> TestResult {
+    use myko_authority::certified::PreparedAuthorityRuntime;
+
+    let directory = tempfile::tempdir()?;
+    let a = RedbJournal::open_node(directory.path().join("a.redb"))?;
+    let b = RedbJournal::open_node(directory.path().join("b.redb"))?;
+    let (_, reader, scope) = install_grant(&a, &b)?;
+    let (_runtime, policy) =
+        PreparedAuthorityRuntime::new(coordinator(&a, &b)?, Arc::new(AllowAllAccessPolicy));
+    for phase in [AuthorizationPhase::Continuation, AuthorizationPhase::Effect] {
+        let mut invalid = AccessAttempt::scoped(
+            reader.id.clone(),
+            AuthorityPresentation::direct(reader.clone()),
+            AccessOperation::ReadItems,
+            scope.clone(),
+        );
+        invalid.authorization_phase = phase;
+        if policy.decide(&invalid).into_immediate() != Err(AuthorityUnavailable::PolicyUnavailable)
+        {
+            return Err("unsupported read phase used the fallback policy".into());
+        }
+    }
+    let mut unscoped = AccessAttempt::scoped(
+        reader.id.clone(),
+        AuthorityPresentation::direct(reader),
+        AccessOperation::ReadItems,
+        scope,
+    );
+    unscoped.target = AccessTarget::ScopeCatalog;
+    if policy.decide(&unscoped).into_immediate() != Err(AuthorityUnavailable::PolicyUnavailable) {
+        return Err("unscoped item read used the fallback policy".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn controllers_certify_a_read_without_a_prepared_application_command() -> TestResult {
     let directory = tempfile::tempdir()?;
     let a = RedbJournal::open_node(directory.path().join("a.redb"))?;

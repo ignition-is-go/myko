@@ -379,11 +379,8 @@ impl AuthorityPolicy {
 }
 
 impl AccessPolicy for AuthorityPolicy {
-    fn decide(
-        &self,
-        request: &AccessAttempt,
-    ) -> Result<AuthorizationDecision, AuthorityUnavailable> {
-        self.evaluate(request.clone())
+    fn decide<'a>(&'a self, request: &'a AccessAttempt) -> myko_federation::PolicyDecision<'a> {
+        self.evaluate(request.clone()).into()
     }
 
     fn revision_cell(&self) -> Option<Cell<u64, CellImmutable>> {
