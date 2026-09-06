@@ -133,9 +133,16 @@ view. All 27 agent-pool tests and workspace strict Clippy pass in
 passes 30 consecutive runs in `/tmp/forrest-approval-repeat-tests.log`.
 All 188 workspace tests and formatting pass in
 `/tmp/forrest-startup-recovery-workspace-tests.log` and
-`/tmp/forrest-startup-recovery-workspace-fmt.log`. Administrative grant issuance and
-revocation still use synchronous authority methods, so this is not certified
-startup activation. The Mac could not be synced because SSH to `10.0.1.110`
+`/tmp/forrest-startup-recovery-workspace-fmt.log`. Administrative startup grant
+issuance and revocation now await the existing owner-authenticated native command
+client. Idempotent issuance, durable revocation, and forged-grantor rejection pass
+in `/tmp/forrest-admin-final-tests.log`. Workspace strict Clippy passes in
+`/tmp/forrest-admin-final-strict.log`. The full workspace build ran out of disk;
+after its terminal failure, package-scoped agent artifact cleanup freed 23 GiB.
+The retry passes all 189 workspace tests and formatting in
+`/tmp/forrest-admin-workspace-retry-tests.log` and
+`/tmp/forrest-admin-workspace-retry-fmt.log`. This is not certified startup activation.
+The Mac could not be synced because SSH to `10.0.1.110`
 timed out before any remote command ran.
 
 Native nodes can install certified authority on their existing Iroh transport
