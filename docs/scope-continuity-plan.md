@@ -84,6 +84,8 @@ nonempty saved batch and result commit once, and the handler execution count sta
 at one. A separate missing-executor test preserves the prior policy. All 66 authority
 tests pass, as do both core command-recovery tests, the focused runtime and
 control-chain gate, strict Clippy, and formatting.
+Forrest's matching lockfile update is `abb31eb`; its locked workspace check passes.
+The latest Mac SSH preflight still times out without changing remote state.
 
 Applications can now own this effect runtime through one installation and shutdown
 guard. Forrest production installation still awaits certified non-effect policy
