@@ -7,11 +7,13 @@
 
 #![forbid(unsafe_code)]
 
+mod authority;
 mod discovery;
 mod pairing;
 mod peer;
 mod status;
 
+pub use authority::{AuthorityControllerAddress, AuthorityRuntimeConfig};
 pub use discovery::{
     ConfigureLanDiscovery, DiscoveredNodeRow, DiscoverySettings, DiscoverySettingsReport,
     NearbyNodesView,
@@ -179,6 +181,7 @@ pub struct Node {
     replicator: IrohReplicator,
     request_router: Arc<FederationRouter>,
     command_dispatch: Option<CommandDispatchGuard>,
+    certified_authority: Option<myko_authority::certified::PreparedAuthorityGuard>,
     supervisor: Arc<PeerSupervisor>,
     peer_reconciler: Option<PeerReconcilerGuard>,
     pairing: Option<PairingSupervisor>,
@@ -1293,6 +1296,7 @@ impl Node {
                 replicator,
                 request_router,
                 command_dispatch: Some(command_dispatch),
+                certified_authority: None,
                 supervisor,
                 peer_reconciler: Some(peer_reconciler),
                 pairing: Some(pairing),
@@ -1544,6 +1548,9 @@ impl Node {
         }
         if let Some(dispatch) = self.command_dispatch.take() {
             dispatch.shutdown().await;
+        }
+        if let Some(authority) = self.certified_authority.take() {
+            authority.shutdown().await.map_err(NodeError::State)?;
         }
         self.replicator
             .sessions()

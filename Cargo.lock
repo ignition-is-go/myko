@@ -5420,9 +5420,11 @@ name = "myko-node"
 version = "7.0.0-alpha.1"
 dependencies = [
  "async-trait",
+ "ed25519-dalek",
  "flume 0.11.1",
  "hyphae",
  "myko",
+ "myko-authority",
  "myko-discovery",
  "myko-federation",
  "myko-iroh",

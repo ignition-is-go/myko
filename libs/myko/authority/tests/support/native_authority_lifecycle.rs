@@ -4,6 +4,9 @@ use myko_authority::certified::PreparedAuthorityRuntime;
 
 use super::*;
 
+#[path = "native_authority_assembly.rs"]
+mod assembly;
+
 #[myko::myko_service(NativeRoot)]
 pub struct NativeService;
 
@@ -138,6 +141,26 @@ fn worker_start_without_an_executor_returns_an_error() -> TestResult {
         PreparedAuthorityRuntime::new(coordinator(&a, &b)?, Arc::new(AllowAllAccessPolicy));
     if runtime.start(|_| {}).is_ok() {
         return Err("started the authority worker without an executor".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn trusted_bootstrap_is_not_rejected_by_the_background_dispatcher() -> TestResult {
+    for iteration in 0..64 {
+        let application = ApplicationHost::new(
+            Node::in_memory(),
+            AuthorityPolicy::install(MykoApplication::new())?,
+        )?;
+        let dispatch = application.drive_commands()?;
+        let result =
+            record_obligated_grant_in(application.clone(), ScopeId::new("bootstrap-race"), [])
+                .map_err(|error| format!("bootstrap attempt {iteration}: {error}"));
+        dispatch.shutdown().await;
+        application
+            .node()
+            .set_command_access_policy(Arc::new(AllowAllAccessPolicy))?;
+        result?;
     }
     Ok(())
 }

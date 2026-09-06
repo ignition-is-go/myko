@@ -72,6 +72,33 @@ The decision trail is `scope-continuity-decisions.tsv` in this directory.
 
 ## Current checkpoint
 
+Native nodes can install certified authority on their existing Iroh transport
+and command dispatcher. Configuration keeps the original controller electorate
+separate from current authenticated routes. The node owns and stops its
+authority worker. The native assembly test certifies a typed command, shuts
+down both nodes, and verifies its exact result after reopening the store.
+
+The broader run exposed a trusted-bootstrap race. An ordinary dispatcher could
+claim a framework command between trusted admission and execution, then reject
+it under the authority policy that bootstrap was initializing. The trusted path
+now holds the existing reentrant dispatch lock across both operations. The
+focused regression failed before that fix and passed afterward. This is
+process-local dispatch ordering, not distributed fencing.
+
+Forrest's production policy is still raw authority. Its synchronous command
+callers and local subscriptions need migration before enabling certified policy.
+No production cutover or C01-C18 completion is claimed.
+
+Verification passed for the federation suite, the authority and native-node
+suites, and strict lint for federation, core, authority, and native node.
+Evidence is in `/tmp/myko-trusted-bootstrap-federation-green.log`,
+`/tmp/myko-native-authority-assembly-gate-fixed.log`, and
+`/tmp/myko-native-authority-assembly-strict-fixed.log`.
+Formatting and Forrest's locked workspace all-target check also passed.
+The Mac inspection timed out, so remote synchronization remains unverified.
+
+### Previous local-publication checkpoint
+
 The prepared-authority worker now certifies locally accepted authority before
 releasing prepared effects. It subscribes before its initial scan, wakes for
 local AuthorityService commits in its realm, and retries failed publication

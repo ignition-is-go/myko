@@ -10,8 +10,10 @@ workspace = true
 
 [dependencies]
 async-trait.workspace = true
+ed25519-dalek = "3.0.0"
 flume.workspace = true
 myko.workspace = true
+myko-authority.workspace = true
 myko-discovery.workspace = true
 myko-federation.workspace = true
 myko-iroh.workspace = true
