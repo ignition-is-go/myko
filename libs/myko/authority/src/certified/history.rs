@@ -483,6 +483,13 @@ impl AuthorityHistory {
     /// immutable event identities or cannot be read.
     pub fn replay(node: &Node, anchor: AuthorityAnchor) -> Result<Self, String> {
         let history = node.events_after(None).map_err(|error| error.to_string())?;
+        Self::from_events(history, anchor)
+    }
+
+    pub(super) fn from_events(
+        history: Vec<EventEnvelope>,
+        anchor: AuthorityAnchor,
+    ) -> Result<Self, String> {
         let chain = CertifiedControlChain::replay(&history, anchor.control_anchor())?;
         Ok(Self {
             anchor,

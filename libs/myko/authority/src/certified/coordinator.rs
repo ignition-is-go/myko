@@ -31,6 +31,7 @@ const DEFAULT_MAX_EVALUATION_SKEW_SECONDS: i64 = 300;
 
 mod access;
 mod approval;
+mod history_cache;
 mod recovery;
 mod revalidation;
 mod runtime;
@@ -1004,6 +1005,7 @@ impl CoordinatedAuthorityDecision {
 /// Coordinates one request-specific authority value through local controllers.
 #[derive(Debug)]
 pub struct AuthorityDecisionCoordinator {
+    history_cache: history_cache::AuthorityHistoryCache,
     anchor: AuthorityAnchor,
     observer: Node,
     proposer: AuthorityControllerPrincipal,
@@ -1033,9 +1035,12 @@ impl AuthorityDecisionCoordinator {
         {
             return Err("authority coordinator proposer endpoint is not configured".to_owned());
         }
+        let history_cache =
+            history_cache::AuthorityHistoryCache::new(observer.clone(), anchor.clone());
         Ok(Self {
             anchor,
             observer,
+            history_cache,
             proposer,
             peers,
             max_rounds: DEFAULT_MAX_COORDINATION_ROUNDS,
@@ -1047,6 +1052,10 @@ impl AuthorityDecisionCoordinator {
     pub const fn with_max_rounds(mut self, max_rounds: usize) -> Self {
         self.max_rounds = max_rounds;
         self
+    }
+
+    fn history_for_exact_snapshot(&self) -> Result<Arc<AuthorityHistory>, String> {
+        self.history_cache.history_for_exact_snapshot()
     }
 
     /// Choose or recover the request-specific authority decision after `head`.
@@ -1068,7 +1077,7 @@ impl AuthorityDecisionCoordinator {
     ) -> Result<CoordinatedAuthorityDecision, String> {
         let _turn = self.proposal_turn.lock().await;
         self.synchronize().await?;
-        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        let history = self.history_for_exact_snapshot()?;
         history.context_at(head)?;
         let root = request.root(self.anchor.realm_id(), request_id)?;
         let mut head = history.retained_head()?;
@@ -1102,7 +1111,7 @@ impl AuthorityDecisionCoordinator {
         request: CertifiedAuthorityRequest,
     ) -> Result<RoundResult, String> {
         self.synchronize().await?;
-        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        let history = self.history_for_exact_snapshot()?;
         if let Some(decision) =
             CoordinatedAuthorityDecision::recover_at(&history, head, root, &request)?
         {
@@ -1182,7 +1191,7 @@ impl AuthorityDecisionCoordinator {
         request: &CertifiedAuthorityRequest,
         evidence: ChosenRoundEvidence,
     ) -> Result<RoundResult, String> {
-        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        let history = self.history_for_exact_snapshot()?;
         let Some(transition) = history.decision_at(chosen_head, root)? else {
             return Ok(RoundResult::Advanced(chosen_head));
         };

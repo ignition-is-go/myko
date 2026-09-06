@@ -41,7 +41,7 @@ impl AuthorityDecisionCoordinator {
         let operation = CommandId::new();
         for _ in 0..self.max_rounds {
             self.synchronize().await?;
-            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+            let history = self.history_for_exact_snapshot()?;
             let head = history.retained_head()?;
             let previous = history
                 .decision_at(head, &root)?
@@ -69,7 +69,8 @@ impl AuthorityDecisionCoordinator {
                 .choose_value(&history, head, ballot, desired.clone())
                 .await?;
             if evidence.proposal.message.value == desired {
-                return AuthorityHistory::replay(&self.observer, self.anchor.clone())?
+                return self
+                    .history_for_exact_snapshot()?
                     .decision_at(chosen, &root)?
                     .ok_or_else(|| "chosen authority continuation is not retained".to_owned())
                     .map(Some);
@@ -120,7 +121,8 @@ impl AuthorityDecisionCoordinator {
             self.synchronize()
                 .await
                 .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
-            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())
+            let history = self
+                .history_for_exact_snapshot()
                 .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
             let head = history
                 .retained_head()
@@ -159,7 +161,8 @@ impl AuthorityDecisionCoordinator {
                 .await
                 .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
             if evidence.proposal.message.value == desired {
-                let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())
+                let history = self
+                    .history_for_exact_snapshot()
                     .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
                 return history
                     .approval_at(chosen, challenge, &presentation.principal)

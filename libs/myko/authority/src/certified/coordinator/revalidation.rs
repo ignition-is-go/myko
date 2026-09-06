@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use chrono::Utc;
 use myko_federation::{
     AuthorityUnavailable, AuthorizationDecision, CommandId,
@@ -15,7 +17,7 @@ pub struct CoordinatedAuthorityRevalidation {
     head: ControlHead,
     revalidation: AuthorityDecisionRevalidation,
     evidence: ChosenRoundEvidence,
-    history: AuthorityHistory,
+    history: Arc<AuthorityHistory>,
 }
 
 impl CoordinatedAuthorityRevalidation {
@@ -76,7 +78,7 @@ impl AuthorityDecisionCoordinator {
     ) -> Result<CoordinatedAuthorityRevalidation, String> {
         let _turn = self.proposal_turn.lock().await;
         self.synchronize().await?;
-        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        let history = self.history_for_exact_snapshot()?;
         history.context_at(head)?;
         let root = request.root(self.anchor.realm_id(), request_id)?;
         let mut expected = request.request.clone();
@@ -86,7 +88,7 @@ impl AuthorityDecisionCoordinator {
         let mut counter = counter.max(super::runtime::next_counter(&history, head)?);
         for _ in 0..self.max_rounds {
             self.synchronize().await?;
-            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+            let history = self.history_for_exact_snapshot()?;
             let original = history
                 .decision_at(head, &root)?
                 .ok_or_else(|| "authority revalidation has no original decision".to_owned())?;
@@ -111,7 +113,7 @@ impl AuthorityDecisionCoordinator {
             if evidence.proposal.message.value != desired {
                 continue;
             }
-            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+            let history = self.history_for_exact_snapshot()?;
             history.context_at(head)?;
             return Ok(CoordinatedAuthorityRevalidation {
                 head,

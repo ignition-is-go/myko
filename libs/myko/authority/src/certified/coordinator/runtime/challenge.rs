@@ -1,6 +1,6 @@
 use myko_federation::{AuthorizationPhase, ChallengeId, CommandId, CommandSnapshot, CommandState};
 
-use super::{AuthorityDecisionCoordinator, AuthorityHistory};
+use super::AuthorityDecisionCoordinator;
 use crate::certified::AuthorityDecisionRoot;
 
 impl AuthorityDecisionCoordinator {
@@ -26,7 +26,7 @@ impl AuthorityDecisionCoordinator {
                     .map_err(|error| error.to_string());
             }
         };
-        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        let history = self.history_for_exact_snapshot()?;
         let head = history.retained_head()?;
         let root = AuthorityDecisionRoot::new(
             self.anchor.realm_id().clone(),

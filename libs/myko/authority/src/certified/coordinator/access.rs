@@ -38,7 +38,8 @@ impl AuthorityDecisionCoordinator {
         self.synchronize()
             .await
             .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
-        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())
+        let history = self
+            .history_for_exact_snapshot()
             .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
         if access.authorization_phase == AuthorizationPhase::Continuation {
             return self.continue_scoped_access(&history, access).await;
@@ -59,7 +60,8 @@ impl AuthorityDecisionCoordinator {
         if !chosen.decision().is_permit() {
             return Ok(chosen.decision().clone());
         }
-        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())
+        let history = self
+            .history_for_exact_snapshot()
             .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
         self.revalidate_scoped_access(&history, request_id, request)
             .await

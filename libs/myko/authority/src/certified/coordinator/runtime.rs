@@ -162,7 +162,7 @@ impl AuthorityDecisionCoordinator {
             .clone()
             .ok_or_else(|| "prepared effect digest is missing".to_owned())?;
         self.synchronize().await?;
-        let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+        let history = self.history_for_exact_snapshot()?;
         let head = history.retained_head()?;
         let root = request.root(self.anchor.realm_id(), command_id)?;
         let original = if let Some(original) = history.decision_at(head, &root)? {
@@ -204,7 +204,7 @@ impl AuthorityDecisionCoordinator {
             .clone()
         };
         let decision = if original.is_permit() {
-            let history = AuthorityHistory::replay(&self.observer, self.anchor.clone())?;
+            let history = self.history_for_exact_snapshot()?;
             let head = history.retained_head()?;
             self.revalidate(head, next_counter(&history, head)?, command_id, request)
                 .await?

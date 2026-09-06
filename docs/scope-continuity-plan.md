@@ -1141,3 +1141,28 @@ federation library rerun passes 229 and 139 tests respectively in
 `/tmp/myko-roster-dispatch-lib-tests.log`. This does not establish a passing
 Myko workspace: the rejected split-evidence prototype remains a failing
 integration test, and the wider continuity requirements remain unverified.
+
+## Certified authority history reuse, 2026-09-06
+
+The coordinator now keeps one verified historical snapshot. It reads the full
+current event log on each request and reuses verification only when every event
+envelope is identical. New evidence invalidates the cache even when the retained
+control head is unchanged. This cache does not contain live permits, replace
+fresh revalidation, or change the prepared-effect commit boundary.
+
+The durable cache test covers unchanged-snapshot reuse and a new persisted vote
+at the same control head. All 102 authority tests pass, including revocation,
+approval, reopening, and controller rotation. Strict authority lint also passes.
+Exact commands, failures during development, and results are in the decision trail.
+
+A real Forrest-node test installs certified authority with its existing grants,
+submits `CreateAgent`, and checks its retained result. The cache-only comparison
+passed in 90.91 seconds, versus 119.33 seconds before reuse. A separate SHA-2
+compiler-optimization experiment took 53.92 seconds without the cache. Neither
+result establishes acceptable latency. No compiler-profile change is retained.
+
+The final Forrest workspace run passes 190 tests, formatting, and strict lint.
+Its native test also requires the certified worker to report the exact agent
+command. CPU-heavy synchronous verification, repeated replay as history grows,
+production activation, and Mac validation remain open. SSH to the Mac still
+times out. No C01-C18 requirement is closed by this checkpoint.
