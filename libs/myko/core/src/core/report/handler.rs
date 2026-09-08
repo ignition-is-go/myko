@@ -9,7 +9,7 @@ use crate::{
         GraphQuerying, PeerAccess, Querying, RegistryScoped, Replaying, Reporting, RequestScoped,
         Searching, ServerScoped, Viewing,
     },
-    request::RequestContext,
+    request::{RequestCacheScope, RequestContext},
     server::MykoServerContext,
     store::StoreRegistry,
 };
@@ -128,6 +128,15 @@ impl Replaying for ReportContext {}
 /// }
 /// ```
 pub trait ReportHandler: Sized {
+    /// Select cache partitioning for this report.
+    ///
+    /// Override this with [`RequestCacheScope::PerClient`] when `compute`
+    /// reads request-scoped caller identity. The default preserves shared
+    /// materialization for context-free reports.
+    fn request_cache_scope() -> RequestCacheScope {
+        RequestCacheScope::Shared
+    }
+
     type Output: Serialize
         + DeserializeOwned
         + Clone

@@ -107,6 +107,10 @@ pub struct WindbackStatus {}
 impl ReportHandler for WindbackStatus {
     type Output = WindbackStatusOutput;
 
+    fn request_cache_scope() -> RequestCacheScope {
+        RequestCacheScope::PerClient
+    }
+
     fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
         let client_id = ctx.client_id().map_or_else(Arc::<str>::default, Arc::from);
         let store = ctx.registry().get_or_create(Client::ENTITY_NAME_STATIC);
