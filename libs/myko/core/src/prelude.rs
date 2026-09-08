@@ -73,6 +73,7 @@ pub use crate::{
         AnyReport, CountResult, MykoReport, Report, ReportContext, ReportHandler, ReportId,
         ReportIdStatic, ReportOutputType, ReportParams,
     },
+    request::RequestCacheScope,
     utils::downcast_item,
     view::{
         AnyView, FilteredViewCellMap, TypedViewCellMap, ViewBuildArgs, ViewHandler, ViewId,
