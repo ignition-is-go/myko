@@ -74,6 +74,7 @@ impl From<&dyn AnyView> for WrappedView {
             view_id: view.view_id(),
             view_item_type: view.view_item_type(),
             window: None,
+            sample_rate: None,
         }
     }
 }

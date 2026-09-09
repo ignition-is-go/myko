@@ -2,6 +2,7 @@
 //!
 //! Handles WebSocket connections using `ClientSession` for subscription management.
 
+use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -275,6 +276,7 @@ struct MessageContext<'a> {
     command_tx: &'a mpsc::UnboundedSender<CommandJob>,
     query_window_tx: &'a mpsc::UnboundedSender<QueryWindowJob>,
     subscribe_tx: &'a mpsc::UnboundedSender<SubscriptionReady>,
+    view_delivery_tx: &'a mpsc::UnboundedSender<ViewDeliveryControl>,
 }
 
 struct ReadLoopState {
@@ -291,6 +293,7 @@ struct ReadLoopState {
     command_tx: mpsc::UnboundedSender<CommandJob>,
     query_window_tx: mpsc::UnboundedSender<QueryWindowJob>,
     subscribe_tx: mpsc::UnboundedSender<SubscriptionReady>,
+    view_delivery_tx: mpsc::UnboundedSender<ViewDeliveryControl>,
     overload_rx: watch::Receiver<bool>,
 }
 
@@ -298,6 +301,7 @@ struct WriterState {
     write: futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
     rx: mpsc::Receiver<OutboundMessage>,
     deferred_rx: mpsc::Receiver<DeferredOutbound>,
+    view_delivery_rx: mpsc::UnboundedReceiver<ViewDeliveryControl>,
     priority_rx: mpsc::Receiver<MykoMessage>,
     ctx: Arc<MykoServerContext>,
     client_id: Arc<str>,
@@ -401,6 +405,7 @@ impl WsHandler {
                 command_tx: &state.command_tx,
                 query_window_tx: &state.query_window_tx,
                 subscribe_tx: &state.subscribe_tx,
+                view_delivery_tx: &state.view_delivery_tx,
             },
             message,
         );
@@ -746,6 +751,7 @@ impl WsHandler {
             mut write,
             mut rx,
             mut deferred_rx,
+            mut view_delivery_rx,
             mut priority_rx,
             ctx: _ctx,
             client_id: write_client_id,
@@ -757,9 +763,19 @@ impl WsHandler {
         let mut normal_open = true;
         let mut priority_open = true;
         let mut deferred_open = true;
+        let mut delivery = ViewDelivery::default();
         while normal_open || priority_open || deferred_open {
+            let deadline = delivery.next_deadline();
             let msg = tokio::select! {
                 biased;
+                Some(control) = view_delivery_rx.recv() => {
+                    delivery.control(control, Instant::now());
+                    continue;
+                }
+                () = tokio::time::sleep_until(deadline.unwrap_or_else(Instant::now).into()), if deadline.is_some() => {
+                    let Some(response) = delivery.take_due(Instant::now()) else { continue; };
+                    OutboundMessage::Message(MykoMessage::ViewResponse(response.into_wire()))
+                }
                 maybe = priority_rx.recv(), if priority_open => {
                     if let Some(msg) = maybe { OutboundMessage::Message(msg) } else {
                         priority_open = false;
@@ -776,6 +792,7 @@ impl WsHandler {
                         }
                         Some(DeferredOutbound::Query { response, is_view }) => {
                             if is_view {
+                                let Some(response) = delivery.push(response, Instant::now()) else { continue; };
                                 OutboundMessage::Message(MykoMessage::ViewResponse(response.into_wire()))
                             } else {
                                 OutboundMessage::Message(MykoMessage::QueryResponse(response.into_wire()))
@@ -873,6 +890,7 @@ impl WsHandler {
         let (command_tx, command_rx) = mpsc::unbounded_channel::<CommandJob>();
         let (query_window_tx, query_window_task) = Self::spawn_query_window_worker();
         let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel::<SubscriptionReady>();
+        let (view_delivery_tx, view_delivery_rx) = mpsc::unbounded_channel();
         let (overload_tx, overload_rx) = watch::channel(false);
         // Outgoing format for this session: defaults to JSON, sticky-promotes
         // to CBOR on the first received binary frame. Never demotes.
@@ -922,6 +940,7 @@ impl WsHandler {
             write,
             rx,
             deferred_rx,
+            view_delivery_rx,
             priority_rx,
             ctx: write_ctx,
             client_id: write_client_id,
@@ -958,6 +977,7 @@ impl WsHandler {
                 command_tx: command_tx.clone(),
                 query_window_tx: query_window_tx.clone(),
                 subscribe_tx: subscribe_tx.clone(),
+                view_delivery_tx,
                 overload_rx,
             },
         )
@@ -1103,6 +1123,12 @@ impl WsHandler {
         if let Ok(mut map) = message_context.view_ids_by_tx.lock() {
             map.insert(tx_id.clone(), view_id.clone());
         }
+        let _ = message_context
+            .view_delivery_tx
+            .send(ViewDeliveryControl::Subscribe {
+                tx: tx_id.clone(),
+                rate: wrapped.sample_rate,
+            });
         if let Ok(mut map) = message_context.subscribe_started_by_tx.lock() {
             map.entry(tx_id.clone()).or_insert_with(Instant::now);
         }
@@ -1197,6 +1223,7 @@ impl WsHandler {
             | MykoMessage::QueryCursorWindow(_)
             | MykoMessage::ViewCancel(_)
             | MykoMessage::ViewWindow(_)
+            | MykoMessage::ViewSampleRate(_)
             | MykoMessage::ReportCancel(_)) => {
                 Self::handle_subscription_control(session, message_context, message);
                 drop(ctx);
@@ -1267,6 +1294,9 @@ impl WsHandler {
             }
             MykoMessage::ViewCancel(CancelSubscription { tx }) => {
                 let tx: Arc<str> = tx.into();
+                let _ = message_context
+                    .view_delivery_tx
+                    .send(ViewDeliveryControl::Cancel(tx.clone()));
                 if let Ok(mut map) = message_context.view_ids_by_tx.lock() {
                     map.remove(&tx);
                 }
@@ -1274,6 +1304,14 @@ impl WsHandler {
                     map.remove(&tx);
                 }
                 session.cancel(&tx);
+            }
+            MykoMessage::ViewSampleRate(update) => {
+                let _ = message_context
+                    .view_delivery_tx
+                    .send(ViewDeliveryControl::SetRate {
+                        tx: update.tx.into(),
+                        rate: update.sample_rate,
+                    });
             }
             MykoMessage::ViewWindow(ViewWindowUpdate { tx, window }) => {
                 session.update_view_window(&Arc::from(tx), window);

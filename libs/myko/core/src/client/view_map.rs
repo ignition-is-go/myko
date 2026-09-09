@@ -24,9 +24,22 @@ use crate::{
 pub struct ViewMapWatch<T: hyphae::CellValue> {
     map: CellMap<Arc<str>, Arc<T>, CellImmutable>,
     ready: Cell<bool, CellImmutable>,
+    sampling: Option<Arc<ViewSamplingControl>>,
 }
 
 impl<T: hyphae::CellValue> ViewMapWatch<T> {
+    /// Update delivery cadence for every handle sharing this view subscription.
+    /// The latest rate is retained across reconnects. None restores immediate delivery.
+    ///
+    /// # Errors
+    /// Returns an error if the subscription or client is gone, or sending fails.
+    pub fn set_sample_rate(&self, rate: Option<crate::wire::ViewSampleRate>) -> Result<(), String> {
+        self.sampling
+            .as_ref()
+            .ok_or("view subscription is unavailable")?
+            .set_rate(rate)
+    }
+
     #[must_use]
     pub const fn map(&self) -> &CellMap<Arc<str>, Arc<T>, CellImmutable> {
         &self.map
@@ -67,18 +80,23 @@ impl MykoClient {
         let supplied: ViewRequest<V> = view.into();
         let view_id = supplied.view.view_id();
         let cache_key = format!(
-            "view-map:{view_id}:{}:{:016x}",
+            "view-map:{view_id}:{}:{:016x}:{:?}",
             std::any::type_name::<V::Item>(),
-            supplied.view.cache_key_hash()
+            supplied.view.cache_key_hash(),
+            supplied.sample_rate
         );
         let _cache_gate = self
             .inner
             .map_watch_cache_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((map, ready)) = self.cached_map_watch(&cache_key) {
+        if let Some((map, ready, sampling)) = self.cached_map_watch(&cache_key) {
             debug!("watch_view_map_state: cache hit for {cache_key}");
-            return ViewMapWatch { map, ready };
+            return ViewMapWatch {
+                map,
+                ready,
+                sampling,
+            };
         }
         self.inner.map_watch_cache.remove(&cache_key);
 
@@ -92,20 +110,19 @@ impl MykoClient {
         let ready_weak = ready.downgrade();
         let ready_read = ready.clone().lock();
 
-        let Ok(wrapped) = wrap_view(tx.clone(), &view.view) else {
+        let Ok(mut wrapped) = wrap_view(tx.clone(), &view.view) else {
             error!("Could not serialize view map request for {view_id}");
             return ViewMapWatch {
                 map: map.lock(),
                 ready: ready_read,
+                sampling: None,
             };
         };
-        let Ok(frame) = self.encode_message(&MykoMessage::View(wrapped)) else {
-            error!("Could not encode view map request for {view_id}");
-            return ViewMapWatch {
-                map: map.lock(),
-                ready: ready_read,
-            };
-        };
+        wrapped.sample_rate = supplied.sample_rate;
+        let sampling = Arc::new(ViewSamplingControl {
+            request: std::sync::Mutex::new(wrapped),
+            client: Arc::downgrade(&self.inner),
+        });
 
         let tx_for_handler = tx.clone();
         let view_id_for_handler = view_id.clone();
@@ -165,10 +182,11 @@ impl MykoClient {
             return ViewMapWatch {
                 map: map.lock(),
                 ready: ready_read,
+                sampling: None,
             };
         }
 
-        let socket = self.inner.socket.clone();
+        let sampling_for_status = sampling.clone();
         let ready_for_status = ready.downgrade();
         let sequences_for_status = sequences;
         let status_cell = self.connection_status();
@@ -180,7 +198,7 @@ impl MykoClient {
                     ready_writer.set(false);
                 }
                 if let ConnectionStatus::Connected(_) = &**status {
-                    match socket.send(frame.clone()) {
+                    match sampling_for_status.subscribe() {
                         Ok(()) => debug!("Watching view map {send_view_id}"),
                         Err(error) => error!("Could not send view: {error:?}"),
                     }
@@ -200,8 +218,78 @@ impl MykoClient {
         let watch = ViewMapWatch {
             map: map.lock(),
             ready: ready_read,
+            sampling: Some(sampling),
         };
-        self.cache_map_watch(cache_key, tx, &watch.map, &watch.ready);
+        self.cache_map_watch(
+            cache_key,
+            tx,
+            &watch.map,
+            &watch.ready,
+            watch.sampling.clone(),
+        );
         watch
+    }
+}
+
+pub(super) struct ViewSamplingControl {
+    request: std::sync::Mutex<crate::wire::WrappedView>,
+    client: std::sync::Weak<super::MykoClientInner>,
+}
+
+// Keep rate updates ordered with reconnect subscription frames through enqueue.
+#[allow(clippy::significant_drop_tightening)]
+impl ViewSamplingControl {
+    fn subscribe(&self) -> Result<(), String> {
+        let client = MykoClient {
+            inner: self.client.upgrade().ok_or("client has been dropped")?,
+        };
+        let request = self
+            .request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let frame = client.encode_message(&MykoMessage::View(request.clone()))?;
+        client
+            .inner
+            .socket
+            .send(frame)
+            .map_err(|error| format!("{error:?}"))
+    }
+
+    fn set_rate(&self, rate: Option<crate::wire::ViewSampleRate>) -> Result<(), String> {
+        use hyphae::Gettable as _;
+        let client = MykoClient {
+            inner: self.client.upgrade().ok_or("client has been dropped")?,
+        };
+        let mut request = self
+            .request
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if request.sample_rate == rate {
+            return Ok(());
+        }
+        request.sample_rate = rate;
+        if !matches!(
+            client.connection_status().get(),
+            ConnectionStatus::Connected(_)
+        ) {
+            return Ok(());
+        }
+        let tx = request
+            .view
+            .get("tx")
+            .and_then(Value::as_str)
+            .ok_or("view transaction is missing")?
+            .to_owned();
+        let frame = client.encode_message(&MykoMessage::ViewSampleRate(
+            crate::wire::ViewSampleRateUpdate {
+                tx,
+                sample_rate: rate,
+            },
+        ))?;
+        client
+            .inner
+            .socket
+            .send(frame)
+            .map_err(|error| format!("{error:?}"))
     }
 }

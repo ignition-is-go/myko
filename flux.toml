@@ -48,3 +48,6 @@ bun = """cp package.json package.json.bak \
   && VERSION=$(bun -p "require('./package.json').version") \
   && if echo "$VERSION" | grep -q '-'; then TAG=canary; else TAG=latest; fi \
   && npm publish --provenance --access public --tag "$TAG" ; mv package.json.bak package.json"""
+
+[tasks.fmt]
+root = ["cargo", "fmt", "--all"]

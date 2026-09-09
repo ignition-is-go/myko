@@ -138,6 +138,7 @@ pub const fn message_kind(msg: &MykoMessage) -> &'static str {
         MykoMessage::ViewResponse(_) => "ViewResponse",
         MykoMessage::ViewCancel(_) => "ViewCancel",
         MykoMessage::ViewWindow(_) => "ViewWindow",
+        MykoMessage::ViewSampleRate(_) => "ViewSampleRate",
         MykoMessage::ViewError(_) => "ViewError",
         MykoMessage::Report(_) => "Report",
         MykoMessage::ReportResponse(_) => "ReportResponse",

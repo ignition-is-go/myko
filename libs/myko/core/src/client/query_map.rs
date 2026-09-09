@@ -713,7 +713,7 @@ impl MykoClient {
             .map_watch_cache_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((map, ready)) = self.cached_map_watch(&cache_key) {
+        if let Some((map, ready, _)) = self.cached_map_watch(&cache_key) {
             debug!("watch_query_map_state: cache hit for {cache_key}");
             return QueryMapWatch { map, ready };
         }
@@ -865,7 +865,7 @@ impl MykoClient {
             map: map.lock(),
             ready: ready_read,
         };
-        self.cache_map_watch(cache_key, tx, &watch.map, &watch.ready);
+        self.cache_map_watch(cache_key, tx, &watch.map, &watch.ready, None);
         watch
     }
 
@@ -1883,6 +1883,73 @@ mod tests {
                 .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:view-cancel")))
                 .count(),
             1
+        );
+    }
+
+    #[cfg(feature = "demo")]
+    #[test]
+    fn sampled_view_updates_rate_in_place_and_retains_it_on_reconnect() {
+        use crate::{view::ViewRequest, wire::ViewSampleRate};
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let request = ViewRequest::new(GetDemoTasksWithStatus {})
+            .with_sample_rate(Some(ViewSampleRate::try_from(30.0).unwrap()));
+        let watch = client.watch_view_map_state(request.clone());
+        let shared = client.watch_view_map_state(request);
+        transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        let frames = || {
+            transport
+                .sent_frames()
+                .iter()
+                .filter_map(|frame| {
+                    let WsFrame::Text(text) = frame else {
+                        return None;
+                    };
+                    serde_json::from_str::<serde_json::Value>(text).ok()
+                })
+                .collect::<Vec<_>>()
+        };
+        let initial = frames();
+        let views: Vec<_> = initial
+            .iter()
+            .filter(|frame| frame["event"] == "ws:m:view")
+            .collect();
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0]["data"]["sampleRate"], 30.0);
+        let tx = views[0]["data"]["view"]["tx"].clone();
+        watch
+            .set_sample_rate(Some(ViewSampleRate::try_from(60.0).unwrap()))
+            .unwrap();
+        shared
+            .set_sample_rate(Some(ViewSampleRate::try_from(60.0).unwrap()))
+            .unwrap();
+        let updates = frames();
+        let updates: Vec<_> = updates
+            .iter()
+            .filter(|frame| frame["event"] == "ws:m:view-sample-rate")
+            .collect();
+        assert_eq!(updates.len(), 1);
+        assert_eq!(updates[0]["data"]["tx"], tx);
+        assert_eq!(updates[0]["data"]["sampleRate"], 60.0);
+        transport.set_status(SocketConnectionStatus::Idle);
+        watch
+            .set_sample_rate(Some(ViewSampleRate::try_from(29.97).unwrap()))
+            .unwrap();
+        transport.set_status(SocketConnectionStatus::Connected(
+            "ws://reconnected".to_owned(),
+        ));
+        let frames = frames();
+        let resumed = frames
+            .iter()
+            .rev()
+            .find(|frame| frame["event"] == "ws:m:view")
+            .unwrap();
+        assert_eq!(resumed["data"]["sampleRate"], 29.97);
+        assert_eq!(resumed["data"]["view"]["tx"], tx);
+        assert!(
+            !frames
+                .iter()
+                .any(|frame| frame["event"] == "ws:m:view-cancel")
         );
     }
 
