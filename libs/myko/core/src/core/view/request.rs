@@ -17,6 +17,8 @@ pub struct ViewRequest<V> {
     pub tx: Arc<str>,
     #[serde(default = "default_created_at")]
     pub created_at: Arc<str>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample_rate: Option<crate::wire::ViewSampleRate>,
     #[serde(flatten)]
     pub view: V,
 }
@@ -26,10 +28,17 @@ fn default_created_at() -> Arc<str> {
 }
 
 impl<V> ViewRequest<V> {
+    #[must_use]
+    pub const fn with_sample_rate(mut self, rate: Option<crate::wire::ViewSampleRate>) -> Self {
+        self.sample_rate = rate;
+        self
+    }
+
     pub fn new(view: V) -> Self {
         Self {
             tx: Uuid::new_v4().to_string().into(),
             created_at: default_created_at(),
+            sample_rate: None,
             view,
         }
     }
@@ -38,6 +47,7 @@ impl<V> ViewRequest<V> {
         Self {
             tx,
             created_at: default_created_at(),
+            sample_rate: None,
             view,
         }
     }

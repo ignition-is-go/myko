@@ -31,7 +31,10 @@ pub use query::{
     QueryWindowUpdate, WrappedQuery, wrap_query,
 };
 pub use report::{ReportError, ReportResponse, WrappedReport, wrap_report};
-pub use view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView, wrap_view};
+pub use view::{
+    ViewError, ViewResponse, ViewSampleRate, ViewSampleRateUpdate, ViewWindowUpdate, WrappedView,
+    wrap_view,
+};
 
 // Ensure core wire types are exported to TS bindings for downstream packages.
 crate::register_typegen_type!(
@@ -57,5 +60,7 @@ crate::register_typegen_type!(
     view::WrappedView,
     view::ViewError,
     view::ViewWindowUpdate,
+    view::ViewSampleRate,
+    view::ViewSampleRateUpdate,
     serde_json::Value
 );

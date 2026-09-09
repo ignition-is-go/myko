@@ -5,7 +5,7 @@ use super::{
     event::MEvent,
     query::{QueryCursorWindowUpdate, QueryError, QueryResponse, QueryWindowUpdate, WrappedQuery},
     report::{ReportError, ReportResponse, WrappedReport},
-    view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView},
+    view::{ViewError, ViewResponse, ViewSampleRateUpdate, ViewWindowUpdate, WrappedView},
 };
 
 pub const WS_EVENT_COMMAND: &str = "ws:m:command";
@@ -58,6 +58,8 @@ pub enum MykoMessage {
     ViewCancel(CancelSubscription),
     #[serde(rename = "ws:m:view-window")]
     ViewWindow(ViewWindowUpdate),
+    #[serde(rename = "ws:m:view-sample-rate")]
+    ViewSampleRate(ViewSampleRateUpdate),
     #[serde(rename = "ws:m:report")]
     Report(WrappedReport),
     #[serde(rename = "ws:m:report-response")]
