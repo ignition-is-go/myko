@@ -145,6 +145,12 @@ function ensureWsTimingLogger(): void {
     wsTimingInbound.clear()
     wsTimingOutbound.clear()
   }, WS_TIMING_WINDOW_MS)
+  // Diagnostics must never keep a process alive. Without unref, any
+  // short-lived client (a CLI, a headless agent harness) that connected once
+  // hangs forever after disconnect() because this interval outlives every
+  // socket. Browsers return a number here, hence the guard.
+  const timer = wsTimingTimer as { unref?: () => void }
+  timer.unref?.()
 }
 
 function stableStringify(value: unknown): string | null {
