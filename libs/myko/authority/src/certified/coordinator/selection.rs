@@ -16,7 +16,7 @@ impl AuthorityDecisionCoordinator {
         let _turn = self.proposal_turn.lock().await;
         for _ in 0..self.max_rounds {
             self.synchronize().await?;
-            let history = self.history_for_exact_snapshot()?;
+            let history = self.history_for_exact_snapshot().await?;
             let head = history.retained_head()?;
             let Some(selection) =
                 history.pending_local_selection_at(head, self.observer.node_id())?
@@ -30,7 +30,7 @@ impl AuthorityDecisionCoordinator {
                 proposer: self.proposer.controller,
             };
             self.choose_value(&history, head, ballot, value).await?;
-            let history = self.history_for_exact_snapshot()?;
+            let history = self.history_for_exact_snapshot().await?;
             let head = history.retained_head()?;
             if history
                 .pending_local_selection_at(head, self.observer.node_id())?
@@ -61,7 +61,7 @@ impl AuthorityDecisionCoordinator {
         let _turn = self.proposal_turn.lock().await;
         for _ in 0..self.max_rounds {
             self.synchronize().await?;
-            let history = self.history_for_exact_snapshot()?;
+            let history = self.history_for_exact_snapshot().await?;
             let head = history.retained_head()?;
             if let Some(chosen) = history.selection_head_at(head, selection)? {
                 return Ok(chosen);
@@ -73,7 +73,7 @@ impl AuthorityDecisionCoordinator {
             };
             self.choose_value(&history, head, ballot, value.clone())
                 .await?;
-            let history = self.history_for_exact_snapshot()?;
+            let history = self.history_for_exact_snapshot().await?;
             if let Some(chosen) = history.selection_head_at(history.retained_head()?, selection)? {
                 return Ok(chosen);
             }

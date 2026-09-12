@@ -11,6 +11,9 @@ proc-macro = true
 [lints]
 workspace = true
 
+[features]
+schema = []
+
 [dependencies]
 proc-macro2.workspace = true
 quote.workspace = true

@@ -406,38 +406,45 @@ pub struct SwitchMapReport {
 impl ReportHandler for SwitchMapReport {
     type Output = Vec<String>;
 
-    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        let category = self.category.clone();
+    #[allow(clippy::expect_used)]
+    fn compute(
+        &self,
+        ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            let category = self.category.clone();
 
-        // Outer: watch all items matching the category
-        let items = ctx
-            .query_map(GetBenchItemsByQuery(BenchItemQuery {
-                category: Some(StringFilter::Eq(category.into())),
-                ..Default::default()
-            }))
-            .items()
-            .materialize();
-
-        // switch_map + nested query_map — the leak pattern
-        items.switch_map(move |items| {
-            if items.is_empty() {
-                return Cell::new(Arc::new(Vec::<String>::new())).lock();
-            }
-
-            let ids: Vec<BenchItemId> = items.iter().map(|item| item.id.clone()).collect();
-
-            // Inner: look up by IDs (different IDs each time = different cache key)
-            ctx.query_map(GetBenchItemsByIds { ids })
+            // Outer: watch all items matching the category
+            let items = ctx
+                .query_map(GetBenchItemsByQuery(BenchItemQuery {
+                    category: Some(StringFilter::Eq(category.into())),
+                    ..Default::default()
+                }))?
                 .items()
-                .map(|items| {
-                    Arc::new(
-                        items
-                            .iter()
-                            .map(|item| item.name.clone())
-                            .collect::<Vec<_>>(),
-                    )
-                })
-                .materialize()
+                .materialize();
+
+            // switch_map + nested query_map — the leak pattern
+            items.switch_map(move |items| {
+                if items.is_empty() {
+                    return Cell::new(Arc::new(Vec::<String>::new())).lock();
+                }
+
+                let ids: Vec<BenchItemId> = items.iter().map(|item| item.id.clone()).collect();
+
+                // Inner: look up by IDs (different IDs each time = different cache key)
+                ctx.query_map(GetBenchItemsByIds { ids })
+                    .expect("benchmark's local nested query opens")
+                    .items()
+                    .map(|items| {
+                        Arc::new(
+                            items
+                                .iter()
+                                .map(|item| item.name.clone())
+                                .collect::<Vec<_>>(),
+                        )
+                    })
+                    .materialize()
+            })
         })
     }
 }

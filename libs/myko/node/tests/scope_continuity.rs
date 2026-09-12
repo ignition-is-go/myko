@@ -80,13 +80,13 @@ impl myko::query::QueryHandler for ContinuityRecords {
 
     fn build_view(
         context: myko::query::QueryBuildArgs<Self>,
-    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn myko::item::AnyItem>>> {
-        let source = context.federated_items::<ContinuityRecord>();
-        assert!(
-            source.is_ok(),
-            "continuity query requires its declared durable source"
-        );
-        source.ok()
+    ) -> Result<Option<impl myko::query::QueryBuildOutput>, String> {
+        let source = context
+            .federated_items::<ContinuityRecord>()
+            .map_err(|error| {
+                format!("continuity query requires its declared durable source: {error}")
+            })?;
+        Ok(Some(myko::query::RetainedQuery::new(source)))
     }
 }
 
@@ -312,7 +312,14 @@ async fn require_remote_records(
     expectations: &[(Option<NodeId>, Vec<ContinuityRecord>)],
 ) -> Result<(), String> {
     for (origin, expected) in expectations {
-        let actual = remote_records(reader, server, *origin, scope.clone()).await?;
+        let actual = remote_records(reader, server, *origin, scope.clone())
+            .await
+            .map_err(|error| {
+                format!(
+                    "endpoint {} failed to read origin {origin:?}: {error}",
+                    server.node().node_id()
+                )
+            })?;
         if actual.as_ref() != Some(expected) {
             return Err(format!(
                 "endpoint {} returned {actual:?} for origin {origin:?}; expected {expected:?}",

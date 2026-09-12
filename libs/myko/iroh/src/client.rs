@@ -1,9 +1,11 @@
+use myko_federation::{AuthorizationBlock, SubscriptionInterruption};
+
 use super::{
     ApprovalDecision, Arc, AuthorityPresentation, ChallengeId, CommandClient, CommandClientFuture,
     CommandId, CommandResponse, CommandSnapshot, CommandStateClient, CommandStatePageFuture,
     CommandStateRequest, CommandStateSnapshot, CommandStateStream, CommandSubmission,
     CommandSubscription, CommandSubscriptionFuture, CommandWatchFuture, CommandWatchingClient,
-    Connection, ControlBallot, ControlHead, ControlValue, EndpointAddr, FederatedSession,
+    Connection, ControlBallot, ControlTarget, ControlValue, EndpointAddr, FederatedSession,
     HandlerClientError, HandlerConnection, HandlerConnector, HandlerFrame, HandlerRequest,
     IrohReplicationError, ItemClient, ItemProjection, ItemQuery, ItemQueryResult,
     ItemQuerySnapshot, ItemQueryStream, ItemQueryUpdate, ItemStatePageFuture, ItemStateRequest,
@@ -14,6 +16,10 @@ use super::{
     SubscriptionLiveness, authorization_error, live_subscription, pairing, read_command_frame,
     read_frame, write_request_envelope, write_request_with_authority,
 };
+
+#[cfg(test)]
+mod authorization_tests;
+
 /// Running Iroh endpoint that serves and pulls Myko replication batches.
 #[derive(Debug, Clone)]
 pub struct IrohReplicator {
@@ -102,6 +108,91 @@ impl IrohHandlerConnector {
     pub fn client(self) -> MykoClient {
         MykoClient::with_handler_connector(Arc::new(self))
     }
+
+    /// Read generated schemas from the authenticated application without running its handler.
+    ///
+    /// # Errors
+    /// Fails on denial, missing schema evidence, transport loss, or a mismatched response.
+    pub async fn describe(
+        &self,
+        request: HandlerRequest,
+    ) -> Result<myko_wire::HandlerContract, HandlerClientError> {
+        let (frame, _connection) = self
+            .open_request(ReplicationRequest::DescribeHandler {
+                request: request.clone(),
+            })
+            .await?;
+        match frame {
+            ReplicationFrame::HandlerContract { contract } => {
+                contract
+                    .validate_for(&request, self.destination)
+                    .map_err(HandlerClientError::Protocol)?;
+                Ok(*contract)
+            }
+            ReplicationFrame::Error { message } => Err(HandlerClientError::Protocol(message)),
+            frame => Err(HandlerClientError::Protocol(format!(
+                "handler description returned {}",
+                frame.kind()
+            ))),
+        }
+    }
+
+    /// Open the exact payload contract observed by a prior description.
+    ///
+    /// This is a precondition, not assignment, readiness, or schema compatibility.
+    /// # Errors
+    /// Rejects changed contracts, authorization failures, and transport errors.
+    pub async fn connect_described(
+        &self,
+        request: HandlerRequest,
+        observed_contract: myko_wire::HandlerContract,
+    ) -> Result<(HandlerFrame, Box<dyn HandlerConnection>), HandlerClientError> {
+        let (frame, connection) = self
+            .open_request(ReplicationRequest::FollowHandler(
+                myko_wire::HandlerOpenRequest {
+                    request,
+                    observed_contract: Some(Box::new(observed_contract)),
+                },
+            ))
+            .await?;
+        Ok((iroh_handler_frame(frame)?, Box::new(connection)))
+    }
+
+    async fn open_request(
+        &self,
+        request: ReplicationRequest,
+    ) -> Result<(ReplicationFrame, IrohHandlerConnection), HandlerClientError> {
+        let connection = self
+            .replicator
+            .router
+            .endpoint()
+            .connect(self.peer.clone(), MYKO_REPLICATION_ALPN)
+            .await
+            .map_err(|error| HandlerClientError::Transport(error.to_string()))?;
+        let (mut send, mut receive) = connection
+            .open_bi()
+            .await
+            .map_err(|error| HandlerClientError::Transport(error.to_string()))?;
+        write_request_envelope(
+            &mut send,
+            &NodeRequestEnvelope {
+                destination: self.destination,
+                authority: self.authority.clone(),
+                forwarding_provenance: self.forwarding_provenance.clone(),
+                request,
+            },
+        )
+        .await
+        .map_err(iroh_handler_error)?;
+        let frame = read_frame(&mut receive).await.map_err(iroh_handler_error)?;
+        Ok((
+            frame,
+            IrohHandlerConnection {
+                _connection: connection,
+                receive,
+            },
+        ))
+    }
 }
 
 struct IrohHandlerConnection {
@@ -135,39 +226,15 @@ impl HandlerConnector for IrohHandlerConnector {
         &self,
         request: HandlerRequest,
     ) -> Result<(HandlerFrame, Box<dyn HandlerConnection>), HandlerClientError> {
-        let connection = self
-            .replicator
-            .router
-            .endpoint()
-            .connect(self.peer.clone(), MYKO_REPLICATION_ALPN)
-            .await
-            .map_err(|error| HandlerClientError::Transport(error.to_string()))?;
-        let (mut send, mut receive) = connection
-            .open_bi()
-            .await
-            .map_err(|error| HandlerClientError::Transport(error.to_string()))?;
-        write_request_envelope(
-            &mut send,
-            &NodeRequestEnvelope {
-                destination: self.destination,
-                authority: self.authority.clone(),
-                forwarding_provenance: self.forwarding_provenance.clone(),
-                request: ReplicationRequest::FollowHandler { request },
-            },
-        )
-        .await
-        .map_err(iroh_handler_error)?;
-        let initial = read_frame(&mut receive)
-            .await
-            .map_err(iroh_handler_error)
-            .and_then(iroh_handler_frame)?;
-        Ok((
-            initial,
-            Box::new(IrohHandlerConnection {
-                _connection: connection,
-                receive,
-            }),
-        ))
+        let (frame, connection) = self
+            .open_request(ReplicationRequest::FollowHandler(
+                myko_wire::HandlerOpenRequest {
+                    request,
+                    observed_contract: None,
+                },
+            ))
+            .await?;
+        Ok((iroh_handler_frame(frame)?, Box::new(connection)))
     }
 
     fn at(&self, destination: NodeId) -> Arc<dyn HandlerConnector> {
@@ -200,8 +267,11 @@ fn iroh_handler_frame(frame: ReplicationFrame) -> Result<HandlerFrame, HandlerCl
 fn iroh_handler_error(error: IrohReplicationError) -> HandlerClientError {
     match error {
         IrohReplicationError::Encoding(error) => HandlerClientError::Decode(error),
-        IrohReplicationError::Authorization { message, .. } => {
-            HandlerClientError::Protocol(message)
+        IrohReplicationError::Authorization { decision, .. } => {
+            HandlerClientError::Authorization(decision)
+        }
+        IrohReplicationError::AuthorityUnavailable(reason) => {
+            HandlerClientError::AuthorityUnavailable(reason)
         }
         error => HandlerClientError::Transport(error.to_string()),
     }
@@ -409,11 +479,11 @@ impl IrohCommandClient {
     /// authority coordination is unavailable, or the response is malformed.
     pub async fn prepare_control(
         &self,
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
     ) -> Result<SignedControlVote, IrohReplicationError> {
         let frame = self
-            .control_frame(ReplicationRequest::ControlPrepare { head, ballot })
+            .control_frame(ReplicationRequest::ControlPrepare { target, ballot })
             .await?;
         match frame {
             ReplicationFrame::ControlVote { vote } => Ok(*vote),
@@ -436,14 +506,14 @@ impl IrohCommandClient {
     /// authority coordination is unavailable, or the response is malformed.
     pub async fn propose_control(
         &self,
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
         promises: Vec<SignedControlVote>,
         value: ControlValue,
     ) -> Result<SignedControlProposal, IrohReplicationError> {
         let frame = self
             .control_frame(ReplicationRequest::ControlPropose {
-                head,
+                target,
                 ballot,
                 promises,
                 value,
@@ -470,12 +540,12 @@ impl IrohCommandClient {
     /// authority coordination is unavailable, or the response is malformed.
     pub async fn accept_control(
         &self,
-        head: ControlHead,
+        target: ControlTarget,
         proposal: SignedControlProposal,
     ) -> Result<SignedControlVote, IrohReplicationError> {
         let frame = self
             .control_frame(ReplicationRequest::ControlAccept {
-                head,
+                target,
                 proposal: Box::new(proposal),
             })
             .await?;
@@ -740,8 +810,8 @@ impl IrohItemClient {
     ///
     /// # Errors
     ///
-    /// Retries transport failures indefinitely. Returns an error if typed
-    /// snapshot validation or materialization fails.
+    /// Retries transport and authority outages. Initial denial, challenge,
+    /// or invalid typed data returns an error before a handle is created.
     pub async fn watch_items_reactive<Q>(
         &self,
         source_node: NodeId,
@@ -763,8 +833,8 @@ impl IrohItemClient {
     ///
     /// # Errors
     ///
-    /// Retries transport failures indefinitely. Returns an error if typed
-    /// snapshot validation or materialization fails.
+    /// Retries transport and authority outages. Initial denial, challenge,
+    /// or invalid typed data returns an error before a handle is created.
     pub async fn watch_serving_items_reactive<Q>(
         &self,
         scope_id: ScopeId,
@@ -794,7 +864,12 @@ impl IrohItemClient {
         let (initial, subscription) = loop {
             match self.watch_request(request.clone(), query.clone()).await {
                 Ok(connected) => break connected,
-                Err(error) if reactive_item_error_is_recoverable(&error) => {
+                Err(error)
+                    if matches!(
+                        reactive_item_interruption(&error),
+                        Some(SubscriptionInterruption::Resynchronizing { .. })
+                    ) =>
+                {
                     tokio::time::sleep(delay).await;
                     delay = self.reconnect_policy.next_delay(delay);
                 }
@@ -945,12 +1020,12 @@ where
                     task_writer.publish(update.value, Some(update.position));
                     continue;
                 }
-                Err(error) if reactive_item_error_is_recoverable(&error) => {
-                    task_writer.resynchronizing(error.to_string());
-                }
                 Err(error) => {
-                    task_writer.invalidate(error.to_string());
-                    return;
+                    let Some(interruption) = reactive_item_interruption(&error) else {
+                        task_writer.invalidate(error.to_string());
+                        return;
+                    };
+                    task_writer.interrupt(interruption);
                 }
             }
             let mut delay = client.reconnect_policy.initial_delay();
@@ -963,8 +1038,8 @@ where
                         break;
                     }
                     Err(error) => {
-                        if reactive_item_error_is_recoverable(&error) {
-                            task_writer.resynchronizing(error.to_string());
+                        if let Some(interruption) = reactive_item_interruption(&error) {
+                            task_writer.interrupt(interruption);
                             delay = client.reconnect_policy.next_delay(delay);
                         } else {
                             task_writer.invalidate(error.to_string());
@@ -978,11 +1053,25 @@ where
     IrohReactiveItemSubscription { live, writer, task }
 }
 
-const fn reactive_item_error_is_recoverable(error: &IrohReplicationError) -> bool {
-    matches!(
-        error,
-        IrohReplicationError::Endpoint(_) | IrohReplicationError::Stream(_)
-    )
+fn reactive_item_interruption(error: &IrohReplicationError) -> Option<SubscriptionInterruption> {
+    match error {
+        IrohReplicationError::Endpoint(_)
+        | IrohReplicationError::Stream(_)
+        | IrohReplicationError::AuthorityUnavailable(_) => {
+            Some(SubscriptionInterruption::Resynchronizing {
+                reason: error.to_string(),
+            })
+        }
+        IrohReplicationError::Authorization { decision, .. } => {
+            AuthorizationBlock::from_decision(*decision.clone())
+                .map(|block| SubscriptionInterruption::AuthorizationBlocked { block })
+        }
+        IrohReplicationError::Encoding(_)
+        | IrohReplicationError::Ingest(_)
+        | IrohReplicationError::Cursor(_)
+        | IrohReplicationError::Supervisor(_)
+        | IrohReplicationError::Identity(_) => None,
+    }
 }
 
 impl<Q: ItemQuery> IrohItemQuerySubscription<Q> {

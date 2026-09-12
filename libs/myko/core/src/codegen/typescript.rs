@@ -759,19 +759,21 @@ fn generate_class_sections(catalog: &TypegenCatalog) -> [String; 5] {
     let query_classes = catalog
         .queries
         .iter()
-        .map(|query| generate_query_class(query.query_id, query.query_item_type))
+        .map(|query| generate_query_class(query.query_id, query.query_item_type, query.service_id))
         .collect::<Vec<_>>()
         .join("\n\n");
     let view_classes = catalog
         .views
         .iter()
-        .map(|view| generate_view_class(view.view_id, view.view_item_type))
+        .map(|view| generate_view_class(view.view_id, view.view_item_type, view.service_id))
         .collect::<Vec<_>>()
         .join("\n\n");
     let report_classes = catalog
         .reports
         .iter()
-        .map(|report| generate_report_class(report.report_id, report.output_type))
+        .map(|report| {
+            generate_report_class(report.report_id, report.output_type, report.service_id)
+        })
         .collect::<Vec<_>>()
         .join("\n\n");
     let command_classes = catalog
@@ -1074,10 +1076,24 @@ pub fn generate_docs_json_from_bindings(
     Ok(())
 }
 
-fn generate_query_class(query_id: &str, query_item_type: &str) -> String {
+fn service_identity_fields(service: Option<crate::ServiceTypeId>) -> String {
+    service.map_or_else(String::new, |service| {
+        let id = ts_literal(service.as_str());
+        format!(
+            "  static readonly serviceId = {id} as const;\n  readonly serviceId = {id} as const;\n"
+        )
+    })
+}
+
+fn generate_query_class(
+    query_id: &str,
+    query_item_type: &str,
+    service: Option<crate::ServiceTypeId>,
+) -> String {
+    let service_fields = service_identity_fields(service);
     format!(
         r#"export class {query_id} {{
-  static readonly queryId = "{query_id}" as const;
+{service_fields}  static readonly queryId = "{query_id}" as const;
   static readonly queryItemType = "{query_item_type}" as const;
   readonly queryId = "{query_id}" as const;
   readonly queryItemType = "{query_item_type}" as const;
@@ -1091,10 +1107,15 @@ fn generate_query_class(query_id: &str, query_item_type: &str) -> String {
     )
 }
 
-fn generate_view_class(view_id: &str, view_item_type: &str) -> String {
+fn generate_view_class(
+    view_id: &str,
+    view_item_type: &str,
+    service: Option<crate::ServiceTypeId>,
+) -> String {
+    let service_fields = service_identity_fields(service);
     format!(
         r#"export class {view_id} {{
-  static readonly viewId = "{view_id}" as const;
+{service_fields}  static readonly viewId = "{view_id}" as const;
   static readonly viewItemType = "{view_item_type}" as const;
   readonly viewId = "{view_id}" as const;
   readonly viewItemType = "{view_item_type}" as const;
@@ -1108,11 +1129,16 @@ fn generate_view_class(view_id: &str, view_item_type: &str) -> String {
     )
 }
 
-fn generate_report_class(report_id: &str, output_type: &str) -> String {
+fn generate_report_class(
+    report_id: &str,
+    output_type: &str,
+    service: Option<crate::ServiceTypeId>,
+) -> String {
+    let service_fields = service_identity_fields(service);
     let ts_output_type = crate::operation_index::rust_type_to_ts(output_type);
     format!(
         r#"export class {report_id} {{
-  static readonly reportId = "{report_id}" as const;
+{service_fields}  static readonly reportId = "{report_id}" as const;
   readonly reportId = "{report_id}" as const;
   readonly report: Omit<_{report_id}, 'tx'>;
   declare readonly $res: () => {ts_output_type};
@@ -1193,6 +1219,26 @@ mod tests {
 
     use super::*;
     use crate::query::{IdFilter, StringFilter};
+
+    #[test]
+    fn generated_reactive_classes_keep_the_registered_service_identity() {
+        let service = Some(crate::ServiceTypeId::new("test:service"));
+        for output in [
+            generate_query_class("Rows", "Record", service),
+            generate_view_class("Rows", "Record", service),
+            generate_report_class("Label", "String", service),
+        ] {
+            assert!(output.contains("static readonly serviceId = \"test:service\" as const;"));
+            assert!(output.contains("\n  readonly serviceId = \"test:service\" as const;"));
+        }
+        for output in [
+            generate_query_class("Rows", "Record", None),
+            generate_view_class("Rows", "Record", None),
+            generate_report_class("Label", "String", None),
+        ] {
+            assert!(!output.contains("serviceId"));
+        }
+    }
 
     #[allow(dead_code)]
     #[derive(crate::TS)]

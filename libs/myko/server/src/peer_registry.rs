@@ -62,12 +62,12 @@ impl PeerRegistry {
         ctx: MykoServerContext,
         local_server: Server,
         self_host_id: ServerId,
-    ) -> SubscriptionGuard {
+    ) -> Result<SubscriptionGuard, String> {
         let all_servers = ctx
-            .query_map(GetAllServers {}, ctx.new_server_transaction())
+            .query_map(GetAllServers {}, ctx.new_server_transaction())?
             .items()
             .materialize();
-        all_servers.subscribe(move |signal| {
+        Ok(all_servers.subscribe(move |signal| {
             if let Signal::Value(servers) = signal {
                 let has_self = servers.iter().any(|s| s.id == self_host_id);
                 if !has_self {
@@ -80,7 +80,7 @@ impl PeerRegistry {
                     }
                 }
             }
-        })
+        }))
     }
 
     fn reconcile_peer_snapshot<T>(
@@ -186,20 +186,25 @@ impl PeerRegistry {
             .subscribe(|_| {})
     }
 
-    pub fn new(ctx: MykoServerContext, config: PeerRegistryConfig) -> Self {
+    /// Builds the peer registry and starts its live query subscriptions.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a required query subscription cannot be built.
+    pub fn new(ctx: MykoServerContext, config: PeerRegistryConfig) -> Result<Self, String> {
         let server_req = ctx.new_server_transaction();
 
         let connections = Arc::new(DashMap::new());
         let remove_guards = Arc::new(DashMap::new());
         let peer_servers = ctx
-            .query_map(GetPeerServers {}, server_req)
+            .query_map(GetPeerServers {}, server_req)?
             .items()
             .materialize();
         let host_id = ServerId(ctx.host_id.to_string().into());
         let server = Self::build_local_server(&config, &host_id);
 
         let self_advertise_guard =
-            Self::spawn_self_advertise_guard(ctx.clone(), server.clone(), host_id.clone());
+            Self::spawn_self_advertise_guard(ctx.clone(), server.clone(), host_id.clone())?;
 
         let peer_sub = Self::spawn_peer_reconcile_guard(
             peer_servers,
@@ -223,12 +228,12 @@ impl PeerRegistry {
         drop(ctx);
         drop(config);
 
-        Self {
+        Ok(Self {
             _peers_guard: peer_sub,
             _self_advertise_guard: self_advertise_guard,
             _connections: connections,
             _remove_guards: remove_guards,
-        }
+        })
     }
 
     pub fn shutdown(&self) {

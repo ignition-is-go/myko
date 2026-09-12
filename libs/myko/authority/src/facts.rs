@@ -241,7 +241,9 @@ pub(super) const fn permission_for(operation: AccessOperation) -> Option<Federat
         }
         AccessOperation::AdministerAuthority => Some(FederationPermission::Admin),
         AccessOperation::DelegateAuthority => Some(FederationPermission::Reshare),
-        AccessOperation::SubscribeLive | AccessOperation::ApproveAuthority => None,
+        AccessOperation::SubscribeLive
+        | AccessOperation::ApproveAuthority
+        | AccessOperation::AdministerExecution => None,
     }
 }
 

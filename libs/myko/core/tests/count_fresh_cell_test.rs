@@ -77,10 +77,12 @@ fn count_all_report_sees_correct_count_on_first_compute() {
 
     // Freshly-computed CountAll cell must see the 5 items already in the
     // store — not 0, which is what myko 4.24.1 returned.
-    let cell = ctx.report(CountAllBenchItems {}, request);
-    let count = myko::hyphae::Gettable::get(&cell);
+    let cell = ctx
+        .report(CountAllBenchItems {}, request)
+        .expect("count report builds");
     assert_eq!(
-        count.count, 5,
+        cell.read_current().map(|count| count.count),
+        Ok(5),
         "a freshly-computed CountAll report must reflect items already present in the store"
     );
 }
@@ -99,20 +101,23 @@ fn count_all_report_correct_under_concurrent_fresh_reads() {
         }
 
         let barrier = Arc::new(std::sync::Barrier::new(8));
-        let handles: [std::thread::JoinHandle<usize>; 8] = std::array::from_fn(|t| {
-            let ctx = ctx.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                let request = Arc::new(myko::request::RequestContext::from_client(
-                    Arc::from(format!("tx-{round}-{t}")),
-                    Arc::from(format!("client-{round}-{t}")),
-                    ctx.host_id,
-                ));
-                barrier.wait();
-                let cell = ctx.report(CountAllBenchItems {}, request);
-                myko::hyphae::Gettable::get(&cell).count
-            })
-        });
+        let handles: [std::thread::JoinHandle<Result<usize, String>>; 8] =
+            std::array::from_fn(|t| {
+                let ctx = ctx.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    let request = Arc::new(myko::request::RequestContext::from_client(
+                        Arc::from(format!("tx-{round}-{t}")),
+                        Arc::from(format!("client-{round}-{t}")),
+                        ctx.host_id,
+                    ));
+                    barrier.wait();
+                    let cell = ctx
+                        .report(CountAllBenchItems {}, request)
+                        .expect("count report builds");
+                    cell.read_current().map(|count| count.count)
+                })
+            });
 
         for (t, h) in handles.into_iter().enumerate() {
             let count = h.join();
@@ -121,7 +126,8 @@ fn count_all_report_correct_under_concurrent_fresh_reads() {
                 return;
             };
             assert_eq!(
-                count, 5,
+                count,
+                Ok(5),
                 "round {round} thread {t}: fresh concurrent CountAll read must see 5, not a stale/racing value"
             );
         }
@@ -144,8 +150,10 @@ fn count_all_report_tracks_writes_after_the_computing_call_returns() {
         Arc::from("client-1"),
         ctx.host_id,
     ));
-    let cell = ctx.report(CountAllBenchItems {}, request);
-    assert_eq!(myko::hyphae::Gettable::get(&cell).count, 1);
+    let cell = ctx
+        .report(CountAllBenchItems {}, request)
+        .expect("count report builds");
+    assert_eq!(cell.read_current().map(|count| count.count), Ok(1));
 
     // Writes AFTER compute() has already returned must still be tracked —
     // a frozen chain would leave `cell` stuck at 1 forever from here on.
@@ -154,8 +162,8 @@ fn count_all_report_tracks_writes_after_the_computing_call_returns() {
     }
 
     assert_eq!(
-        myko::hyphae::Gettable::get(&cell).count,
-        5,
+        cell.read_current().map(|count| count.count),
+        Ok(5),
         "the count cell must keep tracking store writes made after compute() \
          returned — a bare `.size()` clone without retaining the source map \
          freezes at whatever value existed when the local chain inside \

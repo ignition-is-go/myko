@@ -5,7 +5,6 @@ use std::{
     time::Duration,
 };
 
-use hyphae::Gettable as _;
 use myko::{CommandContext, CommandError, CommandHandler, MykoApplication};
 use myko_federation::{
     AccessAttempt, AccessOperation, AccessPolicy, AllowAllAccessPolicy, AuthorityPresentation,
@@ -592,7 +591,7 @@ async fn connected_client_places_a_command_on_a_capable_peer() -> Result<(), Str
         ))
         .map_err(|error| error.to_string())?;
     wait_for("peer service catalog was not replicated", || {
-        *capability.get()
+        capability.read_current().is_ok_and(|value| *value)
     })
     .await?;
 
@@ -737,9 +736,10 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
                 .iter()
                 .any(|(_, peer)| peer.id == configured_peer_id && peer.replication_enabled)
                 && report
-                    .get()
-                    .as_ref()
-                    .as_ref()
+                    .read_current()
+                    .ok()
+                    .as_deref()
+                    .and_then(Option::as_ref)
                     .is_some_and(|peer| peer.id == configured_peer_id && peer.replication_enabled)
         },
     )
@@ -761,9 +761,10 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
         "peer report did not observe the paused relationship",
         || {
             report
-                .get()
-                .as_ref()
-                .as_ref()
+                .read_current()
+                .ok()
+                .as_deref()
+                .and_then(Option::as_ref)
                 .is_some_and(|peer| !peer.replication_enabled)
         },
     )
@@ -778,7 +779,7 @@ async fn typed_peer_commands_drive_live_view_and_report() -> Result<(), String> 
     .await
     .map_err(|error| error.to_string())?;
     wait_for("typed peer live surfaces did not observe removal", || {
-        view.snapshot().is_empty() && report.get().as_ref().as_ref().is_none()
+        view.snapshot().is_empty() && report.read_current().is_ok_and(|value| value.is_none())
     })
     .await?;
     target.shutdown().await.map_err(|error| error.to_string())?;
@@ -862,9 +863,10 @@ async fn discovery_configuration_is_a_durable_live_framework_report() -> Result<
     }
     wait_for("LAN discovery report did not observe configuration", || {
         report
-            .get()
-            .as_ref()
-            .as_ref()
+            .read_current()
+            .ok()
+            .as_deref()
+            .and_then(Option::as_ref)
             .is_some_and(|settings| settings == &configured)
     })
     .await?;
@@ -880,7 +882,7 @@ async fn discovery_configuration_is_a_durable_live_framework_report() -> Result<
             source_node: node_id,
         })
         .map_err(|error| error.to_string())?;
-    if restored.get().as_ref().as_ref() != Some(&configured) {
+    if restored.read_current()?.as_ref().as_ref() != Some(&configured) {
         return Err("LAN discovery settings did not survive restart".to_owned());
     }
     reopened.shutdown().await.map_err(|error| error.to_string())
@@ -905,14 +907,15 @@ async fn complete_pairing_redemption(
         .map_err(|error| error.to_string())?;
     wait_for("pairing redemption report did not become terminal", || {
         redemption_report
-            .get()
-            .as_ref()
-            .as_ref()
+            .read_current()
+            .ok()
+            .as_deref()
+            .and_then(Option::as_ref)
             .is_some_and(|redemption| redemption.phase.is_terminal())
     })
     .await?;
     match redemption_report
-        .get()
+        .read_current()?
         .as_ref()
         .as_ref()
         .map(|redemption| redemption.phase.clone())
@@ -979,14 +982,15 @@ async fn complete_pairing_initiation(
         .map_err(|error| error.to_string())?;
     wait_for("pairing initiation report did not become terminal", || {
         report
-            .get()
-            .as_ref()
-            .as_ref()
+            .read_current()
+            .ok()
+            .as_deref()
+            .and_then(Option::as_ref)
             .is_some_and(|initiation| initiation.phase.is_terminal())
     })
     .await?;
     match report
-        .get()
+        .read_current()?
         .as_ref()
         .as_ref()
         .map(|initiation| initiation.phase.clone())

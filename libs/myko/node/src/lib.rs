@@ -376,7 +376,10 @@ impl HandlerConnector for EmbeddedHandlerConnector {
                     destination: self.destination,
                     authority: self.authority.clone(),
                     forwarding_provenance: Vec::new(),
-                    request: NodeRequest::FollowHandler { request },
+                    request: NodeRequest::FollowHandler(myko_wire::HandlerOpenRequest {
+                        request,
+                        observed_contract: None,
+                    }),
                 },
             )
             .await;

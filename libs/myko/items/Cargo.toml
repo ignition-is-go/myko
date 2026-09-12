@@ -8,8 +8,12 @@ license = "AGPL-3.0-or-later"
 [lints]
 workspace = true
 
+[features]
+schema = ["dep:schemars", "myko-items-macros/schema"]
+
 [dependencies]
 myko-items-macros.workspace = true
+schemars = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

@@ -24,6 +24,7 @@ quote.workspace = true
 
 [features]
 default = []
+schema = []
 # Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
 # Nothing to gate here yet — declared so the flag resolves uniformly across
 # every crate flux runs it against.

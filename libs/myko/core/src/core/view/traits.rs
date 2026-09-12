@@ -13,6 +13,9 @@ pub trait ViewId {
 }
 
 pub trait ViewIdStatic {
+    /// Generated service owner, or `None` for a global view.
+    const SERVICE_ID: Option<crate::ServiceTypeId> = None;
+
     fn view_id_static() -> Arc<str>;
 }
 
@@ -53,7 +56,12 @@ impl<TView: ViewItemType> ViewBuildArgs<TView> {
     /// Returns an error when this is not a federated request or the source
     /// projection cannot be established.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn federated_items<T>(&self) -> Result<crate::query::FilteredCellMap, String>
+    pub fn federated_items<T>(
+        &self,
+    ) -> Result<
+        myko_federation::LiveSubscription<crate::server::federated_source::ItemSnapshot<T>>,
+        String,
+    >
     where
         T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
     {
@@ -69,7 +77,7 @@ impl<TView: ViewItemType> ViewBuildArgs<TView> {
             .ok_or_else(|| "server has no federation runtime".to_owned())?;
         runtime
             .items::<T>(request.source_node, request.scope_id.clone())
-            .map(|source| source.rows())
+            .and_then(|source| source.snapshots::<T>())
     }
 
     /// Open this request's scope across every authoritative source while
@@ -201,13 +209,18 @@ pub trait ViewHandler: ViewItemType + Sized {
     /// runtimes. Closures in the returned plan must be deterministic,
     /// externally side-effect-free, and nonblocking; Hyphae may invoke them
     /// repeatedly or concurrently, with no stable order, count, or thread.
-    #[must_use]
-    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl super::ViewBuildOutput<Item = Self::Item>
+    ///
+    /// # Errors
+    /// Returns a dependency or resource setup error without opening the view.
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> Result<impl super::ViewBuildOutput<Item = Self::Item>, String>
     where
         Self: Send + Sync + 'static;
 }
 
 pub trait AnyView: WithTransaction + ViewId + std::fmt::Debug + Send + Sync + 'static {
+    fn service_id(&self) -> Option<crate::ServiceTypeId>;
     fn view_item_type(&self) -> Arc<str>;
     fn to_value(&self) -> Value;
 }
@@ -216,6 +229,7 @@ impl From<&dyn AnyView> for WrappedView {
     fn from(view: &dyn AnyView) -> Self {
         Self {
             view: view.to_value(),
+            service_id: view.service_id().map(Into::into),
             view_id: view.view_id(),
             view_item_type: view.view_item_type(),
             window: None,

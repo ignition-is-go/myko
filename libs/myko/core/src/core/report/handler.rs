@@ -1,6 +1,5 @@
 use std::sync::Arc;
 
-use hyphae::{Definite, Materialize};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
@@ -68,7 +67,12 @@ impl ReportContext {
     /// Returns an error when this is not a federated request or the source
     /// projection cannot be established.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn federated_items<T>(&self) -> Result<crate::query::FilteredCellMap, String>
+    pub fn federated_items<T>(
+        &self,
+    ) -> Result<
+        myko_federation::LiveSubscription<crate::server::federated_source::ItemSnapshot<T>>,
+        String,
+    >
     where
         T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
     {
@@ -80,7 +84,7 @@ impl ReportContext {
             .federated()
             .ok_or_else(|| "server has no federation runtime".to_owned())?
             .items::<T>(request.source_node, request.scope_id.clone())
-            .map(|source| source.rows())
+            .and_then(|source| source.snapshots::<T>())
     }
 
     /// Open this report's scope across every authoritative source while
@@ -93,7 +97,10 @@ impl ReportContext {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn federated_items_across_sources<T>(
         &self,
-    ) -> Result<crate::server::SourcedItemMap<T>, String>
+    ) -> Result<
+        myko_federation::LiveSubscription<crate::server::federated_source::SourcedItemSnapshot<T>>,
+        String,
+    >
     where
         T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
     {
@@ -108,7 +115,7 @@ impl ReportContext {
         self.server_ctx
             .federated()
             .ok_or_else(|| "server has no federation runtime".to_owned())?
-            .items_across_sources::<T>(scope_id)
+            .sourced_snapshots_selected::<T>(myko_federation::ScopeSelection::Exact(scope_id))
     }
 }
 
@@ -179,7 +186,7 @@ impl Replaying for ReportContext {}
 /// // Pattern:
 /// // 1) Define params (or an empty struct for no params)
 /// // 2) Implement ReportHandler::compute
-/// // 3) Use ctx.query(...) / ctx.report(...) to compose dependencies
+/// // 3) Use ctx.query_map_by_str(...) or ctx.report(...) to compose dependencies
 ///
 /// #[myko_report_output]
 /// pub struct ActiveTargetCount {
@@ -195,9 +202,11 @@ impl Replaying for ReportContext {}
 ///   fn compute(
 ///     &self,
 ///     ctx: ReportContext,
-///   ) -> impl Materialize<Arc<Self::Output>, Definite> {
-///     ctx.query(GetTargetsByQuery { active: Some(true), ..Default::default() })
-///       .map(|items| Arc::new(ActiveTargetCount { count: items.len() }))
+///   ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+///     let targets = ctx.query_map_by_str(
+///       GetTargetsByQuery { active: Some(true), ..Default::default() },
+///     )?;
+///     Ok(targets.size().map(|count| Arc::new(ActiveTargetCount { count: *count })))
 ///   }
 /// }
 /// ```
@@ -243,24 +252,18 @@ pub trait ReportHandler: Sized {
     /// Report arguments are parsed by the framework and passed as `&self`,
     /// so fields are directly accessible (e.g., `self.target_id`).
     ///
-    /// # Returning a `Materialize` pipeline (not a `Cell`)
+    /// Local Hyphae pipelines materialize at the cache boundary. Durable
+    /// sources return `RetainedReport` or a composed `ReportValue` so dependency
+    /// cursor and liveness survive registration and subscription.
     ///
-    /// `compute` returns `impl Materialize<Arc<Output>, Definite>` rather than a
-    /// concrete `Cell`, so reports can chain `.map(...)`, `.tap(...)`, etc. on
-    /// hyphae's lazy operators without materializing an intermediate cell.
-    /// `Definite` is the seedness for pipelines that have a known
-    /// initial value (definite seedness) and can be compiled into a `Cell`
-    /// via `.materialize()`. The framework type-erases the output and
-    /// materializes once at the registration boundary, so each report
-    /// incurs at most one cell allocation regardless of the chain depth of
-    /// `ctx.report(...)` calls.
-    ///
-    /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
-    /// `deduped`, etc. already implement `Materialize<U, Definite>`, so
-    /// returning them directly is fine.
-    #[allow(clippy::as_conversions, clippy::unreachable)]
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        unreachable!("report handlers execute on the server")
-            as hyphae::Cell<Arc<Self::Output>, hyphae::CellImmutable>
+    /// # Errors
+    /// Returns a dependency or resource setup error without opening the report.
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl super::ReportBuildOutput<Self::Output>, String> {
+        Err::<hyphae::Cell<Arc<Self::Output>, hyphae::CellImmutable>, _>(
+            "report handler has no server implementation".to_owned(),
+        )
     }
 }

@@ -859,25 +859,36 @@ async fn native_typed_item_stream_drives_hyphae_lifecycle_state() -> Result<(), 
     server
         .set_access_policy(Arc::new(DenyAllPolicy))
         .map_err(|error| error.to_string())?;
-    let invalid = tokio::time::timeout(Duration::from_secs(10), async {
+    let blocked = tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             let update = updates_rx
                 .recv_async()
                 .await
                 .map_err(|error| error.to_string())?;
-            if matches!(update.liveness, SubscriptionLiveness::Invalid { .. }) {
+            if matches!(
+                update.liveness,
+                SubscriptionLiveness::AuthorizationBlocked { .. }
+            ) {
                 return Ok::<_, String>(update);
+            }
+            if matches!(update.liveness, SubscriptionLiveness::Invalid { .. }) {
+                return Err(format!(
+                    "revocation invalidated the owned handle: {update:?}"
+                ));
             }
         }
     })
     .await
     .map_err(|_| "reactive native item stream did not expose revocation".to_owned())??;
     if !matches!(
-        invalid.liveness,
-        SubscriptionLiveness::Invalid { ref reason }
-            if reason.contains("access denied")
-    ) {
-        return Err(format!("unexpected invalid state: {invalid:?}"));
+        &blocked.liveness,
+        SubscriptionLiveness::AuthorizationBlocked {
+            block: myko_federation::AuthorizationBlock::Denied(decision)
+        } if decision.visibility == ResourceVisibility::Unauthorized
+    ) || blocked.value.is_some()
+        || blocked.through.is_some()
+    {
+        return Err(format!("unexpected revocation state: {blocked:?}"));
     }
 
     drop(reactive);

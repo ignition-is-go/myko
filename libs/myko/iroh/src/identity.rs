@@ -110,9 +110,14 @@ pub fn authorization_error(
 /// the immutable Myko log expected behind it. Pairing and discovery layers can
 /// choose any outer ticket encoding while preserving this distinction.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct NativeNodeDescriptor {
     pub version: u32,
     pub node_id: NodeId,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "crate::schema::endpoint_addr_schema")
+    )]
     pub endpoint: EndpointAddr,
 }
 
@@ -145,6 +150,7 @@ impl NativeNodeDescriptor {
 
 /// Versioned native bootstrap input for one identity-pinned peer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct NativePeerReference(NativeNodeDescriptor);
 

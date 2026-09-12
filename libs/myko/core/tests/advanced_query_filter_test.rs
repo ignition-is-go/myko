@@ -9,7 +9,6 @@ use std::sync::Arc;
 
 use myko::{
     bench_entities::{BenchItem, BenchItemQuery, CountBenchItems, GetBenchItemsByQuery},
-    hyphae::Gettable,
     query::{NumericFilter, StringFilter},
     server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
@@ -67,10 +66,12 @@ fn default_filter_matches_everything() {
     insert_bench_item(&ctx, "a", "cat", 1);
     insert_bench_item(&ctx, "b", "cat", 2);
 
-    let cell = ctx.query_map(
-        GetBenchItemsByQuery(BenchItemQuery::default()),
-        request(&ctx, "tx-1"),
-    );
+    let cell = ctx
+        .query_map(
+            GetBenchItemsByQuery(BenchItemQuery::default()),
+            request(&ctx, "tx-1"),
+        )
+        .expect("default query builds");
     assert_eq!(cell.snapshot().len(), 2);
 }
 
@@ -85,7 +86,9 @@ fn numeric_in_filter_matches_only_listed_values() {
         value: Some(NumericFilter::In(vec![1, 3])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetBenchItemsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetBenchItemsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("numeric query builds");
     assert_eq!(cell.snapshot().len(), 2);
 }
 
@@ -103,7 +106,9 @@ fn numeric_range_filter_matches_inclusive_bounds() {
         }),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetBenchItemsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetBenchItemsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("range query builds");
     assert_eq!(cell.snapshot().len(), 2);
 }
 
@@ -150,8 +155,10 @@ fn count_report_matches_only_filtered_items() {
         category: Some(StringFilter::Eq("alpha".into())),
         ..Default::default()
     };
-    let cell = ctx.report(CountBenchItems(filter), request(&ctx, "tx-1"));
-    assert_eq!(cell.get().count, 2);
+    let cell = ctx
+        .report(CountBenchItems(filter), request(&ctx, "tx-1"))
+        .expect("count report builds");
+    assert_eq!(cell.read_current().map(|output| output.count), Ok(2));
 }
 
 #[test]
@@ -180,13 +187,17 @@ fn count_report_permuted_in_filters_share_one_report_cell() {
         ..Default::default()
     };
 
-    let cell_a = ctx.report(CountBenchItems(filter_a), request(&ctx, "tx-a"));
-    assert_eq!(cell_a.get().count, 2);
+    let cell_a = ctx
+        .report(CountBenchItems(filter_a), request(&ctx, "tx-a"))
+        .expect("first count report builds");
+    assert_eq!(cell_a.read_current().map(|count| count.count), Ok(2));
     let after_a = ctx.report_cache_len();
     assert_eq!(after_a, before + 1, "first filter creates one report cell");
 
-    let cell_b = ctx.report(CountBenchItems(filter_b), request(&ctx, "tx-b"));
-    assert_eq!(cell_b.get().count, 2);
+    let cell_b = ctx
+        .report(CountBenchItems(filter_b), request(&ctx, "tx-b"))
+        .expect("second count report builds");
+    assert_eq!(cell_b.read_current().map(|count| count.count), Ok(2));
     let after_b = ctx.report_cache_len();
     assert_eq!(
         after_b, after_a,

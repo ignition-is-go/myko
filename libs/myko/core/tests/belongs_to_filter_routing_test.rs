@@ -6,6 +6,8 @@
 //! not a scan) is covered separately alongside the rest of the phase-1
 //! acceptance criteria.
 
+#![allow(clippy::expect_used, reason = "Query setup must succeed before testing live updates.")]
+
 use std::sync::Arc;
 
 use myko::{
@@ -93,7 +95,9 @@ fn in_filter_on_belongs_to_field_returns_the_union() {
         ])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("client query builds");
     assert_eq!(
         cell.snapshot().len(),
         2,
@@ -114,7 +118,9 @@ fn in_filter_on_belongs_to_field_stays_reactive() {
         ])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("client query builds");
     assert_eq!(cell.snapshot().len(), 1);
 
     // A new client under server-B (also in the In set) must appear.
@@ -137,7 +143,9 @@ fn eq_filter_on_belongs_to_field_still_works() {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("client query builds");
     assert_eq!(cell.snapshot().len(), 1);
 }
 
@@ -152,8 +160,12 @@ fn retained_filtered_query_items_propagate_deletion() {
         ..Default::default()
     };
     let live_request = request(&ctx, "tx-live-delete");
-    let untyped = ctx.query_map_untyped(GetClientsByQuery(filter.clone()), live_request.clone());
-    let live = ctx.query_map(GetClientsByQuery(filter.clone()), live_request);
+    let untyped = ctx
+        .query_map_untyped(GetClientsByQuery(filter.clone()), live_request.clone())
+        .expect("untyped client query builds");
+    let live = ctx
+        .query_map(GetClientsByQuery(filter.clone()), live_request)
+        .expect("typed client query builds");
     let items = live.items().materialize();
     assert_eq!(items.get().len(), 1);
 
@@ -193,7 +205,9 @@ fn update_to_non_fk_field_propagates_through_routed_view() {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("client query builds");
     let snap = cell.snapshot();
     assert_eq!(snap.len(), 1);
 
@@ -246,7 +260,9 @@ fn id_filter_routes_through_per_id_cells_and_stays_reactive() {
         ])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-id-1"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(filter), request(&ctx, "tx-id-1"))
+        .expect("id-routed client query builds");
     assert_eq!(cell.snapshot().len(), 1);
 
     // An id in the set inserted AFTER subscription must appear.
@@ -266,7 +282,9 @@ fn id_filter_routes_through_per_id_cells_and_stays_reactive() {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-B")))),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(narrowed), request(&ctx, "tx-id-2"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(narrowed), request(&ctx, "tx-id-2"))
+        .expect("narrowed client query builds");
     let snap = cell.snapshot();
     assert_eq!(snap.len(), 1);
     assert_eq!(snap.first().map(|entry| entry.0.as_ref()), Some("c2"));

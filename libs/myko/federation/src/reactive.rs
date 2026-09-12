@@ -4,7 +4,7 @@ use std::{
     collections::BTreeMap,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -17,6 +17,42 @@ use parking_lot::{Mutex, ReentrantMutex};
 
 use crate::{LivePublication, LivePublicationStream, LogPosition, publication::PublicationSource};
 
+/// Structured authorization evidence for a live value that cannot be exposed.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorizationBlock {
+    Denied(Box<crate::DenyDecision>),
+    Challenge {
+        challenge: Box<crate::AuthorityChallenge>,
+        report: Box<crate::AuthorizationReport>,
+    },
+}
+
+impl AuthorizationBlock {
+    /// Converts a non-permit decision into its live-state representation.
+    #[must_use]
+    pub fn from_decision(decision: crate::AuthorizationDecision) -> Option<Self> {
+        match decision {
+            crate::AuthorizationDecision::Permit(_) => None,
+            crate::AuthorizationDecision::Deny(decision) => Some(Self::Denied(Box::new(decision))),
+            crate::AuthorizationDecision::Challenge { challenge, report } => {
+                Some(Self::Challenge {
+                    challenge: Box::new(challenge),
+                    report: Box::new(report),
+                })
+            }
+        }
+    }
+}
+
+/// A noncurrent transition accepted by a live-state writer.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubscriptionInterruption {
+    Resynchronizing { reason: String },
+    AuthorizationBlocked { block: AuthorizationBlock },
+}
+
 /// Whether a live subscription currently represents authoritative state.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -27,6 +63,8 @@ pub enum SubscriptionLiveness {
     Current,
     /// The adapter is reconnecting; a retained value is stale until resynced.
     Resynchronizing { reason: String },
+    /// Authorization currently forbids exposing the protected value.
+    AuthorizationBlocked { block: AuthorizationBlock },
     /// The stream ended or violated its contract and requires a new watch.
     Invalid { reason: String },
 }
@@ -92,6 +130,7 @@ where
 {
     last_diff: MapDiff<K, Arc<T>>,
     revision: LiveCollectionRevision<T, C, K>,
+    order: u64,
 }
 
 fn fold_collection_revision<T, C, K>(
@@ -105,7 +144,7 @@ where
 {
     let diff_changed = previous.last_diff != input.0;
     let state_changed = previous.revision.state != input.1;
-    let revision = if diff_changed {
+    let mut revision = if diff_changed {
         LiveCollectionRevision {
             diff: Some(input.0.clone()),
             state: input.1.clone(),
@@ -118,9 +157,30 @@ where
     } else {
         previous.revision.clone()
     };
+    let order = if diff_changed || state_changed {
+        match previous.order.checked_add(1) {
+            Some(u64::MAX) => {
+                revision = LiveCollectionRevision {
+                    diff: None,
+                    state: LiveCollectionState {
+                        through: previous.revision.state.through.clone(),
+                        liveness: SubscriptionLiveness::Invalid {
+                            reason: "live collection publication sequence exhausted".to_owned(),
+                        },
+                    },
+                };
+                u64::MAX
+            }
+            Some(order) => order,
+            None => previous.order,
+        }
+    } else {
+        previous.order
+    };
     CollectionRevisionFold {
         last_diff: input.0.clone(),
         revision,
+        order,
     }
 }
 
@@ -137,6 +197,7 @@ where
     // mutable lifecycle publication.
     state: Cell<LiveCollectionState<C>, CellImmutable>,
     revision: Cell<LiveCollectionRevision<T, C, K>, CellImmutable>,
+    publication: Cell<LivePublication<LiveCollectionRevision<T, C, K>>, CellImmutable>,
     revision_events: LiveCollectionRevisionSubscribers<T, C, K>,
     revision_gate: LiveCollectionRevisionGate,
     lossless_revision_events: bool,
@@ -251,27 +312,126 @@ where
                 diff: Some(initial_diff),
                 state: initial_state,
             },
+            order: 0,
         };
-        let revision = projected_diffs
+        let fold = projected_diffs
             .join(state)
             .scan(initial, fold_collection_revision)
-            .map(|fold| fold.revision.clone())
             .materialize()
-            .with_name("myko.live_collection.plan.revision");
-        let state = revision
-            .clone()
-            .map(|revision| revision.state.clone())
-            .materialize()
-            .with_name("myko.live_collection.plan.state");
-
-        LiveCollection {
-            rows,
-            state,
-            revision,
-            revision_events: Arc::new(Mutex::new(Vec::new())),
-            revision_gate: Arc::new(ReentrantMutex::new(())),
-            lossless_revision_events: false,
+            .with_name("myko.live_collection.plan.fold");
+        let publication = hyphae::scheduler::no_coalesce(|| {
+            fold.clone()
+                .map(|fold| LivePublication {
+                    sequence: fold.order,
+                    state: fold.revision.clone(),
+                })
+                .materialize()
+        })
+        .with_name("myko.live_collection.plan.publication");
+        let (writer, output) = live_collection(
+            Vec::new(),
+            LiveCollectionState {
+                through: None,
+                liveness: SubscriptionLiveness::Connecting,
+            },
+        );
+        let applied = Arc::new(AtomicU64::new(0));
+        let applied_for_callback = Arc::clone(&applied);
+        let blocked = Arc::new(AtomicBool::new(false));
+        let blocked_for_callback = Arc::clone(&blocked);
+        let source_rows = rows.clone();
+        let source_rows_for_callback = rows;
+        let bootstrap = Arc::new(Mutex::new(Some(Vec::<
+            LivePublication<LiveCollectionRevision<T, C, K>>,
+        >::new())));
+        let bootstrap_for_callback = Arc::clone(&bootstrap);
+        let writer_for_callback = writer.clone();
+        let guard = publication.subscribe(move |signal| {
+            let Signal::Value(publication) = signal else {
+                return;
+            };
+            let mut bootstrap = bootstrap_for_callback.lock();
+            if let Some(queued) = bootstrap.as_mut() {
+                queued.push(publication.as_ref().clone());
+                return;
+            }
+            drop(bootstrap);
+            apply_plan_publication(
+                &writer_for_callback,
+                &source_rows_for_callback,
+                &applied_for_callback,
+                &blocked_for_callback,
+                publication,
+            );
+        });
+        let mut bootstrap = bootstrap.lock();
+        let initial = publication.get();
+        applied.store(initial.sequence, Ordering::Release);
+        blocked.store(
+            matches!(
+                &initial.state.state.liveness,
+                SubscriptionLiveness::AuthorizationBlocked { .. }
+            ),
+            Ordering::Release,
+        );
+        writer.publish_revision(
+            Some(MapDiff::Initial {
+                entries: source_rows.snapshot(),
+            }),
+            initial.state.state,
+        );
+        let mut queued = bootstrap.take().unwrap_or_default();
+        queued.sort_by_key(|publication| publication.sequence);
+        for publication in queued {
+            apply_plan_publication(&writer, &source_rows, &applied, &blocked, &publication);
         }
+        drop(bootstrap);
+        output.revision.own(guard);
+        output
+    }
+}
+
+fn apply_plan_publication<T, C, K>(
+    writer: &LiveCollectionWriter<T, C, K>,
+    source_rows: &CellMap<K, Arc<T>, CellImmutable>,
+    applied: &AtomicU64,
+    blocked: &AtomicBool,
+    publication: &LivePublication<LiveCollectionRevision<T, C, K>>,
+) where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    if publication.sequence <= applied.fetch_max(publication.sequence, Ordering::AcqRel) {
+        return;
+    }
+    let revision = &publication.state;
+    if matches!(
+        &revision.state.liveness,
+        SubscriptionLiveness::AuthorizationBlocked { .. }
+    ) {
+        blocked.store(true, Ordering::Release);
+        writer.publish_revision(revision.diff.clone(), revision.state.clone());
+    } else if blocked.load(Ordering::Acquire) {
+        match &revision.state.liveness {
+            SubscriptionLiveness::Current => {
+                blocked.store(false, Ordering::Release);
+                writer.publish_revision(
+                    Some(MapDiff::Initial {
+                        entries: source_rows.snapshot(),
+                    }),
+                    revision.state.clone(),
+                );
+            }
+            SubscriptionLiveness::Invalid { .. } => {
+                writer.publish_revision(None, revision.state.clone());
+            }
+            SubscriptionLiveness::Connecting
+            | SubscriptionLiveness::Resynchronizing { .. }
+            | SubscriptionLiveness::AuthorizationBlocked { .. } => {}
+        }
+    } else {
+        writer.publish_revision(revision.diff.clone(), revision.state.clone());
     }
 }
 
@@ -440,7 +600,7 @@ where
     /// Takes the current lifecycle revision without subscribing.
     #[must_use]
     pub fn current_state(&self) -> LiveCollectionState<C> {
-        self.state.get()
+        self.publication.get().state.state
     }
 
     /// Projects keyed rows into a coherent live value for derived reports.
@@ -460,13 +620,27 @@ where
                 let mut entries = entries.clone();
                 entries.sort_by(|(left, _), (right, _)| left.cmp(right));
                 LiveSubscriptionState {
-                    value: Some(
-                        entries
-                            .into_iter()
-                            .map(|(_, value)| value.as_ref().clone())
-                            .collect(),
-                    ),
-                    through: state.through.clone(),
+                    value: if matches!(
+                        &state.liveness,
+                        SubscriptionLiveness::AuthorizationBlocked { .. }
+                    ) {
+                        None
+                    } else {
+                        Some(
+                            entries
+                                .into_iter()
+                                .map(|(_, value)| value.as_ref().clone())
+                                .collect(),
+                        )
+                    },
+                    through: if matches!(
+                        &state.liveness,
+                        SubscriptionLiveness::AuthorizationBlocked { .. }
+                    ) {
+                        None
+                    } else {
+                        state.through.clone()
+                    },
                     liveness: state.liveness.clone(),
                 }
             })
@@ -507,8 +681,6 @@ where
     left: BTreeMap<K, Arc<T>>,
     right: BTreeMap<K, Arc<T>>,
     colliding: bool,
-    left_seed_replayed: bool,
-    right_seed_replayed: bool,
 }
 
 fn union_live_collections<T, L, R, K>(
@@ -521,18 +693,10 @@ where
     R: hyphae::CellValue,
     K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
 {
-    let left_rows = left
-        .rows()
-        .snapshot()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
-    let right_rows = right
-        .rows()
-        .snapshot()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
+    let (left_rows, left_state, left_sequence) = collection_union_seed(left);
+    let (right_rows, right_state, right_sequence) = collection_union_seed(right);
     let collision = union_collision(&left_rows, &right_rows).cloned();
-    let initial_state = union_collection_state(left.current_state(), right.current_state());
+    let initial_state = union_collection_state(left_state, right_state);
     let initial_state = if let Some(key) = collision.as_ref() {
         invalid_union_state(&initial_state, key)
     } else {
@@ -548,17 +712,24 @@ where
         left: left_rows,
         right: right_rows,
         colliding: collision.is_some(),
-        left_seed_replayed: false,
-        right_seed_replayed: false,
     }));
 
+    let right_publications = right.publication.clone();
+    let right_applied = Arc::new(AtomicU64::new(right_sequence));
+    let right_applied_for_callback = Arc::clone(&right_applied);
     let left_for_right = left.clone();
     let rows_for_right = Arc::clone(&rows);
     let writer_for_right = writer.clone();
-    let right_guard = right.revision().subscribe(move |signal| {
-        let Signal::Value(revision) = signal else {
+    let right_guard = right_publications.subscribe(move |signal| {
+        let Signal::Value(publication) = signal else {
             return;
         };
+        if publication.sequence
+            <= right_applied_for_callback.fetch_max(publication.sequence, Ordering::AcqRel)
+        {
+            return;
+        }
+        let revision = &publication.state;
         let state = union_collection_state(left_for_right.current_state(), revision.state.clone());
         publish_union_revision(
             &writer_for_right,
@@ -569,13 +740,22 @@ where
         );
     });
 
+    let left_publications = left.publication.clone();
+    let left_applied = Arc::new(AtomicU64::new(left_sequence));
+    let left_applied_for_callback = Arc::clone(&left_applied);
     let right_for_left = right.clone();
     let rows_for_right = rows;
     let writer_for_left = writer;
-    let left_guard = left.revision().subscribe(move |signal| {
-        let Signal::Value(revision) = signal else {
+    let left_guard = left_publications.subscribe(move |signal| {
+        let Signal::Value(publication) = signal else {
             return;
         };
+        if publication.sequence
+            <= left_applied_for_callback.fetch_max(publication.sequence, Ordering::AcqRel)
+        {
+            return;
+        }
+        let revision = &publication.state;
         let state = union_collection_state(revision.state.clone(), right_for_left.current_state());
         publish_union_revision(
             &writer_for_left,
@@ -590,6 +770,20 @@ where
     output
 }
 
+fn collection_union_seed<T, C, K>(
+    collection: &LiveCollection<T, C, K>,
+) -> (BTreeMap<K, Arc<T>>, LiveCollectionState<C>, u64)
+where
+    T: hyphae::CellValue,
+    C: hyphae::CellValue,
+    K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
+{
+    let _revision_gate = collection.revision_gate.lock();
+    let publication = collection.publication.get();
+    let rows = collection.rows().snapshot().into_iter().collect();
+    (rows, publication.state.state, publication.sequence)
+}
+
 fn publish_union_revision<T, C, K>(
     writer: &LiveCollectionWriter<T, C, K>,
     rows: &Mutex<UnionRows<T, K>>,
@@ -602,20 +796,20 @@ fn publish_union_revision<T, C, K>(
     K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
 {
     let mut rows = rows.lock();
-    let seed_replayed = match side {
-        UnionSide::Left => &mut rows.left_seed_replayed,
-        UnionSide::Right => &mut rows.right_seed_replayed,
-    };
-    if !*seed_replayed {
-        *seed_replayed = true;
-        return;
-    }
     if let Some(diff) = diff {
         let side_rows = match side {
             UnionSide::Left => &mut rows.left,
             UnionSide::Right => &mut rows.right,
         };
         apply_diff_to_snapshot(side_rows, diff);
+    }
+
+    if let SubscriptionLiveness::AuthorizationBlocked { block } = &state.liveness {
+        drop(rows);
+        writer.interrupt(SubscriptionInterruption::AuthorizationBlocked {
+            block: block.clone(),
+        });
+        return;
     }
 
     let mut publish_state = state;
@@ -711,6 +905,12 @@ where
     R: Clone,
 {
     let liveness = match (&left.liveness, &right.liveness) {
+        (SubscriptionLiveness::AuthorizationBlocked { block }, _)
+        | (_, SubscriptionLiveness::AuthorizationBlocked { block }) => {
+            SubscriptionLiveness::AuthorizationBlocked {
+                block: block.clone(),
+            }
+        }
         (SubscriptionLiveness::Invalid { reason }, _) => SubscriptionLiveness::Invalid {
             reason: format!("left collection is invalid: {reason}"),
         },
@@ -735,10 +935,14 @@ where
         }
     };
     LiveCollectionState {
-        through: Some(CompositeFrontier {
-            left: left.through,
-            right: right.through,
-        }),
+        through: if matches!(&liveness, SubscriptionLiveness::AuthorizationBlocked { .. }) {
+            None
+        } else {
+            Some(CompositeFrontier {
+                left: left.through,
+                right: right.through,
+            })
+        },
         liveness,
     }
 }
@@ -752,7 +956,7 @@ where
     K: hyphae::CellValue + std::hash::Hash + Eq,
 {
     rows: CellMap<K, Arc<T>, CellMutable>,
-    revision: Cell<LiveCollectionRevision<T, C, K>, CellMutable>,
+    publication: Cell<LivePublication<LiveCollectionRevision<T, C, K>>, CellMutable>,
     revision_events: LiveCollectionRevisionSubscribers<T, C, K>,
     revision_gate: LiveCollectionRevisionGate,
 }
@@ -930,13 +1134,47 @@ where
     }
 
     fn publish_revision(&self, diff: Option<MapDiff<K, Arc<T>>>, state: LiveCollectionState<C>) {
-        let revision = LiveCollectionRevision { diff, state };
+        let blocked = matches!(
+            &state.liveness,
+            SubscriptionLiveness::AuthorizationBlocked { .. }
+        );
+        let mut revision = LiveCollectionRevision {
+            diff: if blocked {
+                Some(MapDiff::Initial {
+                    entries: Vec::new(),
+                })
+            } else {
+                diff
+            },
+            state: LiveCollectionState {
+                through: if blocked { None } else { state.through },
+                liveness: state.liveness,
+            },
+        };
         let _revision_gate = self.revision_gate.lock();
+        let previous_sequence = self.publication.get().sequence;
+        let Some(sequence) = previous_sequence.checked_add(1) else {
+            return;
+        };
+        if sequence == u64::MAX {
+            revision = LiveCollectionRevision {
+                diff: None,
+                state: LiveCollectionState {
+                    through: self.publication.get().state.state.through,
+                    liveness: SubscriptionLiveness::Invalid {
+                        reason: "live collection publication sequence exhausted".to_owned(),
+                    },
+                },
+            };
+        }
         hyphae::batch(|| {
             if let Some(diff) = revision.diff.as_ref() {
                 self.rows.apply_diff_owned(diff.clone());
             }
-            self.revision.set(revision.clone());
+            self.publication.set(LivePublication {
+                sequence,
+                state: revision.clone(),
+            });
             self.revision_events
                 .lock()
                 .retain(|sender| sender.send(revision.clone()).is_ok());
@@ -945,11 +1183,31 @@ where
 
     /// Retains rows while marking the collection stale during recovery.
     pub fn resynchronizing(&self, reason: impl Into<String>) {
-        let previous = self.revision.get().state;
-        let state = LiveCollectionState {
-            through: previous.through,
-            liveness: SubscriptionLiveness::Resynchronizing {
-                reason: reason.into(),
+        self.interrupt(SubscriptionInterruption::Resynchronizing {
+            reason: reason.into(),
+        });
+    }
+
+    /// Applies an outage or authorization interruption atomically.
+    pub fn interrupt(&self, interruption: SubscriptionInterruption) {
+        let previous = self.publication.get().state.state;
+        let state = match interruption {
+            SubscriptionInterruption::Resynchronizing { reason } => {
+                if matches!(
+                    &previous.liveness,
+                    SubscriptionLiveness::AuthorizationBlocked { .. }
+                ) {
+                    previous
+                } else {
+                    LiveCollectionState {
+                        through: previous.through,
+                        liveness: SubscriptionLiveness::Resynchronizing { reason },
+                    }
+                }
+            }
+            SubscriptionInterruption::AuthorizationBlocked { block } => LiveCollectionState {
+                through: None,
+                liveness: SubscriptionLiveness::AuthorizationBlocked { block },
             },
         };
         self.publish_revision(None, state);
@@ -957,7 +1215,7 @@ where
 
     /// Retains rows while marking the collection unusable.
     pub fn invalidate(&self, reason: impl Into<String>) {
-        let previous = self.revision.get().state;
+        let previous = self.publication.get().state.state;
         let state = LiveCollectionState {
             through: previous.through,
             liveness: SubscriptionLiveness::Invalid {
@@ -971,24 +1229,41 @@ where
 /// Creates application and adapter halves of one keyed live collection.
 #[must_use]
 pub fn live_collection<T, C, K>(
-    rows: Vec<(K, Arc<T>)>,
-    state: LiveCollectionState<C>,
+    mut rows: Vec<(K, Arc<T>)>,
+    mut state: LiveCollectionState<C>,
 ) -> (LiveCollectionWriter<T, C, K>, LiveCollection<T, C, K>)
 where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
     K: hyphae::CellValue + std::hash::Hash + Eq + Ord,
 {
+    if matches!(
+        &state.liveness,
+        SubscriptionLiveness::AuthorizationBlocked { .. }
+    ) {
+        rows.clear();
+        state.through = None;
+    }
     let revision_events = Arc::new(Mutex::new(Vec::new()));
     let revision_gate = Arc::new(ReentrantMutex::new(()));
     let mutable_rows = CellMap::new().with_name("myko.live_collection.rows");
     mutable_rows.replace_all(rows.clone());
-    let mutable_revision = Cell::new(LiveCollectionRevision {
-        diff: Some(MapDiff::Initial { entries: rows }),
-        state,
+    let mutable_publication = hyphae::scheduler::no_coalesce(|| {
+        Cell::new(LivePublication {
+            sequence: 0,
+            state: LiveCollectionRevision {
+                diff: Some(MapDiff::Initial { entries: rows }),
+                state,
+            },
+        })
     })
-    .with_name("myko.live_collection.revision");
-    let revision = mutable_revision.clone().lock();
+    .with_name("myko.live_collection.publication");
+    let publication = mutable_publication.clone().lock();
+    let revision = publication
+        .clone()
+        .map(|publication| publication.state.clone())
+        .materialize()
+        .with_name("myko.live_collection.revision");
     let state = revision
         .clone()
         .map(|revision| revision.state.clone())
@@ -998,6 +1273,7 @@ where
         rows: mutable_rows.clone().lock(),
         state,
         revision,
+        publication,
         revision_events: Arc::clone(&revision_events),
         revision_gate: Arc::clone(&revision_gate),
         lossless_revision_events: true,
@@ -1005,7 +1281,7 @@ where
     (
         LiveCollectionWriter {
             rows: mutable_rows,
-            revision: mutable_revision,
+            publication: mutable_publication,
             revision_events,
             revision_gate,
         },
@@ -1022,6 +1298,24 @@ where
 {
     state: Cell<LiveSubscriptionState<T, C>, CellImmutable>,
     publication: Cell<LivePublication<LiveSubscriptionState<T, C>>, CellImmutable>,
+}
+
+/// Weak cache reference preserving the original publication sequence.
+pub struct WeakLiveSubscription<T: hyphae::CellValue, C: hyphae::CellValue = LogPosition> {
+    state: hyphae::cell::WeakCell<LiveSubscriptionState<T, C>, CellImmutable>,
+    publication:
+        hyphae::cell::WeakCell<LivePublication<LiveSubscriptionState<T, C>>, CellImmutable>,
+}
+
+impl<T: hyphae::CellValue, C: hyphae::CellValue> WeakLiveSubscription<T, C> {
+    #[must_use]
+    pub fn upgrade(&self) -> Option<LiveSubscription<T, C>> {
+        let publication = self.publication.upgrade()?;
+        Some(match self.state.upgrade() {
+            Some(state) => LiveSubscription { state, publication },
+            None => LiveSubscription::from_publication_cell(publication),
+        })
+    }
 }
 
 /// A retained driver for one typed reactive value projection.
@@ -1057,6 +1351,51 @@ where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
 {
+    #[must_use]
+    pub fn downgrade(&self) -> WeakLiveSubscription<T, C> {
+        WeakLiveSubscription {
+            state: self.state.downgrade(),
+            publication: self.publication.downgrade(),
+        }
+    }
+
+    /// Converts a cursor at a type-erasure boundary without resequencing values.
+    /// A conversion failure retains the value but explicitly invalidates it.
+    #[must_use]
+    pub fn try_map_cursor<D, E, F>(&self, transform: F) -> LiveSubscription<T, D>
+    where
+        D: hyphae::CellValue,
+        E: std::fmt::Display,
+        F: Fn(&C) -> Result<D, E> + Send + Sync + 'static,
+    {
+        let publication = self
+            .publication
+            .clone()
+            .map(move |publication| {
+                let source = &publication.state;
+                let (through, liveness) = match source.through.as_ref().map(&transform).transpose()
+                {
+                    Ok(through) => (through, source.liveness.clone()),
+                    Err(error) => (
+                        None,
+                        SubscriptionLiveness::Invalid {
+                            reason: format!("subscription cursor conversion failed: {error}"),
+                        },
+                    ),
+                };
+                LivePublication {
+                    sequence: publication.sequence,
+                    state: normalize_subscription_state(LiveSubscriptionState {
+                        value: source.value.clone(),
+                        through,
+                        liveness,
+                    }),
+                }
+            })
+            .materialize();
+        LiveSubscription::from_publication_cell(publication)
+    }
+
     /// Returns whether two handles observe the exact same materialized Hyphae
     /// state cell.
     #[must_use]
@@ -1096,7 +1435,7 @@ where
     /// Takes a coherent snapshot without subscribing.
     #[must_use]
     pub fn current(&self) -> LiveSubscriptionState<T, C> {
-        self.state.get()
+        self.publication.get().state
     }
 
     /// Wraps an application-derived immutable Hyphae lifecycle cell.
@@ -1117,7 +1456,7 @@ where
                 let next = sequence.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                     value.checked_add(1)
                 });
-                let mut state = state.clone();
+                let mut state = normalize_subscription_state(state.clone());
                 let sequence = match next {
                     Ok(sequence) => sequence,
                     Err(sequence) => {
@@ -1155,7 +1494,7 @@ where
         F: Fn(&T) -> U + Send + Sync + 'static,
     {
         let initial_publication = self.publication.get();
-        let initial_source = initial_publication.state;
+        let initial_source = normalize_subscription_state(initial_publication.state);
         let initial_mapped = LiveSubscriptionState {
             value: initial_source.value.as_ref().map(&transform),
             through: initial_source.through.clone(),
@@ -1176,7 +1515,7 @@ where
                     if publication.sequence <= previous_mapped.sequence {
                         return (previous_source.clone(), previous_mapped.clone());
                     }
-                    let source = &publication.state;
+                    let source = normalize_subscription_state(publication.state.clone());
                     let value = if source.value == *previous_source {
                         previous_mapped.state.value.clone()
                     } else {
@@ -1188,8 +1527,8 @@ where
                             sequence: publication.sequence,
                             state: LiveSubscriptionState {
                                 value,
-                                through: source.through.clone(),
-                                liveness: source.liveness.clone(),
+                                through: source.through,
+                                liveness: source.liveness,
                             },
                         },
                     )
@@ -1198,6 +1537,65 @@ where
             .map(|(_, state)| state.clone())
             .materialize()
             .with_name("myko.live_subscription.map_value");
+        LiveSubscription::from_publication_cell(publication)
+    }
+
+    /// Converts a value at a type-erasure boundary without resequencing it.
+    ///
+    /// A failed conversion marks the output invalid and retains its last
+    /// successfully converted value and cursor. A later successful conversion
+    /// restores the source lifecycle. An absent source value clears the output.
+    #[must_use]
+    pub fn try_map_value<U, E, F>(&self, transform: F) -> LiveSubscription<U, C>
+    where
+        U: hyphae::CellValue,
+        E: std::fmt::Display,
+        F: Fn(&T) -> Result<U, E> + Send + Sync + 'static,
+    {
+        let convert = move |source: &LiveSubscriptionState<T, C>,
+                            previous: Option<&LiveSubscriptionState<U, C>>| {
+            if let SubscriptionLiveness::AuthorizationBlocked { block } = &source.liveness {
+                return LiveSubscriptionState {
+                    value: None,
+                    through: None,
+                    liveness: SubscriptionLiveness::AuthorizationBlocked {
+                        block: block.clone(),
+                    },
+                };
+            }
+            match source.value.as_ref().map(&transform).transpose() {
+                Ok(value) => LiveSubscriptionState {
+                    value,
+                    through: source.through.clone(),
+                    liveness: source.liveness.clone(),
+                },
+                Err(error) => LiveSubscriptionState {
+                    value: previous.and_then(|state| state.value.clone()),
+                    through: previous.and_then(|state| state.through.clone()),
+                    liveness: SubscriptionLiveness::Invalid {
+                        reason: format!("subscription value conversion failed: {error}"),
+                    },
+                },
+            }
+        };
+        let initial = self.publication.get();
+        let initial_mapped = LivePublication {
+            sequence: initial.sequence,
+            state: convert(&initial.state, None),
+        };
+        let publication = self
+            .publication
+            .clone()
+            .scan(initial_mapped, move |previous, publication| {
+                if publication.sequence <= previous.sequence {
+                    return previous.clone();
+                }
+                LivePublication {
+                    sequence: publication.sequence,
+                    state: convert(&publication.state, Some(&previous.state)),
+                }
+            })
+            .materialize();
         LiveSubscription::from_publication_cell(publication)
     }
 
@@ -1278,6 +1676,18 @@ where
     D: hyphae::CellValue,
 {
     let (left, right) = dependencies;
+    let authorization_block = match (&left.liveness, &right.liveness) {
+        (SubscriptionLiveness::AuthorizationBlocked { block }, _)
+        | (_, SubscriptionLiveness::AuthorizationBlocked { block }) => Some(block.clone()),
+        _ => None,
+    };
+    if let Some(block) = authorization_block {
+        return LiveSubscriptionState {
+            value: None,
+            through: None,
+            liveness: SubscriptionLiveness::AuthorizationBlocked { block },
+        };
+    }
     let invalid = match (&left.liveness, &right.liveness) {
         (SubscriptionLiveness::Invalid { reason }, _)
         | (_, SubscriptionLiveness::Invalid { reason }) => Some(reason.clone()),
@@ -1293,6 +1703,12 @@ where
     if left.liveness != SubscriptionLiveness::Current
         || right.liveness != SubscriptionLiveness::Current
     {
+        if matches!(
+            previous.liveness,
+            SubscriptionLiveness::AuthorizationBlocked { .. }
+        ) {
+            return previous.clone();
+        }
         let liveness = if previous.value.is_some() {
             SubscriptionLiveness::Resynchronizing {
                 reason: "waiting for independent dependencies".to_owned(),
@@ -1333,6 +1749,18 @@ where
     C: hyphae::CellValue,
 {
     let (left, right) = dependencies;
+    let authorization_block = match (&left.liveness, &right.liveness) {
+        (SubscriptionLiveness::AuthorizationBlocked { block }, _)
+        | (_, SubscriptionLiveness::AuthorizationBlocked { block }) => Some(block.clone()),
+        _ => None,
+    };
+    if let Some(block) = authorization_block {
+        return LiveSubscriptionState {
+            value: None,
+            through: None,
+            liveness: SubscriptionLiveness::AuthorizationBlocked { block },
+        };
+    }
     let invalid = match (&left.liveness, &right.liveness) {
         (SubscriptionLiveness::Invalid { reason }, _)
         | (_, SubscriptionLiveness::Invalid { reason }) => Some(reason.clone()),
@@ -1348,6 +1776,12 @@ where
     if left.liveness != SubscriptionLiveness::Current
         || right.liveness != SubscriptionLiveness::Current
     {
+        if matches!(
+            previous.liveness,
+            SubscriptionLiveness::AuthorizationBlocked { .. }
+        ) {
+            return previous.clone();
+        }
         return LiveSubscriptionState {
             value: previous.value.clone(),
             through: previous.through.clone(),
@@ -1405,7 +1839,7 @@ where
     /// narrower [`Self::publish`], [`Self::resynchronizing`], and
     /// [`Self::invalidate`] operations.
     pub fn replace(&self, state: LiveSubscriptionState<T, C>) {
-        self.update(|_| state);
+        self.update(|_| normalize_subscription_state(state));
     }
 
     /// Captures and replaces a snapshot in this writer's acceptance order.
@@ -1415,7 +1849,7 @@ where
     /// The reader runs under the acceptance lock and must not reenter this
     /// writer. Subscriber callbacks run after that lock is released.
     pub fn replace_with(&self, read: impl FnOnce() -> LiveSubscriptionState<T, C>) {
-        self.update(|_| read());
+        self.update(|_| normalize_subscription_state(read()));
     }
 
     /// Publishes an authoritative snapshot or atomic update.
@@ -1443,12 +1877,34 @@ where
 
     /// Retains the last value while an adapter reconnects and resynchronizes.
     pub fn resynchronizing(&self, reason: impl Into<String>) {
-        self.update(|previous| LiveSubscriptionState {
-            value: previous.value.clone(),
-            through: previous.through.clone(),
-            liveness: SubscriptionLiveness::Resynchronizing {
-                reason: reason.into(),
+        self.interrupt(SubscriptionInterruption::Resynchronizing {
+            reason: reason.into(),
+        });
+    }
+
+    /// Applies an outage or authorization interruption atomically.
+    pub fn interrupt(&self, interruption: SubscriptionInterruption) {
+        self.update(|previous| match interruption {
+            SubscriptionInterruption::AuthorizationBlocked { block } => LiveSubscriptionState {
+                value: None,
+                through: None,
+                liveness: SubscriptionLiveness::AuthorizationBlocked { block },
             },
+            SubscriptionInterruption::Resynchronizing { reason } => {
+                let liveness = match &previous.liveness {
+                    SubscriptionLiveness::AuthorizationBlocked { block } => {
+                        SubscriptionLiveness::AuthorizationBlocked {
+                            block: block.clone(),
+                        }
+                    }
+                    _ => SubscriptionLiveness::Resynchronizing { reason },
+                };
+                LiveSubscriptionState {
+                    value: previous.value.clone(),
+                    through: previous.through.clone(),
+                    liveness,
+                }
+            }
         });
     }
 
@@ -1482,9 +1938,22 @@ where
     T: hyphae::CellValue,
     C: hyphae::CellValue,
 {
-    let source = PublicationSource::new(initial);
+    let source = PublicationSource::new(normalize_subscription_state(initial));
     let readable = LiveSubscription::from_publication_cell(source.publication());
     (LiveSubscriptionWriter { source }, readable)
+}
+
+fn normalize_subscription_state<T, C>(
+    mut state: LiveSubscriptionState<T, C>,
+) -> LiveSubscriptionState<T, C> {
+    if matches!(
+        &state.liveness,
+        SubscriptionLiveness::AuthorizationBlocked { .. }
+    ) {
+        state.value = None;
+        state.through = None;
+    }
+    state
 }
 
 #[cfg(test)]
@@ -1501,6 +1970,139 @@ mod tests {
     use hyphae::{MapValuesExt as _, Signal, Watchable as _};
 
     use super::*;
+
+    #[test]
+    fn weak_subscription_upgrade_does_not_restart_publication_sequence() {
+        let (writer, source) = live_subscription(LiveSubscriptionState {
+            value: Some(7_u64),
+            through: Some(LogPosition::new(3)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        writer.replace(LiveSubscriptionState {
+            value: Some(8),
+            through: Some(LogPosition::new(4)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let publication = source.publication().clone();
+        wait_until(|| publication.get().state.value == Some(8));
+        let before = publication.get();
+        assert!(before.sequence > 0);
+        let weak = source.downgrade();
+        drop(source);
+        let recovered = weak.upgrade();
+        assert!(recovered.is_some());
+        let Some(recovered) = recovered else {
+            return;
+        };
+        assert_eq!(recovered.publication().get(), before);
+        assert_eq!(recovered.current(), before.state);
+    }
+
+    #[test]
+    fn failed_cursor_conversion_invalidates_without_losing_the_value() {
+        let (_writer, source) = live_subscription(LiveSubscriptionState {
+            value: Some(7_u64),
+            through: Some(LogPosition::new(3)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let erased = source.try_map_cursor(|_| Err::<u64, _>("invalid cursor"));
+        let state = erased.current();
+        assert_eq!(state.value, Some(7));
+        assert_eq!(state.through, None);
+        assert!(
+            matches!(state.liveness, SubscriptionLiveness::Invalid { reason } if reason.contains("invalid cursor"))
+        );
+        assert_eq!(
+            erased.publication().get().sequence,
+            source.publication().get().sequence
+        );
+    }
+
+    #[test]
+    fn fallible_value_mapping_retains_the_last_coherent_value_and_frontier() {
+        let (writer, source) = live_subscription(LiveSubscriptionState {
+            value: Some("7".to_owned()),
+            through: Some(LogPosition::new(3)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let mapped = source.try_map_value(|value| value.parse::<u64>());
+        assert_eq!(mapped.current().value, Some(7));
+        writer.publish("invalid".to_owned(), Some(LogPosition::new(4)));
+        wait_until(|| {
+            matches!(
+                mapped.current().liveness,
+                SubscriptionLiveness::Invalid { .. }
+            )
+        });
+        assert_eq!(mapped.current().value, Some(7));
+        assert_eq!(mapped.current().through, Some(LogPosition::new(3)));
+        assert_eq!(
+            mapped.publication().get().sequence,
+            source.publication().get().sequence
+        );
+
+        writer.resynchronizing("reconnecting");
+        wait_until(|| mapped.publication().get().sequence == source.publication().get().sequence);
+        assert!(matches!(
+            mapped.current().liveness,
+            SubscriptionLiveness::Invalid { .. }
+        ));
+        assert_eq!(mapped.current().through, Some(LogPosition::new(3)));
+
+        writer.publish("8".to_owned(), Some(LogPosition::new(5)));
+        wait_until(|| mapped.current().value == Some(8));
+        assert_eq!(mapped.current().through, Some(LogPosition::new(5)));
+        assert_eq!(mapped.current().liveness, SubscriptionLiveness::Current);
+        assert_eq!(
+            mapped.publication().get().sequence,
+            source.publication().get().sequence
+        );
+
+        writer.replace(LiveSubscriptionState {
+            value: None,
+            through: None,
+            liveness: SubscriptionLiveness::Invalid {
+                reason: "access revoked".to_owned(),
+            },
+        });
+        wait_until(|| mapped.current().value.is_none());
+        assert_eq!(
+            mapped.current(),
+            LiveSubscriptionState {
+                value: None,
+                through: None,
+                liveness: SubscriptionLiveness::Invalid {
+                    reason: "access revoked".to_owned()
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn fallible_value_mapping_does_not_invent_an_initial_value() {
+        let (writer, source) = live_subscription(LiveSubscriptionState {
+            value: Some("invalid".to_owned()),
+            through: Some(LogPosition::new(3)),
+            liveness: SubscriptionLiveness::Current,
+        });
+        let mapped = source.try_map_value(|value| value.parse::<u64>());
+        assert_eq!(mapped.current().value, None);
+        assert_eq!(mapped.current().through, None);
+        assert!(matches!(
+            mapped.current().liveness,
+            SubscriptionLiveness::Invalid { .. }
+        ));
+        writer.replace(LiveSubscriptionState {
+            value: None,
+            through: None,
+            liveness: SubscriptionLiveness::Invalid {
+                reason: "access revoked".to_owned(),
+            },
+        });
+        wait_until(|| mapped.current().liveness == source.current().liveness);
+        assert_eq!(mapped.current().value, None);
+        assert_eq!(mapped.current().liveness, source.current().liveness);
+    }
 
     #[derive(Clone, Debug, PartialEq, Eq)]
     struct RuntimeRow {
@@ -2359,3 +2961,7 @@ mod tests {
         drop(observed);
     }
 }
+
+#[cfg(test)]
+#[path = "reactive/authorization_tests.rs"]
+mod authorization_tests;

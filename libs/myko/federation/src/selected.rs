@@ -3,9 +3,9 @@ use std::collections::HashSet;
 use thiserror::Error;
 
 use super::{
-    AuthorityPresentation, AuthorizationPhase, EventEnvelope, EventId, LogPosition,
+    AuthorityPresentation, AuthorizationPhase, CommandRequest, EventEnvelope, EventId, LogPosition,
     MutationOperation, MykoItem, Node, NodeError, NodeEvent, NodeId, PrincipalId, ScopeId,
-    ScopeSelection, ScopeTopology, command_from_event,
+    ScopeSelection, ScopeTopology, SubscriptionLiveness, command_from_event,
 };
 
 /// Exact retained history selected at one frozen local recording cut.
@@ -108,18 +108,26 @@ impl SelectedHistorySnapshot {
             .map(|cut| node.causal_events_through(cut))
             .transpose()?
             .unwrap_or_default();
+        Self::from_history(through, ready, &node.events_after(None)?)
+    }
+
+    pub(super) fn from_history(
+        through: Option<LogPosition>,
+        ready: Vec<EventEnvelope>,
+        retained: &[EventEnvelope],
+    ) -> Result<Self, NodeError> {
         let topology = ScopeTopology::from_events(&ready)?;
         let ready_origins = ready
             .iter()
             .map(|event| event.origin)
             .collect::<HashSet<_>>();
-        let pending = node
-            .events_after(None)?
-            .into_iter()
+        let pending = retained
+            .iter()
             .filter(|event| {
                 through.is_some_and(|cut| event.position <= cut)
                     && !ready_origins.contains(&event.origin)
             })
+            .cloned()
             .collect();
         Ok(Self {
             through,
@@ -127,6 +135,30 @@ impl SelectedHistorySnapshot {
             topology,
             pending,
         })
+    }
+
+    pub(super) fn require_command_history(
+        &self,
+        request: &CommandRequest,
+    ) -> Result<(), NodeError> {
+        let selections = std::iter::once(ScopeSelection::Exact(request.scope_id.clone())).chain(
+            request
+                .resource_claims
+                .iter()
+                .map(|claim| claim.selection.clone()),
+        );
+        for selection in selections {
+            let pending = self.pending.iter().any(|event| {
+                command_from_event(&event.event).is_some()
+                    // Missing topology cannot prove that a pending scope is outside a subtree.
+                    && (matches!(selection, ScopeSelection::Subtree(_))
+                        || event_intersects_selection(event, &selection, &self.topology))
+            });
+            if pending {
+                return Err(NodeError::ScopeHistoryIncomplete(selection));
+            }
+        }
+        Ok(())
     }
 
     /// Local recording cut shared by the events and pending-history assessment.
@@ -252,19 +284,35 @@ impl SelectedHistorySnapshot {
         self.has_pending_matching::<T>(None, std::slice::from_ref(selection))
     }
 
+    pub(super) fn item_projection_liveness<T: MykoItem>(
+        &self,
+        source: Option<NodeId>,
+        scope: Option<&ScopeId>,
+    ) -> SubscriptionLiveness {
+        let pending = scope.map_or_else(
+            || {
+                self.pending
+                    .iter()
+                    .any(|event| pending_affects_items::<T>(event, source))
+            },
+            |scope| self.has_pending_matching::<T>(source, &[ScopeSelection::Exact(scope.clone())]),
+        );
+        if pending {
+            SubscriptionLiveness::Resynchronizing {
+                reason: "selected accepted history has unresolved causal dependencies".to_owned(),
+            }
+        } else {
+            SubscriptionLiveness::Current
+        }
+    }
+
     fn has_pending_matching<T: MykoItem>(
         &self,
         source: Option<NodeId>,
         selections: &[ScopeSelection],
     ) -> bool {
         self.pending.iter().any(|event| {
-            let affects_items = source.is_none_or(|source| event.origin.node_id == source)
-                && command_from_event(&event.event)
-                    .is_some_and(|command| command.request.service_id == T::SERVICE_ID);
-            let affects_topology = matches!(&event.event,
-                NodeEvent::CommandCommitted { batch, .. }
-                if batch.changes.iter().any(|mutation| mutation.roots_scope));
-            (affects_items || affects_topology)
+            pending_affects_items::<T>(event, source)
                 && selections.iter().any(|selection| {
                     // An absent ancestor edge cannot prove a pending scope is
                     // outside a subtree. Exact scopes do not need that inference.
@@ -277,6 +325,16 @@ impl SelectedHistorySnapshot {
                 })
         })
     }
+}
+
+fn pending_affects_items<T: MykoItem>(event: &EventEnvelope, source: Option<NodeId>) -> bool {
+    let affects_items = source.is_none_or(|source| event.origin.node_id == source)
+        && command_from_event(&event.event)
+            .is_some_and(|command| command.request.service_id == T::SERVICE_ID);
+    let affects_topology = matches!(&event.event,
+        NodeEvent::CommandCommitted { batch, .. }
+        if batch.changes.iter().any(|mutation| mutation.roots_scope));
+    affects_items || affects_topology
 }
 
 fn event_intersects_selection(

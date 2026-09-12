@@ -738,6 +738,8 @@ pub struct ItemQueryUpdate<T> {
 pub struct ItemProjectionSnapshot<T: MykoItem> {
     pub through: Option<LogPosition>,
     pub projection: ItemProjection<T>,
+    /// Local causal completeness only, not remote coverage or serving authority.
+    pub liveness: SubscriptionLiveness,
 }
 
 /// One atomic advance of a shared typed item projection.
@@ -747,6 +749,7 @@ pub struct ItemProjectionUpdate<T: MykoItem> {
     pub position: LogPosition,
     pub projection: ItemProjection<T>,
     pub diff: Option<MapDiff<T::Id, Arc<ItemState<T>>>>,
+    pub liveness: SubscriptionLiveness,
 }
 
 /// One authorization-filtered reactive selected-query update.
@@ -888,6 +891,7 @@ pub struct ItemQueryWatch<Q: ItemQuery> {
 #[doc(hidden)]
 pub struct ItemProjectionWatch<T: MykoItem> {
     pub(super) projection: ItemProjection<T>,
+    pub(super) liveness: SubscriptionLiveness,
     pub(super) source_node: Option<NodeId>,
     pub(super) node: Node,
     pub(super) service_id: ServiceId,
@@ -896,116 +900,43 @@ pub struct ItemProjectionWatch<T: MykoItem> {
 }
 
 impl<T: MykoItem> ItemProjectionWatch<T> {
-    /// Waits for the next atomic service/scope revision and returns the typed
-    /// projection after applying it.
+    /// Waits for the next consumed log cut and returns its typed projection.
+    ///
+    /// Unchanged rows still advance the frontier so cached handlers can prove
+    /// they have processed all history required by a later subscription open.
     ///
     /// # Errors
     ///
     /// Returns an error when the durable follow disconnects or a matching
     /// mutation cannot be decoded as `T`.
     pub async fn recv_async(&mut self) -> Result<ItemProjectionUpdate<T>, NodeError> {
-        loop {
-            let envelope = self.events.recv_async().await?;
-            if let Some(update) = self.apply(&envelope)? {
-                return Ok(update);
-            }
-        }
+        let envelope = self.events.recv_async().await?;
+        self.apply(&envelope)
     }
 
     pub(super) fn apply(
         &mut self,
         envelope: &EventEnvelope,
-    ) -> Result<Option<ItemProjectionUpdate<T>>, NodeError> {
-        let advances_cursor = advances_item_cursor::<T>(
-            envelope,
-            self.source_node,
-            &self.service_id,
-            self.scope_id.as_ref(),
-        );
-        if self.source_node.is_none() {
-            let history = self.node.causal_events_through(envelope.position)?;
-            let service_scope = self
-                .scope_id
-                .as_ref()
-                .map(|scope| (&self.service_id, scope));
-            let next = project_item_history(&history, None, service_scope)?;
-            let diff = projection_diff(&self.projection, &next);
-            self.projection = next;
-            return Ok(
-                (advances_cursor || diff.is_some()).then(|| ItemProjectionUpdate {
-                    position: envelope.position,
-                    projection: self.projection.clone(),
-                    diff,
-                }),
-            );
-        }
-        if !advances_cursor {
-            return Ok(None);
-        }
-        let NodeEvent::CommandCommitted { batch, .. } = &envelope.event else {
-            return Ok(None);
-        };
-        let mut changes = Vec::new();
-        for (index, mutation) in batch.changes.iter().enumerate() {
-            if self.scope_id.as_ref().is_some_and(|scope_id| {
-                !mutation.affects_scope::<T>(batch.scope_id.as_str(), scope_id.as_str())
-            }) {
-                continue;
-            }
-            let before = self
-                .projection
-                .state_by_stored_id(&mutation.item_id)
-                .cloned();
-            let change_index = u32::try_from(index).map_err(|error| {
-                NodeError::CorruptHistory(format!(
-                    "item batch contains too many ordered changes: {error}"
-                ))
-            })?;
-            let applied = self
-                .projection
-                .apply_at_order_in_scope(
-                    mutation,
-                    Some(batch.scope_id.as_str()),
-                    envelope.position.get(),
-                    change_index,
-                )
-                .map_err(|error| NodeError::CorruptHistory(error.to_string()))?;
-            if !applied {
-                continue;
-            }
-            let after = self
-                .projection
-                .state_by_stored_id(&mutation.item_id)
-                .cloned();
-            match (before, after) {
-                (None, Some(state)) => changes.push(MapDiff::Insert {
-                    key: state.value().item_id().clone(),
-                    value: Arc::new(state),
-                }),
-                (Some(state), None) => changes.push(MapDiff::Remove {
-                    key: state.value().item_id().clone(),
-                    old_value: Arc::new(state),
-                }),
-                (Some(old_state), Some(new_state)) if old_state != new_state => {
-                    changes.push(MapDiff::Update {
-                        key: new_state.value().item_id().clone(),
-                        old_value: Arc::new(old_state),
-                        new_value: Arc::new(new_state),
-                    });
-                }
-                (None, None) | (Some(_), Some(_)) => {}
-            }
-        }
-        let diff = match changes.len() {
-            0 => None,
-            1 => changes.pop(),
-            _ => Some(MapDiff::Batch { changes }),
-        };
-        Ok(advances_cursor.then(|| ItemProjectionUpdate {
+    ) -> Result<ItemProjectionUpdate<T>, NodeError> {
+        // An event outside the selection can release a pending selected event.
+        // Read ready and pending history at the consumed cut for either source mode.
+        let history = SelectedHistorySnapshot::at(&self.node, Some(envelope.position))?;
+        let liveness =
+            history.item_projection_liveness::<T>(self.source_node, self.scope_id.as_ref());
+        let service_scope = self
+            .scope_id
+            .as_ref()
+            .map(|scope| (&self.service_id, scope));
+        let next = project_item_history(history.ready(), self.source_node, service_scope)?;
+        let diff = projection_diff(&self.projection, &next);
+        self.projection = next;
+        self.liveness = liveness;
+        Ok(ItemProjectionUpdate {
             position: envelope.position,
             projection: self.projection.clone(),
             diff,
-        }))
+            liveness: self.liveness.clone(),
+        })
     }
 }
 

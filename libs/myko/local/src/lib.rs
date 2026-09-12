@@ -31,7 +31,7 @@ use myko_federation::{
     ItemStateRequest, LiveEvent, LiveSubscription, LiveSubscriptionState, Node, NodeError, NodeId,
     Principal, PrincipalId, ProvenanceHop, ReconnectPolicy, ScopeId, SubscriptionLiveness,
     control_quorum::{
-        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+        ControlBallot, ControlTarget, ControlValue, SignedControlProposal, SignedControlVote,
     },
     live_subscription,
 };

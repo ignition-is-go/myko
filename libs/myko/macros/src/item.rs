@@ -135,24 +135,27 @@ fn generate_get_all_query(
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::prelude::QueryBuildArgs<Self>,
-            ) -> Option<impl #krate::prelude::MapQuery<
-                Key = std::sync::Arc<str>,
-                Value = std::sync::Arc<dyn #krate::prelude::AnyItem>,
-            >>
+            ) -> Result<Option<#krate::query::QueryValue>, String>
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
                 use #krate::prelude::RegistryScoped as _;
+                use #krate::query::QueryBuildOutput as _;
+                if ctx.federated.is_some() {
+                    return Ok(Some(#krate::query::RetainedQuery::new(
+                        ctx.federated_items::<#name>()?,
+                    ).materialize_query()));
+                }
                 // Registry stores are already partitioned by entity type, so returning
                 // the raw map avoids installing a no-op `select(|_| true)` runtime.
-                Some(
+                Ok(Some(
                     ctx.query_context
                         .registry()
                         .get_or_create(<#name as #krate::prelude::Eventable>::ENTITY_NAME_STATIC)
                         .as_ref()
                         .clone()
-                        .lock(),
-                )
+                        .lock().materialize_query(),
+                ))
             }
         }
     }
@@ -180,19 +183,26 @@ fn generate_get_by_ids_query(
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::prelude::QueryBuildArgs<Self>,
-            ) -> Option<impl #krate::prelude::MapQuery<
-                Key = std::sync::Arc<str>,
-                Value = std::sync::Arc<dyn #krate::prelude::AnyItem>,
-            >>
+            ) -> Result<Option<#krate::query::QueryValue>, String>
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
                 use #krate::prelude::RegistryScoped as _;
+                use #krate::query::QueryBuildOutput as _;
                 let ids: Vec<std::sync::Arc<str>> = ctx.query.ids.iter()
                     .map(|id| std::sync::Arc::<str>::from(id.clone()))
                     .collect();
+                if ctx.federated.is_some() {
+                    return Ok(Some(#krate::query::RetainedQuery::new(
+                        ctx.federated_items::<#name>()?.map_value(move |rows| {
+                            ids.iter().filter_map(|id| {
+                                rows.get(id).map(|item| (id.clone(), item.clone()))
+                            }).collect()
+                        }),
+                    ).materialize_query()));
+                }
                 let store = ctx.query_context.registry().get_or_create(#name_str);
-                Some(#krate::query::build_ids_source_map(&store, &ids))
+                Ok(Some(#krate::query::build_ids_source_map(&store, &ids).materialize_query()))
             }
         }
     }
@@ -206,6 +216,7 @@ fn generate_filter_struct(
 ) -> TokenStream {
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
+    let schema = ctx.schema_derive();
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
     let fields = filter_fields.iter().map(|(field_ident, field_ty)| {
         quote! {
@@ -239,6 +250,7 @@ fn generate_filter_struct(
         .unwrap_or_else(|| quote! { true });
 
     quote! {
+        #schema
         #[derive(Clone, Default, Debug, #serde_path::Serialize, #serde_path::Deserialize)]
         #[derive(#krate::TS)]
         #[ts(crate = "myko::ts_rs")]
@@ -402,14 +414,22 @@ fn generate_filter_query(
 
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(ctx: #krate::prelude::QueryBuildArgs<Self>)
-                -> Option<impl #krate::prelude::MapQuery<
-                    Key = std::sync::Arc<str>,
-                    Value = std::sync::Arc<dyn #krate::prelude::AnyItem>,
-                >>
+                -> Result<Option<#krate::query::QueryValue>, String>
             where Self: std::marker::Send + std::marker::Sync + 'static,
             {
                 use #krate::prelude::RegistryScoped as _;
-                let source = match ctx.query.0.query_route()? {
+                use #krate::query::QueryBuildOutput as _;
+                if ctx.federated.is_some() {
+                    let filter = ctx.query.0.clone();
+                    return Ok(Some(#krate::query::RetainedQuery::new(
+                        ctx.federated_items::<#name>()?.map_value(move |rows| {
+                            rows.iter().filter(|(_, item)| filter.matches(item))
+                                .map(|(id, item)| (id.clone(), item.clone())).collect()
+                        }),
+                    ).materialize_query()));
+                }
+                let Some(route) = ctx.query.0.query_route() else { return Ok(None) };
+                let source = match route {
                     #krate::query::QueryRoute::Ids(ids) => {
                         let store = ctx.query_context.registry().get_or_create(#name_str);
                         #krate::query::build_ids_source_map(&store, &ids)
@@ -422,9 +442,9 @@ fn generate_filter_query(
                         )
                     }
                 };
-                Some(#krate::query::filter_query_over_source::<#query_ident>(
+                Ok(Some(#krate::query::filter_query_over_source::<#query_ident>(
                     source, ctx.query.clone(), ctx.query_context.query_context.clone(),
-                ))
+                ).materialize_query()))
             }
         }
     }
@@ -447,14 +467,23 @@ fn generate_count_all_report(
         impl #krate::prelude::ReportHandler for #report_ident {
             type Output = #result_ident;
             fn compute(&self, ctx: #krate::prelude::ReportContext)
-                -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
+                -> Result<#krate::report::ReportValue<Self::Output>, String>
             {
                 use #krate::prelude::{MapExt as _, Querying as _};
+                use #krate::report::ReportBuildOutput as _;
+                #[cfg(not(target_arch = "wasm32"))]
+                if #krate::prelude::ServerScoped::__federated_request(&ctx).is_some() {
+                    return Ok(#krate::report::RetainedReport::new(
+                        ctx.federated_items::<#name>()?.map_value(|rows| {
+                            std::sync::Arc::new(#result_ident { count: rows.len() })
+                        }),
+                    ).materialize_report());
+                }
                 let query = #query_ident {};
-                let source = ctx.query_map_by_str(query);
-                source.size().map(move |count| {
+                let source = ctx.query_map_by_str(query)?;
+                Ok(source.size().map(move |count| {
                     std::sync::Arc::new(#result_ident { count: *count })
-                })
+                }).materialize_report())
             }
         }
     }
@@ -483,13 +512,25 @@ fn generate_count_report(
         impl #krate::prelude::ReportHandler for #report_ident {
             type Output = #result_ident;
             fn compute(&self, ctx: #krate::prelude::ReportContext)
-                -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
+                -> Result<#krate::report::ReportValue<Self::Output>, String>
             {
                 use #krate::prelude::{MapExt as _, Querying as _};
-                let source = ctx.query_map_by_str(#query_ident(self.0.clone()));
-                source.size().map(move |count| {
+                use #krate::report::ReportBuildOutput as _;
+                #[cfg(not(target_arch = "wasm32"))]
+                if #krate::prelude::ServerScoped::__federated_request(&ctx).is_some() {
+                    let filter = self.0.clone();
+                    return Ok(#krate::report::RetainedReport::new(
+                        ctx.federated_items::<#name>()?.map_value(move |rows| {
+                            std::sync::Arc::new(#result_ident {
+                                count: rows.values().filter(|item| filter.matches(item)).count(),
+                            })
+                        }),
+                    ).materialize_report());
+                }
+                let source = ctx.query_map_by_str(#query_ident(self.0.clone()))?;
+                Ok(source.size().map(move |count| {
                     std::sync::Arc::new(#result_ident { count: *count })
-                })
+                }).materialize_report())
             }
         }
     }
@@ -508,15 +549,24 @@ fn generate_get_by_id_report(
         impl #krate::prelude::ReportHandler for #report_ident {
             type Output = Option<std::sync::Arc<#name>>;
             fn compute(&self, ctx: #krate::prelude::ReportContext)
-                -> impl #krate::prelude::Materialize<std::sync::Arc<Self::Output>, #krate::prelude::Definite>
+                -> Result<#krate::report::ReportValue<Self::Output>, String>
             {
                 use #krate::prelude::{Eventable as _, MapExt as _, RegistryScoped as _};
+                use #krate::report::ReportBuildOutput as _;
                 let id: std::sync::Arc<str> = self.id.clone().into();
+                #[cfg(not(target_arch = "wasm32"))]
+                if #krate::prelude::ServerScoped::__federated_request(&ctx).is_some() {
+                    return Ok(#krate::report::RetainedReport::new(
+                        ctx.federated_items::<#name>()?.map_value(move |rows| {
+                            std::sync::Arc::new(rows.get(&id).cloned())
+                        }),
+                    ).materialize_report());
+                }
                 let store = ctx.registry().get_or_create(#name::ENTITY_NAME_STATIC);
-                store.get(&id).map(move |item| std::sync::Arc::new(
+                Ok(store.get(&id).map(move |item| std::sync::Arc::new(
                     item.as_ref().and_then(|item| item.as_any().downcast_ref::<#name>())
                         .map(|typed| std::sync::Arc::new(typed.clone()))
-                ))
+                )).materialize_report())
             }
         }
     }
@@ -686,7 +736,9 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> Result<Prepare
         .as_ref()
         .map_or_else(|| quote!(#serde_path::Deserialize,), |_| quote!());
     let default = (!relationships.ensure_for_fields.is_empty()).then(|| quote!(Default,));
+    let schema = ctx.schema_derive();
     let derives = quote! {
+        #schema
         #[derive(#default Clone, #serde_path::Serialize, #deserialize Debug, #krate::TS)]
         #[ts(crate = "myko::ts_rs")]
         #serde_attr
@@ -826,7 +878,9 @@ fn generate_foreign_key_impls(
 fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> TokenStream {
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
+    let schema = ctx.schema_derive();
     quote! {
+        #schema
         #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, #serde_path::Serialize, #serde_path::Deserialize, Debug, #krate::TS)]
         #[ts(crate = "myko::ts_rs")]
         #[ts(type = "string")]

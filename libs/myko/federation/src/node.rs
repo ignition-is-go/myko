@@ -56,6 +56,9 @@ pub trait NodeBackend: Send + Sync + 'static {
     }
 
     /// Durably submits a command without granting execution to the caller.
+    /// New identities require dependency-complete application history in their
+    /// primary scope and declared selections, checked atomically with acceptance.
+    /// Matching accepted identities recover their existing lifecycle instead.
     ///
     /// # Errors
     ///
@@ -70,6 +73,7 @@ pub trait NodeBackend: Send + Sync + 'static {
     fn claim(&self, command_id: CommandId) -> Result<CommandAdmission, NodeError>;
 
     /// Atomically admits a stable command or returns its existing lifecycle.
+    /// New identities have the same scope-history requirement as [`Self::submit`].
     ///
     /// # Errors
     ///
@@ -546,6 +550,56 @@ pub trait CommandClient: Send + Sync {
     {
         let submission = CommandSubmission::for_command(&command).map_err(Self::Error::from);
         Box::pin(async move { self.submit_submission(submission?).await })
+    }
+
+    /// Builds a command from one current reactive value without waiting for recovery.
+    ///
+    /// Join reactive dependencies before calling this method. Collections can use
+    /// `as_subscription()` to supply their coherent rows and lifecycle together.
+    /// The builder runs once, using the value observed when the future is polled.
+    ///
+    /// This checks published client state at invocation, polling, and after command
+    /// encoding. It is not a server freshness receipt or an atomic precondition.
+    /// Server admission and execution must independently validate their requirements.
+    fn submit_from<'a, T, Cursor, C, F>(
+        &'a self,
+        source: &'a LiveSubscription<T, Cursor>,
+        build: F,
+    ) -> CommandClientFuture<'a, Self::Error>
+    where
+        Self: Sized,
+        T: hyphae::CellValue,
+        Cursor: hyphae::CellValue,
+        C: MykoCommand,
+        F: FnOnce(T) -> C + Send + 'a,
+    {
+        let initial = command_dependency_value(source).map(|_| ());
+        Box::pin(async move {
+            initial?;
+            let command = build(command_dependency_value(source)?);
+            let submission = CommandSubmission::for_command(&command)?;
+            command_dependency_value(source)?;
+            self.submit_submission(submission).await
+        })
+    }
+}
+
+fn command_dependency_value<T, Cursor>(source: &LiveSubscription<T, Cursor>) -> Result<T, NodeError>
+where
+    T: hyphae::CellValue,
+    Cursor: hyphae::CellValue,
+{
+    let state = hyphae::Gettable::get(source.publication()).state;
+    match state.liveness {
+        SubscriptionLiveness::Current => {
+            state.value.ok_or(NodeError::CommandDependencyMissingValue)
+        }
+        liveness @ (SubscriptionLiveness::Connecting
+        | SubscriptionLiveness::Resynchronizing { .. }
+        | SubscriptionLiveness::AuthorizationBlocked { .. }
+        | SubscriptionLiveness::Invalid { .. }) => {
+            Err(NodeError::CommandDependencyNotCurrent(liveness))
+        }
     }
 }
 
@@ -3662,23 +3716,22 @@ impl Node {
         T: MykoItem,
     {
         let service_id = ServiceId::new(T::SERVICE_ID);
-        let (through, history) = if source_node.is_none() {
-            self.causal_snapshot()?
-        } else {
-            let history = self.events_after(None)?;
-            (history.last().map(|event| event.position), history)
-        };
+        let history = SelectedHistorySnapshot::current(self)?;
+        let through = history.through();
+        let liveness = history.item_projection_liveness::<T>(source_node, scope_id.as_ref());
         let service_scope = scope_id.as_ref().map(|scope_id| (&service_id, scope_id));
-        let projection = project_item_history(&history, source_node, service_scope)?;
+        let projection = project_item_history(history.ready(), source_node, service_scope)?;
         let snapshot = ItemProjectionSnapshot {
             through,
             projection: projection.clone(),
+            liveness: liveness.clone(),
         };
         let events = self.subscribe(through)?;
         Ok((
             snapshot,
             ItemProjectionWatch {
                 projection,
+                liveness,
                 source_node,
                 node: self.clone(),
                 service_id,

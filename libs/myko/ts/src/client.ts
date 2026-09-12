@@ -204,7 +204,7 @@ export enum MykoProtocol {
 type ConnectionLogLevel = 'silent' | 'error' | 'warn' | 'info' | 'debug' | 'verbose'
 
 /** Query class interface */
-export interface Query<T> {
+export interface Query<T> extends Pick<WrappedQuery, 'serviceId'> {
   readonly queryId: string
   readonly queryItemType: string
   readonly query: Record<string, unknown>
@@ -212,7 +212,7 @@ export interface Query<T> {
 }
 
 /** View class interface */
-export interface View<T> {
+export interface View<T> extends Pick<WrappedView, 'serviceId'> {
   readonly viewId: string
   readonly viewItemType: string
   readonly view: Record<string, unknown>
@@ -220,7 +220,7 @@ export interface View<T> {
 }
 
 /** Report class interface */
-export interface Report<T> {
+export interface Report<T> extends Pick<WrappedReport, 'serviceId'> {
   readonly reportId: string
   readonly report: Record<string, unknown>
   readonly $res?: () => T
@@ -302,26 +302,26 @@ export type QueryWindowInfo = {
 }
 
 function queryCacheKey(
-  query: Pick<Query<unknown>, 'queryId' | 'query'>,
+  query: Pick<Query<unknown>, 'serviceId' | 'queryId' | 'query'>,
   options?: QueryWatchOptions,
 ): string {
   const queryPayload = stableStringify(query.query) ?? '__unstable_query__'
   const windowPayload = stableStringify(options?.window ?? null) ?? '__unstable_window__'
-  return `query:${query.queryId}:${queryPayload}:${windowPayload}`
+  return `query:${JSON.stringify([query.serviceId ?? null, query.queryId])}:${queryPayload}:${windowPayload}`
 }
 
 function viewCacheKey(
-  view: Pick<View<unknown>, 'viewId' | 'view'>,
+  view: Pick<View<unknown>, 'serviceId' | 'viewId' | 'view'>,
   options?: QueryWatchOptions,
 ): string {
   const viewPayload = stableStringify(view.view) ?? '__unstable_view__'
   const windowPayload = stableStringify(options?.window ?? null) ?? '__unstable_window__'
-  return `view:${view.viewId}:${viewPayload}:${windowPayload}`
+  return `view:${JSON.stringify([view.serviceId ?? null, view.viewId])}:${viewPayload}:${windowPayload}`
 }
 
-function reportCacheKey(report: Pick<Report<unknown>, 'reportId' | 'report'>): string {
+function reportCacheKey(report: Pick<Report<unknown>, 'serviceId' | 'reportId' | 'report'>): string {
   const payload = stableStringify(report.report) ?? '__unstable_report__'
-  return `report:${report.reportId}:${payload}`
+  return `report:${JSON.stringify([report.serviceId ?? null, report.reportId])}:${payload}`
 }
 
 // Message type aliases
@@ -804,6 +804,7 @@ export class MykoClient {
     const queryName =
       (query as { constructor?: { name?: string } }).constructor?.name ?? query.queryId
     const wrappedQuery = {
+      ...(query.serviceId === undefined ? {} : { serviceId: query.serviceId }),
       query: { ...query.query, tx, createdAt: new Date().toISOString() },
       queryId: query.queryId,
       queryItemType: query.queryItemType,
@@ -961,6 +962,7 @@ export class MykoClient {
     const viewName =
       (view as { constructor?: { name?: string } }).constructor?.name ?? view.viewId
     const wrappedView = {
+      ...(view.serviceId === undefined ? {} : { serviceId: view.serviceId }),
       view: { ...view.view, tx, createdAt: new Date().toISOString() },
       viewId: view.viewId,
       viewItemType: view.viewItemType,
@@ -1696,6 +1698,7 @@ export class MykoClient {
       (report as { constructor?: { name?: string } }).constructor?.name ??
       report.reportId
     const wrappedReport: WrappedReport = {
+      ...(report.serviceId === undefined ? {} : { serviceId: report.serviceId }),
       report: { ...report.report, tx },
       reportId: report.reportId,
     }
@@ -1749,6 +1752,7 @@ export class MykoClient {
       (report as { constructor?: { name?: string } }).constructor?.name ??
       report.reportId
     const wrappedReport: WrappedReport = {
+      ...(report.serviceId === undefined ? {} : { serviceId: report.serviceId }),
       report: { ...report.report, tx },
       reportId: report.reportId,
     }

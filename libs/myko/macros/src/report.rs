@@ -51,6 +51,11 @@ pub fn myko_report_impl(args: ReportArgs, mut input_struct: ItemStruct) -> Token
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let schema = args.service_item.as_ref().map(|_| ctx.schema_derive());
+    let schema_field = crate::DeriveCtx::schema_field(&args.service_item.as_ref().map_or_else(
+        || quote!(None),
+        |_| quote!(Some(#krate::schema::HandlerPayloadSchema::value::<#struct_name, #report_output_type>)),
+    ));
     let service_id = args.service_item.map_or_else(
         || quote!(None),
         |service_item| quote!(Some(<#service_item as #krate::MykoItem>::SERVICE_ID)),
@@ -102,6 +107,7 @@ pub fn myko_report_impl(args: ReportArgs, mut input_struct: ItemStruct) -> Token
     // Generate report registration using ReportFactory trait
     let report_registration = quote! {
         #krate::prelude::ReportRegistration {
+            #schema_field
             report_id: stringify!(#struct_name),
             service_id: #service_id,
             crate_name: module_path!(),
@@ -138,6 +144,7 @@ pub fn myko_report_impl(args: ReportArgs, mut input_struct: ItemStruct) -> Token
 
     let expanded = quote! {
         #derives
+        #schema
         #input_struct
 
         // Registration is server-only (requires ReportFactory which depends on hyphae)
@@ -157,6 +164,8 @@ pub fn myko_report_impl(args: ReportArgs, mut input_struct: ItemStruct) -> Token
         }
 
         impl #krate::prelude::ReportIdStatic for #struct_name {
+            const SERVICE_ID: Option<#krate::ServiceTypeId> = #service_id;
+
             fn report_id_static() -> &'static str {
                 stringify!(#struct_name)
             }

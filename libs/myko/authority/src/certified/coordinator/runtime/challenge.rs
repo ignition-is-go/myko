@@ -4,7 +4,7 @@ use super::AuthorityDecisionCoordinator;
 use crate::certified::AuthorityDecisionRoot;
 
 impl AuthorityDecisionCoordinator {
-    pub(super) fn park_prepared_challenge(
+    pub(super) async fn park_prepared_challenge(
         &self,
         command_id: CommandId,
         digest: &str,
@@ -26,7 +26,7 @@ impl AuthorityDecisionCoordinator {
                     .map_err(|error| error.to_string());
             }
         };
-        let history = self.history_for_exact_snapshot()?;
+        let history = self.history_for_exact_snapshot().await?;
         let head = history.retained_head()?;
         let root = AuthorityDecisionRoot::new(
             self.anchor.realm_id().clone(),

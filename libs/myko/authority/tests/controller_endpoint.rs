@@ -1,9 +1,7 @@
 use std::{error::Error, path::Path, sync::Arc};
 
 use ed25519_dalek::SigningKey;
-use myko::server::{
-    AuthorityControlEndpoint as _, FederatedSession, ScopedRetainedEvidenceEndpoint as _,
-};
+use myko::server::{ControlEndpoint as _, FederatedSession, ScopedRetainedEvidenceEndpoint as _};
 use myko_authority::certified::{
     AuthorityAnchor, AuthorityControllerPrincipal, CertifiedAuthorityControlEndpoint,
 };
@@ -46,7 +44,10 @@ async fn serve(
         vec![AuthorityControllerPrincipal::new(caller(), controller())],
     )?;
     let sessions = FederatedSession::new(node.clone(), Arc::new(DenyAllAccessPolicy));
-    sessions.set_authority_control(Some(Arc::new(endpoint)))?;
+    sessions.set_control_endpoint(
+        myko_authority::authority_realm_scope(anchor()?.realm_id()),
+        Some(Arc::new(endpoint)),
+    )?;
     Ok(LocalNodeServer::spawn_sessions_authenticated(socket, sessions, authenticated).await?)
 }
 
@@ -64,7 +65,7 @@ async fn unauthorized_socket_caller_cannot_write_a_controller_promise() -> Resul
     .await?;
     let result = LocalCommandClient::new(&socket)
         .prepare_control(
-            anchor()?.genesis(),
+            anchor()?.target(anchor()?.genesis()),
             ControlBallot {
                 counter: 1,
                 proposer: controller(),
@@ -93,7 +94,7 @@ async fn authenticated_socket_promise_survives_reopen_and_rejects_impersonation(
         let client = LocalCommandClient::new(&socket);
         let result = client
             .prepare_control(
-                anchor()?.genesis(),
+                anchor()?.target(anchor()?.genesis()),
                 ControlBallot {
                     counter: 1,
                     proposer: ControllerId(
@@ -110,7 +111,7 @@ async fn authenticated_socket_promise_survives_reopen_and_rejects_impersonation(
         }
         let vote = client
             .prepare_control(
-                anchor()?.genesis(),
+                anchor()?.target(anchor()?.genesis()),
                 ControlBallot {
                     counter: 1,
                     proposer: controller(),
@@ -132,7 +133,7 @@ async fn authenticated_socket_promise_survives_reopen_and_rejects_impersonation(
     let server = serve(&reopened, &socket, caller()).await?;
     let vote = LocalCommandClient::new(&socket)
         .prepare_control(
-            anchor()?.genesis(),
+            anchor()?.target(anchor()?.genesis()),
             ControlBallot {
                 counter: 1,
                 proposer: controller(),
@@ -162,7 +163,12 @@ async fn native_controller_adapter_preserves_identity_and_typed_unavailability()
         proposer: controller(),
     };
     let result = client
-        .prepare(&principal.id, &presentation, anchor()?.genesis(), ballot)
+        .prepare(
+            &principal.id,
+            &presentation,
+            anchor()?.target(anchor()?.genesis()),
+            ballot,
+        )
         .await;
     if !matches!(
         result,
@@ -174,8 +180,9 @@ async fn native_controller_adapter_preserves_identity_and_typed_unavailability()
             format!("missing native controller did not report unavailable: {result:?}").into(),
         );
     }
-    server.sessions().set_authority_control(Some(Arc::new(
-        CertifiedAuthorityControlEndpoint::new(
+    server.sessions().set_control_endpoint(
+        myko_authority::authority_realm_scope(anchor()?.realm_id()),
+        Some(Arc::new(CertifiedAuthorityControlEndpoint::new(
             node.clone(),
             anchor()?,
             SigningKey::from_bytes(&[1; 32]),
@@ -183,14 +190,14 @@ async fn native_controller_adapter_preserves_identity_and_typed_unavailability()
                 principal.clone(),
                 controller(),
             )],
-        )?,
-    )))?;
+        )?)),
+    )?;
     let spoofed = caller();
     let result = client
         .prepare(
             &spoofed.id,
             &AuthorityPresentation::direct(spoofed.clone()),
-            anchor()?.genesis(),
+            anchor()?.target(anchor()?.genesis()),
             ballot,
         )
         .await;
@@ -201,7 +208,12 @@ async fn native_controller_adapter_preserves_identity_and_typed_unavailability()
         return Err("unavailable or impersonated request wrote a controller promise".into());
     }
     let vote = client
-        .prepare(&principal.id, &presentation, anchor()?.genesis(), ballot)
+        .prepare(
+            &principal.id,
+            &presentation,
+            anchor()?.target(anchor()?.genesis()),
+            ballot,
+        )
         .await;
     if let Err(error) = vote {
         return Err(format!("native authenticated controller prepare failed: {error:?}").into());

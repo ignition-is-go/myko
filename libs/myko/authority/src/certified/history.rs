@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::{Arc, Mutex},
+};
 
 use chrono::{DateTime, Utc};
 use myko_federation::{
@@ -23,6 +26,8 @@ const DECISION_DOMAIN: &[u8] = b"myko/certified-authority-decision/v1\0";
 
 mod approval;
 mod continuation;
+#[cfg(test)]
+mod replay_tests;
 mod revalidation;
 pub use approval::AuthorityApprovalTransition;
 pub use revalidation::AuthorityDecisionRevalidation;
@@ -62,6 +67,12 @@ impl AuthorityAnchor {
     #[must_use]
     pub const fn genesis(&self) -> ControlHead {
         self.control.genesis()
+    }
+
+    /// Address this authority realm without asserting that the head is current.
+    #[must_use]
+    pub fn target(&self, head: ControlHead) -> myko_federation::control_quorum::ControlTarget {
+        self.control.target(head)
     }
 
     fn control_anchor(&self) -> ControlAnchor {
@@ -469,6 +480,13 @@ pub struct AuthorityHistory {
     anchor: AuthorityAnchor,
     history: Vec<EventEnvelope>,
     chain: CertifiedControlChain,
+    selected: Mutex<Option<SelectedFacts>>,
+}
+
+#[derive(Debug)]
+struct SelectedFacts {
+    head: ControlHead,
+    facts: Arc<[CertifiedAuthorityFact]>,
 }
 
 impl AuthorityHistory {
@@ -495,6 +513,17 @@ impl AuthorityHistory {
             anchor,
             history,
             chain,
+            selected: Mutex::new(None),
+        })
+    }
+
+    pub(super) fn refresh(&self, history: Vec<EventEnvelope>) -> Result<Self, String> {
+        let chain = self.chain.refresh(&history)?;
+        Ok(Self {
+            anchor: self.anchor.clone(),
+            history,
+            chain,
+            selected: Mutex::new(None),
         })
     }
 
@@ -712,14 +741,39 @@ impl AuthorityHistory {
         &self,
         head: ControlHead,
     ) -> Result<Vec<CertifiedAuthorityFact>, String> {
+        let cached = {
+            let selected = self
+                .selected
+                .lock()
+                .map_err(|_| "historical facts lock is poisoned".to_owned())?;
+            selected
+                .as_ref()
+                .filter(|selected| selected.head == head)
+                .map(|selected| Arc::clone(&selected.facts))
+        };
+        if let Some(facts) = cached {
+            return Ok(facts.to_vec());
+        }
         let transitions = self.chain.transitions_to(head)?;
-        self.selected_from_transitions(transitions)
+        let facts = self.selected_from_transitions(transitions)?;
+        let selected = SelectedFacts {
+            head,
+            facts: Arc::from(facts.clone()),
+        };
+        // This immutable snapshot can reuse facts, never a live authorization result.
+        *self
+            .selected
+            .lock()
+            .map_err(|_| "historical facts lock is poisoned".to_owned())? = Some(selected);
+        Ok(facts)
     }
 
     fn selected_from_transitions<'a>(
         &self,
         transitions: impl IntoIterator<Item = &'a ControlTransition>,
     ) -> Result<Vec<CertifiedAuthorityFact>, String> {
+        #[cfg(test)]
+        replay_tests::record_replay();
         let mut replay =
             AuthorityFactReplay::new(retained_by_origin(&self.history)?, self.realm_id());
         for transition in transitions {

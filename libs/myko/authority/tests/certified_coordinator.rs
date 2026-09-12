@@ -6,8 +6,8 @@ pub use myko::prelude;
 use myko::{
     ApplicationHost, MykoApplication,
     server::{
-        AuthorityControlEndpoint, AuthorityControlFuture, AuthorityControlProposeRequest,
-        RetainedEvidenceError, RetainedEvidenceFuture, ScopedRetainedEvidenceEndpoint,
+        ControlEndpoint, ControlFuture, ControlProposeRequest, RetainedEvidenceError,
+        RetainedEvidenceFuture, ScopedRetainedEvidenceEndpoint,
     },
 };
 use myko_authority::{
@@ -435,14 +435,14 @@ impl ScopedRetainedEvidenceEndpoint for UnavailableEvidence {
 #[derive(Debug)]
 struct UnavailableControlEndpoint;
 
-impl AuthorityControlEndpoint for UnavailableControlEndpoint {
+impl ControlEndpoint for UnavailableControlEndpoint {
     fn prepare<'a>(
         &'a self,
         _principal: &'a PrincipalId,
         _presentation: &'a AuthorityPresentation,
-        _head: ControlHead,
+        _head: myko_federation::control_quorum::ControlTarget,
         _ballot: ControlBallot,
-    ) -> AuthorityControlFuture<'a, SignedControlVote> {
+    ) -> ControlFuture<'a, SignedControlVote> {
         Box::pin(async {
             Err(AuthorizationFailure::Unavailable(
                 AuthorityUnavailable::CoordinationUnavailable,
@@ -454,8 +454,8 @@ impl AuthorityControlEndpoint for UnavailableControlEndpoint {
         &'a self,
         _principal: &'a PrincipalId,
         _presentation: &'a AuthorityPresentation,
-        _request: AuthorityControlProposeRequest,
-    ) -> AuthorityControlFuture<'a, SignedControlProposal> {
+        _request: ControlProposeRequest,
+    ) -> ControlFuture<'a, SignedControlProposal> {
         Box::pin(async {
             Err(AuthorizationFailure::Unavailable(
                 AuthorityUnavailable::CoordinationUnavailable,
@@ -467,9 +467,9 @@ impl AuthorityControlEndpoint for UnavailableControlEndpoint {
         &'a self,
         _principal: &'a PrincipalId,
         _presentation: &'a AuthorityPresentation,
-        _head: ControlHead,
+        _head: myko_federation::control_quorum::ControlTarget,
         _proposal: SignedControlProposal,
-    ) -> AuthorityControlFuture<'a, SignedControlVote> {
+    ) -> ControlFuture<'a, SignedControlVote> {
         Box::pin(async {
             Err(AuthorizationFailure::Unavailable(
                 AuthorityUnavailable::CoordinationUnavailable,
@@ -636,29 +636,33 @@ impl NativeControlHarness {
             Principal::node(endpoint_principal_id(coordinator_transport.address().id));
         let a_binding =
             AuthorityControllerPrincipal::new(a_principal.clone(), controller_id(&a_key));
-        a_transport.sessions().set_authority_control(Some(Arc::new(
-            CertifiedAuthorityControlEndpoint::new(
+        a_transport.sessions().set_control_endpoint(
+            myko_authority::authority_realm_scope(anchor()?.realm_id()),
+            Some(Arc::new(CertifiedAuthorityControlEndpoint::new(
                 a.clone(),
                 selected_anchor.clone(),
                 a_key,
                 vec![a_binding.clone()],
-            )?,
-        )))?;
-        b_transport.sessions().set_authority_control(Some(Arc::new(
-            CertifiedAuthorityControlEndpoint::new(
-                b.clone(),
-                selected_anchor.clone(),
-                b_key,
-                vec![a_binding.clone()],
-            )?
-            .with_scoped_evidence_endpoint(
-                a_principal.id.clone(),
-                Arc::new(IrohScopedEvidenceEndpoint::new(
-                    b_transport.clone(),
-                    a_transport.address(),
-                )),
-            )?,
-        )))?;
+            )?)),
+        )?;
+        b_transport.sessions().set_control_endpoint(
+            myko_authority::authority_realm_scope(anchor()?.realm_id()),
+            Some(Arc::new(
+                CertifiedAuthorityControlEndpoint::new(
+                    b.clone(),
+                    selected_anchor.clone(),
+                    b_key,
+                    vec![a_binding.clone()],
+                )?
+                .with_scoped_evidence_endpoint(
+                    a_principal.id.clone(),
+                    Arc::new(IrohScopedEvidenceEndpoint::new(
+                        b_transport.clone(),
+                        a_transport.address(),
+                    )),
+                )?,
+            )),
+        )?;
         Ok(Self {
             a_transport,
             b_transport,
@@ -1015,11 +1019,21 @@ async fn endpoint_promises(
 ) -> Result<Vec<SignedControlVote>, Box<dyn Error>> {
     Ok(vec![
         a_endpoint
-            .prepare(&a_principal.id, presentation, grant_head, ballot)
+            .prepare(
+                &a_principal.id,
+                presentation,
+                anchor()?.target(grant_head),
+                ballot,
+            )
             .await
             .map_err(|failure| format!("{failure:?}"))?,
         b_endpoint
-            .prepare(&a_principal.id, presentation, grant_head, ballot)
+            .prepare(
+                &a_principal.id,
+                presentation,
+                anchor()?.target(grant_head),
+                ballot,
+            )
             .await
             .map_err(|failure| format!("{failure:?}"))?,
     ])
@@ -1046,8 +1060,8 @@ async fn reject_new_expired_value(
         .propose(
             &principal.id,
             presentation,
-            AuthorityControlProposeRequest {
-                head: grant_head,
+            ControlProposeRequest {
+                target: anchor()?.target(grant_head),
                 ballot,
                 promises,
                 value,
@@ -1095,8 +1109,8 @@ async fn recover_accepted_value(
         .propose(
             &quorum.principal.id,
             quorum.presentation,
-            AuthorityControlProposeRequest {
-                head: quorum.grant_head,
+            ControlProposeRequest {
+                target: anchor()?.target(quorum.grant_head),
                 ballot,
                 promises,
                 value,
@@ -1109,7 +1123,7 @@ async fn recover_accepted_value(
         .accept(
             &quorum.principal.id,
             quorum.presentation,
-            quorum.grant_head,
+            anchor()?.target(quorum.grant_head),
             proposal,
         )
         .await
@@ -1230,7 +1244,7 @@ async fn endpoint_reports_retained_evidence_failures_as_unavailable() -> TestRes
         .prepare(
             &principal.id,
             &presentation,
-            anchor()?.genesis(),
+            anchor()?.target(anchor()?.genesis()),
             ControlBallot {
                 counter: 1,
                 proposer: controller_id(&a_key),
@@ -1335,14 +1349,15 @@ async fn native_coordinator_survives_controller_shutdown_and_store_reopen() -> T
     .await?;
     let c_transport = IrohReplicator::bind_loopback(c.clone()).await?;
     let c_address = c_transport.address();
-    c_transport.sessions().set_authority_control(Some(Arc::new(
-        CertifiedAuthorityControlEndpoint::new(
+    c_transport.sessions().set_control_endpoint(
+        myko_authority::authority_realm_scope(anchor()?.realm_id()),
+        Some(Arc::new(CertifiedAuthorityControlEndpoint::new(
             c.clone(),
             selected_anchor.clone(),
             c_key.clone(),
             vec![harness.a_binding.clone()],
-        )?,
-    )))?;
+        )?)),
+    )?;
     let c_client = harness
         .coordinator_transport
         .command_client(c_address.clone());
@@ -1350,7 +1365,7 @@ async fn native_coordinator_survives_controller_shutdown_and_store_reopen() -> T
         .prepare(
             &harness.a_principal.id,
             &AuthorityPresentation::direct(harness.a_principal.clone()),
-            grant_head,
+            anchor()?.target(grant_head),
             ControlBallot {
                 counter: 2,
                 proposer: controller_id(&a_key),
@@ -1421,7 +1436,7 @@ async fn assert_native_peer_unavailable(
         .prepare(
             &harness.a_principal.id,
             &AuthorityPresentation::direct(harness.a_principal.clone()),
-            head,
+            anchor()?.target(head),
             ControlBallot {
                 counter: 3,
                 proposer: controller_id(&a_key),

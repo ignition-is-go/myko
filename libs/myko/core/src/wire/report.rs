@@ -27,6 +27,8 @@ impl ReportResponse {
 #[serde(rename_all = "camelCase")]
 #[ts(export)]
 pub struct WrappedReport {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<std::sync::Arc<str>>,
     pub report: Value,
     pub report_id: String,
 }
@@ -58,7 +60,7 @@ impl ReportError {
 /// # Errors
 ///
 /// Returns an error when the requested operation cannot be completed.
-pub fn wrap_report<Q: ReportId + Serialize + Clone>(
+pub fn wrap_report<Q: ReportId + crate::report::ReportIdStatic + Serialize + Clone>(
     tx: String,
     report: &Q,
 ) -> Result<WrappedReport, serde_json::Error> {
@@ -71,6 +73,7 @@ pub fn wrap_report<Q: ReportId + Serialize + Clone>(
     obj.insert("tx".to_string(), tx.into());
 
     Ok(WrappedReport {
+        service_id: Q::SERVICE_ID.map(Into::into),
         report: json,
         report_id: report.report_id().to_string(),
     })

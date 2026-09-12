@@ -32,6 +32,7 @@ pub struct ReplicationBatch {
 
 /// Parent relationships between concrete, service-qualified scope roots.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScopeTopology {
     parents: BTreeMap<ScopeId, ScopeId>,
     known: BTreeSet<ScopeId>,
@@ -218,6 +219,7 @@ impl ScopeTopology {
 /// still advance across omitted events, so a follower can resume without
 /// learning history outside its selection.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", content = "value", rename_all = "snake_case")]
 pub enum ReplicationSelection {
     /// Copies every service and scope in the peer's history.
@@ -243,6 +245,7 @@ pub enum ReplicationSelection {
 
 /// One scope component in a composable replication selection.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", content = "scope_id", rename_all = "snake_case")]
 pub enum ScopeSelection {
     /// Selects only the named scope.
@@ -752,6 +755,12 @@ pub enum NodeError {
     UnknownCommand(CommandId),
     #[error("command ID {0} is retained but its committed history is not yet causally complete")]
     CommandHistoryIncomplete(CommandId),
+    #[error("scope history is incomplete for {0:?}; new command was not accepted")]
+    ScopeHistoryIncomplete(ScopeSelection),
+    #[error("command dependency is not current: {0:?}; command was not submitted")]
+    CommandDependencyNotCurrent(SubscriptionLiveness),
+    #[error("command dependency has no value; command was not submitted")]
+    CommandDependencyMissingValue,
     #[error("command ID {command_id} was rejected: {reason}")]
     CommandRejected {
         command_id: CommandId,

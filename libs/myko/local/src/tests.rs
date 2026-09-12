@@ -10,11 +10,16 @@ use myko::{CommandContext, CommandError, CommandHandler, view::ViewHandler};
 use myko_federation::{
     AccessAttempt, AccessOperation, AllowAllAccessPolicy, ApprovalId, AuthorityPresentation,
     AuthorityRealmId, AuthorityUnavailable, AuthorizationBinding, AuthorizationDecision, BatchId,
-    ChangeBatch, CommandRequest, DelegationId, LiveCollectionHandle as _, ObligationId, Principal,
-    PrincipalId, PrincipalKind, ProvenanceOperation, ResourceClaim, ResourceClaimKind, ServiceId,
-    SubscriptionLiveness,
+    ChangeBatch, CommandRequest, DelegationId, LiveCollectionHandle as _,
+    LiveSubscriptionHandle as _, ObligationId, Principal, PrincipalId, PrincipalKind,
+    ProvenanceOperation, ResourceClaim, ResourceClaimKind, ServiceId, SubscriptionLiveness,
 };
 use myko_items::{ItemMutation, myko_command, myko_service};
+
+mod command_dependencies;
+mod execution_control;
+mod handler_authorization;
+mod handler_ownership;
 
 #[derive(Debug)]
 struct ApprovalPolicy;
@@ -119,11 +124,10 @@ impl myko::query::QueryHandler for AllLocalRecordHandlers {
 
     fn build_view(
         ctx: myko::query::QueryBuildArgs<Self>,
-    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn myko::item::AnyItem>>> {
-        Some(
-            ctx.federated_items::<LocalRecord>()
-                .expect("test federation source is configured"),
-        )
+    ) -> Result<Option<impl myko::query::QueryBuildOutput>, String> {
+        Ok(Some(myko::query::RetainedQuery::new(
+            ctx.federated_items::<LocalRecord>()?,
+        )))
     }
 }
 
@@ -138,15 +142,10 @@ impl ViewHandler for AllLocalRecordsView {
 
     fn build_cell(
         context: myko::view::ViewBuildArgs<Self>,
-    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
-        myko::view::LocalView::new({
-            myko::item::typed_map_arc_from_any_item::<LocalRecord>(
-                context
-                    .federated_items::<LocalRecord>()
-                    .expect("test federation source is configured"),
-                "AllLocalRecordsView",
-            )
-        })
+    ) -> Result<impl myko::view::ViewBuildOutput<Item = Self::Item>, String> {
+        Ok(myko::view::RetainedView::new(
+            context.federated_items::<LocalRecord>()?,
+        ))
     }
 }
 
@@ -348,10 +347,20 @@ async fn local_handler_connector_follows_retained_query() -> Result<(), LocalPee
     }
 
     let second = commit_record(&node, scope_id, "record-2")?;
-    let update = tokio::time::timeout(Duration::from_secs(2), query.recv())
-        .await
-        .map_err(|_| LocalPeerError::Protocol("local handler update timed out".to_owned()))?
-        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    let update = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let update = query.recv().await?;
+            // An unchanged publication can precede the newly committed rows.
+            if update.value.as_deref() != Some(std::slice::from_ref(&first))
+                || update.liveness != SubscriptionLiveness::Current
+            {
+                break Ok::<_, myko::client::HandlerClientError>(update);
+            }
+        }
+    })
+    .await
+    .map_err(|_| LocalPeerError::Protocol("local handler update timed out".to_owned()))?
+    .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
     if update.value != Some(vec![first, second]) {
         return Err(LocalPeerError::Protocol(format!(
             "local handler returned the wrong query rows: {update:?}"
@@ -386,15 +395,11 @@ async fn retained_query_recovers_from_authority_outage_on_the_same_socket()
         Duration::from_millis(10),
         Duration::from_millis(20),
     )?);
-    let query = local
-        .handler_connector()
-        .client()
-        .follow_query_reactive(
-            Some(node.node_id()),
-            scope.clone(),
-            &AllLocalRecordHandlers {},
-        )
-        .await?;
+    let query = local.handler_connector().client().follow_query_reactive(
+        Some(node.node_id()),
+        scope.clone(),
+        &AllLocalRecordHandlers {},
+    )?;
     let retained = query.live_collection().clone();
     let items = local
         .item_client()
@@ -412,6 +417,13 @@ async fn retained_query_recovers_from_authority_outage_on_the_same_socket()
             let _ignored = updates_tx.send(state.clone());
         }
     });
+    tokio::time::timeout(Duration::from_secs(3), async {
+        while retained.current_state().liveness != SubscriptionLiveness::Current {
+            updates_rx.recv_async().await?;
+        }
+        Ok::<_, flume::RecvError>(())
+    })
+    .await??;
     policy
         .available
         .store(false, std::sync::atomic::Ordering::SeqCst);
@@ -577,20 +589,131 @@ async fn one_connector_family_multiplexes_128_handler_subscriptions() -> Result<
     assert_eq!(probe.peak_active(), 1);
 
     drop(subscriptions.pop());
-    let second = commit_record(&node, scope_id, "record-2")?;
+    let second = commit_record(&node, scope_id.clone(), "record-2")?;
+    let committed_through = node
+        .authoritative_position_in::<LocalService>(&scope_id)?
+        .ok_or_else(|| LocalPeerError::Protocol("missing record commit frontier".to_owned()))?;
     let surviving = subscriptions
         .get_mut(0)
         .ok_or_else(|| LocalPeerError::Protocol("missing surviving subscription".to_owned()))?;
-    let update = tokio::time::timeout(Duration::from_secs(2), surviving.recv())
-        .await
-        .map_err(|_| LocalPeerError::Protocol("surviving handler update timed out".to_owned()))?
-        .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    let update = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let update = surviving.recv().await?;
+            if update
+                .through
+                .is_some_and(|through| through >= committed_through)
+            {
+                return Ok::<_, HandlerClientError>(update);
+            }
+            assert_eq!(update.value.as_deref(), Some(std::slice::from_ref(&first)));
+        }
+    })
+    .await
+    .map_err(|_| LocalPeerError::Protocol("surviving handler update timed out".to_owned()))?
+    .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+    assert_eq!(update.liveness, SubscriptionLiveness::Current);
     assert_eq!(update.value, Some(vec![first, second]));
     assert_eq!(probe.accepted(), 1);
     assert_eq!(probe.peak_active(), 1);
 
     drop(subscriptions);
     server.shutdown().await
+}
+
+#[tokio::test]
+async fn reactive_handlers_open_before_local_server_and_share_one_socket()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("myko.sock");
+    let node = Node::in_memory();
+    let scope = ScopeId::new("local-scope");
+    let record = commit_record(&node, scope.clone(), "record-1")?;
+    let local = LocalClientSession::new(&socket).with_reconnect_policy(ReconnectPolicy::new(
+        Duration::from_millis(10),
+        Duration::from_millis(20),
+    )?);
+    let client = local.handler_connector().client();
+    let query =
+        client.follow_query_reactive(Some(node.node_id()), scope, &AllLocalRecordHandlers {})?;
+    let report = client.follow_report_reactive(&CountAllLocalRecords {})?;
+    let view = client.follow_view_reactive(&AllLocalRecordsView {})?;
+    assert_eq!(
+        query.live_collection().current_state().liveness,
+        SubscriptionLiveness::Connecting
+    );
+    assert_eq!(
+        report.live_subscription().current().liveness,
+        SubscriptionLiveness::Connecting
+    );
+    assert_eq!(
+        view.live_collection().current_state().liveness,
+        SubscriptionLiveness::Connecting
+    );
+    assert!(query.live_collection().rows().snapshot().is_empty());
+    assert!(view.live_collection().rows().snapshot().is_empty());
+    assert!(report.live_subscription().current().value.is_none());
+
+    // The listener is absent when the initial-open tasks are scheduled.
+    tokio::task::yield_now().await;
+    let probe = LocalServerProbe::default();
+    let server = LocalNodeServer::spawn_application_with_probe(
+        &socket,
+        local_record_application(node)?,
+        PrincipalId::new("local:owner"),
+        Arc::new(AllowAllAccessPolicy),
+        probe.clone(),
+    )
+    .await?;
+
+    let mut waiting_for = "query";
+    tokio::time::timeout(Duration::from_secs(3), async {
+        for (kind, collection) in [
+            ("query", query.live_collection()),
+            ("view", view.live_collection()),
+        ] {
+            waiting_for = kind;
+            let (states_tx, states_rx) = flume::unbounded();
+            // Revision events may precede cell settlement in a shared Hyphae batch.
+            let _guard = collection.state().subscribe(move |signal| {
+                if let Signal::Value(state) = signal {
+                    let _ignored = states_tx.send(state.liveness.clone());
+                }
+            });
+            while states_rx.recv_async().await? != SubscriptionLiveness::Current {
+            }
+            assert_eq!(
+                collection.rows().snapshot(),
+                vec![(Arc::from("record-1"), Arc::new(record.clone()))]
+            );
+        }
+        waiting_for = "report";
+        let live_report = report.live_subscription();
+        let mut publications = live_report.watch_publications();
+        let report_state = loop {
+            let state = publications.recv_async().await?.state;
+            if state.liveness == SubscriptionLiveness::Current {
+                break state;
+            }
+        };
+        assert_eq!(report_state.value.map(|value| value.count), Some(1));
+        Ok::<_, flume::RecvError>(())
+    })
+    .await
+    .map_err(|error| {
+        format!(
+            "startup wait stalled on {waiting_for}: {error}; query={:?}; report={:?}; view={:?}; accepted={}; peak_active={}",
+            query.live_collection().current_state(),
+            report.live_subscription().current(),
+            view.live_collection().current_state(),
+            probe.accepted(),
+            probe.peak_active(),
+        )
+    })??;
+    assert_eq!(probe.accepted(), 1);
+    assert_eq!(probe.peak_active(), 1);
+    drop((query, report, view));
+    server.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -633,7 +756,7 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
         .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
     assert_eq!(
         report.current().value.as_ref().map(|count| count.count),
-        Some(0)
+        Some(1)
     );
     let mut view = client
         .follow_view(&AllLocalRecordsView {})
@@ -645,7 +768,6 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
     );
     let reactive_view = client
         .follow_view_reactive(&AllLocalRecordsView {})
-        .await
         .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
     let (reactive_updates_tx, reactive_updates_rx) = flume::bounded(16);
     let _reactive_guard = reactive_view
@@ -656,7 +778,19 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
                 let _ignored = reactive_updates_tx.send(state.clone());
             }
         });
-    let _initial_reactive_notification = reactive_updates_rx.try_recv();
+    let mut reactive_before_disconnect = tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let state = reactive_updates_rx
+                .recv_async()
+                .await
+                .map_err(|error| LocalPeerError::Protocol(error.to_string()))?;
+            if state.liveness == SubscriptionLiveness::Current {
+                return Ok::<_, LocalPeerError>(state);
+            }
+        }
+    })
+    .await
+    .map_err(|_| LocalPeerError::Protocol("initial reactive view timed out".to_owned()))??;
     let submitted = local
         .command_client()
         .submit_typed_command(SetLocalRecord {
@@ -677,6 +811,10 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
             let update = reactive_updates_rx.recv_async().await.map_err(|error| {
                 LocalPeerError::Protocol(format!("reactive view observation ended: {error}"))
             })?;
+            if update.liveness == SubscriptionLiveness::Current {
+                reactive_before_disconnect = update;
+                continue;
+            }
             if matches!(
                 update.liveness,
                 SubscriptionLiveness::Resynchronizing { .. }
@@ -689,7 +827,27 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
     .map_err(|_| {
         LocalPeerError::Protocol("reactive view did not expose the disconnected state".to_owned())
     })??;
-    assert!(reactive_resync.through.is_none());
+    assert_eq!(
+        reactive_resync.through, reactive_before_disconnect.through,
+        "resynchronization must retain the last coherent view frontier"
+    );
+    let stale_submission = CommandSubmission::for_command(&SetLocalRecord {
+        id: LocalRecordId::from("during-reconnect"),
+        value: "must not queue".to_owned(),
+    })?;
+    let history_before = node.events_after(None)?;
+    let disconnected = tokio::time::timeout(
+        Duration::from_secs(1),
+        local
+            .command_client()
+            .submit_submission(stale_submission.clone()),
+    )
+    .await
+    .map_err(|_| {
+        LocalPeerError::Protocol("submission waited behind reconnecting handles".to_owned())
+    })?;
+    assert!(matches!(disconnected, Err(error) if error.to_string().contains("not submitted")));
+    assert_eq!(node.events_after(None)?, history_before);
     let admission = node.claim(command_id)?;
     node.commit(
         command_id,
@@ -714,13 +872,13 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
     )
     .await?;
 
-    tokio::time::timeout(Duration::from_secs(2), async {
+    let reactive_recovered = tokio::time::timeout(Duration::from_secs(2), async {
         loop {
             let update = reactive_updates_rx.recv_async().await.map_err(|error| {
                 LocalPeerError::Protocol(format!("reactive view observation ended: {error}"))
             })?;
             if update.liveness == SubscriptionLiveness::Current {
-                return Ok::<_, LocalPeerError>(());
+                return Ok::<_, LocalPeerError>(update);
             }
         }
     })
@@ -728,6 +886,31 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
     .map_err(|_| {
         LocalPeerError::Protocol("reactive view did not recover after reconnect".to_owned())
     })??;
+    assert_ne!(
+        reactive_recovered.through, reactive_resync.through,
+        "recovered view frontier must cover the commits made while disconnected"
+    );
+    assert_eq!(
+        reactive_view.live_collection().current_state(),
+        *reactive_recovered,
+        "recovered lifecycle state must match the collection's coherent revision"
+    );
+    let mut reactive_recovered_rows = reactive_view.live_collection().rows().snapshot();
+    reactive_recovered_rows.sort_by(|(left, _), (right, _)| left.cmp(right));
+    assert_eq!(
+        reactive_recovered_rows,
+        vec![
+            (Arc::from("record-1"), Arc::new(first.clone())),
+            (Arc::from("record-2"), Arc::new(second.clone())),
+        ],
+        "recovered frontier must be published with the recovered rows"
+    );
+    assert!(node.command(stale_submission.id)?.is_none());
+    local
+        .command_client()
+        .submit_submission(stale_submission.clone())
+        .await?;
+    assert!(node.command(stale_submission.id)?.is_some());
 
     tokio::time::timeout(Duration::from_secs(2), async {
         while !matches!(
@@ -791,7 +974,7 @@ async fn live_handler_survives_local_server_restart() -> Result<(), LocalPeerErr
     );
     assert_eq!(
         report_update.value.as_ref().map(|count| count.count),
-        Some(0)
+        Some(2)
     );
     assert_eq!(view_update.value, Some(vec![first, second]));
     let command_update = tokio::time::timeout(Duration::from_secs(2), command_watch.recv())
@@ -832,6 +1015,73 @@ async fn dropped_handler_clients_release_connection_capacity() -> Result<(), Loc
     }
 
     server.shutdown().await
+}
+
+#[tokio::test]
+async fn local_submission_rejects_incomplete_scope_without_queuing()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("myko.sock");
+    let node = Node::in_memory();
+    let probe = LocalServerProbe::default();
+    let server = LocalNodeServer::spawn_application_with_probe(
+        &socket,
+        local_record_application(node.clone())?,
+        PrincipalId::new("local:owner"),
+        Arc::new(AllowAllAccessPolicy),
+        probe.clone(),
+    )
+    .await?;
+    let local = LocalClientSession::new(&socket);
+    let client = local.command_client();
+    let first = client
+        .submit_typed_command(SetLocalRecord {
+            id: LocalRecordId::from("first"),
+            value: "before catch-up".to_owned(),
+        })
+        .await?
+        .command
+        .ok_or("first submission returned no command state")?;
+    let source = Node::in_memory();
+    commit_record(&source, first.request.scope_id, "source-record")?;
+    let mut history = source.events_after(None)?.into_iter();
+    let parent = history.next().ok_or("source did not record admission")?;
+    let child = history.next().ok_or("source did not record commit")?;
+    node.ingest(child)?;
+    let before = node.events_after(None)?;
+    let rejected = tokio::time::timeout(
+        Duration::from_secs(2),
+        client.submit_typed_command(SetLocalRecord {
+            id: LocalRecordId::from("second"),
+            value: "must not queue".to_owned(),
+        }),
+    )
+    .await?;
+    match rejected {
+        Err(error) if error.to_string().contains("scope history is incomplete") => {}
+        Err(error) => return Err(error.into()),
+        Ok(_) => {
+            return Err("local transport accepted a command into incomplete scope history".into());
+        }
+    }
+    if node.events_after(None)? != before {
+        return Err("rejected wire submission recorded command acceptance".into());
+    }
+    node.ingest(parent)?;
+    let recovered = client
+        .submit_typed_command(SetLocalRecord {
+            id: LocalRecordId::from("second"),
+            value: "explicit retry after catch-up".to_owned(),
+        })
+        .await?;
+    if recovered.command.is_none() {
+        return Err("wire submission did not recover after scope catch-up".into());
+    }
+    if probe.accepted() != 1 {
+        return Err("rejection replaced the shared client socket".into());
+    }
+    server.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]
@@ -1043,6 +1293,84 @@ async fn local_peer_executes_typed_command_to_its_result() -> Result<(), LocalPe
         ));
     }
     server.shutdown().await
+}
+
+#[tokio::test]
+async fn unavailable_local_server_does_not_queue_a_submission()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("myko.sock");
+    let node = Node::in_memory();
+    let local = LocalClientSession::new(&socket);
+    let client = local.command_client();
+    let command = CommandSubmission::for_command(&SetLocalRecord {
+        id: LocalRecordId::from("not-queued"),
+        value: "explicit retry".to_owned(),
+    })?;
+    let failed = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.submit_submission(command.clone()),
+    )
+    .await
+    .map_err(|_| "submission waited for an unavailable server")?;
+    let error = failed.err().ok_or("offline submission succeeded")?;
+    assert!(error.to_string().contains("not submitted"));
+
+    let server = LocalNodeServer::spawn_application(
+        &socket,
+        local_record_application(node.clone())?,
+        PrincipalId::new("local:owner"),
+        Arc::new(AllowAllAccessPolicy),
+    )
+    .await?;
+    assert!(node.command(command.id)?.is_none());
+    client.submit_submission(command.clone()).await?;
+    assert!(node.command(command.id)?.is_some());
+    server.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn lost_submission_is_not_replayed_on_a_new_connection()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let socket = directory.path().join("myko.sock");
+    let listener = UnixListener::bind(&socket)?;
+    let local = LocalClientSession::new(&socket);
+    let client = local.command_client();
+    let command = CommandSubmission::for_command(&SetLocalRecord {
+        id: LocalRecordId::from("interrupted"),
+        value: "explicit recovery".to_owned(),
+    })?;
+    let command_id = command.id;
+    let peer = tokio::spawn(crate::session_mux::interrupt_submission(
+        listener, command_id,
+    ));
+    let failed = tokio::time::timeout(
+        Duration::from_secs(1),
+        client.submit_submission(command.clone()),
+    )
+    .await
+    .map_err(|_| "interrupted submission waited to be replayed")?;
+    peer.await??;
+    let error = failed.err().ok_or("unacknowledged submission succeeded")?;
+    assert!(error.to_string().contains("acceptance is unknown"));
+    assert!(error.to_string().contains(&command_id.to_string()));
+
+    let node = Node::in_memory();
+    let server = LocalNodeServer::spawn_application(
+        &socket,
+        local_record_application(node.clone())?,
+        PrincipalId::new("local:owner"),
+        Arc::new(AllowAllAccessPolicy),
+    )
+    .await?;
+    local.node_client().identify().await?;
+    assert!(node.command(command_id)?.is_none());
+    client.submit_submission(command).await?;
+    assert!(node.command(command_id)?.is_some());
+    server.shutdown().await?;
+    Ok(())
 }
 
 #[tokio::test]

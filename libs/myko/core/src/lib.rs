@@ -145,6 +145,8 @@ pub use myko_items::{
     ItemQuery, ItemScope, MykoCommand, MykoCommandContract, MykoItem, MykoOperation, MykoService,
     ServiceTypeId,
 };
+#[cfg(feature = "schema")]
+pub use myko_items::{schema, schemars};
 pub use myko_macros::*;
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas

@@ -30,6 +30,7 @@ const DEFAULT_ANNOUNCE_INTERVAL: Duration = Duration::from_secs(3);
 const DEFAULT_EXPIRY: Duration = Duration::from_secs(12);
 
 /// Operational shape of one native Myko participant.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantKind {
@@ -42,6 +43,7 @@ pub enum ParticipantKind {
 }
 
 /// Explicit operational capability of one participant.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ParticipantCapability {
@@ -52,6 +54,7 @@ pub enum ParticipantCapability {
 }
 
 /// Explicit capability set advertised by one participant.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ParticipantCapabilities(BTreeSet<ParticipantCapability>);
 
@@ -81,6 +84,7 @@ impl ParticipantCapabilities {
 }
 
 /// One nearby node exposed to application roster surfaces.
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredNode {
     pub descriptor: NativeNodeDescriptor,

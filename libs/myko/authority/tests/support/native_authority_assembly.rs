@@ -2,6 +2,9 @@ use myko_node::{AuthorityControllerAddress, AuthorityRuntimeConfig};
 
 use super::*;
 
+#[path = "native_grant_subscriptions.rs"]
+mod grant_subscriptions;
+
 #[derive(Debug)]
 struct AssemblyPolicy(ScopedHistoryPolicy);
 

@@ -408,6 +408,37 @@ impl InMemoryBackend {
         Ok(visible)
     }
 
+    fn require_command_history(
+        state: &MemoryState,
+        request: &CommandRequest,
+    ) -> Result<(), NodeError> {
+        let origins = state.causal_index.ordered_origins(None);
+        if origins.len() == state.events.len() {
+            return Ok(());
+        }
+        let ready = origins
+            .iter()
+            .map(|origin| {
+                state
+                    .origin_indexes
+                    .get(origin)
+                    .and_then(|index| state.events.get(*index))
+                    .cloned()
+                    .ok_or_else(|| {
+                        NodeError::CorruptHistory(
+                            "causal index references absent history".to_owned(),
+                        )
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        SelectedHistorySnapshot::from_history(
+            state.events.last().map(|event| event.position),
+            ready,
+            &state.events,
+        )?
+        .require_command_history(request)
+    }
+
     pub(super) fn matches_cursor(event: &EventEnvelope, after: Option<LogPosition>) -> bool {
         after.is_none_or(|cursor| event.position > cursor)
     }
@@ -537,6 +568,8 @@ impl NodeBackend for InMemoryBackend {
             return Self::resume_visible_command(&state, request.id);
         }
 
+        Self::require_command_history(&state, &request)?;
+
         let position = state.next_position;
         let origin = EventId::new(self.node_id, position);
         let snapshot = CommandSnapshot {
@@ -589,6 +622,8 @@ impl NodeBackend for InMemoryBackend {
             }
             return Self::resume_visible_command(&state, request.id).map(CommandAdmission::Resume);
         }
+
+        Self::require_command_history(&state, &request)?;
 
         let position = state.next_position;
         let origin = EventId::new(self.node_id, position);

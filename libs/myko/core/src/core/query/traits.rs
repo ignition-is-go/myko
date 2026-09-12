@@ -2,15 +2,11 @@
 
 use std::{fmt::Debug, sync::Arc};
 
-use hyphae::{CellImmutable, MapQuery};
+use hyphae::CellImmutable;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
-use super::{
-    super::item::{AnyItem, Eventable},
-    context::QueryContext,
-    request::QueryRequest,
-};
+use super::{super::item::Eventable, context::QueryContext, request::QueryRequest};
 use crate::{
     cache::CacheKey,
     client::MykoClient,
@@ -29,6 +25,9 @@ pub trait QueryId {
 }
 
 pub trait QueryIdStatic {
+    /// Generated service owner, or `None` for a global query.
+    const SERVICE_ID: Option<crate::ServiceTypeId> = None;
+
     fn query_id_static() -> Arc<str>;
 }
 
@@ -90,14 +89,10 @@ pub trait QueryHandler: QueryItemType + Sized {
 
     /// Optional set-wise reactive builder for complex many-to-many joins.
     ///
-    /// When implemented, this is preferred by the runtime over per-item
-    /// `test_entity` evaluation and should return a reactive map plan that
-    /// the runtime materializes once at the registration boundary. Returning
-    /// `impl MapQuery<...>` lets impls compose `inner_join`, `filter_map_entries`,
-    /// `select_cell`, etc. without forcing intermediate `CellMap` allocations.
-    /// Concrete `CellMap`/`FilteredCellMap` values still satisfy the bound
-    /// via the blanket impl on `ReactiveMap`, so simple impls returning a
-    /// pre-built map continue to work unchanged.
+    /// This takes precedence over per-item `test_entity` evaluation. Local
+    /// builders return a Hyphae map plan for materialization at registration.
+    /// Durable builders return `RetainedQuery` or a composed `QueryValue` so
+    /// dependency cursor and liveness stay attached to their rows.
     ///
     /// Keep recognized join/projection chains unmaterialized through this
     /// boundary. Hyphae specializes one- and two-join chains and can promote
@@ -106,14 +101,16 @@ pub trait QueryHandler: QueryItemType + Sized {
     /// Every closure captured by the returned plan must be deterministic,
     /// externally side-effect-free, and nonblocking because Hyphae may invoke
     /// it repeatedly or concurrently.
-    #[must_use]
+    ///
+    /// # Errors
+    /// Returns a dependency or resource setup error without opening the query.
     fn build_view(
         _ctx: QueryBuildArgs<Self>,
-    ) -> Option<impl MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>>
+    ) -> Result<Option<impl super::QueryBuildOutput>, String>
     where
         Self: Send + Sync + 'static,
     {
-        None::<FilteredCellMap>
+        Ok(None::<FilteredCellMap>)
     }
 
     /// Optional pushed-down builder for a bounded query window.
@@ -167,7 +164,12 @@ impl<TQuery: QueryItemType> QueryBuildArgs<TQuery> {
     /// Returns an error when this is not a federated request or the source
     /// projection cannot be established.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn federated_items<T>(&self) -> Result<super::FilteredCellMap, String>
+    pub fn federated_items<T>(
+        &self,
+    ) -> Result<
+        myko_federation::LiveSubscription<crate::server::federated_source::ItemSnapshot<T>>,
+        String,
+    >
     where
         T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
     {
@@ -311,6 +313,7 @@ where
 /// Type-erased query trait for dynamic dispatch.
 /// All queries implement this via the `#[myko_query]` macro.
 pub trait AnyQuery: WithTransaction + QueryId + Debug + Send + Sync + 'static {
+    fn service_id(&self) -> Option<crate::ServiceTypeId>;
     /// Returns the item type this query targets (e.g., "Server", "Client").
     fn query_item_type(&self) -> Arc<str>;
 
@@ -323,6 +326,7 @@ impl From<&dyn AnyQuery> for WrappedQuery {
     fn from(query: &dyn AnyQuery) -> Self {
         Self {
             query: query.to_value(),
+            service_id: query.service_id().map(Into::into),
             query_id: query.query_id(),
             query_item_type: query.query_item_type(),
             window: None,

@@ -7,8 +7,8 @@ use myko_federation::{
 
 use super::{
     AuthorityApprovalTransition, AuthorityDecisionCoordinator, AuthorityDecisionTransition,
-    AuthorityHistory, AuthorityRequestSource, CertifiedAuthorityControlEndpoint,
-    control_denial_for_message, required_accepted_value, runtime::next_counter,
+    AuthorityRequestSource, CertifiedAuthorityControlEndpoint, control_denial_for_message,
+    required_accepted_value, runtime::next_counter,
 };
 
 impl AuthorityDecisionCoordinator {
@@ -41,7 +41,7 @@ impl AuthorityDecisionCoordinator {
         let operation = CommandId::new();
         for _ in 0..self.max_rounds {
             self.synchronize().await?;
-            let history = self.history_for_exact_snapshot()?;
+            let history = self.history_for_exact_snapshot().await?;
             let head = history.retained_head()?;
             let previous = history
                 .decision_at(head, &root)?
@@ -70,7 +70,8 @@ impl AuthorityDecisionCoordinator {
                 .await?;
             if evidence.proposal.message.value == desired {
                 return self
-                    .history_for_exact_snapshot()?
+                    .history_for_exact_snapshot()
+                    .await?
                     .decision_at(chosen, &root)?
                     .ok_or_else(|| "chosen authority continuation is not retained".to_owned())
                     .map(Some);
@@ -123,6 +124,7 @@ impl AuthorityDecisionCoordinator {
                 .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
             let history = self
                 .history_for_exact_snapshot()
+                .await
                 .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
             let head = history
                 .retained_head()
@@ -163,6 +165,7 @@ impl AuthorityDecisionCoordinator {
             if evidence.proposal.message.value == desired {
                 let history = self
                     .history_for_exact_snapshot()
+                    .await
                     .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
                 return history
                     .approval_at(chosen, challenge, &presentation.principal)
@@ -175,7 +178,7 @@ impl AuthorityDecisionCoordinator {
 }
 
 impl CertifiedAuthorityControlEndpoint {
-    pub(super) fn validate_approval(
+    pub(super) async fn validate_approval(
         &self,
         presentation: &AuthorityPresentation,
         head: ControlHead,
@@ -184,7 +187,10 @@ impl CertifiedAuthorityControlEndpoint {
         value: &ControlValue,
         approval: &AuthorityApprovalTransition,
     ) -> Result<(), AuthorizationFailure> {
-        let history = AuthorityHistory::replay(&self.node, self.anchor.clone())
+        let history = self
+            .controller
+            .cached_history()
+            .await
             .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
         let verifier = history
             .context_at(head)

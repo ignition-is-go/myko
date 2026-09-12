@@ -29,6 +29,8 @@ use super::item::{AnyItem, Eventable};
 use crate::common::with_id::WithTypedId;
 
 /// A stable, serializable reference to any registered Myko item.
+#[cfg_attr(feature = "schema", derive(crate::schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(crate = "crate::schemars"))]
 #[derive(Clone, Debug, Hash, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::TS)]
 #[serde(rename_all = "camelCase")]
 #[ts(crate = "crate::ts_rs")]
@@ -1798,6 +1800,12 @@ enum GraphWindowSelection {
     Cursor(crate::wire::QueryCursorWindow),
 }
 
+struct GraphWindowState {
+    selection: GraphWindowSelection,
+    // Publication can be deferred by a batch; filtering must use the queued page.
+    latest_snapshot: Arc<crate::query::WindowedQuerySnapshot>,
+}
+
 impl GraphWindowSelection {
     const fn offset_window(&self) -> Option<&crate::wire::QueryWindow> {
         match self {
@@ -3371,23 +3379,20 @@ impl GraphIndex {
             + 'static,
         M: Fn(&EdgeEndpoints) -> bool + Send + Sync + 'static,
     {
-        use hyphae::{Gettable, Mutable};
+        use hyphae::Mutable;
 
         let registration = self
             .registration(edge_type)
             .context("edge type is not registered")?;
         let _authority = self.lock_authority();
-        let selection = Arc::new(Mutex::new(GraphWindowSelection::Offset(Some(
-            initial_window,
-        ))));
+        let selection = GraphWindowSelection::Offset(Some(initial_window));
         let select = Arc::new(select);
-        let initial = {
-            let current = selection
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            select(self, &current)
-        };
-        let snapshots = hyphae::Cell::new(Arc::new(initial));
+        let initial = Arc::new(select(self, &selection));
+        let selection = Arc::new(Mutex::new(GraphWindowState {
+            selection,
+            latest_snapshot: initial.clone(),
+        }));
+        let snapshots = hyphae::Cell::new(initial);
         let dispatch = Arc::new(parking_lot::ReentrantMutex::new(()));
 
         let snapshots_weak = snapshots.downgrade();
@@ -3403,22 +3408,23 @@ impl GraphIndex {
             let Some(snapshots) = snapshots_weak.upgrade() else {
                 return;
             };
-            let current = snapshots.get();
-            if !Self::watch_diff_affects_window(
-                registration,
-                &matches_endpoints,
-                diff,
-                &current.entries,
-            ) {
-                return;
-            }
             let next = {
-                let selection = selection_for_diffs
+                let mut state = selection_for_diffs
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                select_for_diffs(&graph, &selection)
+                if !Self::watch_diff_affects_window(
+                    registration,
+                    &matches_endpoints,
+                    diff,
+                    &state.latest_snapshot.entries,
+                ) {
+                    return;
+                }
+                let next = Arc::new(select_for_diffs(&graph, &state.selection));
+                state.latest_snapshot = next.clone();
+                next
             };
-            snapshots.set(Arc::new(next));
+            snapshots.set(next);
         });
         let guard = self.watch_router.subscribe_many(routes, &callback);
         snapshots.own(guard);
@@ -3435,18 +3441,20 @@ impl GraphIndex {
             };
             let next_snapshot = {
                 let _authority = graph.lock_authority();
-                let mut current = selection_for_window
+                let mut state = selection_for_window
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let next = GraphWindowSelection::Offset(next);
-                if *current == next {
+                if state.selection == next {
                     return;
                 }
-                *current = next;
-                select_for_window(&graph, &current)
+                state.selection = next;
+                let next = Arc::new(select_for_window(&graph, &state.selection));
+                state.latest_snapshot = next.clone();
+                next
             };
             if let Some(snapshots) = snapshots_weak.upgrade() {
-                snapshots.set(Arc::new(next_snapshot));
+                snapshots.set(next_snapshot);
             }
         };
 
@@ -3462,18 +3470,20 @@ impl GraphIndex {
             };
             let next_snapshot = {
                 let _authority = graph.lock_authority();
-                let mut current = selection
+                let mut state = selection
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let next = GraphWindowSelection::Cursor(next);
-                if *current == next {
+                if state.selection == next {
                     return;
                 }
-                *current = next;
-                select(&graph, &current)
+                state.selection = next;
+                let next = Arc::new(select(&graph, &state.selection));
+                state.latest_snapshot = next.clone();
+                next
             };
             if let Some(snapshots) = snapshots_weak.upgrade() {
-                snapshots.set(Arc::new(next_snapshot));
+                snapshots.set(next_snapshot);
             }
         };
 
@@ -5330,6 +5340,8 @@ mod tests {
         clippy::redundant_clone,
         clippy::too_many_lines
     )]
+    mod window_publication;
+
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -5633,48 +5645,52 @@ mod tests {
         let handlers = HandlerRegistry::new();
         assert!(
             handlers
-                .query("ForwardIndexedAssignmentGraphFrom")
+                .query(None, "ForwardIndexedAssignmentGraphFrom")
                 .is_some_and(|query| query.window_cell_factory.is_some())
         );
-        assert!(handlers.query("ForwardIndexedAssignmentGraphTo").is_some());
         assert!(
             handlers
-                .query("ForwardIndexedAssignmentGraphFromId")
+                .query(None, "ForwardIndexedAssignmentGraphTo")
                 .is_some()
         );
         assert!(
             handlers
-                .query("ForwardIndexedAssignmentGraphFromIds")
+                .query(None, "ForwardIndexedAssignmentGraphFromId")
                 .is_some()
         );
         assert!(
             handlers
-                .query("ForwardIndexedAssignmentGraphToId")
+                .query(None, "ForwardIndexedAssignmentGraphFromIds")
                 .is_some()
         );
         assert!(
             handlers
-                .query("ForwardIndexedAssignmentGraphBetween")
+                .query(None, "ForwardIndexedAssignmentGraphToId")
                 .is_some()
         );
         assert!(
             handlers
-                .query("ForwardIndexedAssignmentGraphBetweenId")
+                .query(None, "ForwardIndexedAssignmentGraphBetween")
                 .is_some()
         );
         assert!(
             handlers
-                .query("ForwardIndexedAssignmentGraphBetweenIds")
+                .query(None, "ForwardIndexedAssignmentGraphBetweenId")
                 .is_some()
         );
         assert!(
             handlers
-                .report("ForwardIndexedAssignmentGraphCountFrom")
+                .query(None, "ForwardIndexedAssignmentGraphBetweenIds")
                 .is_some()
         );
         assert!(
             handlers
-                .report("ForwardIndexedAssignmentGraphExistsBetween")
+                .report(None, "ForwardIndexedAssignmentGraphCountFrom")
+                .is_some()
+        );
+        assert!(
+            handlers
+                .report(None, "ForwardIndexedAssignmentGraphExistsBetween")
                 .is_some()
         );
     }
@@ -6366,7 +6382,7 @@ mod tests {
         let from_request = request();
         let handlers = HandlerRegistry::new();
         let from_handler = handlers
-            .query("ForwardIndexedAssignmentGraphFrom")
+            .query(None, "ForwardIndexedAssignmentGraphFrom")
             .expect("generated graph query handler");
         let encoded = serde_json::to_value(crate::query::QueryRequest::with_tx(
             ForwardIndexedAssignmentGraphFrom::new(tag.id.clone()),
@@ -6381,35 +6397,49 @@ mod tests {
             Some(Arc::new(context.clone())),
             None,
         )
-        .expect("dispatch generated graph query");
-        let to = context.query_map_by_str(
-            ForwardIndexedAssignmentGraphTo::new(article.id.clone()),
-            request(),
-        );
-        let between = context.query_map_by_str(
-            ForwardIndexedAssignmentGraphBetween::new(tag.id.clone(), article.id.clone()),
-            request(),
-        );
-        let from_id = context.query_map_by_str(
-            ForwardIndexedAssignment::from_id_query(&tag.id, &edge.id),
-            request(),
-        );
-        let to_id = context.query_map_by_str(
-            ForwardIndexedAssignmentGraphToId::new(article.id.clone(), edge.id.clone()),
-            request(),
-        );
-        let between_id = context.query_map_by_str(
-            ForwardIndexedAssignmentGraphBetweenId::new(
-                tag.id.clone(),
-                article.id.clone(),
-                edge.id.clone(),
-            ),
-            request(),
-        );
-        let wrong_scope_id = context.query_map_by_str(
-            ForwardIndexedAssignment::from_id_query(&other_tag.id, &edge.id),
-            request(),
-        );
+        .expect("dispatch generated graph query")
+        .into_local_map()
+        .expect("generated graph query uses a local map");
+        let to = context
+            .query_map_by_str(
+                ForwardIndexedAssignmentGraphTo::new(article.id.clone()),
+                request(),
+            )
+            .expect("generated graph query");
+        let between = context
+            .query_map_by_str(
+                ForwardIndexedAssignmentGraphBetween::new(tag.id.clone(), article.id.clone()),
+                request(),
+            )
+            .expect("generated graph query");
+        let from_id = context
+            .query_map_by_str(
+                ForwardIndexedAssignment::from_id_query(&tag.id, &edge.id),
+                request(),
+            )
+            .expect("generated graph query");
+        let to_id = context
+            .query_map_by_str(
+                ForwardIndexedAssignmentGraphToId::new(article.id.clone(), edge.id.clone()),
+                request(),
+            )
+            .expect("generated graph query");
+        let between_id = context
+            .query_map_by_str(
+                ForwardIndexedAssignmentGraphBetweenId::new(
+                    tag.id.clone(),
+                    article.id.clone(),
+                    edge.id.clone(),
+                ),
+                request(),
+            )
+            .expect("generated graph query");
+        let wrong_scope_id = context
+            .query_map_by_str(
+                ForwardIndexedAssignment::from_id_query(&other_tag.id, &edge.id),
+                request(),
+            )
+            .expect("generated graph query");
         let selected_ids = [
             edge.id.clone(),
             ForwardIndexedAssignmentId::from("missing-edge"),
@@ -6417,19 +6447,27 @@ mod tests {
         ];
         let canonical_from_ids = ForwardIndexedAssignment::from_ids_query(&tag.id, &selected_ids);
         assert_eq!(canonical_from_ids.ids.len(), 2);
-        let from_ids = context.query_map_by_str(canonical_from_ids, request());
-        let to_ids = context.query_map_by_str(
-            ForwardIndexedAssignment::to_ids_query(&article.id, &selected_ids),
-            request(),
-        );
-        let between_ids = context.query_map_by_str(
-            ForwardIndexedAssignment::between_ids_query(&tag.id, &article.id, &selected_ids),
-            request(),
-        );
-        let wrong_scope_ids = context.query_map_by_str(
-            ForwardIndexedAssignment::from_ids_query(&other_tag.id, &selected_ids),
-            request(),
-        );
+        let from_ids = context
+            .query_map_by_str(canonical_from_ids, request())
+            .expect("generated graph query");
+        let to_ids = context
+            .query_map_by_str(
+                ForwardIndexedAssignment::to_ids_query(&article.id, &selected_ids),
+                request(),
+            )
+            .expect("generated graph query");
+        let between_ids = context
+            .query_map_by_str(
+                ForwardIndexedAssignment::between_ids_query(&tag.id, &article.id, &selected_ids),
+                request(),
+            )
+            .expect("generated graph query");
+        let wrong_scope_ids = context
+            .query_map_by_str(
+                ForwardIndexedAssignment::from_ids_query(&other_tag.id, &selected_ids),
+                request(),
+            )
+            .expect("generated graph query");
         assert_eq!(from.snapshot().len(), 1);
         assert_eq!(to.snapshot().len(), 1);
         assert_eq!(between.snapshot().len(), 1);
@@ -6515,10 +6553,12 @@ mod tests {
                 context.host_id,
             ))
         };
-        let targets = context.query_map_by_str(
-            ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
-            request(),
-        );
+        let targets = context
+            .query_map_by_str(
+                ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
+                request(),
+            )
+            .expect("generated related-entity query");
         assert_eq!(targets.snapshot().len(), 1);
         assert!(targets.get_value(&article_a.id()).is_some());
 
@@ -6559,10 +6599,12 @@ mod tests {
         };
         assert!(context.set(&moved).is_ok());
         assert!(targets.get_value(&article_b.id()).is_some());
-        let sources = context.query_map_by_str(
-            ForwardIndexedAssignmentGraphSourcesTo::new(article_b.id.clone()),
-            request(),
-        );
+        let sources = context
+            .query_map_by_str(
+                ForwardIndexedAssignmentGraphSourcesTo::new(article_b.id.clone()),
+                request(),
+            )
+            .expect("generated related-entity query");
         assert_eq!(sources.snapshot().len(), 1);
         assert!(sources.get_value(&tag.id()).is_some());
     }
@@ -6631,34 +6673,42 @@ mod tests {
                 context.host_id,
             ))
         };
-        let neighbors = context.query_map_by_str(
-            ArticleLinkGraphNeighbors::new(article_a.id.clone()),
-            request(),
-        );
+        let neighbors = context
+            .query_map_by_str(
+                ArticleLinkGraphNeighbors::new(article_a.id.clone()),
+                request(),
+            )
+            .expect("generated neighbor query");
         assert_eq!(neighbors.snapshot().len(), 3);
         assert!(neighbors.get_value(&article_a.id()).is_some());
         assert!(neighbors.get_value(&article_b.id()).is_some());
         assert!(neighbors.get_value(&article_c.id()).is_some());
 
-        let reverse = context.query_map_by_str(
-            ArticleLinkGraphNeighbors::new(article_b.id.clone()),
-            request(),
-        );
+        let reverse = context
+            .query_map_by_str(
+                ArticleLinkGraphNeighbors::new(article_b.id.clone()),
+                request(),
+            )
+            .expect("generated reverse-neighbor query");
         assert_eq!(reverse.snapshot().len(), 1);
         assert!(reverse.get_value(&article_a.id()).is_some());
-        let reverse_exact = context.query_map_by_str(
-            ArticleLink::between_id_query(&article_b.id, &article_a.id, &first.id),
-            request(),
-        );
+        let reverse_exact = context
+            .query_map_by_str(
+                ArticleLink::between_id_query(&article_b.id, &article_a.id, &first.id),
+                request(),
+            )
+            .expect("generated reverse edge query");
         assert_eq!(reverse_exact.snapshot().len(), 1);
-        let reverse_exact_batch = context.query_map_by_str(
-            ArticleLink::between_ids_query(
-                &article_b.id,
-                &article_a.id,
-                &[first.id.clone(), ArticleLinkId::from("missing-link")],
-            ),
-            request(),
-        );
+        let reverse_exact_batch = context
+            .query_map_by_str(
+                ArticleLink::between_ids_query(
+                    &article_b.id,
+                    &article_a.id,
+                    &[first.id.clone(), ArticleLinkId::from("missing-link")],
+                ),
+                request(),
+            )
+            .expect("generated reverse edge batch query");
         assert_eq!(reverse_exact_batch.snapshot().len(), 1);
 
         let window_request = request();
@@ -6767,8 +6817,12 @@ mod tests {
             context.host_id,
         ));
         let query = ArticleLinkGraphNeighbors::new(center.id.clone());
-        let untyped = context.query_map_untyped(query.clone(), request.clone());
-        let view = context.query_map_by_str(query, request);
+        let untyped = context
+            .query_map_untyped(query.clone(), request.clone())
+            .expect("generated untyped neighbor query");
+        let view = context
+            .query_map_by_str(query, request)
+            .expect("generated typed neighbor query");
         assert_eq!(view.snapshot().len(), neighbors.len());
 
         let diffs = Arc::new(AtomicUsize::new(0));
@@ -6825,14 +6879,16 @@ mod tests {
         assert!(context.set(&tag).is_ok());
         assert!(context.set(&article).is_ok());
 
-        let targets = context.query_map_by_str(
-            ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
-            Arc::new(crate::request::RequestContext::from_client(
-                Uuid::new_v4().to_string().into(),
-                "graph-related-reentrant-test".into(),
-                context.host_id,
-            )),
-        );
+        let targets = context
+            .query_map_by_str(
+                ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
+                Arc::new(crate::request::RequestContext::from_client(
+                    Uuid::new_v4().to_string().into(),
+                    "graph-related-reentrant-test".into(),
+                    context.host_id,
+                )),
+            )
+            .expect("generated reentrant related-entity query");
         let fired = Arc::new(AtomicBool::new(false));
         let deleted = Arc::new(AtomicBool::new(false));
         let fired_for_callback = fired.clone();
@@ -7116,33 +7172,37 @@ mod tests {
         .expect("many demand window fallback");
         assert!(demand_windowed.is_none());
 
-        let related = context.query_map_by_str(
-            ForwardIndexedAssignmentGraphTargetsFromMany::new(vec![
-                tags[0].id.clone(),
-                tags[1].id.clone(),
-            ]),
-            Arc::new(crate::request::RequestContext::from_client(
-                Uuid::new_v4().to_string().into(),
-                "graph-many-related-test".into(),
-                context.host_id,
-            )),
-        );
+        let related = context
+            .query_map_by_str(
+                ForwardIndexedAssignmentGraphTargetsFromMany::new(vec![
+                    tags[0].id.clone(),
+                    tags[1].id.clone(),
+                ]),
+                Arc::new(crate::request::RequestContext::from_client(
+                    Uuid::new_v4().to_string().into(),
+                    "graph-many-related-test".into(),
+                    context.host_id,
+                )),
+            )
+            .expect("generated many-endpoint related-entity query");
         assert_eq!(related.snapshot().len(), 2);
         assert!(related.get_value(&articles[0].id()).is_some());
         assert!(related.get_value(&articles[1].id()).is_some());
         assert!(related.get_value(&articles[2].id()).is_none());
 
-        let sources = context.query_map_by_str(
-            forward_indexed_edge::ForwardIndexedAssignmentGraphSourcesToMany::new(vec![
-                articles[0].id.clone(),
-                articles[1].id.clone(),
-            ]),
-            Arc::new(crate::request::RequestContext::from_client(
-                Uuid::new_v4().to_string().into(),
-                "graph-many-sources-test".into(),
-                context.host_id,
-            )),
-        );
+        let sources = context
+            .query_map_by_str(
+                forward_indexed_edge::ForwardIndexedAssignmentGraphSourcesToMany::new(vec![
+                    articles[0].id.clone(),
+                    articles[1].id.clone(),
+                ]),
+                Arc::new(crate::request::RequestContext::from_client(
+                    Uuid::new_v4().to_string().into(),
+                    "graph-many-sources-test".into(),
+                    context.host_id,
+                )),
+            )
+            .expect("generated many-endpoint source query");
         assert_eq!(sources.snapshot().len(), 1);
         assert!(sources.get_value(&tags[1].id()).is_some());
     }
@@ -7350,49 +7410,81 @@ mod tests {
                 context.host_id,
             ))
         };
-        let count_from = context.report(
-            ForwardIndexedAssignmentGraphCountFrom {
-                endpoint: tag.id.clone(),
-            },
-            request(),
+        let count_from = context
+            .report(
+                ForwardIndexedAssignmentGraphCountFrom {
+                    endpoint: tag.id.clone(),
+                },
+                request(),
+            )
+            .expect("generated count-from report");
+        let count_to = context
+            .report(
+                ForwardIndexedAssignmentGraphCountTo {
+                    endpoint: article.id.clone(),
+                },
+                request(),
+            )
+            .expect("generated count-to report");
+        let count_between = context
+            .report(
+                ForwardIndexedAssignmentGraphCountBetween {
+                    a: tag.id.clone(),
+                    b: article.id.clone(),
+                },
+                request(),
+            )
+            .expect("generated count-between report");
+        let exists_between = context
+            .report(
+                ForwardIndexedAssignmentGraphExistsBetween {
+                    a: tag.id.clone(),
+                    b: article.id.clone(),
+                },
+                request(),
+            )
+            .expect("generated exists-between report");
+        assert_eq!(
+            *count_from.read_current().expect("test report is current"),
+            1
         );
-        let count_to = context.report(
-            ForwardIndexedAssignmentGraphCountTo {
-                endpoint: article.id.clone(),
-            },
-            request(),
+        assert_eq!(*count_to.read_current().expect("test report is current"), 1);
+        assert_eq!(
+            *count_between
+                .read_current()
+                .expect("test report is current"),
+            1
         );
-        let count_between = context.report(
-            ForwardIndexedAssignmentGraphCountBetween {
-                a: tag.id.clone(),
-                b: article.id.clone(),
-            },
-            request(),
+        assert!(
+            *exists_between
+                .read_current()
+                .expect("test report is current")
         );
-        let exists_between = context.report(
-            ForwardIndexedAssignmentGraphExistsBetween {
-                a: tag.id.clone(),
-                b: article.id.clone(),
-            },
-            request(),
-        );
-        assert_eq!(*count_from.get(), 1);
-        assert_eq!(*count_to.get(), 1);
-        assert_eq!(*count_between.get(), 1);
-        assert!(*exists_between.get());
 
         let moved = ForwardIndexedAssignment {
             tag_id: other_tag.id.clone(),
             ..edge.clone()
         };
         assert!(context.set(&moved).is_ok());
-        assert_eq!(*count_from.get(), 0);
-        assert_eq!(*count_to.get(), 1);
-        assert_eq!(*count_between.get(), 0);
-        assert!(!*exists_between.get());
+        assert_eq!(
+            *count_from.read_current().expect("test report is current"),
+            0
+        );
+        assert_eq!(*count_to.read_current().expect("test report is current"), 1);
+        assert_eq!(
+            *count_between
+                .read_current()
+                .expect("test report is current"),
+            0
+        );
+        assert!(
+            !*exists_between
+                .read_current()
+                .expect("test report is current")
+        );
 
         assert!(context.del(&moved).is_ok());
-        assert_eq!(*count_to.get(), 0);
+        assert_eq!(*count_to.read_current().expect("test report is current"), 0);
     }
 
     #[test]
@@ -7415,19 +7507,27 @@ mod tests {
             "graph-traversal-report-test".into(),
             context.host_id,
         ));
-        let report = context.report(
-            ForwardIndexedAssignmentGraphTraverseFrom {
-                start: tag.id.clone(),
-                direction: Direction::Forward,
-                max_depth: 1,
-                max_nodes: 8,
-                max_edges: Some(8),
-                include_edges: false,
-                scope: None,
-            },
-            request,
+        let report = context
+            .report(
+                ForwardIndexedAssignmentGraphTraverseFrom {
+                    start: tag.id.clone(),
+                    direction: Direction::Forward,
+                    max_depth: 1,
+                    max_nodes: 8,
+                    max_edges: Some(8),
+                    include_edges: false,
+                    scope: None,
+                },
+                request,
+            )
+            .expect("generated traversal report");
+        assert!(
+            report
+                .read_current()
+                .expect("test report is current")
+                .nodes
+                .is_empty()
         );
-        assert!(report.get().nodes.is_empty());
 
         let edge = ForwardIndexedAssignment {
             tag_id: tag.id.clone(),
@@ -7435,12 +7535,32 @@ mod tests {
             id: ForwardIndexedAssignmentId::from("traversal-report-edge"),
         };
         assert!(context.set(&edge).is_ok());
-        assert_eq!(report.get().nodes, vec![EntityRef::from(&article)]);
-        assert!(report.get().edge_ids.is_empty());
-        assert!(!report.get().truncated);
+        assert_eq!(
+            report.read_current().expect("test report is current").nodes,
+            vec![EntityRef::from(&article)]
+        );
+        assert!(
+            report
+                .read_current()
+                .expect("test report is current")
+                .edge_ids
+                .is_empty()
+        );
+        assert!(
+            !report
+                .read_current()
+                .expect("test report is current")
+                .truncated
+        );
 
         assert!(context.del(&edge).is_ok());
-        assert!(report.get().nodes.is_empty());
+        assert!(
+            report
+                .read_current()
+                .expect("test report is current")
+                .nodes
+                .is_empty()
+        );
     }
 
     #[test]
@@ -7498,19 +7618,24 @@ mod tests {
             "graph-scoped-traversal-report-test".into(),
             context.host_id,
         ));
-        let report = context.report(
-            ScopedTagAssignmentGraphTraverseFrom {
-                start: tag.id,
-                direction: Direction::Forward,
-                max_depth: 1,
-                max_nodes: 8,
-                max_edges: Some(8),
-                include_edges: false,
-                scope: Some(serde_json::json!(scope.id)),
-            },
-            request,
+        let report = context
+            .report(
+                ScopedTagAssignmentGraphTraverseFrom {
+                    start: tag.id,
+                    direction: Direction::Forward,
+                    max_depth: 1,
+                    max_nodes: 8,
+                    max_edges: Some(8),
+                    include_edges: false,
+                    scope: Some(serde_json::json!(scope.id)),
+                },
+                request,
+            )
+            .expect("generated scoped traversal report");
+        assert_eq!(
+            report.read_current().expect("test report is current").nodes,
+            vec![EntityRef::from(&included)]
         );
-        assert_eq!(report.get().nodes, vec![EntityRef::from(&included)]);
     }
 
     #[test]

@@ -23,6 +23,8 @@ pub struct ViewWindowUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WrappedView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<std::sync::Arc<str>>,
     pub view: Value,
     pub view_id: Arc<str>,
     pub view_item_type: Arc<str>,
@@ -58,11 +60,12 @@ pub type ViewResponse = QueryResponse;
 /// # Errors
 ///
 /// Returns an error when the requested operation cannot be completed.
-pub fn wrap_view<V: ViewId + ViewItemType + Serialize + Clone>(
+pub fn wrap_view<V: ViewId + crate::view::ViewIdStatic + ViewItemType + Serialize + Clone>(
     tx: Arc<str>,
     view: &V,
 ) -> Result<WrappedView, serde_json::Error> {
     Ok(WrappedView {
+        service_id: V::SERVICE_ID.map(Into::into),
         view: value_with_tx(tx, view)?,
         view_id: view.view_id(),
         view_item_type: view.view_item_type(),

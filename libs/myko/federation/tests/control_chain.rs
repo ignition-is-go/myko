@@ -425,6 +425,101 @@ fn chosen_malformed_payload_is_remembered_by_head() -> TestResult {
 }
 
 #[test]
+fn refreshed_chain_matches_cold_replay_after_evidence_changes() -> TestResult {
+    let keys = keys(70);
+    let anchor = anchor(&keys)?;
+    let transition = ControlTransition::retain(CommandId::new(), ControlValue(b"first".to_vec()));
+    let (head, original) = choose(&anchor, &keys, &transition)?;
+    let previous = CertifiedControlChain::replay(&original, anchor.clone())?;
+    let mut reversed = original.clone();
+    reversed.reverse();
+    let missing = original.get(..2).ok_or("missing fixture quorum")?.to_vec();
+    let mut tampered = original.clone();
+    let Some(NodeEvent::FrameworkControl(FrameworkControlEvent::ControlVote(vote))) =
+        tampered.get_mut(2).map(|event| &mut event.event)
+    else {
+        return Err("missing fixture accept".into());
+    };
+    vote.signature[0] ^= 1;
+    let mut duplicate = original.clone();
+    duplicate.extend(records(vec![
+        original.get(1).ok_or("missing accept")?.event.clone(),
+    ]));
+    let sibling = ControlTransition::retain(CommandId::new(), ControlValue(b"second".to_vec()));
+    let (_, sibling_events) = choose(&anchor, &keys, &sibling)?;
+    let mut competing = original.clone();
+    competing.extend(sibling_events);
+    let mut conflicting_origin = original.clone();
+    conflicting_origin.extend(tampered.clone());
+    for history in [
+        original,
+        reversed,
+        missing,
+        tampered,
+        duplicate,
+        competing,
+        conflicting_origin,
+    ] {
+        match (
+            previous.refresh(&history),
+            CertifiedControlChain::replay(&history, anchor.clone()),
+        ) {
+            (Ok(refreshed), Ok(cold)) => {
+                if refreshed.retained_head() != cold.retained_head()
+                    || refreshed.transitions_to(head) != cold.transitions_to(head)
+                {
+                    return Err("certificate reuse changed cold replay semantics".into());
+                }
+            }
+            (Err(refreshed), Err(cold)) if refreshed == cold => {}
+            _ => return Err("certificate reuse changed replay failure semantics".into()),
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn noisy_accepts_preserve_valid_quorum_without_inventing_one() -> TestResult {
+    let keys = keys(60);
+    let anchor = anchor(&keys)?;
+    let transition = ControlTransition::retain(CommandId::new(), ControlValue(b"ok".to_vec()));
+    let (head, events) = choose(&anchor, &keys, &transition)?;
+    let Some(NodeEvent::FrameworkControl(FrameworkControlEvent::ControlVote(valid))) =
+        events.get(2).map(|event| &event.event)
+    else {
+        return Err("fixture did not contain its second accept".into());
+    };
+    let mut forged = valid.clone();
+    forged.signature[0] ^= 1;
+    let noise = records(vec![
+        NodeEvent::FrameworkControl(FrameworkControlEvent::ControlVote(forged)),
+        events.get(1).ok_or("missing first accept")?.event.clone(),
+    ]);
+    for noise_first in [false, true] {
+        for has_quorum in [false, true] {
+            let retained = if has_quorum {
+                events.as_slice()
+            } else {
+                events.get(..2).ok_or("missing partial quorum")?
+            };
+            let history = if noise_first {
+                noise.iter().chain(retained)
+            } else {
+                retained.iter().chain(&noise)
+            }
+            .cloned()
+            .collect::<Vec<_>>();
+            let chain = CertifiedControlChain::replay(&history, anchor.clone())?;
+            let expected = if has_quorum { head } else { anchor.genesis() };
+            if chain.retained_head()? != expected {
+                return Err("noisy accepts changed the valid quorum".into());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[test]
 fn valid_duplicate_proposal_dominates_malformed_duplicate() -> TestResult {
     let keys = keys(40);
     let anchor = anchor(&keys)?;

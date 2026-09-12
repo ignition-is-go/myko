@@ -1744,7 +1744,7 @@ impl MykoClient {
         let query_item_type = Q::query_item_type_static();
         let cache_key = format!(
             "query-list:{query_id}:{query_item_type}:{}:{:016x}",
-            std::any::type_name::<Q::Item>(),
+            std::any::type_name::<Q>(),
             supplied.query.cache_key_hash()
         );
         let _cache_gate = self
@@ -1777,6 +1777,7 @@ impl MykoClient {
         };
 
         let wrapped = WrappedQuery {
+            service_id: Q::SERVICE_ID.map(Into::into),
             query: query_value,
             query_id: query_id.clone(),
             query_item_type,
@@ -1941,9 +1942,11 @@ impl MykoClient {
         let report: ReportRequest<R> = report.into();
         let report_id: Arc<str> = R::report_id_static().into();
 
-        // NOTE(ts): Cache key is report_id + params hash (excludes tx).
-        // Identical report params share a single WS subscription.
-        let cache_key = format!("{}:{:016x}", report_id, report.report.cache_key_hash());
+        let cache_key = format!(
+            "{}:{report_id}:{:016x}",
+            std::any::type_name::<R>(),
+            report.report.cache_key_hash()
+        );
 
         // Cache hit: if the cell is still alive (has subscribers), reuse it.
         if let Some(existing) = self.inner.report_cache.get(&cache_key) {
@@ -1969,6 +1972,7 @@ impl MykoClient {
             return cell.lock();
         };
         let wrapped = WrappedReport {
+            service_id: R::SERVICE_ID.map(Into::into),
             report: report_value,
             report_id: report_id.to_string(),
         };
@@ -2060,7 +2064,7 @@ impl MykoClient {
         let view_id = supplied.view.view_id();
         let cache_key = format!(
             "view-list:{view_id}:{}:{:016x}",
-            std::any::type_name::<V::Item>(),
+            std::any::type_name::<V>(),
             supplied.view.cache_key_hash()
         );
         let _cache_gate = self

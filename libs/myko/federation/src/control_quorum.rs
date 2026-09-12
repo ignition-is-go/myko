@@ -29,6 +29,14 @@ pub struct ControlEpochId(pub [u8; 32]);
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ControlHead(pub [u8; 32]);
 
+/// Address of a control decision, not evidence that its realm or head is trusted.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ControlTarget {
+    pub realm: ScopeId,
+    pub head: ControlHead,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlSlot {
@@ -37,12 +45,19 @@ pub struct ControlSlot {
     pub predecessor: ControlHead,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static HEAD_HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl ControlSlot {
     /// Content-derived identifier, not proof that this value was chosen or authorized.
     ///
     /// # Errors
     /// Returns an error if the slot or value cannot be serialized.
     pub fn head_for(&self, value: &ControlValue) -> Result<ControlHead, serde_json::Error> {
+        #[cfg(test)]
+        HEAD_HASHES.with(|count| count.set(count.get().saturating_add(1)));
         let mut bytes = b"myko/control-head/v1\0".to_vec();
         serde_json::to_writer(&mut bytes, &(self, value))?;
         Ok(ControlHead(Sha256::digest(bytes).into()))

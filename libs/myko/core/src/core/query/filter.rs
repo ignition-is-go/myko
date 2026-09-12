@@ -188,13 +188,17 @@ fn canonical_in_values_partial<T: PartialOrd + PartialEq + Clone>(mut values: Ve
 // — and every other operator is a `$`-sigilled object. `$` can't collide with
 // a bare value: field/variant names are Rust identifiers, never `$`-prefixed.
 #[derive(Debug, Clone, PartialEq, Eq, TS)]
+#[cfg_attr(feature = "schema", derive(crate::schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(crate = "crate::schemars"))]
 // `bound` is required because `#[ts(type = …)]` on a generic drops the
 // auto-added `T: TS` bound but still emits it internally (ts-rs 11); it's a
 // no-op without the `codegen-ts` feature (myko's `TsNoop` claims the attr).
 #[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
 pub enum IdFilter<T> {
-    Eq(T),
+    #[cfg_attr(feature = "schema", schemars(rename = "$in"))]
     In(Vec<T>),
+    #[cfg_attr(feature = "schema", schemars(untagged))]
+    Eq(T),
 }
 
 impl<T: Clone> IdFilter<T> {
@@ -255,20 +259,44 @@ impl<T> From<Vec<T>> for IdFilter<T> {
 // ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, TS)]
+#[cfg_attr(feature = "schema", derive(crate::schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(crate = "crate::schemars"))]
 #[ts(
     type = "T | { \"$in\": Array<T> } | { \"$range\": { min?: T, max?: T } }",
     bound = "T: ts_rs::TS"
 )]
 pub enum NumericFilter<T> {
-    Eq(T),
+    #[cfg_attr(feature = "schema", schemars(rename = "$in"))]
     In(Vec<T>),
-    /// Inclusive bounds; both `None` is invalid (rejected at construction
-    /// time is future work — for now it degenerates to "match everything,"
-    /// same as an unset filter, since myko trusts callers not to write it).
-    Range {
-        min: Option<T>,
-        max: Option<T>,
-    },
+    /// Inclusive bounds. With neither bound, matches every value.
+    #[cfg_attr(
+        feature = "schema",
+        schemars(rename = "$range", schema_with = "numeric_range_schema::<T>")
+    )]
+    Range { min: Option<T>, max: Option<T> },
+    #[cfg_attr(feature = "schema", schemars(untagged))]
+    Eq(T),
+}
+
+#[cfg(feature = "schema")]
+fn numeric_range_schema<T: crate::schemars::JsonSchema>(
+    generator: &mut crate::schemars::SchemaGenerator,
+) -> crate::schemars::Schema {
+    // wire_serde accepts null/unknown bounds, but emits only present min/max values.
+    let emitting = generator.contract().is_serialize();
+    let bound = if emitting {
+        generator.subschema_for::<T>()
+    } else {
+        generator.subschema_for::<Option<T>>()
+    };
+    let mut schema = crate::schemars::json_schema!({
+        "type": "object",
+        "properties": {"min": bound, "max": bound}
+    });
+    if emitting {
+        schema.insert("additionalProperties".into(), false.into());
+    }
+    schema
 }
 
 impl<T: PartialOrd + PartialEq + Clone> CanonicalFilter for NumericFilter<T> {
@@ -352,15 +380,21 @@ impl_numeric_filterable!(
 // ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, TS)]
+#[cfg_attr(feature = "schema", derive(crate::schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(crate = "crate::schemars"))]
 #[ts(
     type = "string | { \"$in\": Array<string> } | { \"$contains\": string } | { \"$startsWith\": string }"
 )]
 pub enum StringFilter {
-    Eq(Arc<str>),
+    #[cfg_attr(feature = "schema", schemars(rename = "$in"))]
     In(Vec<Arc<str>>),
     /// Substring, case-sensitive.
+    #[cfg_attr(feature = "schema", schemars(rename = "$contains"))]
     Contains(Arc<str>),
+    #[cfg_attr(feature = "schema", schemars(rename = "$startsWith"))]
     StartsWith(Arc<str>),
+    #[cfg_attr(feature = "schema", schemars(untagged))]
+    Eq(Arc<str>),
 }
 
 impl CanonicalFilter for StringFilter {
@@ -491,10 +525,14 @@ impl CanonicalFilter for bool {
 // ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, TS)]
+#[cfg_attr(feature = "schema", derive(crate::schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(crate = "crate::schemars"))]
 #[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
 pub enum EqFilter<T> {
-    Eq(T),
+    #[cfg_attr(feature = "schema", schemars(rename = "$in"))]
     In(Vec<T>),
+    #[cfg_attr(feature = "schema", schemars(untagged))]
+    Eq(T),
 }
 
 impl<T: Ord + Clone> CanonicalFilter for EqFilter<T> {
@@ -607,6 +645,8 @@ pub fn in_matches<T: PartialEq>(values: &[T], value: &T) -> bool {
 // ─────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[cfg_attr(feature = "schema", derive(crate::schemars::JsonSchema))]
+#[cfg_attr(feature = "schema", schemars(crate = "crate::schemars"))]
 pub enum Unfilterable {}
 
 impl<T> Filter<T> for Unfilterable {

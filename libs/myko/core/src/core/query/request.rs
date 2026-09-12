@@ -10,7 +10,7 @@ use super::traits::{
     AnyQuery, QueryBuildArgs, QueryHandler, QueryId, QueryIdStatic, QueryItemType, QueryParams,
     QueryTestContext,
 };
-use crate::{TS, common::with_transaction::WithTransaction, core::item::AnyItem};
+use crate::{TS, common::with_transaction::WithTransaction};
 
 #[derive(Clone, Debug, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
@@ -75,6 +75,8 @@ impl<Q: QueryId> QueryId for QueryRequest<Q> {
 }
 
 impl<Q: QueryIdStatic> QueryIdStatic for QueryRequest<Q> {
+    const SERVICE_ID: Option<crate::ServiceTypeId> = Q::SERVICE_ID;
+
     fn query_id_static() -> Arc<str> {
         Q::query_id_static()
     }
@@ -102,7 +104,7 @@ impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequ
     }
     fn build_view(
         ctx: QueryBuildArgs<Self>,
-    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>> {
+    ) -> Result<Option<impl super::QueryBuildOutput>, String> {
         Q::build_view(QueryBuildArgs {
             query: Arc::new(ctx.query.query.clone()),
             query_context: ctx.query_context,
@@ -112,9 +114,14 @@ impl<Q: QueryHandler + Clone + Send + Sync + 'static> QueryHandler for QueryRequ
     }
 }
 
-impl<Q: QueryId + QueryItemType + Serialize + std::fmt::Debug + Send + Sync + 'static> AnyQuery
-    for QueryRequest<Q>
+impl<
+    Q: QueryId + QueryIdStatic + QueryItemType + Serialize + std::fmt::Debug + Send + Sync + 'static,
+> AnyQuery for QueryRequest<Q>
 {
+    fn service_id(&self) -> Option<crate::ServiceTypeId> {
+        Q::SERVICE_ID
+    }
+
     fn query_item_type(&self) -> Arc<str> {
         QueryItemType::query_item_type(self)
     }

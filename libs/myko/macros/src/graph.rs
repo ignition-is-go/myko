@@ -194,23 +194,23 @@ fn graph_related_query_tokens(
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::query::QueryBuildArgs<Self>,
-            ) -> Option<impl #krate::prelude::MapQuery<
+            ) -> Result<Option<impl #krate::prelude::MapQuery<
                 Key = std::sync::Arc<str>,
                 Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-            >>
+            >>, String>
             where
                 Self: Send + Sync + 'static,
             {
                 let endpoint = <#source_endpoint as #krate::graph::EndpointSpec>::erase(
                     &ctx.query.endpoint,
-                ).ok()?;
+                ).map_err(|error| error.to_string())?;
                 ctx.query_context
                     .graph_related_at::<#edge_type, #target_endpoint>(
                         #edge_position,
                         &endpoint,
                         #related_position,
                     )
-                    .ok()
+                    .map(Some)
             }
         }
 
@@ -255,24 +255,24 @@ fn graph_related_query_tokens(
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::query::QueryBuildArgs<Self>,
-            ) -> Option<impl #krate::prelude::MapQuery<
+            ) -> Result<Option<impl #krate::prelude::MapQuery<
                 Key = std::sync::Arc<str>,
                 Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-            >>
+            >>, String>
             where
                 Self: Send + Sync + 'static,
             {
                 let endpoints = ctx.query.endpoints.iter()
                     .map(<#source_endpoint as #krate::graph::EndpointSpec>::erase)
                     .collect::<Result<Vec<_>, _>>()
-                    .ok()?;
+                    .map_err(|error| error.to_string())?;
                 ctx.query_context
                     .graph_related_many_at::<#edge_type, #target_endpoint>(
                         #edge_position,
                         &endpoints,
                         #related_position,
                     )
-                    .ok()
+                    .map(Some)
             }
         }
 
@@ -340,19 +340,19 @@ fn graph_neighbor_query_tokens(
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::query::QueryBuildArgs<Self>,
-            ) -> Option<impl #krate::prelude::MapQuery<
+            ) -> Result<Option<impl #krate::prelude::MapQuery<
                 Key = std::sync::Arc<str>,
                 Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-            >>
+            >>, String>
             where
                 Self: Send + Sync + 'static,
             {
                 let endpoint = <#endpoint as #krate::graph::EndpointSpec>::erase(
                     &ctx.query.endpoint,
-                ).ok()?;
+                ).map_err(|error| error.to_string())?;
                 ctx.query_context
                     .graph_neighbors_at::<#edge_type, #endpoint>(&endpoint)
-                    .ok()
+                    .map(Some)
             }
         }
 
@@ -394,15 +394,12 @@ fn graph_aggregate_tokens(
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<
-                std::sync::Arc<Self::Output>,
-                #krate::prelude::Definite,
-            > {
+            ) -> Result<impl #krate::report::ReportBuildOutput<Self::Output>, String> {
                 use #krate::prelude::{GraphQuerying, MapExt};
-                ctx.edges::<#edge_type>()
+                Ok(ctx.edges::<#edge_type>()
                     .watch_count_from(&self.endpoint)
-                    .unwrap_or_else(|_| #krate::hyphae::Cell::new(0).lock())
-                    .map(|count| std::sync::Arc::new(*count))
+                    .map_err(|error| error.to_string())?
+                    .map(|count| std::sync::Arc::new(*count)))
             }
         }
 
@@ -419,15 +416,12 @@ fn graph_aggregate_tokens(
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<
-                std::sync::Arc<Self::Output>,
-                #krate::prelude::Definite,
-            > {
+            ) -> Result<impl #krate::report::ReportBuildOutput<Self::Output>, String> {
                 use #krate::prelude::{GraphQuerying, MapExt};
-                ctx.edges::<#edge_type>()
+                Ok(ctx.edges::<#edge_type>()
                     .watch_count_to(&self.endpoint)
-                    .unwrap_or_else(|_| #krate::hyphae::Cell::new(0).lock())
-                    .map(|count| std::sync::Arc::new(*count))
+                    .map_err(|error| error.to_string())?
+                    .map(|count| std::sync::Arc::new(*count)))
             }
         }
 
@@ -445,15 +439,12 @@ fn graph_aggregate_tokens(
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<
-                std::sync::Arc<Self::Output>,
-                #krate::prelude::Definite,
-            > {
+            ) -> Result<impl #krate::report::ReportBuildOutput<Self::Output>, String> {
                 use #krate::prelude::{GraphQuerying, MapExt};
-                ctx.edges::<#edge_type>()
+                Ok(ctx.edges::<#edge_type>()
                     .watch_count_between(&self.a, &self.b)
-                    .unwrap_or_else(|_| #krate::hyphae::Cell::new(0).lock())
-                    .map(|count| std::sync::Arc::new(*count))
+                    .map_err(|error| error.to_string())?
+                    .map(|count| std::sync::Arc::new(*count)))
             }
         }
 
@@ -471,15 +462,12 @@ fn graph_aggregate_tokens(
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<
-                std::sync::Arc<Self::Output>,
-                #krate::prelude::Definite,
-            > {
+            ) -> Result<impl #krate::report::ReportBuildOutput<Self::Output>, String> {
                 use #krate::prelude::{GraphQuerying, MapExt};
-                ctx.edges::<#edge_type>()
+                Ok(ctx.edges::<#edge_type>()
                     .watch_count_between(&self.a, &self.b)
-                    .unwrap_or_else(|_| #krate::hyphae::Cell::new(0).lock())
-                    .map(|count| std::sync::Arc::new(*count != 0))
+                    .map_err(|error| error.to_string())?
+                    .map(|count| std::sync::Arc::new(*count != 0)))
             }
         }
 
@@ -546,10 +534,7 @@ fn graph_traversal_tokens(
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<
-                std::sync::Arc<Self::Output>,
-                #krate::prelude::Definite,
-            > {
+            ) -> Result<impl #krate::report::ReportBuildOutput<Self::Output>, String> {
                 use #krate::prelude::{GraphQuerying, MapExt, RegistryScoped};
                 let start = self.start.clone();
                 let direction = self.direction;
@@ -558,7 +543,7 @@ fn graph_traversal_tokens(
                 let max_edges = self.max_edges;
                 let include_edges = self.include_edges;
                 let scope = self.scope.clone();
-                ctx.registry()
+                Ok(ctx.registry()
                     .get_or_create(<#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC)
                     .diffs()
                     .map(move |_| {
@@ -584,7 +569,7 @@ fn graph_traversal_tokens(
                             truncated: true,
                             ..#krate::graph::TraversalResult::default()
                         }))
-                    })
+                    }))
             }
         }
 
@@ -607,10 +592,7 @@ fn graph_traversal_tokens(
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<
-                std::sync::Arc<Self::Output>,
-                #krate::prelude::Definite,
-            > {
+            ) -> Result<impl #krate::report::ReportBuildOutput<Self::Output>, String> {
                 use #krate::prelude::{GraphQuerying, MapExt, RegistryScoped};
                 let start = self.start.clone();
                 let direction = self.direction;
@@ -619,7 +601,7 @@ fn graph_traversal_tokens(
                 let max_edges = self.max_edges;
                 let include_edges = self.include_edges;
                 let scope = self.scope.clone();
-                ctx.registry()
+                Ok(ctx.registry()
                     .get_or_create(<#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC)
                     .diffs()
                     .map(move |_| {
@@ -645,7 +627,7 @@ fn graph_traversal_tokens(
                             truncated: true,
                             ..#krate::graph::TraversalResult::default()
                         }))
-                    })
+                    }))
             }
         }
 
@@ -1073,18 +1055,18 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
                     let endpoint =
-                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).ok()?;
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).map_err(|error| error.to_string())?;
                     ctx.query_context
                         .graph_watch_at::<#edge_type>(#krate::graph::EndPosition::A, &endpoint)
-                        .ok()
+                        .map(Some)
                 }
             }
 
@@ -1134,10 +1116,10 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
@@ -1146,11 +1128,11 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     );
                     let id = std::sync::Arc::<str>::from(ctx.query.id.clone());
                     let source = #krate::query::build_ids_source_map(&store, &[id]);
-                    Some(#krate::query::filter_query_over_source::<Self>(
+                    Ok(Some(#krate::query::filter_query_over_source::<Self>(
                         source,
                         ctx.query.clone(),
                         ctx.query_context.query_context.clone(),
-                    ))
+                    )))
                 }
             }
 
@@ -1203,15 +1185,15 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
                     let expected =
-                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).ok()?;
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).map_err(|error| error.to_string())?;
                     let store = ctx.query_context.registry().get_or_create(
                         <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
                     );
@@ -1221,13 +1203,13 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     ids.sort_unstable();
                     ids.dedup();
                     let source = #krate::query::build_ids_source_map(&store, &ids);
-                    Some(#krate::query::filter_typed_source::<#edge_type, _>(
+                    Ok(Some(#krate::query::filter_typed_source::<#edge_type, _>(
                         source,
                         move |item| {
                             <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&item.ends())
                                 .is_ok_and(|actual| actual.a == expected)
                         },
-                    ))
+                    )))
                 }
             }
 
@@ -1286,20 +1268,20 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
                     let endpoints = ctx.query.endpoints.iter()
                         .map(<<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase)
                         .collect::<Result<Vec<_>, _>>()
-                        .ok()?;
+                        .map_err(|error| error.to_string())?;
                     ctx.query_context
                         .graph_watch_many_at::<#edge_type>(#krate::graph::EndPosition::A, &endpoints)
-                        .ok()
+                        .map(Some)
                 }
             }
 
@@ -1353,18 +1335,18 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
                     let endpoint =
-                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).ok()?;
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).map_err(|error| error.to_string())?;
                     ctx.query_context
                         .graph_watch_at::<#edge_type>(#krate::graph::EndPosition::B, &endpoint)
-                        .ok()
+                        .map(Some)
                 }
             }
 
@@ -1414,10 +1396,10 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
@@ -1426,11 +1408,11 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     );
                     let id = std::sync::Arc::<str>::from(ctx.query.id.clone());
                     let source = #krate::query::build_ids_source_map(&store, &[id]);
-                    Some(#krate::query::filter_query_over_source::<Self>(
+                    Ok(Some(#krate::query::filter_query_over_source::<Self>(
                         source,
                         ctx.query.clone(),
                         ctx.query_context.query_context.clone(),
-                    ))
+                    )))
                 }
             }
 
@@ -1483,15 +1465,15 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
                     let expected =
-                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).ok()?;
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.endpoint).map_err(|error| error.to_string())?;
                     let store = ctx.query_context.registry().get_or_create(
                         <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
                     );
@@ -1501,13 +1483,13 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     ids.sort_unstable();
                     ids.dedup();
                     let source = #krate::query::build_ids_source_map(&store, &ids);
-                    Some(#krate::query::filter_typed_source::<#edge_type, _>(
+                    Ok(Some(#krate::query::filter_typed_source::<#edge_type, _>(
                         source,
                         move |item| {
                             <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&item.ends())
                                 .is_ok_and(|actual| actual.b == expected)
                         },
-                    ))
+                    )))
                 }
             }
 
@@ -1566,20 +1548,20 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
                     let endpoints = ctx.query.endpoints.iter()
                         .map(<<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase)
                         .collect::<Result<Vec<_>, _>>()
-                        .ok()?;
+                        .map_err(|error| error.to_string())?;
                     ctx.query_context
                         .graph_watch_many_at::<#edge_type>(#krate::graph::EndPosition::B, &endpoints)
-                        .ok()
+                        .map(Some)
                 }
             }
 
@@ -1647,18 +1629,18 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
                     let a =
-                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.a).ok()?;
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.a).map_err(|error| error.to_string())?;
                     let b =
-                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.b).ok()?;
-                    ctx.query_context.graph_watch_between::<#edge_type>(&a, &b).ok()
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.b).map_err(|error| error.to_string())?;
+                    ctx.query_context.graph_watch_between::<#edge_type>(&a, &b).map(Some)
                 }
             }
 
@@ -1720,10 +1702,10 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
@@ -1732,11 +1714,11 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     );
                     let id = std::sync::Arc::<str>::from(ctx.query.id.clone());
                     let source = #krate::query::build_ids_source_map(&store, &[id]);
-                    Some(#krate::query::filter_query_over_source::<Self>(
+                    Ok(Some(#krate::query::filter_query_over_source::<Self>(
                         source,
                         ctx.query.clone(),
                         ctx.query_context.query_context.clone(),
-                    ))
+                    )))
                 }
             }
 
@@ -1801,17 +1783,17 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                 #[cfg(not(target_arch = "wasm32"))]
                 fn build_view(
                     ctx: #krate::query::QueryBuildArgs<Self>,
-                ) -> Option<impl #krate::prelude::MapQuery<
+                ) -> Result<Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
                     Value = std::sync::Arc<dyn #krate::item::AnyItem>,
-                >>
+                >>, String>
                 where
                     Self: Send + Sync + 'static,
                 {
                     let a =
-                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.a).ok()?;
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::A as #krate::graph::EndpointSpec>::erase(&ctx.query.a).map_err(|error| error.to_string())?;
                     let b =
-                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.b).ok()?;
+                        <<<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::TypedEdgeEnds>::B as #krate::graph::EndpointSpec>::erase(&ctx.query.b).map_err(|error| error.to_string())?;
                     let store = ctx.query_context.registry().get_or_create(
                         <#edge_type as #krate::item::Eventable>::ENTITY_NAME_STATIC,
                     );
@@ -1821,7 +1803,7 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                     ids.sort_unstable();
                     ids.dedup();
                     let source = #krate::query::build_ids_source_map(&store, &ids);
-                    Some(#krate::query::filter_typed_source::<#edge_type, _>(
+                    Ok(Some(#krate::query::filter_typed_source::<#edge_type, _>(
                         source,
                         move |item| {
                             <<#edge_type as #krate::graph::GraphEdge>::Ends as #krate::graph::EdgeEnds>::erase(&item.ends())
@@ -1833,7 +1815,7 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
                                             && actual.b == a)
                                 })
                         },
-                    ))
+                    )))
                 }
             }
 

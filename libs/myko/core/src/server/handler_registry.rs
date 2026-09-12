@@ -5,6 +5,11 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
+#[cfg(not(target_arch = "wasm32"))]
+mod contract;
+mod scoped;
+use scoped::ScopedHandlers;
+
 use crate::{
     ServiceTypeId,
     command::CommandHandlerRegistration,
@@ -21,6 +26,8 @@ use crate::query::QueryAuthorityFactory;
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug, Clone, Default)]
 pub struct HandlerAuthority {
+    /// Filled from the activated registration by `HandlerRegistry::handler_authority`.
+    pub service_id: Option<ServiceTypeId>,
     pub source_node: Option<myko_federation::NodeId>,
     pub scope_id: Option<myko_federation::ScopeId>,
     pub resource_claims: Vec<myko_federation::ResourceClaim>,
@@ -61,6 +68,9 @@ fn format_str_list(items: &[&str]) -> String {
 
 /// Stored query registration data.
 pub struct StoredQueryData {
+    #[cfg(feature = "schema")]
+    pub payload_schema: Option<fn() -> crate::schema::HandlerPayloadSchema>,
+    pub service_id: Option<ServiceTypeId>,
     pub query_id: Arc<str>,
     pub query_item_type: Arc<str>,
     pub parse: QueryParseFn,
@@ -72,6 +82,9 @@ pub struct StoredQueryData {
 
 /// Stored view registration data.
 pub struct StoredViewData {
+    #[cfg(feature = "schema")]
+    pub payload_schema: Option<fn() -> crate::schema::HandlerPayloadSchema>,
+    pub service_id: Option<ServiceTypeId>,
     pub view_id: Arc<str>,
     pub view_item_type: Arc<str>,
     pub parse: ViewParseFn,
@@ -82,7 +95,11 @@ pub struct StoredViewData {
 
 /// Stored report registration data.
 pub struct StoredReportData {
+    #[cfg(feature = "schema")]
+    pub payload_schema: Option<fn() -> crate::schema::HandlerPayloadSchema>,
+    pub service_id: Option<ServiceTypeId>,
     pub report_id: Arc<str>,
+    pub output_type: &'static str,
     pub parse: ReportParseFn,
     pub cell_factory: ReportCellFactory,
     #[cfg(not(target_arch = "wasm32"))]
@@ -99,13 +116,13 @@ pub struct HandlerRegistry {
     /// Optional ingest buffering policy by entity type name
     item_buffer_policies: AMap<Arc<str>, IngestBufferPolicy>,
     /// Query data by query id
-    query_data: AMap<Arc<str>, StoredQueryData>,
+    query_data: ScopedHandlers<StoredQueryData>,
     /// View data by view id
-    view_data: AMap<Arc<str>, StoredViewData>,
+    view_data: ScopedHandlers<StoredViewData>,
     /// Report data by report id
-    report_data: AMap<Arc<str>, StoredReportData>,
+    report_data: ScopedHandlers<StoredReportData>,
     /// Command handlers admitted by the activated service set.
-    command_ids: Vec<&'static str>,
+    commands: Vec<&'static CommandHandlerRegistration>,
 }
 
 impl HandlerRegistry {
@@ -127,9 +144,9 @@ impl HandlerRegistry {
     fn collect(services: Option<&BTreeSet<ServiceTypeId>>) -> Self {
         let mut item_parsers = AMap::default();
         let mut item_buffer_policies = AMap::default();
-        let mut query_data = AMap::default();
-        let mut view_data = AMap::default();
-        let mut report_data = AMap::default();
+        let mut query_data = ScopedHandlers::default();
+        let mut view_data = ScopedHandlers::default();
+        let mut report_data = ScopedHandlers::default();
 
         // Collect item registrations
         for registration in inventory::iter::<ItemRegistration> {
@@ -164,6 +181,9 @@ impl HandlerRegistry {
             }
             tracing::trace!("Registered query: {}", registration.query_id);
             let data = StoredQueryData {
+                #[cfg(feature = "schema")]
+                payload_schema: registration.payload_schema,
+                service_id: registration.service_id,
                 query_id: registration.query_id.into(),
                 query_item_type: registration.query_item_type.into(),
                 parse: registration.parse,
@@ -171,7 +191,7 @@ impl HandlerRegistry {
                 window_cell_factory: Some(registration.window_cell_factory),
                 authority: registration.authority,
             };
-            query_data.insert(data.query_id.clone(), data);
+            query_data.insert(data.service_id, data.query_id.clone(), data);
         }
 
         // Graph operations use the ordinary query wire/runtime but render
@@ -179,6 +199,9 @@ impl HandlerRegistry {
         for registration in inventory::iter::<GraphQueryRegistration> {
             tracing::trace!("Registered graph query: {}", registration.query_id);
             let data = StoredQueryData {
+                #[cfg(feature = "schema")]
+                payload_schema: None,
+                service_id: None,
                 query_id: registration.query_id.into(),
                 query_item_type: registration.edge_type.into(),
                 parse: registration.parse,
@@ -186,7 +209,7 @@ impl HandlerRegistry {
                 window_cell_factory: Some(registration.window_cell_factory),
                 authority: default_query_authority,
             };
-            query_data.insert(data.query_id.clone(), data);
+            query_data.insert(data.service_id, data.query_id.clone(), data);
         }
 
         // Collect view registrations
@@ -200,6 +223,9 @@ impl HandlerRegistry {
             }
             tracing::trace!("Registered view: {}", registration.view_id);
             let data = StoredViewData {
+                #[cfg(feature = "schema")]
+                payload_schema: registration.payload_schema,
+                service_id: registration.service_id,
                 view_id: registration.view_id.into(),
                 view_item_type: registration.view_item_type.into(),
                 parse: registration.parse,
@@ -207,7 +233,7 @@ impl HandlerRegistry {
                 #[cfg(not(target_arch = "wasm32"))]
                 authority: registration.authority,
             };
-            view_data.insert(data.view_id.clone(), data);
+            view_data.insert(data.service_id, data.view_id.clone(), data);
         }
 
         // Collect report registrations
@@ -221,17 +247,20 @@ impl HandlerRegistry {
             }
             tracing::trace!("Registered report: {}", registration.report_id);
             let data = StoredReportData {
+                output_type: registration.output_type,
+                #[cfg(feature = "schema")]
+                payload_schema: registration.payload_schema,
+                service_id: registration.service_id,
                 report_id: registration.report_id.into(),
                 parse: registration.parse,
                 cell_factory: registration.cell_factory,
                 #[cfg(not(target_arch = "wasm32"))]
                 authority: registration.authority,
             };
-            report_data.insert(data.report_id.clone(), data);
+            report_data.insert(data.service_id, data.report_id.clone(), data);
         }
 
-        // Collect command handler names for logging
-        let mut command_ids: Vec<&str> = inventory::iter::<CommandHandlerRegistration>()
+        let mut commands: Vec<_> = inventory::iter::<CommandHandlerRegistration>()
             .filter(|registration| {
                 !services.is_some_and(|services| {
                     registration
@@ -239,20 +268,23 @@ impl HandlerRegistry {
                         .is_some_and(|service| !services.contains(&service))
                 })
             })
-            .map(|r| r.command_id)
             .collect();
-        command_ids.sort_unstable();
+        commands.sort_by_key(|registration| registration.command_id);
+        let command_ids: Vec<_> = commands
+            .iter()
+            .map(|registration| registration.command_id)
+            .collect();
 
         tracing::trace!(
             "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Views ({}):\n    {}\n  Reports ({}):\n    {}\n  Commands ({}):\n    {}",
             item_parsers.len(),
             format_list(item_parsers.keys()),
             query_data.len(),
-            format_list(query_data.keys()),
+            format_list(query_data.values().map(|data| &data.query_id)),
             view_data.len(),
-            format_list(view_data.keys()),
+            format_list(view_data.values().map(|data| &data.view_id)),
             report_data.len(),
-            format_list(report_data.keys()),
+            format_list(report_data.values().map(|data| &data.report_id)),
             command_ids.len(),
             format_str_list(&command_ids),
         );
@@ -263,7 +295,7 @@ impl HandlerRegistry {
             query_data,
             view_data,
             report_data,
-            command_ids,
+            commands,
         }
     }
 
@@ -284,8 +316,8 @@ impl HandlerRegistry {
 
     /// Get query registration data by query id.
     #[must_use]
-    pub fn query(&self, query_id: &str) -> Option<&StoredQueryData> {
-        self.query_data.get(query_id)
+    pub fn query(&self, service: Option<&str>, query_id: &str) -> Option<&StoredQueryData> {
+        self.query_data.get(service, query_id)
     }
 
     /// Parse and open one durable query through the retained registration.
@@ -297,16 +329,16 @@ impl HandlerRegistry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_federated_query(
         &self,
+        service: Option<&str>,
         query_id: &str,
         mut params: serde_json::Value,
         request: Arc<crate::request::RequestContext>,
         server: Arc<crate::server::MykoServerContext>,
         source: crate::server::federated_source::FederatedRequest,
-    ) -> Result<crate::query::FilteredCellMap, String> {
-        let registration = self
-            .query_data
-            .get(query_id)
-            .ok_or_else(|| format!("unknown query handler {query_id}"))?;
+    ) -> Result<crate::query::QueryValue, String> {
+        let registration = self.query_data.get(service, query_id).ok_or_else(|| {
+            format!("query handler {query_id} is not registered for the requested service")
+        })?;
         let object = params
             .as_object_mut()
             .ok_or_else(|| "query parameters must be an object".to_owned())?;
@@ -326,8 +358,8 @@ impl HandlerRegistry {
 
     /// Get report registration data by report id.
     #[must_use]
-    pub fn report(&self, report_id: &str) -> Option<&StoredReportData> {
-        self.report_data.get(report_id)
+    pub fn report(&self, service: Option<&str>, report_id: &str) -> Option<&StoredReportData> {
+        self.report_data.get(service, report_id)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -340,36 +372,49 @@ impl HandlerRegistry {
     pub fn handler_authority(
         &self,
         kind: myko_federation::HandlerKind,
+        service: Option<&str>,
         handler_id: &str,
         params: serde_json::Value,
         local_node: myko_federation::NodeId,
     ) -> Result<HandlerAuthority, String> {
-        match kind {
+        let (service_id, mut authority) = match kind {
             myko_federation::HandlerKind::Query => {
-                let registration = self
-                    .query_data
-                    .get(handler_id)
-                    .ok_or_else(|| format!("unknown query handler {handler_id}"))?;
-                (registration.authority)(params, local_node)
+                let registration = self.query_data.get(service, handler_id).ok_or_else(|| {
+                    format!(
+                        "query handler {handler_id} is not registered for the requested service"
+                    )
+                })?;
+                (
+                    registration.service_id,
+                    (registration.authority)(params, local_node)?,
+                )
             }
             myko_federation::HandlerKind::View => {
-                let registration = self
-                    .view_data
-                    .get(handler_id)
-                    .ok_or_else(|| format!("unknown view handler {handler_id}"))?;
-                (registration.authority)(params, local_node)
+                let registration = self.view_data.get(service, handler_id).ok_or_else(|| {
+                    format!("view handler {handler_id} is not registered for the requested service")
+                })?;
+                (
+                    registration.service_id,
+                    (registration.authority)(params, local_node)?,
+                )
             }
             myko_federation::HandlerKind::Report => {
-                let registration = self
-                    .report_data
-                    .get(handler_id)
-                    .ok_or_else(|| format!("unknown report handler {handler_id}"))?;
-                (registration.authority)(params, local_node)
+                let registration = self.report_data.get(service, handler_id).ok_or_else(|| {
+                    format!(
+                        "report handler {handler_id} is not registered for the requested service"
+                    )
+                })?;
+                (
+                    registration.service_id,
+                    (registration.authority)(params, local_node)?,
+                )
             }
             myko_federation::HandlerKind::Command => {
-                Err("commands are admitted through SubmitCommand".to_owned())
+                return Err("commands are admitted through SubmitCommand".to_owned());
             }
-        }
+        };
+        authority.service_id = service_id;
+        Ok(authority)
     }
 
     /// Parse and open one durable report through the retained registration.
@@ -381,17 +426,16 @@ impl HandlerRegistry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_federated_report(
         &self,
+        service: Option<&str>,
         report_id: &str,
         mut params: serde_json::Value,
         request: Arc<crate::request::RequestContext>,
         server: Arc<crate::server::MykoServerContext>,
         source: crate::server::federated_source::FederatedRequest,
-    ) -> Result<hyphae::Cell<Arc<dyn crate::report::AnyOutput>, hyphae::CellImmutable>, String>
-    {
-        let registration = self
-            .report_data
-            .get(report_id)
-            .ok_or_else(|| format!("unknown report handler {report_id}"))?;
+    ) -> Result<crate::report::ReportValue<dyn crate::report::AnyOutput>, String> {
+        let registration = self.report_data.get(service, report_id).ok_or_else(|| {
+            format!("report handler {report_id} is not registered for the requested service")
+        })?;
         let object = params
             .as_object_mut()
             .ok_or_else(|| "report parameters must be an object".to_owned())?;
@@ -405,8 +449,8 @@ impl HandlerRegistry {
 
     /// Get view registration data by view id.
     #[must_use]
-    pub fn view(&self, view_id: &str) -> Option<&StoredViewData> {
-        self.view_data.get(view_id)
+    pub fn view(&self, service: Option<&str>, view_id: &str) -> Option<&StoredViewData> {
+        self.view_data.get(service, view_id)
     }
 
     /// Parse and open one durable view through the retained registration.
@@ -418,16 +462,16 @@ impl HandlerRegistry {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn open_federated_view(
         &self,
+        service: Option<&str>,
         view_id: &str,
         mut params: serde_json::Value,
         request: Arc<crate::request::RequestContext>,
         server: Arc<crate::server::MykoServerContext>,
         source: crate::server::federated_source::FederatedRequest,
     ) -> Result<RegisteredViewOutput, String> {
-        let registration = self
-            .view_data
-            .get(view_id)
-            .ok_or_else(|| format!("unknown view handler {view_id}"))?;
+        let registration = self.view_data.get(service, view_id).ok_or_else(|| {
+            format!("view handler {view_id} is not registered for the requested service")
+        })?;
         let object = params
             .as_object_mut()
             .ok_or_else(|| "view parameters must be an object".to_owned())?;
@@ -450,24 +494,31 @@ impl HandlerRegistry {
         self.item_parsers.keys()
     }
 
-    /// Get all registered query ids.
-    pub fn query_ids(&self) -> impl Iterator<Item = &Arc<str>> {
-        self.query_data.keys()
+    /// Iterate retained queries without discarding their service namespaces.
+    pub fn queries(&self) -> impl Iterator<Item = &StoredQueryData> {
+        self.query_data.values()
     }
 
-    /// Get all registered report ids.
-    pub fn report_ids(&self) -> impl Iterator<Item = &Arc<str>> {
-        self.report_data.keys()
+    /// Iterate retained reports without discarding their service namespaces.
+    pub fn reports(&self) -> impl Iterator<Item = &StoredReportData> {
+        self.report_data.values()
     }
 
-    /// Get all registered view ids.
-    pub fn view_ids(&self) -> impl Iterator<Item = &Arc<str>> {
-        self.view_data.keys()
+    /// Iterate retained views without discarding their service namespaces.
+    pub fn views(&self) -> impl Iterator<Item = &StoredViewData> {
+        self.view_data.values()
     }
 
     /// Return command IDs admitted by the activated service set.
     pub fn command_ids(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.command_ids.iter().copied()
+        self.commands
+            .iter()
+            .map(|registration| registration.command_id)
+    }
+
+    /// Retained command registrations used for metadata and application execution.
+    pub fn commands(&self) -> impl Iterator<Item = &'static CommandHandlerRegistration> + '_ {
+        self.commands.iter().copied()
     }
 }
 

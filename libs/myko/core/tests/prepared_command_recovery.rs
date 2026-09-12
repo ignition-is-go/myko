@@ -9,6 +9,8 @@ use std::{
 };
 
 pub use myko::prelude;
+#[cfg(feature = "schema")]
+pub use myko::schemars;
 pub use myko::*;
 
 use hyphae::{Cell, CellImmutable, CellMutable, Mutable as _};

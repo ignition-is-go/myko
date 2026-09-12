@@ -2,8 +2,6 @@
 
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable};
-
 use super::{
     cell::FilteredCellMap, registration::QueryFactory, request::QueryRequest, traits::AnyQuery,
 };
@@ -89,7 +87,7 @@ impl QueryBuildContext {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    pub fn query<Q>(&self, query: Q) -> Result<FilteredCellMap, String>
+    pub fn query<Q>(&self, query: Q) -> Result<super::QueryValue, String>
     where
         Q: QueryFactory + Clone,
         Q::Item: crate::core::item::Eventable
@@ -110,12 +108,12 @@ impl QueryBuildContext {
                     scope_id: <Q as crate::query::QueryHandler>::scope_id(&query, local_node),
                 })
             });
-            return Ok(server_ctx.query_map_untyped_routed(
+            return server_ctx.query_value_routed(
                 query,
                 self.query_context.req.clone(),
                 #[cfg(not(target_arch = "wasm32"))]
                 federated,
-            ));
+            );
         }
 
         // Fallback for test/wasm contexts that don't carry a MykoServerContext.
@@ -140,7 +138,7 @@ impl QueryBuildContext {
     pub fn report<R>(
         &self,
         report: R,
-    ) -> Result<Cell<Arc<<R as ReportOutputType>::Output>, CellImmutable>, String>
+    ) -> Result<crate::report::ReportValue<<R as ReportOutputType>::Output>, String>
     where
         R: ReportFactory + ReportHandler<Output = <R as ReportOutputType>::Output> + Clone,
         <R as ReportOutputType>::Output:
@@ -158,12 +156,12 @@ impl QueryBuildContext {
             })
         });
 
-        Ok(server_ctx.report_routed(
+        server_ctx.report_routed(
             report,
             self.query_context.req.clone(),
             #[cfg(not(target_arch = "wasm32"))]
             federated,
-        ))
+        )
     }
 
     #[must_use]
@@ -182,7 +180,10 @@ impl QueryBuildContext {
         &self,
         source_node: Option<myko_federation::NodeId>,
         scope_id: Option<myko_federation::ScopeId>,
-    ) -> Result<FilteredCellMap, String>
+    ) -> Result<
+        myko_federation::LiveSubscription<crate::server::federated_source::ItemSnapshot<T>>,
+        String,
+    >
     where
         T: crate::MykoItem + crate::item::Eventable + crate::item::AnyItem,
     {
@@ -191,7 +192,7 @@ impl QueryBuildContext {
             .and_then(|server| server.federated())
             .ok_or_else(|| "query context has no federation source runtime".to_owned())?
             .items::<T>(source_node, scope_id)
-            .map(|source| source.rows())
+            .and_then(|source| source.snapshots::<T>())
     }
 
     /// Open an exact scope or subtree across every authoritative source while

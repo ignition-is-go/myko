@@ -385,6 +385,7 @@ pub struct RevokeAuthorityFact {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum RevocationKind {
     Grant,
     Delegation,

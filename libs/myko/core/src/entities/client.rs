@@ -41,18 +41,22 @@ pub struct ConnectedClients {}
 
 impl ViewHandler for ConnectedClients {
     #[cfg(not(target_arch = "wasm32"))]
-    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl crate::view::ViewBuildOutput<Item = Self::Item>
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> Result<impl crate::view::ViewBuildOutput<Item = Self::Item>, String>
     where
         Self: Send + Sync + 'static,
     {
-        crate::view::LocalView::new({
-            ctx.view_context
-                .query_map_by_str(GetAllClients {})
-                .left_semi_join_by(
-                    client_registry().connected_ids(),
-                    |client_id, _| client_id.clone(),
-                    |client_id, ()| client_id.clone(),
-                )
+        Ok({
+            crate::view::LocalView::new({
+                ctx.view_context
+                    .query_map_by_str(GetAllClients {})?
+                    .left_semi_join_by(
+                        client_registry().connected_ids(),
+                        |client_id, _| client_id.clone(),
+                        |client_id, ()| client_id.clone(),
+                    )
+            })
         })
     }
 }
@@ -76,15 +80,20 @@ pub struct ClientStatus {
 impl ReportHandler for ClientStatus {
     type Output = ClientStatusOutput;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // ClientStatus currently targets a single-server cluster. Peer-aware
-        // routing can be added here later without making replayed Client rows
-        // the source of connection liveness again.
-        let client_id: Arc<str> = self.client_id.clone().into();
-        client_registry()
-            .watch_connected(&client_id)
-            .map(|online| Arc::new(ClientStatusOutput { online: *online }))
-            .materialize()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // ClientStatus currently targets a single-server cluster. Peer-aware
+            // routing can be added here later without making replayed Client rows
+            // the source of connection liveness again.
+            let client_id: Arc<str> = self.client_id.clone().into();
+            client_registry()
+                .watch_connected(&client_id)
+                .map(|online| Arc::new(ClientStatusOutput { online: *online }))
+                .materialize()
+        })
     }
 }
 
@@ -107,16 +116,21 @@ pub struct WindbackStatus {}
 impl ReportHandler for WindbackStatus {
     type Output = WindbackStatusOutput;
 
-    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        let client_id = ctx.client_id().map_or_else(Arc::<str>::default, Arc::from);
-        let store = ctx.registry().get_or_create(Client::ENTITY_NAME_STATIC);
+    fn compute(
+        &self,
+        ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            let client_id = ctx.client_id().map_or_else(Arc::<str>::default, Arc::from);
+            let store = ctx.registry().get_or_create(Client::ENTITY_NAME_STATIC);
 
-        store.get(&client_id).map(|client| {
-            let windback = client
-                .as_ref()
-                .and_then(|client| client.as_any().downcast_ref::<Client>())
-                .and_then(|client| client.windback.clone());
-            Arc::new(WindbackStatusOutput { windback })
+            store.get(&client_id).map(|client| {
+                let windback = client
+                    .as_ref()
+                    .and_then(|client| client.as_any().downcast_ref::<Client>())
+                    .and_then(|client| client.windback.clone());
+                Arc::new(WindbackStatusOutput { windback })
+            })
         })
     }
 }

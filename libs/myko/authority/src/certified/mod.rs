@@ -20,6 +20,8 @@ use crate::{
 mod coordinator;
 mod history;
 mod issuer;
+#[cfg(test)]
+mod projection_tests;
 mod rotation;
 pub use coordinator::{
     AuthorityControllerPrincipal, AuthorityCoordinatorPeer, AuthorityDecisionCoordinator,
@@ -134,27 +136,28 @@ fn project_mutation<T: MykoItem>(
     mutation: &myko_federation::ItemMutation,
     realm: &AuthorityRealmKey,
 ) -> Result<(), String> {
-    if mutation.item_type == T::ITEM_TYPE {
-        if immutable
-            && (mutation.operation != MutationOperation::Set
-                || !seen.insert(mutation.item_id.clone()))
-        {
-            return Err(
-                "certified authority reused or removed an immutable use or audit".to_owned(),
-            );
-        }
-        if mutation.operation == MutationOperation::Set {
-            let item = mutation
-                .decode_set::<T>()
-                .map_err(|error| error.to_string())?;
-            if item.scope_id().as_ref() != realm.as_str() {
-                return Err("certified authority payload belongs to another realm".to_owned());
-            }
-        }
+    if mutation.item_type != T::ITEM_TYPE {
+        return Ok(());
     }
-    projection
+    if immutable
+        && (mutation.operation != MutationOperation::Set || !seen.insert(mutation.item_id.clone()))
+    {
+        return Err("certified authority reused or removed an immutable use or audit".to_owned());
+    }
+    let applied = projection
         .apply(mutation)
         .map_err(|error| error.to_string())?;
+    if mutation.operation == MutationOperation::Set {
+        if !applied {
+            return Err("certified authority set belongs to another service".to_owned());
+        }
+        let item = projection
+            .get_by_stored_id(&mutation.item_id)
+            .ok_or_else(|| "certified authority set did not materialize its item".to_owned())?;
+        if item.scope_id().as_ref() != realm.as_str() {
+            return Err("certified authority payload belongs to another realm".to_owned());
+        }
+    }
     Ok(())
 }
 

@@ -70,7 +70,7 @@ async fn installed_policy_certifies_item_streams() -> TestResult {
         if second.recv().await.is_some() {
             return Err("denied second stream emitted a frame".into());
         }
-        harness.b_transport.sessions().set_authority_control(None)?;
+        harness.b_transport.sessions().set_control_endpoint(myko_authority::authority_realm_scope(anchor()?.realm_id()), None)?;
         let frame = tokio::time::timeout(std::time::Duration::from_mins(1), frames.recv()).await
             .map_err(|_| "stream quorum-loss notification timed out")?;
         if !matches!(frame, Some(NodeFrame::AuthorityUnavailable { reason: AuthorityUnavailable::CoordinationUnavailable })) {

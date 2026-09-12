@@ -9,7 +9,7 @@ use std::{
 };
 
 use chrono::Utc;
-use hyphae::{Cell, Definite, Materialize};
+use hyphae::Cell;
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
 
@@ -286,46 +286,35 @@ impl crate::report::ReportHandler for ExportEntityTree {
     fn compute(
         &self,
         ctx: crate::report::ReportContext,
-    ) -> impl Materialize<Arc<Self::Output>, Definite> {
-        let registry = if let Some(as_of) = &self.as_of {
-            match ctx.replay_store(as_of) {
-                Ok(r) => r,
-                Err(err) => {
-                    eprintln!("[ExportEntityTree] replay_store FAILED: as_of={as_of} err={err}");
-                    return Cell::new(Arc::new(EntityTreeExport {
-                        version: 1,
-                        root_type: self.root_type.clone(),
-                        root_id: self.root_id.clone(),
-                        exported_at: Utc::now().to_rfc3339(),
-                        entities: vec![],
-                    }))
-                    .lock();
-                }
-            }
-        } else {
-            ctx.registry()
-        };
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            let registry = if let Some(as_of) = &self.as_of {
+                ctx.replay_store(as_of)?
+            } else {
+                ctx.registry()
+            };
 
-        eprintln!(
-            "[ExportEntityTree] registry has {} entity types, walking root_type={} root_id={}",
-            registry.entity_types().len(),
-            self.root_type,
-            self.root_id,
-        );
-        let adjacency = build_adjacency_map();
-        let entities = walk_tree(&self.root_type, &self.root_id, &registry, &adjacency);
-        eprintln!(
-            "[ExportEntityTree] walk_tree found {} entities",
-            entities.len()
-        );
+            eprintln!(
+                "[ExportEntityTree] registry has {} entity types, walking root_type={} root_id={}",
+                registry.entity_types().len(),
+                self.root_type,
+                self.root_id,
+            );
+            let adjacency = build_adjacency_map();
+            let entities = walk_tree(&self.root_type, &self.root_id, &registry, &adjacency);
+            eprintln!(
+                "[ExportEntityTree] walk_tree found {} entities",
+                entities.len()
+            );
 
-        Cell::new(Arc::new(EntityTreeExport {
-            version: 1,
-            root_type: self.root_type.clone(),
-            root_id: self.root_id.clone(),
-            exported_at: Utc::now().to_rfc3339(),
-            entities,
-        }))
-        .lock()
+            Cell::new(Arc::new(EntityTreeExport {
+                version: 1,
+                root_type: self.root_type.clone(),
+                root_id: self.root_id.clone(),
+                exported_at: Utc::now().to_rfc3339(),
+                entities,
+            }))
+            .lock()
+        })
     }
 }

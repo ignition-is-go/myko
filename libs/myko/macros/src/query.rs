@@ -75,6 +75,11 @@ pub fn myko_query_impl(
         || matches!(&input_struct.fields, syn::Fields::Unit);
 
     let derives = query_derive_tokens(&ctx, is_empty, non_hash_cache_key, include_in_typegen);
+    let schema = service_item_type.map(|_| ctx.schema_derive());
+    let schema_field = crate::DeriveCtx::schema_field(&service_item_type.map_or_else(
+        || quote!(None),
+        |_| quote!(Some(#krate::schema::HandlerPayloadSchema::rows::<#struct_name, #query_item_type>)),
+    ));
 
     // Generate query registration using QueryFactory trait
     let service_id = service_item_type.map_or_else(
@@ -104,6 +109,7 @@ pub fn myko_query_impl(
     );
     let query_registration = quote! {
         #krate::prelude::QueryRegistration {
+            #schema_field
             query_id: stringify!(#struct_name),
             query_item_type: stringify!(#query_item_type),
             service_id: #service_id,
@@ -146,6 +152,7 @@ pub fn myko_query_impl(
 
     quote! {
         #derives
+        #schema
         #input_struct
 
         // Registration is server-only (requires QueryFactory which depends on hyphae/store)
@@ -164,6 +171,8 @@ pub fn myko_query_impl(
         }
 
         impl #krate::prelude::QueryIdStatic for #struct_name {
+            const SERVICE_ID: Option<#krate::ServiceTypeId> = #service_id;
+
             fn query_id_static() -> std::sync::Arc<str> {
                 stringify!(#struct_name).into()
             }

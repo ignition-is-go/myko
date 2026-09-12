@@ -806,6 +806,7 @@ pub trait ClientReportSpec: Clone + Send + Sync + 'static {
     type Output: DeserializeOwned + Clone + Debug + PartialEq + Send + Sync + 'static;
 
     const REPORT_ID: &'static str;
+    const SERVICE_ID: Option<&'static str> = None;
 
     fn parameters(&self) -> JsonMap<String, JsonValue> {
         JsonMap::new()
@@ -846,6 +847,7 @@ fn wrap_client_report<R: ClientReportSpec>(report: &R) -> WrappedReport {
         JsonValue::String(uuid::Uuid::new_v4().to_string()),
     );
     WrappedReport {
+        service_id: R::SERVICE_ID.map(Into::into),
         report: JsonValue::Object(parameters),
         report_id: R::REPORT_ID.to_owned(),
     }

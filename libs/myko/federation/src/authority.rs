@@ -18,6 +18,7 @@ use crate::{
 macro_rules! authority_id {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -56,6 +57,7 @@ authority_id!(LeaseId);
 authority_id!(AuthorityRealmId);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum PrincipalKind {
     Person,
@@ -68,6 +70,7 @@ pub enum PrincipalKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Principal {
     pub id: PrincipalId,
     pub kind: PrincipalKind,
@@ -86,6 +89,7 @@ impl Principal {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProvenanceOperation {
     AgentInvocation {
@@ -108,6 +112,7 @@ pub enum ProvenanceOperation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ProvenanceHop {
     pub delegation_id: DelegationId,
     pub delegator: Principal,
@@ -117,6 +122,7 @@ pub struct ProvenanceHop {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorityPresentation {
     pub principal: Principal,
     pub executor: Principal,
@@ -177,6 +183,7 @@ impl AuthorityPresentation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceClaimKind {
     Primary,
@@ -187,6 +194,7 @@ pub enum ResourceClaimKind {
 /// A conjunctive claim. Requirements are local to this resource, while
 /// `AccessAttempt::application_capabilities` remains truly request-global.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ResourceClaim {
     pub selection: ScopeSelection,
     pub kind: ResourceClaimKind,
@@ -297,6 +305,7 @@ fn selection_covers(
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorityConstraints {
     #[serde(default)]
     pub services: Vec<ServiceId>,
@@ -355,6 +364,7 @@ fn subset_or_parent_unbounded<T: Eq>(child: &[T], parent: &[T]) -> bool {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ApplicationCapability {
     pub id: CapabilityId,
     pub description: String,
@@ -363,12 +373,14 @@ pub struct ApplicationCapability {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorityLeaseRequest {
     pub duration_seconds: u64,
     pub offline: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorityLease {
     pub id: LeaseId,
     pub issued_at: DateTime<Utc>,
@@ -377,6 +389,7 @@ pub struct AuthorityLease {
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorizationPhase {
     #[default]
@@ -386,6 +399,7 @@ pub enum AuthorizationPhase {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorityGrant {
     pub id: AuthorityGrantId,
     pub realm_id: AuthorityRealmId,
@@ -408,6 +422,7 @@ pub struct AuthorityGrant {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "type", content = "id", rename_all = "snake_case")]
 pub enum DelegationParent {
     Grant(AuthorityGrantId),
@@ -415,6 +430,7 @@ pub enum DelegationParent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorityDelegation {
     pub id: DelegationId,
     pub realm_id: AuthorityRealmId,
@@ -437,6 +453,7 @@ pub struct AuthorityDelegation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Obligation {
     pub id: ObligationId,
     pub realm_id: AuthorityRealmId,
@@ -449,6 +466,7 @@ pub struct Obligation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorizationBinding {
     pub principal: Principal,
     pub executor: Principal,
@@ -497,6 +515,7 @@ impl AuthorizationBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorityChallenge {
     pub id: ChallengeId,
     pub realm_id: AuthorityRealmId,
@@ -509,6 +528,7 @@ pub struct AuthorityChallenge {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ApprovalDecision {
     pub id: ApprovalId,
     pub realm_id: AuthorityRealmId,
@@ -523,6 +543,7 @@ pub struct ApprovalDecision {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ResourceVisibility {
     Present,
@@ -540,6 +561,7 @@ pub enum ResourceVisibility {
 /// Proof supplied with a selected projection. Callers cannot convert an empty
 /// replicated cache into authoritative absence without a completeness proof.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ProjectionCoverage {
     LocalAuthoritative,
@@ -557,6 +579,7 @@ pub enum ProjectionCoverage {
 /// `Some` is an actual query result and its visibility states whether absence
 /// is authoritative.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct SelectedQueryResult<T> {
     pub value: Option<T>,
     pub visibility: ResourceVisibility,
@@ -590,6 +613,7 @@ impl<T> SelectedQueryResult<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorizationExplanation {
     pub code: String,
     pub message: String,
@@ -600,6 +624,7 @@ pub struct AuthorizationExplanation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AuthorizationReport {
     pub evaluated_at: DateTime<Utc>,
     pub principal: Principal,
@@ -609,18 +634,21 @@ pub struct AuthorizationReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PermitDecision {
     pub report: AuthorizationReport,
     pub lease: Option<AuthorityLease>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct DenyDecision {
     pub report: AuthorizationReport,
     pub visibility: ResourceVisibility,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(tag = "decision", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)] // Decisions stay directly inspectable across the public wire API.
 pub enum AuthorizationDecision {

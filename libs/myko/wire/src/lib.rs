@@ -7,9 +7,13 @@
 #![forbid(unsafe_code)]
 
 mod handler;
+mod handler_contract;
 
 pub use handler::{
     ErasedHandlerState, ErasedKeyedValue, ErasedViewDelta, HandlerRequest, HandlerStreamRevision,
+};
+pub use handler_contract::{
+    HandlerContract, HandlerOpenRequest, HandlerResultContract, SchemaDocument, TypeSchemaPair,
 };
 
 use std::fmt;
@@ -22,7 +26,7 @@ use myko_federation::{
     ReplicationBatch, ReplicationSelection, ScopeCatalogPage, ScopeId, ScopedReplicationBatch,
     SelectedReplicationBatch,
     control_quorum::{
-        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+        ControlBallot, ControlTarget, ControlValue, SignedControlProposal, SignedControlVote,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -31,7 +35,7 @@ use serde::{Deserialize, Serialize};
 ///
 /// Transport adapters may version their framing independently, but a peer must
 /// not decode an envelope whose message schema it does not understand.
-pub const WIRE_PROTOCOL_VERSION: u32 = 11;
+pub const WIRE_PROTOCOL_VERSION: u32 = 16;
 
 /// A versioned message envelope for framed transports.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -247,10 +251,9 @@ pub enum NodeRequest {
         request: ItemFollowRequest,
     },
     /// Follows one registered reactive application handler.
-    FollowHandler {
-        /// Handler lifecycle request.
-        request: HandlerRequest,
-    },
+    FollowHandler(HandlerOpenRequest),
+    /// Describes generated payload schemas without executing the registered handler.
+    DescribeHandler { request: HandlerRequest },
     /// Records an approval through the same authenticated session boundary.
     ApproveAuthority {
         challenge_id: ChallengeId,
@@ -258,19 +261,19 @@ pub enum NodeRequest {
     },
     /// Asks this authenticated controller endpoint to persist a prepare vote.
     ControlPrepare {
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
     },
     /// Asks this authenticated controller endpoint to persist a proposal.
     ControlPropose {
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
         promises: Vec<SignedControlVote>,
         value: ControlValue,
     },
     /// Asks this authenticated controller endpoint to persist an accept vote.
     ControlAccept {
-        head: ControlHead,
+        target: ControlTarget,
         proposal: Box<SignedControlProposal>,
     },
 }
@@ -297,7 +300,8 @@ impl NodeRequest {
             Self::Cancel { .. } => "cancel",
             Self::ItemState { .. } => "item_state",
             Self::FollowItems { .. } => "follow_items",
-            Self::FollowHandler { .. } => "follow_handler",
+            Self::FollowHandler(_) => "follow_handler",
+            Self::DescribeHandler { .. } => "describe_handler",
             Self::ApproveAuthority { .. } => "approve_authority",
             Self::ControlPrepare { .. } => "control_prepare",
             Self::ControlPropose { .. } => "control_propose",
@@ -350,6 +354,8 @@ pub enum NodeFrame {
         revision: HandlerStreamRevision,
         delta: Box<ErasedViewDelta>,
     },
+    /// Generated application metadata, not assignment, readiness, or a stream permit.
+    HandlerContract { contract: Box<HandlerContract> },
     /// First-class permit/deny/challenge result for an authority operation.
     Authorization {
         decision: Box<AuthorizationDecision>,
@@ -389,6 +395,7 @@ impl NodeFrame {
             Self::ItemUpdate { .. } => "item_update",
             Self::HandlerState { .. } => "handler_state",
             Self::HandlerViewDelta { .. } => "handler_view_delta",
+            Self::HandlerContract { .. } => "handler_contract",
             Self::Authorization { .. } => "authorization",
             Self::AuthorityUnavailable { .. } => "authority_unavailable",
             Self::Approval { .. } => "approval",
@@ -411,8 +418,45 @@ mod tests {
     }
 
     #[test]
-    fn unavailable_authority_uses_schema_version_eleven() {
-        assert_eq!(WIRE_PROTOCOL_VERSION, 11);
+    fn observed_handler_contracts_use_schema_version_sixteen() {
+        assert_eq!(WIRE_PROTOCOL_VERSION, 16);
+        let old = WireEnvelope {
+            version: 15,
+            body: NodeRequestEnvelope::connected(NodeRequest::Identify),
+        };
+        assert_eq!(
+            old.into_current(),
+            Err(UnsupportedWireVersion { received: 15 })
+        );
+    }
+
+    #[test]
+    fn control_target_requires_realm_and_rejects_extra_anchor_fields()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let target = ControlTarget {
+            realm: ScopeId::new("control"),
+            head: myko_federation::control_quorum::ControlHead([1; 32]),
+        };
+        let mut encoded = serde_json::to_value(&target)?;
+        if serde_json::from_value::<ControlTarget>(encoded.clone())? != target {
+            return Err("control target did not round-trip".into());
+        }
+        encoded
+            .as_object_mut()
+            .ok_or("target is not an object")?
+            .remove("realm");
+        if serde_json::from_value::<ControlTarget>(encoded).is_ok() {
+            return Err("control target did not require a realm".into());
+        }
+        let mut encoded = serde_json::to_value(&target)?;
+        encoded
+            .as_object_mut()
+            .ok_or("target is not an object")?
+            .insert("controllers".to_owned(), serde_json::json!([]));
+        if serde_json::from_value::<ControlTarget>(encoded).is_ok() {
+            return Err("control target accepted caller-supplied anchor fields".into());
+        }
+        Ok(())
     }
 
     #[test]

@@ -23,5 +23,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 chrono.workspace = true
+ed25519-dalek = "3.0.0"
 myko-items.workspace = true
+myko-redb.workspace = true
 tempfile = "3"

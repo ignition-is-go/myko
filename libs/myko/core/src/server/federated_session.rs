@@ -28,7 +28,7 @@ use myko_federation::{
     ResourceClaim, ResourceClaimKind, ResourceVisibility, ScopeCatalogPage, ScopeId,
     ScopedReplicationBatch, ServiceId,
     control_quorum::{
-        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+        ControlBallot, ControlTarget, ControlValue, SignedControlProposal, SignedControlVote,
     },
 };
 use myko_wire::{HandlerRequest, NodeFrame, NodeRequest, NodeRequestEnvelope};
@@ -292,49 +292,50 @@ pub trait NodeRequestRouter: std::fmt::Debug + Send + Sync + 'static {
 }
 
 /// Future returned by an installed certified-control endpoint.
-pub type AuthorityControlFuture<'a, T> =
+pub type ControlFuture<'a, T> =
     Pin<Box<dyn Future<Output = Result<T, AuthorizationFailure>> + Send + 'a>>;
 
 /// Request body for one certified-control proposal transport call.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthorityControlProposeRequest {
-    pub head: ControlHead,
+pub struct ControlProposeRequest {
+    pub target: ControlTarget,
     pub ballot: ControlBallot,
     pub promises: Vec<SignedControlVote>,
     pub value: ControlValue,
 }
 
-/// Local authority coordinator behind authenticated controller transport calls.
+/// Certified-control domain behind authenticated controller transport calls.
 ///
 /// Transport adapters authenticate the peer and deliver typed requests here.
 /// This endpoint owns certified-history validation, local controller key use,
 /// and the durable [`Node::vote_control`] / [`Node::propose_control`] path.
-pub trait AuthorityControlEndpoint: std::fmt::Debug + Send + Sync + 'static {
-    /// Persist a prepare vote for the certified predecessor head.
+/// It must reject targets outside its independently configured control realm.
+pub trait ControlEndpoint: std::fmt::Debug + Send + Sync + 'static {
+    /// Persist a prepare vote at the addressed certified predecessor.
     fn prepare<'a>(
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
-    ) -> AuthorityControlFuture<'a, SignedControlVote>;
+    ) -> ControlFuture<'a, SignedControlVote>;
 
     /// Persist a proposal after validating promise recovery and payload meaning.
     fn propose<'a>(
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        request: AuthorityControlProposeRequest,
-    ) -> AuthorityControlFuture<'a, SignedControlProposal>;
+        request: ControlProposeRequest,
+    ) -> ControlFuture<'a, SignedControlProposal>;
 
     /// Persist an accept vote for one certified proposal.
     fn accept<'a>(
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        head: ControlHead,
+        target: ControlTarget,
         proposal: SignedControlProposal,
-    ) -> AuthorityControlFuture<'a, SignedControlVote>;
+    ) -> ControlFuture<'a, SignedControlVote>;
 }
 
 /// Shared semantic endpoint behind every Myko transport adapter.
@@ -347,7 +348,7 @@ pub struct FederatedSession {
     access_policy: Arc<RwLock<Arc<dyn AccessPolicy>>>,
     policy_revision: watch::Sender<u64>,
     router: Arc<RwLock<Option<Weak<dyn NodeRequestRouter>>>>,
-    authority_control: Arc<RwLock<Option<Arc<dyn AuthorityControlEndpoint>>>>,
+    control_endpoints: Arc<RwLock<BTreeMap<ScopeId, Arc<dyn ControlEndpoint>>>>,
 }
 
 impl std::fmt::Debug for FederatedSession {
@@ -399,7 +400,7 @@ impl FederatedSession {
             access_policy: Arc::new(RwLock::new(access_policy)),
             policy_revision,
             router: Arc::new(RwLock::new(None)),
-            authority_control: Arc::new(RwLock::new(None)),
+            control_endpoints: Arc::new(RwLock::new(BTreeMap::new())),
         }
     }
 
@@ -440,6 +441,8 @@ impl FederatedSession {
             .map_err(|_| "application lock is poisoned".to_owned())?;
         *current = Some(application);
         drop(current);
+        self.policy_revision
+            .send_modify(|revision| *revision = revision.saturating_add(1));
         Ok(())
     }
 
@@ -460,6 +463,8 @@ impl FederatedSession {
             .map_err(|_| "application lock is poisoned".to_owned())?;
         *current = None;
         drop(current);
+        self.policy_revision
+            .send_modify(|revision| *revision = revision.saturating_add(1));
         Ok(())
     }
 
@@ -512,20 +517,26 @@ impl FederatedSession {
         Ok(())
     }
 
-    /// Installs the local certified-control endpoint used by controller peers.
+    /// Installs or removes one realm's local certified-control endpoint.
+    /// Existing calls retain their selected endpoint; subsequent calls use this map.
     ///
     /// # Errors
     ///
-    /// Returns an error when the endpoint slot is poisoned.
-    pub fn set_authority_control(
+    /// Returns an error when the endpoint registry is poisoned.
+    pub fn set_control_endpoint(
         &self,
-        endpoint: Option<Arc<dyn AuthorityControlEndpoint>>,
+        realm: ScopeId,
+        endpoint: Option<Arc<dyn ControlEndpoint>>,
     ) -> Result<(), String> {
         let mut current = self
-            .authority_control
+            .control_endpoints
             .write()
-            .map_err(|_| "authority-control endpoint lock is poisoned".to_owned())?;
-        *current = endpoint;
+            .map_err(|_| "control-endpoint registry lock is poisoned".to_owned())?;
+        if let Some(endpoint) = endpoint {
+            current.insert(realm, endpoint);
+        } else {
+            current.remove(&realm);
+        }
         drop(current);
         Ok(())
     }
@@ -581,6 +592,7 @@ impl FederatedSession {
         service.admission_id = CommandId::new();
         let span = tracing::debug_span!(
             "myko.session.request",
+            admission_id = %service.admission_id,
             node_id = %self.node.node_id(),
             principal_id = %authenticated.id,
             request = request_kind,
@@ -801,8 +813,12 @@ impl FederatedSession {
                 self.follow_items(principal, presentation, request, follow, send)
                     .await
             }
-            NodeRequest::FollowHandler { request: handler } => {
-                self.follow_handler(principal, presentation, request, handler, send)
+            NodeRequest::FollowHandler(open) => {
+                self.follow_handler(principal, presentation, request, open, send)
+                    .await
+            }
+            NodeRequest::DescribeHandler { request: handler } => {
+                self.describe_handler(&principal, &presentation, &request, &handler, send)
                     .await
             }
             NodeRequest::ApproveAuthority {
@@ -812,12 +828,12 @@ impl FederatedSession {
                 self.approve_authority(&principal, &presentation, &challenge_id, approved, send)
                     .await
             }
-            NodeRequest::ControlPrepare { head, ballot } => {
-                self.control_prepare(&principal, &presentation, head, ballot, send)
+            NodeRequest::ControlPrepare { target, ballot } => {
+                self.control_prepare(&principal, &presentation, target, ballot, send)
                     .await
             }
             NodeRequest::ControlPropose {
-                head,
+                target,
                 ballot,
                 promises,
                 value,
@@ -825,8 +841,8 @@ impl FederatedSession {
                 self.control_propose(
                     &principal,
                     &presentation,
-                    AuthorityControlProposeRequest {
-                        head,
+                    ControlProposeRequest {
+                        target,
                         ballot,
                         promises,
                         value,
@@ -835,8 +851,8 @@ impl FederatedSession {
                 )
                 .await
             }
-            NodeRequest::ControlAccept { head, proposal } => {
-                self.control_accept(&principal, &presentation, head, *proposal, send)
+            NodeRequest::ControlAccept { target, proposal } => {
+                self.control_accept(&principal, &presentation, target, *proposal, send)
                     .await
             }
         }
@@ -1594,14 +1610,54 @@ impl FederatedSession {
         }
     }
 
+    async fn describe_handler(
+        &self,
+        principal: &PrincipalId,
+        presentation: &AuthorityPresentation,
+        request: &NodeRequest,
+        handler: &HandlerRequest,
+        send: &flume::Sender<NodeFrame>,
+    ) -> Result<(), String> {
+        let contract = self
+            .application
+            .read()
+            .map_err(|_| "application lock is poisoned".to_owned())
+            .map(|application| application.clone())
+            .and_then(|application| {
+                let application = application
+                    .ok_or_else(|| "this node does not expose a Myko application".to_owned())?;
+                application
+                    .application()
+                    .handlers()
+                    .handler_contract(self.node.node_id(), handler)
+            });
+        if !self
+            .stream_authorized(principal, presentation, request, send)
+            .await?
+        {
+            return Ok(());
+        }
+        emit(
+            send,
+            NodeFrame::HandlerContract {
+                contract: Box::new(contract?),
+            },
+        )
+        .await
+    }
+
     async fn follow_handler(
         &self,
         principal: PrincipalId,
         presentation: AuthorityPresentation,
         request: NodeRequest,
-        handler: HandlerRequest,
+        open: myko_wire::HandlerOpenRequest,
         send: &flume::Sender<NodeFrame>,
     ) -> Result<(), String> {
+        let myko_wire::HandlerOpenRequest {
+            request: handler,
+            observed_contract: observed,
+        } = open;
         tracing::debug!(
             handler_kind = handler.kind.as_str(),
             handler_id = %handler.handler_id,
@@ -1609,12 +1665,28 @@ impl FederatedSession {
             scope_id = ?handler.scope_id,
             "opening handler subscription"
         );
+        let mut authorization = self.authorization_pulse();
         let application = self
             .application
             .read()
             .map_err(|_| "application lock is poisoned".to_owned())?
             .clone()
             .ok_or_else(|| "this node does not expose a Myko application".to_owned())?;
+        if let Some(observed) = observed.as_deref() {
+            let actual = application
+                .application()
+                .handlers()
+                .handler_contract(self.node.node_id(), &handler);
+            if !self
+                .stream_authorized(&principal, &presentation, &request, send)
+                .await?
+            {
+                return Ok(());
+            }
+            if actual? != *observed {
+                return Err("observed handler contract changed".to_owned());
+            }
+        }
         let opened = std::time::Instant::now();
         let tx: Arc<str> = Arc::from(uuid::Uuid::new_v4().to_string());
         let (handler_send, handler_frames) = flume::bounded(SESSION_FRAME_CAPACITY);
@@ -1622,14 +1694,19 @@ impl FederatedSession {
             Arc::from(principal.as_str()),
             NodeFrameSink(handler_send),
         );
-        application.open_handler(&mut session, tx, handler.clone())?;
+        {
+            let _current = observed
+                .as_ref()
+                .map(|_| self.hold_current_application(&application))
+                .transpose()?;
+            application.open_handler(&mut session, tx, handler.clone())?;
+        }
         tracing::debug!(
             handler_kind = handler.kind.as_str(),
             handler_id = %handler.handler_id,
             "handler subscription opened"
         );
         debug_initial_handler_progress(&handler, "handler_opened", opened.elapsed(), None);
-        let mut authorization = self.authorization_pulse();
         loop {
             let frame = tokio::select! {
                 biased;
@@ -1647,9 +1724,30 @@ impl FederatedSession {
                 );
                 return Ok(());
             }
+            if observed.is_some() {
+                drop(self.hold_current_application(&application)?);
+            }
             if let Some(frame) = frame {
                 emit(send, frame).await?;
             }
+        }
+    }
+
+    fn hold_current_application(
+        &self,
+        application: &crate::ApplicationHost,
+    ) -> Result<std::sync::RwLockReadGuard<'_, Option<crate::ApplicationHost>>, String> {
+        let current = self
+            .application
+            .read()
+            .map_err(|_| "application lock is poisoned".to_owned())?;
+        if current
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current.application(), application.application()))
+        {
+            Ok(current)
+        } else {
+            Err("serving application changed during inspected handler stream".to_owned())
         }
     }
 
@@ -1704,16 +1802,16 @@ impl FederatedSession {
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
         send: &flume::Sender<NodeFrame>,
     ) -> Result<(), String> {
-        let endpoint = match self.authority_control_endpoint() {
+        let endpoint = match self.control_endpoint(&target.realm) {
             Ok(endpoint) => endpoint,
             Err(failure) => return emit_authorization_failure(send, failure).await,
         };
         match endpoint
-            .prepare(principal, presentation, head, ballot)
+            .prepare(principal, presentation, target, ballot)
             .await
         {
             Ok(vote) => {
@@ -1733,10 +1831,10 @@ impl FederatedSession {
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
-        request: AuthorityControlProposeRequest,
+        request: ControlProposeRequest,
         send: &flume::Sender<NodeFrame>,
     ) -> Result<(), String> {
-        let endpoint = match self.authority_control_endpoint() {
+        let endpoint = match self.control_endpoint(&request.target.realm) {
             Ok(endpoint) => endpoint,
             Err(failure) => return emit_authorization_failure(send, failure).await,
         };
@@ -1758,16 +1856,16 @@ impl FederatedSession {
         &self,
         principal: &PrincipalId,
         presentation: &AuthorityPresentation,
-        head: ControlHead,
+        target: ControlTarget,
         proposal: SignedControlProposal,
         send: &flume::Sender<NodeFrame>,
     ) -> Result<(), String> {
-        let endpoint = match self.authority_control_endpoint() {
+        let endpoint = match self.control_endpoint(&target.realm) {
             Ok(endpoint) => endpoint,
             Err(failure) => return emit_authorization_failure(send, failure).await,
         };
         match endpoint
-            .accept(principal, presentation, head, proposal)
+            .accept(principal, presentation, target, proposal)
             .await
         {
             Ok(vote) => {
@@ -1783,14 +1881,16 @@ impl FederatedSession {
         }
     }
 
-    fn authority_control_endpoint(
+    fn control_endpoint(
         &self,
-    ) -> Result<Arc<dyn AuthorityControlEndpoint>, AuthorizationFailure> {
+        realm: &ScopeId,
+    ) -> Result<Arc<dyn ControlEndpoint>, AuthorizationFailure> {
         let endpoint = self
-            .authority_control
+            .control_endpoints
             .read()
             .map_err(|_| AuthorityUnavailable::PolicyUnavailable)?
-            .clone()
+            .get(realm)
+            .cloned()
             .ok_or(AuthorityUnavailable::CoordinationUnavailable)?;
         Ok(endpoint)
     }
@@ -1924,6 +2024,14 @@ impl FederatedSession {
                 authorization_phase,
                 decision,
                 started.elapsed(),
+            );
+        } else if let Err(reason) = &decision {
+            tracing::debug!(
+                operation = ?operation,
+                authorization_phase = ?authorization_phase,
+                reason = ?reason,
+                elapsed_ms = started.elapsed().as_millis(),
+                "session authority unavailable"
             );
         }
         match decision {
@@ -2082,7 +2190,8 @@ impl FederatedSession {
                 &request.scope_id,
                 &request.item_type,
             ),
-            NodeRequest::FollowHandler { request } => self.handler_access(request)?,
+            NodeRequest::FollowHandler(myko_wire::HandlerOpenRequest { request, .. })
+            | NodeRequest::DescribeHandler { request } => self.handler_access(request)?,
             NodeRequest::ApproveAuthority { .. } => {
                 return Err("authority approval is handled outside prepared access".to_owned());
             }
@@ -2143,7 +2252,9 @@ impl FederatedSession {
                     selection: myko_federation::ScopeSelection::Exact(scope_id.clone()),
                     kind: ResourceClaimKind::Primary,
                     source_node: request.source_node,
-                    service_id: None,
+                    service_id: authority
+                        .service_id
+                        .map(|service| myko_federation::ServiceId::new(service.as_str())),
                     item_type: None,
                     item_id: None,
                     required_permissions: Vec::new(),
@@ -2374,6 +2485,7 @@ fn handler_access(request: &HandlerRequest) -> AccessPreparation {
         AccessTarget::Handler {
             access: myko_federation::HandlerAccess {
                 kind: request.kind,
+                service_id: request.service_id.clone(),
                 handler_id: request.handler_id.clone(),
             },
             source_node: request.source_node,
@@ -2451,6 +2563,7 @@ fn validate_live_topics(topics: &[String]) -> Result<(), String> {
 #[cfg(test)]
 #[allow(clippy::panic, clippy::unwrap_used)]
 mod tests {
+    use myko_federation::control_quorum::ControlHead;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -2495,8 +2608,8 @@ mod tests {
 
         fn build_cell(
             _context: crate::view::ViewBuildArgs<Self>,
-        ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
-            crate::view::LocalView::new(hyphae::CellMap::new().lock())
+        ) -> Result<impl crate::view::ViewBuildOutput<Item = Self::Item>, String> {
+            Ok(crate::view::LocalView::new(hyphae::CellMap::new().lock()))
         }
     }
 
@@ -2566,18 +2679,20 @@ mod tests {
         }
     }
 
-    impl AuthorityControlEndpoint for RecordingControlEndpoint {
+    impl ControlEndpoint for RecordingControlEndpoint {
         fn prepare<'a>(
             &'a self,
             principal: &'a PrincipalId,
             presentation: &'a AuthorityPresentation,
-            head: ControlHead,
+            target: ControlTarget,
             ballot: ControlBallot,
-        ) -> AuthorityControlFuture<'a, SignedControlVote> {
-            self.seen
-                .lock()
-                .unwrap()
-                .push((principal.clone(), presentation.clone(), head, ballot));
+        ) -> ControlFuture<'a, SignedControlVote> {
+            self.seen.lock().unwrap().push((
+                principal.clone(),
+                presentation.clone(),
+                target.head,
+                ballot,
+            ));
             Box::pin(async move { Ok(self.vote.clone()) })
         }
 
@@ -2585,8 +2700,8 @@ mod tests {
             &'a self,
             _principal: &'a PrincipalId,
             _presentation: &'a AuthorityPresentation,
-            _request: AuthorityControlProposeRequest,
-        ) -> AuthorityControlFuture<'a, SignedControlProposal> {
+            _request: ControlProposeRequest,
+        ) -> ControlFuture<'a, SignedControlProposal> {
             Box::pin(async move {
                 Err(AuthorizationFailure::Unavailable(
                     AuthorityUnavailable::CoordinationUnavailable,
@@ -2598,9 +2713,9 @@ mod tests {
             &'a self,
             _principal: &'a PrincipalId,
             _presentation: &'a AuthorityPresentation,
-            _head: ControlHead,
+            _target: ControlTarget,
             _proposal: SignedControlProposal,
-        ) -> AuthorityControlFuture<'a, SignedControlVote> {
+        ) -> ControlFuture<'a, SignedControlVote> {
             Box::pin(async move {
                 Err(AuthorizationFailure::Unavailable(
                     AuthorityUnavailable::CoordinationUnavailable,
@@ -2788,7 +2903,7 @@ mod tests {
         };
         let endpoint = Arc::new(RecordingControlEndpoint::new(vote.clone()));
         session
-            .set_authority_control(Some(endpoint.clone()))
+            .set_control_endpoint(ScopeId::new("authority-realm"), Some(endpoint.clone()))
             .unwrap();
         let principal = Principal::new(
             PrincipalId::new("node:controller-peer"),
@@ -2797,7 +2912,13 @@ mod tests {
         let mut frames = session
             .open_authenticated(
                 principal.clone(),
-                NodeRequestEnvelope::connected(NodeRequest::ControlPrepare { head, ballot }),
+                NodeRequestEnvelope::connected(NodeRequest::ControlPrepare {
+                    target: ControlTarget {
+                        realm: ScopeId::new("authority-realm"),
+                        head,
+                    },
+                    ballot,
+                }),
             )
             .await;
 
@@ -2821,6 +2942,7 @@ mod tests {
     fn handler_identity_is_typed_and_not_an_authority_scope() {
         let request = HandlerRequest {
             kind: myko_federation::HandlerKind::View,
+            service_id: None,
             handler_id: "ForestView".to_owned(),
             source_node: None,
             scope_id: None,
@@ -2833,6 +2955,7 @@ mod tests {
             AccessTarget::Handler {
                 access: myko_federation::HandlerAccess {
                     kind: myko_federation::HandlerKind::View,
+                    service_id: None,
                     handler_id: "ForestView".to_owned(),
                 },
                 source_node: None,
@@ -2871,9 +2994,11 @@ mod tests {
         let application = crate::ApplicationHost::new(node, crate::MykoApplication::new()).unwrap();
         let policy = Arc::new(CapturingPolicy::allow());
         let session = FederatedSession::for_application(application, policy.clone());
-        let request = NodeRequest::FollowHandler {
+        let request = NodeRequest::FollowHandler(myko_wire::HandlerOpenRequest {
+            observed_contract: None,
             request: HandlerRequest {
                 kind: myko_federation::HandlerKind::View,
+                service_id: None,
                 handler_id: "ProtectedHandlerView".to_owned(),
                 source_node: Some(source_node),
                 scope_id: Some(scope_id.clone()),
@@ -2883,7 +3008,7 @@ mod tests {
                 })
                 .unwrap(),
             },
-        };
+        });
         let mut frames = session
             .open(
                 PrincipalId::new("node:subscriber"),
@@ -2908,6 +3033,7 @@ mod tests {
         assert!(access.resource_claims.iter().any(|claim| {
             claim.selection == ScopeSelection::Exact(scope_id.clone())
                 && claim.source_node == Some(source_node)
+                && claim.service_id.is_none()
                 && claim
                     .required_permissions
                     .contains(&FederationPermission::ReadState)
@@ -2940,18 +3066,22 @@ mod tests {
         let mut frames = session
             .open(
                 PrincipalId::new("reader"),
-                NodeRequestEnvelope::connected(NodeRequest::FollowHandler {
-                    request: HandlerRequest {
-                        kind: myko_federation::HandlerKind::View,
-                        handler_id: "ProtectedHandlerView".to_owned(),
-                        source_node: Some(source_node),
-                        scope_id: Some(scope_id.clone()),
-                        params: serde_json::to_value(ProtectedHandlerView {
-                            source_node,
-                            scope_id,
-                        })?,
+                NodeRequestEnvelope::connected(NodeRequest::FollowHandler(
+                    myko_wire::HandlerOpenRequest {
+                        observed_contract: None,
+                        request: HandlerRequest {
+                            kind: myko_federation::HandlerKind::View,
+                            service_id: None,
+                            handler_id: "ProtectedHandlerView".to_owned(),
+                            source_node: Some(source_node),
+                            scope_id: Some(scope_id.clone()),
+                            params: serde_json::to_value(ProtectedHandlerView {
+                                source_node,
+                                scope_id,
+                            })?,
+                        },
                     },
-                }),
+                )),
             )
             .await;
         if !matches!(frames.recv().await, Some(NodeFrame::Authorization { decision }) if decision.is_permit())
@@ -3079,6 +3209,7 @@ mod tests {
             .clone();
         let parent_envelope = parent_source.events_after(None).unwrap().pop().unwrap();
         let source = Node::in_memory();
+        source.ingest(parent_envelope.clone()).unwrap();
         let mut command_ids = Vec::new();
         for _ in 0..2 {
             let command = request(CommandId::new());
@@ -3101,7 +3232,9 @@ mod tests {
         }
         let target = Node::in_memory();
         for event in source.events_after(None).unwrap() {
-            target.ingest(event).unwrap();
+            if event.origin != parent_envelope.origin {
+                target.ingest(event).unwrap();
+            }
         }
         let watch = target
             .command_states(CommandStateRequest {

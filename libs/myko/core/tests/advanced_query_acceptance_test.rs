@@ -112,7 +112,9 @@ fn compound_two_belongs_to_in_filter_returns_exact_union() {
         ])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetBenchCompoundChildsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetBenchCompoundChildsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("compound query builds");
     assert_eq!(
         cell.snapshot().len(),
         2,
@@ -132,7 +134,9 @@ fn writes_to_non_matching_belongs_to_buckets_do_not_change_the_result() {
         ))])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("client query builds");
     assert_eq!(cell.snapshot().len(), 1);
 
     // Writes to servers outside the In set must not appear — the union
@@ -164,7 +168,9 @@ fn item_moving_out_of_the_in_set_disappears() {
         ))])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("client query builds");
     assert_eq!(cell.snapshot().len(), 1);
 
     // Re-SET the same client id under a server OUTSIDE the In set — an fk
@@ -189,7 +195,9 @@ fn item_moving_into_the_in_set_appears() {
         ))])),
         ..Default::default()
     };
-    let cell = ctx.query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"));
+    let cell = ctx
+        .query_map(GetClientsByQuery(filter), request(&ctx, "tx-1"))
+        .expect("client query builds");
     assert_eq!(cell.snapshot().len(), 0);
 
     // Re-SET the same client id under a server INSIDE the In set.
@@ -235,8 +243,12 @@ fn permuted_in_filters_share_one_query_cell() {
         ..Default::default()
     };
 
-    let cell_a = ctx.query_map(GetClientsByQuery(filter_a), request(&ctx, "tx-a"));
-    let cell_b = ctx.query_map(GetClientsByQuery(filter_b), request(&ctx, "tx-b"));
+    let cell_a = ctx
+        .query_map(GetClientsByQuery(filter_a), request(&ctx, "tx-a"))
+        .expect("first client query builds");
+    let cell_b = ctx
+        .query_map(GetClientsByQuery(filter_b), request(&ctx, "tx-b"))
+        .expect("second client query builds");
     assert_eq!(cell_a.snapshot().len(), 2);
     assert_eq!(cell_b.snapshot().len(), 2);
 
@@ -273,8 +285,12 @@ fn distinct_filters_do_not_share_a_query_cell() {
         server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-C")))),
         ..Default::default()
     };
-    let _cell_a = ctx.query_map(GetClientsByQuery(filter_a), request(&ctx, "tx-a"));
-    let _cell_c = ctx.query_map(GetClientsByQuery(filter_c), request(&ctx, "tx-c"));
+    let _cell_a = ctx
+        .query_map(GetClientsByQuery(filter_a), request(&ctx, "tx-a"))
+        .expect("first client query builds");
+    let _cell_c = ctx
+        .query_map(GetClientsByQuery(filter_c), request(&ctx, "tx-c"))
+        .expect("second client query builds");
 
     let after = query_runtime_metrics_by_id(usize::MAX)
         .into_iter()

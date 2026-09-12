@@ -61,6 +61,8 @@ fn authority_grants_view_publishes_retained_liveness_for_native_clients() -> Tes
         "test",
     ));
     let output = application.server().handler_registry.open_federated_view(
+        <AuthorityGrantsView as myko::view::ViewIdStatic>::SERVICE_ID
+            .map(myko::ServiceTypeId::as_str),
         AuthorityGrantsView::view_id_static().as_ref(),
         serde_json::to_value(AuthorityGrantsView {
             source_node: application.node_id(),

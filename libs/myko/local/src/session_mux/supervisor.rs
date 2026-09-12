@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::Duration,
 };
 
 use tokio::{
@@ -23,7 +24,7 @@ use super::{
 use crate::{
     Envelope, HandlerClientError, LocalPeerError, NodeRequestEnvelope, PeerFrame, PeerRequest,
     ReconnectPolicy,
-    transport::{connect_local_peer, read_frame, write_frame},
+    transport::{read_frame, write_frame},
 };
 
 impl OpenReject {
@@ -314,6 +315,7 @@ enum ClientIoEvent {
 struct ClientSupervisor {
     socket_path: PathBuf,
     reconnect_policy: ReconnectPolicy,
+    reconnect_delay: Duration,
     routes: HashMap<StreamId, ClientRoute>,
     pending_opens: VecDeque<StreamId>,
     generation: Option<ClientGeneration>,
@@ -334,6 +336,7 @@ async fn run_client_supervisor(
     let mut supervisor = ClientSupervisor {
         socket_path,
         reconnect_policy,
+        reconnect_delay: Duration::ZERO,
         routes: HashMap::new(),
         pending_opens: VecDeque::new(),
         generation: None,
@@ -380,6 +383,20 @@ impl ClientSupervisor {
                         "local handler open was cancelled".to_owned(),
                     )));
                     return;
+                }
+                if self.generation.is_none()
+                    && !self.reconnect_delay.is_zero()
+                    && let PeerRequest::Submit { command } = &request.request
+                {
+                    if self.routes.is_empty() && self.connecting.is_none() {
+                        self.reconnect_delay = Duration::ZERO;
+                    } else {
+                        let _ignored = reply.send(Err(HandlerClientError::Transport(format!(
+                            "command {} was not submitted: local session is disconnected",
+                            command.id
+                        ))));
+                        return;
+                    }
                 }
                 if self.routes.len() >= MAX_LOGICAL_STREAMS {
                     let _ignored = reply.send(Err(HandlerClientError::Transport(
@@ -434,6 +451,7 @@ impl ClientSupervisor {
             connecting.task.join().await;
         }
         self.generation = Some(generation);
+        self.reconnect_delay = Duration::ZERO;
     }
 
     async fn handle_connect_failed(&mut self, generation: u64, terminal: RouteTerminal) {
@@ -445,6 +463,11 @@ impl ClientSupervisor {
         }
         match terminal {
             RouteTerminal::Transport(message) => {
+                self.reconnect_delay = if self.reconnect_delay.is_zero() {
+                    self.reconnect_policy.initial_delay()
+                } else {
+                    self.reconnect_policy.next_delay(self.reconnect_delay)
+                };
                 tracing::debug!(
                     generation,
                     error = %message,
@@ -473,6 +496,7 @@ impl ClientSupervisor {
             | RouteTerminal::Transport(message)
             | RouteTerminal::Protocol(message) => message,
         };
+        self.reconnect_delay = self.reconnect_policy.initial_delay();
         self.queue_routes_for_reconnect(&reason);
     }
 
@@ -592,17 +616,13 @@ impl ClientSupervisor {
         let generation = self.next_generation;
         self.next_generation = self.next_generation.saturating_add(1);
         let socket_path = self.socket_path.clone();
-        let reconnect_policy = self.reconnect_policy;
+        let reconnect_delay = self.reconnect_delay;
         let event_tx = self.event_tx.clone();
         let task = tokio::spawn(async move {
-            match connect_client_generation(
-                &socket_path,
-                reconnect_policy,
-                generation,
-                event_tx.clone(),
-            )
-            .await
-            {
+            if !reconnect_delay.is_zero() {
+                tokio::time::sleep(reconnect_delay).await;
+            }
+            match connect_client_generation(&socket_path, generation, event_tx.clone()).await {
                 Ok(connected) => {
                     let _ignored = event_tx.send(ClientIoEvent::Connected(connected)).await;
                 }
@@ -707,6 +727,7 @@ impl ClientSupervisor {
         if let Some(generation) = self.generation.take() {
             generation.stop().await;
         }
+        self.reconnect_delay = self.reconnect_policy.initial_delay();
         self.queue_routes_for_reconnect(&reason);
     }
 
@@ -715,6 +736,23 @@ impl ClientSupervisor {
         let mut stream_ids = self.routes.keys().copied().collect::<Vec<_>>();
         stream_ids.sort_unstable_by_key(|stream_id| stream_id.0);
         for stream_id in stream_ids {
+            if let Some(route) = self.routes.get(&stream_id)
+                && let PeerRequest::Submit { command } = &route.request.request
+            {
+                let message = match route.phase {
+                    ClientStreamPhase::Queued => {
+                        format!("command {} was not submitted: {reason}", command.id)
+                    }
+                    ClientStreamPhase::OpenWritten | ClientStreamPhase::Opened => format!(
+                        "command {} acceptance is unknown; read its durable state before retrying: {reason}",
+                        command.id
+                    ),
+                };
+                if let Some(route) = self.routes.remove(&stream_id) {
+                    finish_client_route(route, RouteTerminal::Transport(Arc::from(message)));
+                }
+                continue;
+            }
             if let Some(route) = self.routes.get_mut(&stream_id) {
                 let reopening = route.reply.is_none();
                 if reopening && !route.reopening {
@@ -765,11 +803,12 @@ fn finish_client_route(mut route: ClientRoute, terminal: RouteTerminal) {
 
 async fn connect_client_generation(
     socket_path: &Path,
-    reconnect_policy: ReconnectPolicy,
     generation: u64,
     event_tx: mpsc::Sender<ClientIoEvent>,
 ) -> Result<ClientGeneration, RouteTerminal> {
-    let mut stream = connect_local_peer(socket_path, reconnect_policy).await;
+    let mut stream = tokio::net::UnixStream::connect(socket_path)
+        .await
+        .map_err(|error| RouteTerminal::Transport(Arc::from(error.to_string())))?;
     write_frame(
         &mut stream,
         &Envelope::new(LocalConnectionHello::SessionMux {
@@ -865,6 +904,91 @@ mod tests {
         CommandWatchRequest, LogPosition, Node, PrincipalId, ResourceClaim, ResourceClaimKind,
         ScopeId, ServiceId,
     };
+
+    #[test]
+    fn reconnect_removes_submissions_at_every_delivery_phase()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for phase in [
+            ClientStreamPhase::Queued,
+            ClientStreamPhase::OpenWritten,
+            ClientStreamPhase::Opened,
+        ] {
+            let (event_tx, _events) = mpsc::channel(CONTROL_CAPACITY);
+            let mut supervisor = ClientSupervisor {
+                socket_path: PathBuf::new(),
+                reconnect_policy: ReconnectPolicy::default(),
+                reconnect_delay: Duration::ZERO,
+                routes: HashMap::new(),
+                pending_opens: VecDeque::new(),
+                generation: None,
+                connecting: None,
+                next_generation: 1,
+                event_tx,
+                next_stream_id: Arc::new(AtomicU64::new(3)),
+            };
+            let submission = myko_federation::CommandSubmission {
+                id: CommandId::new(),
+                service_id: ServiceId::new("records"),
+                command_type: "records.change".to_owned(),
+                payload: Vec::new(),
+            };
+            let (command, terminal) = test_route(
+                PeerRequest::Submit {
+                    command: submission,
+                },
+                phase,
+            );
+            let (follow, _) = test_route(
+                PeerRequest::Follow { after: None },
+                ClientStreamPhase::Opened,
+            );
+            supervisor.routes.insert(StreamId(1), command);
+            supervisor.routes.insert(StreamId(2), follow);
+            supervisor.queue_routes_for_reconnect(&Arc::from("test disconnect"));
+            if supervisor.routes.contains_key(&StreamId(1))
+                || supervisor.pending_opens != [StreamId(2)]
+                || !supervisor.routes.contains_key(&StreamId(2))
+            {
+                return Err("reconnect retained a submission or discarded the follow".into());
+            }
+            let terminal = terminal
+                .borrow()
+                .clone()
+                .ok_or("submission did not terminate")?;
+            let message = terminal.into_error().to_string();
+            let expected = match phase {
+                ClientStreamPhase::Queued => "not submitted",
+                ClientStreamPhase::OpenWritten | ClientStreamPhase::Opened => {
+                    "acceptance is unknown"
+                }
+            };
+            if !message.contains(expected) {
+                return Err("interruption reported the wrong acceptance status".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn test_route(
+        request: PeerRequest,
+        phase: ClientStreamPhase,
+    ) -> (ClientRoute, watch::Receiver<Option<RouteTerminal>>) {
+        let (frames, _receiver) = mpsc::channel(PER_STREAM_FRAME_CAPACITY);
+        let (terminal, receiver) = watch::channel(None);
+        let (reply, _opened) = oneshot::channel();
+        (
+            ClientRoute {
+                request: NodeRequestEnvelope::connected(request),
+                lease: Arc::new(LogicalLeaseState::new()),
+                frames,
+                terminal,
+                reply: (!matches!(phase, ClientStreamPhase::Opened)).then_some(reply),
+                phase,
+                reopening: false,
+            },
+            receiver,
+        )
+    }
 
     fn admitted_command(
         node: &Node,

@@ -8,7 +8,11 @@ license = "AGPL-3.0-or-later"
 [lints]
 workspace = true
 
+[features]
+schema = ["dep:schemars", "myko-iroh/schema"]
+
 [dependencies]
+schemars = { workspace = true, optional = true }
 gethostname = "1.1.0"
 myko-federation.workspace = true
 myko-iroh.workspace = true

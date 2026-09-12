@@ -67,7 +67,7 @@ impl Executor {
     pub async fn execute_report(&self, report_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Self::Client(client) => client_execute_report(client.clone(), report_id, args).await,
-            Self::InProcess(ctx) => in_process_execute_report(ctx.clone(), report_id, args).await,
+            Self::InProcess(ctx) => in_process_execute_report(ctx.clone(), report_id, args),
         }
     }
 
@@ -129,63 +129,66 @@ async fn client_execute_query(
     query_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
-    for reg in inventory::iter::<QueryRegistration> {
-        if reg.query_id == query_id {
-            let tx = Uuid::new_v4().to_string();
-            let mut query_json = arguments_object(arguments);
-            if let Some(obj) = query_json.as_object_mut() {
-                obj.insert("tx".to_string(), json!(tx));
-                obj.insert(
-                    "createdAt".to_string(),
-                    json!(chrono::Utc::now().to_rfc3339()),
-                );
-            }
-
-            let wrapped = WrappedQuery {
-                query: query_json,
-                query_id: reg.query_id.into(),
-                query_item_type: reg.query_item_type.into(),
-                window: None,
-            };
-
-            let cell = client.watch_query_raw(wrapped);
-            let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();
-            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
-            let seen_initial = Arc::new(Mutex::new(false));
-            let result_tx_sub = result_tx.clone();
-            let seen_initial_sub = seen_initial.clone();
-            let _guard = cell.subscribe(move |signal| {
-                if let hyphae::Signal::Value(items) = signal {
-                    let is_followup = {
-                        let mut seen = seen_initial_sub
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let was_seen = *seen;
-                        *seen = true;
-                        was_seen
-                    };
-                    if !is_followup {
-                        return;
-                    }
-                    if let Some(tx) = take_mutex(&result_tx_sub) {
-                        let _ = tx.send((**items).clone());
-                    }
-                }
-            });
-
-            return match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
-                Ok(Ok(items)) => Ok(json!({
-                    "query_id": query_id,
-                    "item_type": reg.query_item_type,
-                    "count": items.len(),
-                    "items": items,
-                })),
-                Ok(Err(_)) => Err("Query channel closed".to_string()),
-                Err(_) => Err("Timeout waiting for query response".to_string()),
-            };
-        }
+    let reg = unique_registration(
+        inventory::iter::<QueryRegistration>
+            .into_iter()
+            .filter(|reg| reg.query_id == query_id),
+        "Query",
+        query_id,
+    )?;
+    let tx = Uuid::new_v4().to_string();
+    let mut query_json = arguments_object(arguments);
+    if let Some(obj) = query_json.as_object_mut() {
+        obj.insert("tx".to_string(), json!(tx));
+        obj.insert(
+            "createdAt".to_string(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
     }
-    Err(format!("Query not found: {query_id}"))
+
+    let wrapped = WrappedQuery {
+        service_id: reg.service_id.map(Into::into),
+        query: query_json,
+        query_id: reg.query_id.into(),
+        query_item_type: reg.query_item_type.into(),
+        window: None,
+    };
+
+    let cell = client.watch_query_raw(wrapped);
+    let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();
+    let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+    let seen_initial = Arc::new(Mutex::new(false));
+    let result_tx_sub = result_tx.clone();
+    let seen_initial_sub = seen_initial.clone();
+    let _guard = cell.subscribe(move |signal| {
+        if let hyphae::Signal::Value(items) = signal {
+            let is_followup = {
+                let mut seen = seen_initial_sub
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let was_seen = *seen;
+                *seen = true;
+                was_seen
+            };
+            if !is_followup {
+                return;
+            }
+            if let Some(tx) = take_mutex(&result_tx_sub) {
+                let _ = tx.send((**items).clone());
+            }
+        }
+    });
+
+    match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
+        Ok(Ok(items)) => Ok(json!({
+            "query_id": query_id,
+            "item_type": reg.query_item_type,
+            "count": items.len(),
+            "items": items,
+        })),
+        Ok(Err(_)) => Err("Query channel closed".to_string()),
+        Err(_) => Err("Timeout waiting for query response".to_string()),
+    }
 }
 
 async fn client_execute_view(
@@ -193,63 +196,66 @@ async fn client_execute_view(
     view_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
-    for reg in inventory::iter::<ViewRegistration> {
-        if reg.view_id == view_id {
-            let tx = Uuid::new_v4().to_string();
-            let mut view_json = arguments_object(arguments);
-            if let Some(obj) = view_json.as_object_mut() {
-                obj.insert("tx".to_string(), json!(tx));
-                obj.insert(
-                    "createdAt".to_string(),
-                    json!(chrono::Utc::now().to_rfc3339()),
-                );
-            }
-
-            let wrapped = WrappedView {
-                view: view_json,
-                view_id: reg.view_id.into(),
-                view_item_type: reg.view_item_type.into(),
-                window: None,
-            };
-
-            let cell = client.watch_view_raw(wrapped);
-            let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();
-            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
-            let seen_initial = Arc::new(Mutex::new(false));
-            let result_tx_sub = result_tx.clone();
-            let seen_initial_sub = seen_initial.clone();
-            let _guard = cell.subscribe(move |signal| {
-                if let hyphae::Signal::Value(items) = signal {
-                    let is_followup = {
-                        let mut seen = seen_initial_sub
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let was_seen = *seen;
-                        *seen = true;
-                        was_seen
-                    };
-                    if !is_followup {
-                        return;
-                    }
-                    if let Some(tx) = take_mutex(&result_tx_sub) {
-                        let _ = tx.send((**items).clone());
-                    }
-                }
-            });
-
-            return match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
-                Ok(Ok(items)) => Ok(json!({
-                    "view_id": view_id,
-                    "item_type": reg.view_item_type,
-                    "count": items.len(),
-                    "items": items,
-                })),
-                Ok(Err(_)) => Err("View channel closed".to_string()),
-                Err(_) => Err("Timeout waiting for view response".to_string()),
-            };
-        }
+    let reg = unique_registration(
+        inventory::iter::<ViewRegistration>
+            .into_iter()
+            .filter(|reg| reg.view_id == view_id),
+        "View",
+        view_id,
+    )?;
+    let tx = Uuid::new_v4().to_string();
+    let mut view_json = arguments_object(arguments);
+    if let Some(obj) = view_json.as_object_mut() {
+        obj.insert("tx".to_string(), json!(tx));
+        obj.insert(
+            "createdAt".to_string(),
+            json!(chrono::Utc::now().to_rfc3339()),
+        );
     }
-    Err(format!("View not found: {view_id}"))
+
+    let wrapped = WrappedView {
+        service_id: reg.service_id.map(Into::into),
+        view: view_json,
+        view_id: reg.view_id.into(),
+        view_item_type: reg.view_item_type.into(),
+        window: None,
+    };
+
+    let cell = client.watch_view_raw(wrapped);
+    let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();
+    let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+    let seen_initial = Arc::new(Mutex::new(false));
+    let result_tx_sub = result_tx.clone();
+    let seen_initial_sub = seen_initial.clone();
+    let _guard = cell.subscribe(move |signal| {
+        if let hyphae::Signal::Value(items) = signal {
+            let is_followup = {
+                let mut seen = seen_initial_sub
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let was_seen = *seen;
+                *seen = true;
+                was_seen
+            };
+            if !is_followup {
+                return;
+            }
+            if let Some(tx) = take_mutex(&result_tx_sub) {
+                let _ = tx.send((**items).clone());
+            }
+        }
+    });
+
+    match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
+        Ok(Ok(items)) => Ok(json!({
+            "view_id": view_id,
+            "item_type": reg.view_item_type,
+            "count": items.len(),
+            "items": items,
+        })),
+        Ok(Err(_)) => Err("View channel closed".to_string()),
+        Err(_) => Err("Timeout waiting for view response".to_string()),
+    }
 }
 
 async fn client_execute_report(
@@ -257,43 +263,46 @@ async fn client_execute_report(
     report_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
-    for reg in inventory::iter::<ReportRegistration> {
-        if reg.report_id == report_id {
-            let tx = Uuid::new_v4().to_string();
-            let mut report_json = arguments_object(arguments);
-            if let Some(obj) = report_json.as_object_mut() {
-                obj.insert("tx".to_string(), json!(tx));
-            }
-
-            let wrapped = WrappedReport {
-                report: report_json,
-                report_id: reg.report_id.to_string(),
-            };
-
-            let cell = client.watch_report_raw(wrapped);
-            let (result_tx, result_rx) = oneshot::channel::<Value>();
-            let result_tx = Arc::new(Mutex::new(Some(result_tx)));
-            let _guard = cell.subscribe(move |signal| {
-                if let hyphae::Signal::Value(value_opt) = signal
-                    && let Some(value) = &**value_opt
-                    && let Some(tx) = take_mutex(&result_tx)
-                {
-                    let _ = tx.send(value.clone());
-                }
-            });
-
-            return match tokio::time::timeout(REPORT_TIMEOUT, result_rx).await {
-                Ok(Ok(value)) => Ok(json!({
-                    "report_id": report_id,
-                    "output_type": reg.output_type,
-                    "result": value,
-                })),
-                Ok(Err(_)) => Err("Report channel closed".to_string()),
-                Err(_) => Err("Timeout waiting for report response".to_string()),
-            };
-        }
+    let reg = unique_registration(
+        inventory::iter::<ReportRegistration>
+            .into_iter()
+            .filter(|reg| reg.report_id == report_id),
+        "Report",
+        report_id,
+    )?;
+    let tx = Uuid::new_v4().to_string();
+    let mut report_json = arguments_object(arguments);
+    if let Some(obj) = report_json.as_object_mut() {
+        obj.insert("tx".to_string(), json!(tx));
     }
-    Err(format!("Report not found: {report_id}"))
+
+    let wrapped = WrappedReport {
+        service_id: reg.service_id.map(Into::into),
+        report: report_json,
+        report_id: reg.report_id.to_string(),
+    };
+
+    let cell = client.watch_report_raw(wrapped);
+    let (result_tx, result_rx) = oneshot::channel::<Value>();
+    let result_tx = Arc::new(Mutex::new(Some(result_tx)));
+    let _guard = cell.subscribe(move |signal| {
+        if let hyphae::Signal::Value(value_opt) = signal
+            && let Some(value) = &**value_opt
+            && let Some(tx) = take_mutex(&result_tx)
+        {
+            let _ = tx.send(value.clone());
+        }
+    });
+
+    match tokio::time::timeout(REPORT_TIMEOUT, result_rx).await {
+        Ok(Ok(value)) => Ok(json!({
+            "report_id": report_id,
+            "output_type": reg.output_type,
+            "result": value,
+        })),
+        Ok(Err(_)) => Err("Report channel closed".to_string()),
+        Err(_) => Err("Timeout waiting for report response".to_string()),
+    }
 }
 
 async fn client_execute_command(
@@ -368,15 +377,14 @@ fn in_process_execute_query(
     query_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
-    let registration = inventory::iter::<QueryRegistration>
-        .into_iter()
-        .find(|r| r.query_id == query_id)
-        .ok_or_else(|| format!("Query not found: {query_id}"))?;
-
-    let query_data = ctx
-        .handler_registry
-        .query(query_id)
-        .ok_or_else(|| format!("Query handler not registered: {query_id}"))?;
+    let query_data = unique_registration(
+        ctx.handler_registry
+            .queries()
+            .filter(|data| data.query_id.as_ref() == query_id),
+        "Query",
+        query_id,
+    )?;
+    let item_type = query_data.query_item_type.clone();
 
     let mut query_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
@@ -393,7 +401,7 @@ fn in_process_execute_query(
 
     let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
 
-    let cellmap = (query_data.cell_factory)(
+    let output = (query_data.cell_factory)(
         parsed,
         ctx.registry.clone(),
         request_context,
@@ -402,16 +410,17 @@ fn in_process_execute_query(
     )
     .map_err(|e| format!("Failed to build query cell: {e}"))?;
 
-    let items: Vec<Value> = cellmap
-        .snapshot()
-        .into_iter()
-        .map(|(_, item)| serde_json::to_value(&*item).unwrap_or(Value::Null))
+    let items: Vec<Value> = output
+        .read_current()
+        .map_err(|e| format!("Failed to read current query {query_id}: {e}"))?
+        .into_values()
+        .map(|item| serde_json::to_value(&*item).unwrap_or(Value::Null))
         .collect();
     drop(ctx);
 
     Ok(json!({
         "query_id": query_id,
-        "item_type": registration.query_item_type,
+        "item_type": item_type,
         "count": items.len(),
         "items": items,
     }))
@@ -422,15 +431,14 @@ fn in_process_execute_view(
     view_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
-    let registration = inventory::iter::<ViewRegistration>
-        .into_iter()
-        .find(|r| r.view_id == view_id)
-        .ok_or_else(|| format!("View not found: {view_id}"))?;
-
-    let view_data = ctx
-        .handler_registry
-        .view(view_id)
-        .ok_or_else(|| format!("View handler not registered: {view_id}"))?;
+    let view_data = unique_registration(
+        ctx.handler_registry
+            .views()
+            .filter(|data| data.view_id.as_ref() == view_id),
+        "View",
+        view_id,
+    )?;
+    let item_type = view_data.view_item_type.clone();
 
     let mut view_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
@@ -461,7 +469,7 @@ fn in_process_execute_view(
 
     Ok(json!({
         "view_id": view_id,
-        "item_type": registration.view_item_type,
+        "item_type": item_type,
         "count": items.len(),
         "items": items,
         "through": through,
@@ -501,20 +509,19 @@ fn view_output_snapshot(output: myko::view::RegisteredViewOutput) -> (Vec<Value>
     }
 }
 
-async fn in_process_execute_report(
+fn in_process_execute_report(
     ctx: Arc<MykoServerContext>,
     report_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
-    let registration = inventory::iter::<ReportRegistration>
-        .into_iter()
-        .find(|r| r.report_id == report_id)
-        .ok_or_else(|| format!("Report not found: {report_id}"))?;
-
-    let report_data = ctx
-        .handler_registry
-        .report(report_id)
-        .ok_or_else(|| format!("Report handler not registered: {report_id}"))?;
+    let report_data = unique_registration(
+        ctx.handler_registry
+            .reports()
+            .filter(|data| data.report_id.as_ref() == report_id),
+        "Report",
+        report_id,
+    )?;
+    let output_type = report_data.output_type;
 
     let mut report_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
@@ -530,27 +537,12 @@ async fn in_process_execute_report(
     let cell = (report_data.cell_factory)(parsed, request_context, ctx, None)
         .map_err(|e| format!("Failed to build report cell: {e}"))?;
 
-    // Subscribe to drive reactive evaluation; capture the first emission.
-    let (tx_resp, rx_resp) = oneshot::channel::<Value>();
-    let tx_resp = Arc::new(Mutex::new(Some(tx_resp)));
-    let tx_resp_sub = tx_resp.clone();
-    let _guard = cell.subscribe(move |signal| {
-        if let hyphae::Signal::Value(output) = signal
-            && let Some(sender) = take_mutex(&tx_resp_sub)
-        {
-            let _ = sender.send(output.to_value());
-        }
-    });
-
-    match tokio::time::timeout(REPORT_TIMEOUT, rx_resp).await {
-        Ok(Ok(value)) => Ok(json!({
-            "report_id": report_id,
-            "output_type": registration.output_type,
-            "result": value,
-        })),
-        Ok(Err(_)) => Err("Report cell dropped before emitting".to_string()),
-        Err(_) => Err("Timeout waiting for report value".to_string()),
-    }
+    let value = cell.read_current()?.to_value();
+    Ok(json!({
+        "report_id": report_id,
+        "output_type": output_type,
+        "result": value,
+    }))
 }
 
 fn in_process_execute_command(
@@ -595,6 +587,21 @@ fn arguments_object(arguments: Value) -> Value {
     } else {
         json!({})
     }
+}
+
+fn unique_registration<T>(
+    candidates: impl IntoIterator<Item = T>,
+    kind: &str,
+    id: &str,
+) -> Result<T, String> {
+    let mut candidates = candidates.into_iter();
+    let registration = candidates
+        .next()
+        .ok_or_else(|| format!("{kind} not found: {id}"))?;
+    if candidates.next().is_some() {
+        return Err(format!("{kind} name is ambiguous across services: {id}"));
+    }
+    Ok(registration)
 }
 
 #[cfg(test)]
@@ -676,6 +683,19 @@ mod tests {
         assert_eq!(
             liveness,
             json!({"resynchronizing": {"reason": "waiting for parent"}})
+        );
+    }
+
+    #[test]
+    fn unqualified_names_require_exactly_one_registration() {
+        assert_eq!(unique_registration(["left"], "Query", "Rows"), Ok("left"));
+        assert_eq!(
+            unique_registration(["left", "right"], "Query", "Rows"),
+            Err("Query name is ambiguous across services: Rows".to_owned()),
+        );
+        assert_eq!(
+            unique_registration(Vec::<()>::new(), "Report", "Label"),
+            Err("Report not found: Label".to_owned()),
         );
     }
 }

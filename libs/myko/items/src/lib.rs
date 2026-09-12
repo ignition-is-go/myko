@@ -16,11 +16,16 @@ use std::{
 };
 
 pub use myko_items_macros::{myko_command, myko_item, myko_service, myko_subtype};
+#[cfg(feature = "schema")]
+pub use schemars;
 pub use serde;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 #[doc(hidden)]
 pub use serde_json;
 use thiserror::Error;
+
+#[cfg(feature = "schema")]
+pub mod schema;
 
 #[cfg(test)]
 mod subtype_tests {
@@ -173,6 +178,13 @@ pub trait MykoService: Send + Sync + 'static {
 
     /// Generated stable identity used only by persistence and wire envelopes.
     const SERVICE_ID: ServiceTypeId;
+
+    /// Generated item payload contracts, or missing evidence for a manual service.
+    #[cfg(feature = "schema")]
+    #[must_use]
+    fn item_schemas() -> Option<Vec<schema::ItemSchema>> {
+        None
+    }
 }
 
 /// A typed record in the Myko property graph.
@@ -496,7 +508,8 @@ impl ItemMutation {
         }
     }
 
-    /// Returns whether this mutation belongs to `T`'s exact schema version.
+    /// Match the declared service, item identity, and version number.
+    /// This does not compare serialized contracts or prove decoding compatibility.
     #[must_use]
     pub fn is<T: MykoItem>(&self) -> bool {
         self.service_id == T::SERVICE_ID.as_str()

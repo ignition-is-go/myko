@@ -31,22 +31,24 @@ impl QueryHandler for GetConnectedServer {
     #[cfg(not(target_arch = "wasm32"))]
     fn build_view(
         ctx: QueryBuildArgs<Self>,
-    ) -> Option<impl MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>>
+    ) -> Result<Option<impl crate::query::QueryBuildOutput>, String>
     where
         Self: Send + Sync + 'static,
     {
-        let host_id: Arc<str> = ctx
-            .query_context
-            .query_context
-            .req
-            .host_id
-            .to_string()
-            .into();
-        let store = ctx
-            .query_context
-            .registry()
-            .get_or_create(Server::ENTITY_NAME_STATIC);
-        Some(crate::query::build_ids_source_map(&store, &[host_id]))
+        Ok({
+            let host_id: Arc<str> = ctx
+                .query_context
+                .query_context
+                .req
+                .host_id
+                .to_string()
+                .into();
+            let store = ctx
+                .query_context
+                .registry()
+                .get_or_create(Server::ENTITY_NAME_STATIC);
+            Some(crate::query::build_ids_source_map(&store, &[host_id]))
+        })
     }
 }
 
@@ -63,19 +65,21 @@ impl QueryHandler for GetPeerServers {
     #[cfg(not(target_arch = "wasm32"))]
     fn build_view(
         ctx: QueryBuildArgs<Self>,
-    ) -> Option<impl MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>>
+    ) -> Result<Option<impl crate::query::QueryBuildOutput>, String>
     where
         Self: Send + Sync + 'static,
     {
-        let host_id = ctx.query_context.query_context.req.host_id.to_string();
-        let store = ctx
-            .query_context
-            .registry()
-            .get_or_create(Server::ENTITY_NAME_STATIC)
-            .as_ref()
-            .clone()
-            .lock();
-        Some(store.select_by(move |id, _server| id.as_ref() != host_id))
+        Ok({
+            let host_id = ctx.query_context.query_context.req.host_id.to_string();
+            let store = ctx
+                .query_context
+                .registry()
+                .get_or_create(Server::ENTITY_NAME_STATIC)
+                .as_ref()
+                .clone()
+                .lock();
+            Some(store.select_by(move |id, _server| id.as_ref() != host_id))
+        })
     }
 }
 
@@ -124,36 +128,41 @@ pub struct ServerStats {}
 impl ReportHandler for ServerStats {
     type Output = ServerStatsOutput;
 
-    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        let host_id: Arc<str> = ctx.host_id().to_string().into();
-        // Canonical string keys match `IdFor<Server>::MapKey`; the direct join
-        // projection reads the shared relationship index without cloning clients
-        // into an intermediate joined value.
-        let stats_by_server = ctx
-            .query_map_by_str(GetConnectedServer {})
-            .left_join_fk::<ClientServerIdRelation, _>(ctx.query_map_by_str(GetAllClients {}))
-            .map_joined_values(|_server_id, server, clients| (server.clone(), clients.len()))
-            .materialize();
+    fn compute(
+        &self,
+        ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            let host_id: Arc<str> = ctx.host_id().to_string().into();
+            // Canonical string keys match `IdFor<Server>::MapKey`; the direct join
+            // projection reads the shared relationship index without cloning clients
+            // into an intermediate joined value.
+            let stats_by_server = ctx
+                .query_map_by_str(GetConnectedServer {})?
+                .left_join_fk::<ClientServerIdRelation, _>(ctx.query_map_by_str(GetAllClients {})?)
+                .map_joined_values(|_server_id, server, clients| (server.clone(), clients.len()))
+                .materialize();
 
-        stats_by_server.get(&host_id).map(|stats| {
-            let Some((server, client_count)) = stats else {
-                return Arc::new(ServerStatsOutput {
-                    server: None,
-                    client_count: 0,
-                    uptime_seconds: None,
-                });
-            };
-            let uptime_seconds = chrono::DateTime::parse_from_rfc3339(&server.started_at)
-                .ok()
-                .map(|started| {
-                    let now = chrono::Utc::now();
-                    now.signed_duration_since(started.with_timezone(&chrono::Utc))
-                        .num_seconds()
-                });
-            Arc::new(ServerStatsOutput {
-                server: Some(server.clone()),
-                client_count: *client_count,
-                uptime_seconds,
+            stats_by_server.get(&host_id).map(|stats| {
+                let Some((server, client_count)) = stats else {
+                    return Arc::new(ServerStatsOutput {
+                        server: None,
+                        client_count: 0,
+                        uptime_seconds: None,
+                    });
+                };
+                let uptime_seconds = chrono::DateTime::parse_from_rfc3339(&server.started_at)
+                    .ok()
+                    .map(|started| {
+                        let now = chrono::Utc::now();
+                        now.signed_duration_since(started.with_timezone(&chrono::Utc))
+                            .num_seconds()
+                    });
+                Arc::new(ServerStatsOutput {
+                    server: Some(server.clone()),
+                    client_count: *client_count,
+                    uptime_seconds,
+                })
             })
         })
     }

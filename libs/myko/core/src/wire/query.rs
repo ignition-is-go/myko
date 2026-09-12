@@ -353,6 +353,8 @@ pub struct QueryCursorWindowUpdate {
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct WrappedQuery {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<std::sync::Arc<str>>,
     pub query: Value,
     pub query_id: Arc<str>,
     pub query_item_type: Arc<str>,
@@ -430,11 +432,12 @@ pub enum ClientQueryChange {
 /// # Errors
 ///
 /// Returns an error when the requested operation cannot be completed.
-pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
+pub fn wrap_query<Q: QueryId + crate::query::QueryIdStatic + QueryItemType + Serialize + Clone>(
     tx: Arc<str>,
     query: &Q,
 ) -> Result<WrappedQuery, serde_json::Error> {
     Ok(WrappedQuery {
+        service_id: Q::SERVICE_ID.map(Into::into),
         query: value_with_tx(tx, query)?,
         query_id: query.query_id(),
         query_item_type: query.query_item_type(),

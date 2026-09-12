@@ -58,6 +58,7 @@ macro_rules! uuid_id {
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
         )]
+        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
         #[serde(transparent)]
         pub struct $name(Uuid);
 
@@ -98,6 +99,7 @@ macro_rules! uuid_id {
 macro_rules! string_id {
     ($name:ident) => {
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
         #[serde(transparent)]
         pub struct $name(String);
 
@@ -209,6 +211,7 @@ fn snake_case_type_name(value: &str) -> String {
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, Default,
 )]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(transparent)]
 pub struct LogPosition(u64);
 
@@ -238,6 +241,7 @@ impl LogPosition {
 
 /// Globally unique origin of an immutable event.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct EventId {
     pub node_id: NodeId,
     pub sequence: LogPosition,
@@ -254,6 +258,7 @@ impl EventId {
 /// Durable command admission metadata owned by Myko.
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CommandRequest {
     pub id: CommandId,
     pub service_id: ServiceId,
@@ -276,6 +281,7 @@ pub struct CommandRequest {
 /// Authenticated-transport submission before Myko binds its principal.
 #[doc(hidden)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct CommandSubmission {
     pub id: CommandId,
     pub service_id: ServiceId,
@@ -352,6 +358,7 @@ pub(super) fn digest_bytes(value: &[u8]) -> String {
 
 /// Transport-neutral operation presented to a node access policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum AccessOperation {
     ReadHistory,
@@ -368,6 +375,8 @@ pub enum AccessOperation {
     CancelCommand,
     ApproveAuthority,
     AdministerAuthority,
+    /// Participate in explicitly configured execution-assignment control.
+    AdministerExecution,
     DelegateAuthority,
 }
 
@@ -377,6 +386,7 @@ pub enum AccessOperation {
 /// They describe what a remote Myko principal may do with framework data; an
 /// application may layer its domain authorization on top of them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum FederationPermission {
     /// Read the current materialized state in the scope.
@@ -398,6 +408,7 @@ pub enum FederationPermission {
 
 /// Kind of registered application handler selected by a live subscription.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum HandlerKind {
     Command,
@@ -421,8 +432,11 @@ impl HandlerKind {
 
 /// Structured identity of a registered handler subscription.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct HandlerAccess {
     pub kind: HandlerKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_id: Option<ServiceId>,
     pub handler_id: String,
 }
 
@@ -432,6 +446,7 @@ pub struct HandlerAccess {
 /// policy code never reconciles competing optional service, scope, command,
 /// handler, and live-topic fields.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub enum AccessTarget {
     NodeIdentity,
     ScopeCatalog,
@@ -473,6 +488,7 @@ pub enum AccessTarget {
 
 /// The portion of the nested scope tree covered by one grant.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ScopeGrantCoverage {
     /// Authorizes only the named scope.
@@ -489,6 +505,7 @@ pub enum ScopeGrantCoverage {
 /// authorize another node through the grantee unless the issuing application
 /// explicitly models a reshare operation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScopeGrant {
     pub scope_id: ScopeId,
     #[serde(default)]
@@ -546,7 +563,11 @@ const fn required_permission(operation: AccessOperation) -> Option<FederationPer
         // Live topics do not carry a scope identifier. A scope grant must not
         // accidentally disclose them; an application can authorize exact
         // topics in its own policy once it has mapped them to a scope.
-        AccessOperation::SubscribeLive | AccessOperation::ApproveAuthority => None,
+        // Controller participation requires an explicit authenticated key binding,
+        // not an application's scope grant.
+        AccessOperation::SubscribeLive
+        | AccessOperation::ApproveAuthority
+        | AccessOperation::AdministerExecution => None,
     }
 }
 
@@ -566,6 +587,7 @@ const fn stream_permission(operation: AccessOperation) -> Option<FederationPermi
         | AccessOperation::CancelCommand
         | AccessOperation::ApproveAuthority
         | AccessOperation::AdministerAuthority
+        | AccessOperation::AdministerExecution
         | AccessOperation::DelegateAuthority => None,
     }
 }
@@ -596,6 +618,7 @@ impl ScopeGrantPolicy {
 
 /// Authenticated operation used for authorization before node access.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct AccessAttempt {
     /// Framework-created identity for one live access admission and its continuations.
     /// A transport must not copy this identity from a client presentation.
@@ -663,6 +686,7 @@ impl AccessAttempt {
             | AccessTarget::Items { service_id, .. }
             | AccessTarget::KnownCommand { service_id, .. }
             | AccessTarget::CommandCatalog { service_id, .. } => Some(service_id),
+            AccessTarget::Handler { access, .. } => access.service_id.as_ref(),
             _ => None,
         }
     }

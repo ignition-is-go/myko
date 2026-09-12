@@ -293,6 +293,88 @@ fn raw_records_and_missing_selected_bodies_cannot_prove_a_head() -> TestResult {
 }
 
 #[test]
+fn historical_replay_does_not_reuse_facts_across_same_head_snapshots() -> TestResult {
+    let fixture = fixture(None)?;
+    let complete = Node::in_memory();
+    ingest(&complete, &fixture.events)?;
+    let original = AuthorityHistory::replay(&complete, anchor()?)?;
+    let at = Utc::now();
+    for _ in 0..2 {
+        if !original
+            .assess_at(fixture.head, &fixture.request, at, ScopeTopology::default())?
+            .decision_at_head()
+            .is_permit()
+        {
+            return Err("complete historical snapshot did not permit its reader".into());
+        }
+    }
+    let record = fixture.records.last().ok_or("fixture has no records")?;
+    let mut altered = fixture.events.clone();
+    for event in &mut altered {
+        if event.origin == record.origin {
+            event.recorded_at = event
+                .recorded_at
+                .checked_add_signed(Duration::seconds(1))
+                .ok_or("record time overflow")?;
+        }
+    }
+    let changed = Node::in_memory();
+    ingest(&changed, &altered)?;
+    let refreshed = AuthorityHistory::replay(&changed, anchor()?)?;
+    let error = refreshed
+        .assess_at(fixture.head, &fixture.request, at, ScopeTopology::default())
+        .err()
+        .ok_or("same-head history reused facts from different retained bodies")?;
+    if error != "retained authority event differs from certified record" {
+        return Err(format!("changed history failed for the wrong reason: {error}").into());
+    }
+    if !original
+        .assess_at(fixture.head, &fixture.request, at, ScopeTopology::default())?
+        .decision_at_head()
+        .is_permit()
+    {
+        return Err("another snapshot changed an immutable historical assessment".into());
+    }
+    Ok(())
+}
+
+#[test]
+fn historical_replay_recovers_missing_bodies_only_in_a_new_snapshot() -> TestResult {
+    let fixture = fixture(None)?;
+    let omitted = fixture.records.last().ok_or("fixture has no records")?;
+    let node = Node::in_memory();
+    let retained = fixture
+        .events
+        .iter()
+        .filter(|event| event.origin != omitted.origin)
+        .cloned()
+        .collect::<Vec<_>>();
+    ingest(&node, &retained)?;
+    let missing = AuthorityHistory::replay(&node, anchor()?)?;
+    let at = Utc::now();
+    let assess = |history: &AuthorityHistory| {
+        history.assess_at(fixture.head, &fixture.request, at, ScopeTopology::default())
+    };
+    for _ in 0..2 {
+        let error = assess(&missing)
+            .err()
+            .ok_or("incomplete snapshot exposed selected authority facts")?;
+        if error != "selected authority event is not retained" {
+            return Err(format!("missing body failed for the wrong reason: {error}").into());
+        }
+    }
+    node.ingest(omitted.clone())?;
+    let complete = AuthorityHistory::replay(&node, anchor()?)?;
+    if !assess(&complete)?.decision_at_head().is_permit() {
+        return Err("fresh snapshot retained an earlier missing-body failure".into());
+    }
+    if assess(&missing).is_ok() {
+        return Err("old incomplete snapshot silently acquired later evidence".into());
+    }
+    Ok(())
+}
+
+#[test]
 fn timestamp_mismatch_and_missing_accept_majority_are_rejected() -> TestResult {
     let fixture = fixture(None)?;
     let Some(record) = fixture.records.last() else {

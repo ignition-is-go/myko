@@ -12,9 +12,15 @@ async fn native_controller_votes_before_application_startup_completes() -> TestR
     let [a_key, b_key] = keys();
     let principal = Principal::node(endpoint_principal_id(client.address().id));
     let binding = AuthorityControllerPrincipal::new(principal.clone(), controller_id(&a_key));
-    server.sessions().set_authority_control(Some(Arc::new(
-        CertifiedAuthorityControlEndpoint::new(node.clone(), anchor()?, b_key, vec![binding])?,
-    )))?;
+    server.sessions().set_control_endpoint(
+        myko_authority::authority_realm_scope(anchor()?.realm_id()),
+        Some(Arc::new(CertifiedAuthorityControlEndpoint::new(
+            node.clone(),
+            anchor()?,
+            b_key,
+            vec![binding],
+        )?)),
+    )?;
     let endpoint = client.command_client(server.address());
     let ballot = ControlBallot {
         counter: 1,
@@ -26,7 +32,7 @@ async fn native_controller_votes_before_application_startup_completes() -> TestR
             endpoint.prepare(
                 &principal.id,
                 &AuthorityPresentation::direct(principal.clone()),
-                anchor()?.genesis(),
+                anchor()?.target(anchor()?.genesis()),
                 ballot,
             ),
         )
@@ -41,7 +47,7 @@ async fn native_controller_votes_before_application_startup_completes() -> TestR
             .prepare(
                 &principal.id,
                 &AuthorityPresentation::direct(principal.clone()),
-                anchor()?.genesis(),
+                anchor()?.target(anchor()?.genesis()),
                 ControlBallot {
                     counter: 2,
                     proposer: vote.message.controller,
@@ -57,7 +63,7 @@ async fn native_controller_votes_before_application_startup_completes() -> TestR
             endpoint.prepare(
                 &forged.id,
                 &AuthorityPresentation::direct(forged.clone()),
-                anchor()?.genesis(),
+                anchor()?.target(anchor()?.genesis()),
                 ControlBallot {
                     counter: 2,
                     ..ballot

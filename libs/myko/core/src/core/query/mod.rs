@@ -3,6 +3,7 @@
 pub mod cell;
 mod context;
 mod filter;
+mod output;
 mod registration;
 mod request;
 mod traits;
@@ -16,6 +17,10 @@ pub use filter::{
     Filterable, ID_ROUTE_FIELD_NAMES, IdFilter, LiveFilterQuery, NumericFilter, QueryRoute,
     StringFilter, Unfilterable, in_matches,
 };
+#[cfg(not(target_arch = "wasm32"))]
+pub use output::RetainedQuery;
+pub(crate) use output::WeakQueryValue;
+pub use output::{LocalQueryMap, QueryBuildOutput, QueryRows, QueryValue};
 #[cfg(not(target_arch = "wasm32"))]
 pub use registration::QueryAuthorityFactory;
 pub use registration::{

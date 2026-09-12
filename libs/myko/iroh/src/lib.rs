@@ -19,6 +19,8 @@
 
 mod attestation;
 mod pairing;
+#[cfg(feature = "schema")]
+pub mod schema;
 
 pub use attestation::{
     RetainedHistorySignatureError, sign_retained_history_statement,
@@ -69,7 +71,7 @@ use myko_federation::{
     ScopedReplicationCheckpoint, ScopedReplicationReport, SelectedReplicationBatch,
     SelectedReplicationCheckpoint, SelectedReplicationReport, SubscriptionLiveness,
     control_quorum::{
-        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+        ControlBallot, ControlTarget, ControlValue, SignedControlProposal, SignedControlVote,
     },
     live_subscription,
 };

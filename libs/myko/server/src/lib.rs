@@ -385,17 +385,25 @@ impl MykoServer {
     }
 
     /// Start the peer registry for federation.
-    pub fn start_peer_registry(&self, config: Option<peer_registry::PeerRegistryConfig>) {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the peer registry's query subscriptions cannot be built.
+    pub fn start_peer_registry(
+        &self,
+        config: Option<peer_registry::PeerRegistryConfig>,
+    ) -> Result<(), String> {
         let peer_config = config.or_else(|| self.config.peer_registry.clone());
 
         if let Some(peer_config) = peer_config {
             tracing::info!("Starting peer registry");
-            let pr = peer_registry::PeerRegistry::new(self.ctx(), peer_config);
+            let pr = peer_registry::PeerRegistry::new(self.ctx(), peer_config)?;
             *self
                 .peer_registry_instance
                 .write()
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(pr);
         }
+        Ok(())
     }
 
     /// Check if peer registry is running.
@@ -682,7 +690,7 @@ impl MykoServer {
         if let Err(e) = ServerOwnershipManager::claim_orphaned(&self.ctx()) {
             tracing::error!("Failed to claim orphaned server-owned items: {}", e);
         }
-        let ownership_guard = ServerOwnershipManager::watch_peer_deaths(&self.ctx());
+        let ownership_guard = ServerOwnershipManager::watch_peer_deaths(&self.ctx())?;
         *self
             .server_ownership_guard
             .lock()
@@ -751,7 +759,7 @@ impl MykoServer {
 
         // Start peer registry if configured
         if self.config.peer_registry.is_some() {
-            self.start_peer_registry(None);
+            self.start_peer_registry(None)?;
         }
 
         tracing::info!("Server started");

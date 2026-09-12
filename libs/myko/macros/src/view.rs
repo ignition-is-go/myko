@@ -17,6 +17,7 @@ struct ViewExpansion<'a> {
     registration: &'a TokenStream,
     struct_name: &'a syn::Ident,
     item_type: &'a Path,
+    service_id: &'a TokenStream,
     cache_key_impl: &'a TokenStream,
 }
 
@@ -28,6 +29,7 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
         registration,
         struct_name,
         item_type,
+        service_id,
         cache_key_impl,
     } = expansion;
     quote! {
@@ -48,6 +50,8 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
         }
 
         impl #krate::prelude::ViewIdStatic for #struct_name {
+            const SERVICE_ID: Option<#krate::ServiceTypeId> = #service_id;
+
             fn view_id_static() -> std::sync::Arc<str> {
                 stringify!(#struct_name).into()
             }
@@ -106,6 +110,7 @@ impl Parse for ViewArgs {
 pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let name = &input_struct.ident;
     let ctx = crate::DeriveCtx::new();
+    let schema = ctx.schema_derive();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
@@ -116,6 +121,7 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     }
 
     quote! {
+        #schema
         #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize)]
         #[derive(#krate::TS)]
         #[ts(crate = "myko::ts_rs")]
@@ -169,6 +175,11 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let item_type = args.item_type;
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
+    let schema = args.service_item.as_ref().map(|_| ctx.schema_derive());
+    let schema_field = crate::DeriveCtx::schema_field(&args.service_item.as_ref().map_or_else(
+        || quote!(None),
+        |_| quote!(Some(#krate::schema::HandlerPayloadSchema::rows::<#struct_name, #item_type>)),
+    ));
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
     let service_id = args.service_item.map_or_else(
@@ -216,8 +227,10 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
         }
     };
 
+    let derives = quote!(#schema #derives);
     let view_registration = quote! {
         #krate::prelude::ViewRegistration {
+            #schema_field
             view_id: stringify!(#struct_name),
             service_id: #service_id,
             view_item_type: stringify!(#item_type),
@@ -258,6 +271,7 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
         registration: &view_registration,
         struct_name,
         item_type: &item_type,
+        service_id: &service_id,
         cache_key_impl: &cache_key_impl,
     })
 }

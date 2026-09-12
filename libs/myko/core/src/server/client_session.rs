@@ -164,7 +164,6 @@ enum SubscriptionEntry {
     #[cfg(not(target_arch = "wasm32"))]
     NativeReport {
         _task: NativeHandlerTask,
-        _guard: SubscriptionGuard,
     },
 }
 
@@ -552,31 +551,23 @@ impl<W: SessionSink> ClientSession<W> {
     pub fn subscribe_node_handler_report(
         &mut self,
         tx: Arc<str>,
-        cell: Cell<Arc<dyn AnyOutput>, CellImmutable>,
+        output: crate::report::ReportValue<dyn AnyOutput>,
     ) -> Result<(), String> {
         let executor = tokio::runtime::Handle::try_current()
             .map_err(|error| format!("native report requires an executor: {error}"))?;
         let writer = Arc::clone(&self.writer);
         let epoch = NEXT_HANDLER_EPOCH.fetch_add(1, Ordering::Relaxed);
-        let (updates, mut latest) = tokio::sync::watch::channel(None::<Arc<dyn AnyOutput>>);
-        let guard = cell.subscribe(move |signal| {
-            if let Signal::Value(output) = signal {
-                updates.send_replace(Some(Arc::clone(output.as_ref())));
-            }
-        });
+        let mut publications = output.into_live().watch_publications();
         let task = executor.spawn(async move {
             let mut sequence = 0_u64;
-            while latest.changed().await.is_ok() {
-                let output = latest.borrow_and_update().clone();
-                let Some(output) = output else {
-                    continue;
-                };
+            while let Ok(publication) = publications.recv_async().await {
+                let state = publication.state;
                 let frame = myko_wire::NodeFrame::HandlerState {
                     revision: myko_wire::HandlerStreamRevision { epoch, sequence },
                     state: Box::new(myko_wire::ErasedHandlerState {
-                        value: Some(output.to_value()),
-                        through: None,
-                        liveness: myko_federation::SubscriptionLiveness::Current,
+                        value: state.value.map(|value| value.to_value()),
+                        through: state.through,
+                        liveness: state.liveness,
                         row_keys: None,
                     }),
                 };
@@ -590,12 +581,10 @@ impl<W: SessionSink> ClientSession<W> {
                 sequence = next;
             }
         });
-        drop(cell);
         self.subscriptions.insert(
             tx,
             SubscriptionEntry::NativeReport {
                 _task: NativeHandlerTask(task),
-                _guard: guard,
             },
         );
         Ok(())
@@ -1562,7 +1551,10 @@ mod tests {
         let output = |value| -> Arc<dyn AnyOutput> { Arc::new(serde_json::json!(value)) };
         let cell = Cell::new(output(0));
         session
-            .subscribe_node_handler_report("report".into(), cell.clone().lock())
+            .subscribe_node_handler_report(
+                "report".into(),
+                crate::report::ReportValue::LocalCell(cell.clone().lock()),
+            )
             .map_err(anyhow::Error::msg)?;
         let deadline = std::time::Duration::from_secs(2);
         tokio::time::timeout(deadline, attempts.recv_async()).await??;

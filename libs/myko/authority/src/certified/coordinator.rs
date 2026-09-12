@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, fmt, sync::Arc};
 use chrono::{DateTime, Duration, Utc};
 use ed25519_dalek::SigningKey;
 use myko::server::{
-    AuthorityControlEndpoint as MykoAuthorityControlEndpoint, AuthorityControlFuture,
-    AuthorityControlProposeRequest, RetainedEvidenceError, ScopedRetainedEvidenceEndpoint,
+    ControlEndpoint as MykoControlEndpoint, ControlFuture, ControlProposeRequest,
+    RetainedEvidenceError, ScopedRetainedEvidenceEndpoint,
 };
 use myko_federation::{
     AccessAttempt, AccessOperation, AccessTarget, AuthorityPresentation, AuthorityUnavailable,
@@ -13,7 +13,7 @@ use myko_federation::{
     FrameworkControlEvent, MykoService as _, Node, NodeEvent, Principal, PrincipalId,
     ResourceVisibility, ScopeId, ScopeSelection, ScopeTopology, ServiceId,
     control_quorum::{
-        ControlBallot, ControlHead, ControlValue, ControlVoteKind, ControllerId,
+        ControlBallot, ControlHead, ControlTarget, ControlValue, ControlVoteKind, ControllerId,
         SignedControlProposal, SignedControlVote,
     },
 };
@@ -31,7 +31,7 @@ const DEFAULT_MAX_EVALUATION_SKEW_SECONDS: i64 = 300;
 
 mod access;
 mod approval;
-mod history_cache;
+pub(super) mod history_cache;
 mod recovery;
 mod revalidation;
 mod runtime;
@@ -237,6 +237,12 @@ impl CertifiedAuthorityControlEndpoint {
         Ok(self)
     }
 
+    fn control_head(&self, target: &ControlTarget) -> Result<ControlHead, AuthorizationFailure> {
+        (target.realm == authority_realm_scope(self.anchor.realm_id()))
+            .then_some(target.head)
+            .ok_or_else(|| AuthorityUnavailable::CoordinationUnavailable.into())
+    }
+
     fn authorize(
         &self,
         authenticated: &PrincipalId,
@@ -341,12 +347,17 @@ impl CertifiedAuthorityControlEndpoint {
                     )
                 })?
         {
-            return self.validate_approval(presentation, head, ballot, promises, value, &approval);
+            return self
+                .validate_approval(presentation, head, ballot, promises, value, &approval)
+                .await;
         }
         let Some(decision) = decision_transition(presentation, value)? else {
             return Ok(());
         };
-        let history = AuthorityHistory::replay(&self.node, self.anchor.clone())
+        let history = self
+            .controller
+            .cached_history()
+            .await
             .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
         let verifier = history
             .context_at(head)
@@ -390,7 +401,10 @@ impl CertifiedAuthorityControlEndpoint {
         value: &ControlValue,
         revalidation: &AuthorityDecisionRevalidation,
     ) -> Result<(), AuthorizationFailure> {
-        let history = AuthorityHistory::replay(&self.node, self.anchor.clone())
+        let history = self
+            .controller
+            .cached_history()
+            .await
             .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
         let verifier = history
             .context_at(head)
@@ -589,19 +603,21 @@ impl fmt::Debug for CertifiedAuthorityControlEndpoint {
     }
 }
 
-impl MykoAuthorityControlEndpoint for CertifiedAuthorityControlEndpoint {
+impl MykoControlEndpoint for CertifiedAuthorityControlEndpoint {
     fn prepare<'a>(
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
-    ) -> AuthorityControlFuture<'a, SignedControlVote> {
+    ) -> ControlFuture<'a, SignedControlVote> {
         Box::pin(async move {
+            let head = self.control_head(&target)?;
             self.authorize(principal, presentation, ballot.proposer)?;
             self.refresh_authority_evidence(presentation).await?;
             self.controller
-                .prepare(head, ballot, &self.key)
+                .prepare_cached(head, ballot, &self.key)
+                .await
                 .map_err(controller_failure)
         })
     }
@@ -610,27 +626,29 @@ impl MykoAuthorityControlEndpoint for CertifiedAuthorityControlEndpoint {
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        request: AuthorityControlProposeRequest,
-    ) -> AuthorityControlFuture<'a, SignedControlProposal> {
+        request: ControlProposeRequest,
+    ) -> ControlFuture<'a, SignedControlProposal> {
         Box::pin(async move {
+            let head = self.control_head(&request.target)?;
             self.authorize(principal, presentation, request.ballot.proposer)?;
             self.refresh_authority_evidence(presentation).await?;
             self.validate_proposed_value(
                 presentation,
-                request.head,
+                head,
                 request.ballot,
                 &request.promises,
                 &request.value,
             )
             .await?;
             self.controller
-                .propose(
-                    request.head,
+                .propose_cached(
+                    head,
                     request.ballot,
                     &request.promises,
                     &request.value,
                     &self.key,
                 )
+                .await
                 .map_err(controller_failure)
         })
     }
@@ -639,10 +657,11 @@ impl MykoAuthorityControlEndpoint for CertifiedAuthorityControlEndpoint {
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        head: ControlHead,
+        target: ControlTarget,
         proposal: SignedControlProposal,
-    ) -> AuthorityControlFuture<'a, SignedControlVote> {
+    ) -> ControlFuture<'a, SignedControlVote> {
         Box::pin(async move {
+            let head = self.control_head(&target)?;
             self.authorize(principal, presentation, proposal.message.ballot.proposer)?;
             self.refresh_authority_evidence(presentation).await?;
             self.validate_proposed_value(
@@ -654,7 +673,8 @@ impl MykoAuthorityControlEndpoint for CertifiedAuthorityControlEndpoint {
             )
             .await?;
             self.controller
-                .accept(head, &proposal, &self.key)
+                .accept_cached(head, &proposal, &self.key)
+                .await
                 .map_err(controller_failure)
         })
     }
@@ -776,7 +796,7 @@ fn is_certified_authority_event(
 /// One async controller endpoint used by the request coordinator.
 #[derive(Clone)]
 pub struct AuthorityCoordinatorPeer {
-    endpoint: Arc<dyn MykoAuthorityControlEndpoint>,
+    endpoint: Arc<dyn MykoControlEndpoint>,
     principal: Principal,
     controller_id: ControllerId,
     retained_node: Option<Node>,
@@ -800,7 +820,7 @@ impl AuthorityCoordinatorPeer {
     /// Build a peer from an installed async authority-control endpoint.
     #[must_use]
     pub fn new(
-        endpoint: Arc<dyn MykoAuthorityControlEndpoint>,
+        endpoint: Arc<dyn MykoControlEndpoint>,
         principal: Principal,
         controller_id: ControllerId,
         realm: AuthorityRealmKey,
@@ -890,7 +910,10 @@ impl AuthorityCoordinatorPeer {
             .prepare(
                 &caller.id,
                 &AuthorityPresentation::direct(caller.clone()),
-                head,
+                ControlTarget {
+                    realm: authority_realm_scope(&self.realm),
+                    head,
+                },
                 ballot,
             )
             .await
@@ -908,8 +931,11 @@ impl AuthorityCoordinatorPeer {
             .propose(
                 &caller.id,
                 &AuthorityPresentation::direct(caller.clone()),
-                AuthorityControlProposeRequest {
-                    head,
+                ControlProposeRequest {
+                    target: ControlTarget {
+                        realm: authority_realm_scope(&self.realm),
+                        head,
+                    },
                     ballot,
                     promises: promises.to_vec(),
                     value: value.clone(),
@@ -928,7 +954,10 @@ impl AuthorityCoordinatorPeer {
             .accept(
                 &caller.id,
                 &AuthorityPresentation::direct(caller.clone()),
-                head,
+                ControlTarget {
+                    realm: authority_realm_scope(&self.realm),
+                    head,
+                },
                 proposal.clone(),
             )
             .await
@@ -1054,8 +1083,8 @@ impl AuthorityDecisionCoordinator {
         self
     }
 
-    fn history_for_exact_snapshot(&self) -> Result<Arc<AuthorityHistory>, String> {
-        self.history_cache.history_for_exact_snapshot()
+    async fn history_for_exact_snapshot(&self) -> Result<Arc<AuthorityHistory>, String> {
+        self.history_cache.history_for_exact_snapshot().await
     }
 
     /// Choose or recover the request-specific authority decision after `head`.
@@ -1077,7 +1106,7 @@ impl AuthorityDecisionCoordinator {
     ) -> Result<CoordinatedAuthorityDecision, String> {
         let _turn = self.proposal_turn.lock().await;
         self.synchronize().await?;
-        let history = self.history_for_exact_snapshot()?;
+        let history = self.history_for_exact_snapshot().await?;
         history.context_at(head)?;
         let root = request.root(self.anchor.realm_id(), request_id)?;
         let mut head = history.retained_head()?;
@@ -1111,7 +1140,7 @@ impl AuthorityDecisionCoordinator {
         request: CertifiedAuthorityRequest,
     ) -> Result<RoundResult, String> {
         self.synchronize().await?;
-        let history = self.history_for_exact_snapshot()?;
+        let history = self.history_for_exact_snapshot().await?;
         if let Some(decision) =
             CoordinatedAuthorityDecision::recover_at(&history, head, root, &request)?
         {
@@ -1120,6 +1149,7 @@ impl AuthorityDecisionCoordinator {
         let desired = Self::plan_value(&history, head, operation, root, request.clone())?;
         let (chosen_head, evidence) = self.choose_value(&history, head, ballot, desired).await?;
         self.recover_or_advance(head, chosen_head, root, &request, evidence)
+            .await
     }
 
     async fn choose_value(
@@ -1129,6 +1159,7 @@ impl AuthorityDecisionCoordinator {
         ballot: ControlBallot,
         desired: ControlValue,
     ) -> Result<(ControlHead, ChosenRoundEvidence), String> {
+        let started = std::time::Instant::now();
         let verifier = history.context_at(head)?.verifier()?;
         if self.proposer.controller != ballot.proposer {
             return Err("authority ballot proposer does not match coordinator identity".to_owned());
@@ -1139,6 +1170,11 @@ impl AuthorityDecisionCoordinator {
         let promises = self
             .prepare_votes(&self.proposer.principal, head, ballot)
             .await?;
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "authority prepare completed"
+        );
+        let started = std::time::Instant::now();
         let prepared = verifier
             .verify_prepare(ballot, &promises)
             .map_err(|error| error.to_string())?;
@@ -1146,9 +1182,18 @@ impl AuthorityDecisionCoordinator {
         let proposal = self
             .propose_value(&self.proposer.principal, head, ballot, &promises, &value)
             .await?;
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "authority proposal completed"
+        );
+        let started = std::time::Instant::now();
         let accepts = self
             .accept_votes(&self.proposer.principal, head, &proposal)
             .await?;
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "authority accepts completed"
+        );
         let chosen = prepared
             .verify_chosen(&value, &accepts)
             .map_err(|error| error.to_string())?;
@@ -1183,7 +1228,7 @@ impl AuthorityDecisionCoordinator {
             .control_value()
     }
 
-    fn recover_or_advance(
+    async fn recover_or_advance(
         &self,
         predecessor: ControlHead,
         chosen_head: ControlHead,
@@ -1191,7 +1236,7 @@ impl AuthorityDecisionCoordinator {
         request: &CertifiedAuthorityRequest,
         evidence: ChosenRoundEvidence,
     ) -> Result<RoundResult, String> {
-        let history = self.history_for_exact_snapshot()?;
+        let history = self.history_for_exact_snapshot().await?;
         let Some(transition) = history.decision_at(chosen_head, root)? else {
             return Ok(RoundResult::Advanced(chosen_head));
         };
@@ -1287,6 +1332,7 @@ impl AuthorityDecisionCoordinator {
     }
 
     async fn synchronize(&self) -> Result<(), String> {
+        let started = std::time::Instant::now();
         let authority_scope = authority_realm_scope(self.anchor.realm_id());
         for peer in &self.peers {
             match peer.synchronize_evidence(&authority_scope).await {
@@ -1307,6 +1353,10 @@ impl AuthorityDecisionCoordinator {
                 peer.ingest(event.clone())?;
             }
         }
+        tracing::debug!(
+            elapsed_ms = started.elapsed().as_millis(),
+            "authority synchronization completed"
+        );
         Ok(())
     }
 }

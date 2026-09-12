@@ -221,6 +221,7 @@ pub fn myko_command(arguments: TokenStream, input: TokenStream) -> TokenStream {
 }
 
 fn expand_command(arguments: CommandArguments, item: &ItemStruct) -> TokenStream2 {
+    let schema = schema_derive();
     let name = item.ident.clone();
     let CommandArguments {
         result,
@@ -243,6 +244,7 @@ fn expand_command(arguments: CommandArguments, item: &ItemStruct) -> TokenStream
         }),
     };
     quote! {
+        #schema
         #[derive(Clone, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize, Debug)]
         #[serde(rename_all = "camelCase")]
         #item
@@ -301,6 +303,18 @@ fn expand_service(arguments: ServiceArguments, service: ItemStruct) -> syn::Resu
 
     let name = service.ident.clone();
     let items = arguments.items;
+    let schema = if cfg!(feature = "schema") {
+        let item_schemas = items
+            .iter()
+            .map(|item| quote!(::myko_items::schema::ItemSchema::of::<#item>()));
+        quote! {
+            fn item_schemas() -> ::std::option::Option<::std::vec::Vec<::myko_items::schema::ItemSchema>> {
+                ::std::option::Option::Some(::std::vec![#(#item_schemas),*])
+            }
+        }
+    } else {
+        quote!()
+    };
     let item_tuple = items.iter().map(|item| quote!(#item,));
     let item_checks = items.iter().map(|item| {
         quote! {
@@ -312,6 +326,7 @@ fn expand_service(arguments: ServiceArguments, service: ItemStruct) -> syn::Resu
         #service
 
         impl ::myko_items::MykoService for #name {
+            #schema
             type Items = (#(#item_tuple)*);
             const SERVICE_ID: ::myko_items::ServiceTypeId = ::myko_items::ServiceTypeId::new(
                 concat!(module_path!(), "::", stringify!(#name)),
@@ -326,6 +341,7 @@ fn expand_service(arguments: ServiceArguments, service: ItemStruct) -> syn::Resu
 }
 
 fn expand_subtype(arguments: SubtypeArguments, item: Item) -> syn::Result<TokenStream2> {
+    let schema = schema_derive();
     let serde_attributes = match &item {
         Item::Struct(_) => quote!(#[serde(rename_all = "camelCase")]),
         Item::Enum(_) => quote!(),
@@ -338,6 +354,7 @@ fn expand_subtype(arguments: SubtypeArguments, item: Item) -> syn::Result<TokenS
     };
     let extra_derives = arguments.extra_derives;
     Ok(quote! {
+        #schema
         #[derive(
             Debug,
             Clone,
@@ -352,6 +369,7 @@ fn expand_subtype(arguments: SubtypeArguments, item: Item) -> syn::Result<TokenS
 }
 
 fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<TokenStream2> {
+    let schema = schema_derive();
     let Fields::Named(fields) = &mut item.fields else {
         return Err(syn::Error::new_spanned(
             item,
@@ -397,6 +415,7 @@ fn expand_item(arguments: ItemArguments, mut item: ItemStruct) -> syn::Result<To
     Ok(quote! {
         #id_definition
 
+        #schema
         #[derive(Clone, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize, Debug)]
         #[serde(rename_all = "camelCase")]
         #item
@@ -550,8 +569,21 @@ fn snake_case(value: &str) -> String {
     output
 }
 
+fn schema_derive() -> TokenStream2 {
+    if cfg!(feature = "schema") {
+        quote! {
+            #[derive(::myko_items::schemars::JsonSchema)]
+            #[schemars(crate = "::myko_items::schemars")]
+        }
+    } else {
+        quote!()
+    }
+}
+
 fn generate_id(id: &Ident) -> TokenStream2 {
+    let schema = schema_derive();
     quote! {
+        #schema
         #[derive(Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize, Debug)]
         #[serde(transparent)]
         pub struct #id(::std::sync::Arc<str>);
@@ -592,11 +624,13 @@ fn generate_id(id: &Ident) -> TokenStream2 {
 }
 
 fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
+    let schema = schema_derive();
     let get_all = format_ident!("GetAll{name}s");
     let get_one = format_ident!("Get{name}ById");
     let get_many = format_ident!("Get{name}sByIds");
     quote! {
 
+        #schema
         #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
         pub struct #get_all;
 
@@ -610,6 +644,7 @@ fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
 
         impl ::myko_items::GeneratedItemQuery for #get_all {}
 
+        #schema
         #[derive(Debug, Clone, PartialEq, Eq, Hash, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
         pub struct #get_one {
             pub id: #id,
@@ -629,6 +664,7 @@ fn generate_queries(name: &Ident, id: &Ident) -> TokenStream2 {
 
         impl ::myko_items::GeneratedItemQuery for #get_one {}
 
+        #schema
         #[derive(Debug, Clone, Default, PartialEq, Eq, Hash, ::myko_items::serde::Serialize, ::myko_items::serde::Deserialize)]
         pub struct #get_many {
             pub ids: ::std::vec::Vec<#id>,

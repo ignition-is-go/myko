@@ -8,7 +8,11 @@ license = "AGPL-3.0-or-later"
 [lints]
 workspace = true
 
+[features]
+schema = ["dep:schemars", "myko-items/schema"]
+
 [dependencies]
+schemars = { workspace = true, optional = true }
 chrono.workspace = true
 ed25519-dalek = "3.0.0"
 flume.workspace = true

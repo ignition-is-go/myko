@@ -72,7 +72,10 @@ async fn check_worker_publication(interrupt_controller: bool) -> TestResult {
         starting.ready();
         wait_for_permission(&a, &request, true).await?;
         if interrupt_controller {
-            harness.b_transport.sessions().set_authority_control(None)?;
+            harness.b_transport.sessions().set_control_endpoint(
+                myko_authority::authority_realm_scope(anchor()?.realm_id()),
+                None,
+            )?;
             for _ in errors_rx.drain() {}
         }
         record_revocation(&a)?;
@@ -80,10 +83,9 @@ async fn check_worker_publication(interrupt_controller: bool) -> TestResult {
             tokio::time::timeout(std::time::Duration::from_secs(15), errors_rx.recv_async())
                 .await??;
             let [_, b_key] = keys();
-            harness
-                .b_transport
-                .sessions()
-                .set_authority_control(Some(Arc::new(
+            harness.b_transport.sessions().set_control_endpoint(
+                myko_authority::authority_realm_scope(anchor()?.realm_id()),
+                Some(Arc::new(
                     CertifiedAuthorityControlEndpoint::new(
                         b.clone(),
                         anchor()?,
@@ -97,7 +99,8 @@ async fn check_worker_publication(interrupt_controller: bool) -> TestResult {
                             harness.a_transport.address(),
                         )),
                     )?,
-                )))?;
+                )),
+            )?;
         }
         wait_for_permission(&a, &request, false).await?;
         Ok(())
@@ -147,7 +150,10 @@ async fn native_retained_selection_recovers_bootstrap_and_revocation_after_reope
             return Err("completed bootstrap certification was not idempotent".into());
         }
         record_revocation(&a)?;
-        harness.b_transport.sessions().set_authority_control(None)?;
+        harness.b_transport.sessions().set_control_endpoint(
+            myko_authority::authority_realm_scope(anchor()?.realm_id()),
+            None,
+        )?;
         if coordinator.certify_local_authority().await.is_ok() {
             return Err("unavailable controller did not stop revocation certification".into());
         }

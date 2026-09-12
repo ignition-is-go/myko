@@ -63,6 +63,7 @@ opentelemetry = { version = "0.32.0", default-features = false, features = [
 
 # Native-only deps (store, search, codegen)
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ed25519-dalek = "3.0.0"
 myko-federation.workspace = true
 myko-wire.workspace = true
 sha2.workspace = true
@@ -109,6 +110,7 @@ required-features = ["bench"]
 
 [features]
 default = []
+schema = ["myko-items/schema", "myko-federation/schema", "myko-macros/schema"]
 # Canonical domain used only by integration demos and examples. Keeping it
 # opt-in prevents application-specific entities from entering Myko inventories
 # or generated API surfaces in normal framework builds.

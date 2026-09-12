@@ -3,7 +3,7 @@ use myko_federation::{
     CommandSubmission, CommandWatchRequest, HandlerAccess, ItemFollowRequest, ItemStateRequest,
     LogPosition, NodeId, ProvenanceHop, ReplicationSelection, ScopeId,
     control_quorum::{
-        ControlBallot, ControlHead, ControlValue, SignedControlProposal, SignedControlVote,
+        ControlBallot, ControlTarget, ControlValue, SignedControlProposal, SignedControlVote,
     },
 };
 use myko_wire::{HandlerRequest, NodeRequest, NodeRequestEnvelope};
@@ -46,23 +46,27 @@ pub enum PreparedRequest {
     },
     ReadItems(ItemStateRequest),
     FollowItems(ItemFollowRequest),
-    FollowHandler(HandlerRequest),
+    FollowHandler {
+        request: HandlerRequest,
+        observed_contract: Option<Box<myko_wire::HandlerContract>>,
+    },
+    DescribeHandler(HandlerRequest),
     ApproveAuthority {
         challenge_id: ChallengeId,
         approved: bool,
     },
     ControlPrepare {
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
     },
     ControlPropose {
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
         promises: Vec<SignedControlVote>,
         value: ControlValue,
     },
     ControlAccept {
-        head: ControlHead,
+        target: ControlTarget,
         proposal: Box<SignedControlProposal>,
     },
 }
@@ -117,14 +121,17 @@ impl PreparedRequest {
                 scope_id: request.scope_id.clone(),
                 item_type: request.item_type.clone(),
             },
-            Self::FollowHandler(request) => AccessTarget::Handler {
-                access: HandlerAccess {
-                    kind: request.kind,
-                    handler_id: request.handler_id.clone(),
-                },
-                source_node: request.source_node,
-                scope_id: request.scope_id.clone(),
-            },
+            Self::FollowHandler { request, .. } | Self::DescribeHandler(request) => {
+                AccessTarget::Handler {
+                    access: HandlerAccess {
+                        kind: request.kind,
+                        service_id: request.service_id.clone(),
+                        handler_id: request.handler_id.clone(),
+                    },
+                    source_node: request.source_node,
+                    scope_id: request.scope_id.clone(),
+                }
+            }
             Self::ApproveAuthority { challenge_id, .. } => {
                 AccessTarget::AuthorityApproval(challenge_id.clone())
             }
@@ -186,7 +193,14 @@ impl PreparedEnvelope {
             }
             NodeRequest::ItemState { request } => PreparedRequest::ReadItems(request),
             NodeRequest::FollowItems { request } => PreparedRequest::FollowItems(request),
-            NodeRequest::FollowHandler { request } => PreparedRequest::FollowHandler(request),
+            NodeRequest::FollowHandler(myko_wire::HandlerOpenRequest {
+                request,
+                observed_contract,
+            }) => PreparedRequest::FollowHandler {
+                request,
+                observed_contract,
+            },
+            NodeRequest::DescribeHandler { request } => PreparedRequest::DescribeHandler(request),
             NodeRequest::ApproveAuthority {
                 challenge_id,
                 approved,
@@ -194,22 +208,22 @@ impl PreparedEnvelope {
                 challenge_id,
                 approved,
             },
-            NodeRequest::ControlPrepare { head, ballot } => {
-                PreparedRequest::ControlPrepare { head, ballot }
+            NodeRequest::ControlPrepare { target, ballot } => {
+                PreparedRequest::ControlPrepare { target, ballot }
             }
             NodeRequest::ControlPropose {
-                head,
+                target,
                 ballot,
                 promises,
                 value,
             } => PreparedRequest::ControlPropose {
-                head,
+                target,
                 ballot,
                 promises,
                 value,
             },
-            NodeRequest::ControlAccept { head, proposal } => {
-                PreparedRequest::ControlAccept { head, proposal }
+            NodeRequest::ControlAccept { target, proposal } => {
+                PreparedRequest::ControlAccept { target, proposal }
             }
         };
         let access_target = request.access_target();
@@ -231,26 +245,73 @@ mod tests {
     fn preparation_derives_handler_access_once() {
         let handler = HandlerRequest {
             kind: myko_federation::HandlerKind::View,
+            service_id: Some(myko_federation::ServiceId::new("projects")),
             handler_id: "Projects".to_owned(),
             source_node: Some(NodeId::new()),
             scope_id: None,
             params: serde_json::json!({}),
         };
         let prepared = PreparedEnvelope::from_wire(NodeRequestEnvelope::connected(
-            NodeRequest::FollowHandler {
+            NodeRequest::FollowHandler(myko_wire::HandlerOpenRequest {
                 request: handler.clone(),
-            },
+                observed_contract: None,
+            }),
         ));
         assert_eq!(
             prepared.access_target,
             AccessTarget::Handler {
                 access: HandlerAccess {
                     kind: handler.kind,
+                    service_id: handler.service_id,
                     handler_id: handler.handler_id,
                 },
                 source_node: handler.source_node,
                 scope_id: handler.scope_id,
             }
         );
+    }
+
+    #[test]
+    fn descriptor_preparation_retains_request_kind_and_handler_access() {
+        let handler = HandlerRequest {
+            kind: myko_federation::HandlerKind::Report,
+            service_id: Some(myko_federation::ServiceId::new("records")),
+            handler_id: "Count".to_owned(),
+            source_node: Some(NodeId::new()),
+            scope_id: Some(ScopeId::new("records:one")),
+            params: serde_json::json!({}),
+        };
+        let schema = myko_wire::TypeSchemaPair {
+            serialization: myko_wire::SchemaDocument::Boolean(true),
+            deserialization: myko_wire::SchemaDocument::Boolean(true),
+        };
+        let observed = Box::new(myko_wire::HandlerContract {
+            serving_node: NodeId::new(),
+            service_id: handler.service_id.clone(),
+            kind: handler.kind,
+            handler_id: handler.handler_id.clone(),
+            arguments: schema.clone(),
+            result: myko_wire::HandlerResultContract::Value(schema),
+        });
+        let follow = PreparedEnvelope::from_wire(NodeRequestEnvelope::connected(
+            NodeRequest::FollowHandler(myko_wire::HandlerOpenRequest {
+                request: handler.clone(),
+                observed_contract: Some(observed.clone()),
+            }),
+        ));
+        let describe = PreparedEnvelope::from_wire(NodeRequestEnvelope::connected(
+            NodeRequest::DescribeHandler {
+                request: handler.clone(),
+            },
+        ));
+        assert_eq!(describe.access_target, follow.access_target);
+        assert_eq!(
+            follow.request,
+            PreparedRequest::FollowHandler {
+                request: handler.clone(),
+                observed_contract: Some(observed),
+            }
+        );
+        assert_eq!(describe.request, PreparedRequest::DescribeHandler(handler));
     }
 }

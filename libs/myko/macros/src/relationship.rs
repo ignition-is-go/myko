@@ -761,13 +761,13 @@ fn generate_search_report(local_type: &str) -> TokenStream {
             fn compute(
                 &self,
                 ctx: #krate::prelude::ReportContext,
-            ) -> impl #krate::prelude::Materialize<::std::sync::Arc<Self::Output>, #krate::prelude::Definite> {
+            ) -> Result<impl #krate::report::ReportBuildOutput<Self::Output>, String> {
                 let arc_ids = ctx.search(#local_type, &self.query, self.limit);
                 let ids: ::std::vec::Vec<#id_type_ident> = arc_ids
                     .into_iter()
                     .map(<#id_type_ident as ::std::convert::From<::std::sync::Arc<str>>>::from)
                     .collect();
-                #krate::hyphae::Cell::new(::std::sync::Arc::new(#search_result_ident { ids })).lock()
+                Ok(#krate::hyphae::Cell::new(::std::sync::Arc::new(#search_result_ident { ids })).lock())
             }
         }
     }

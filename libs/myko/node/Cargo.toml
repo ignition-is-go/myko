@@ -8,6 +8,9 @@ license = "AGPL-3.0-or-later"
 [lints]
 workspace = true
 
+[features]
+schema = ["myko-authority/schema", "myko-discovery/schema", "myko-iroh/schema"]
+
 [dependencies]
 async-trait.workspace = true
 ed25519-dalek = "3.0.0"
@@ -29,5 +32,6 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+jsonschema.workspace = true
 myko-local.workspace = true
 tempfile = "3"

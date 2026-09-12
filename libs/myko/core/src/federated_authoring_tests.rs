@@ -106,13 +106,49 @@ fn retained_items_carry_service_and_scope_contracts() {
 fn application_activation_filters_the_retained_inventory() {
     let application = MykoApplication::builder().service::<Planning>().build();
 
-    assert!(application.handlers().query("GetAllProjects").is_some());
-    assert!(application.handlers().query("GetAllTasks").is_some());
-    assert!(application.handlers().query("GetProjectsByQuery").is_some());
-    assert!(application.handlers().query("TasksNamed").is_some());
-    assert!(application.handlers().report("CountProjects").is_some());
-    assert!(application.handlers().report("GetProjectById").is_some());
-    assert!(application.handlers().query("GetAllServers").is_none());
+    let service = Some(Planning::SERVICE_ID.as_str());
+    assert!(
+        application
+            .handlers()
+            .query(service, "GetAllProjects")
+            .is_some()
+    );
+    assert!(
+        application
+            .handlers()
+            .query(service, "GetAllTasks")
+            .is_some()
+    );
+    assert!(
+        application
+            .handlers()
+            .query(service, "GetProjectsByQuery")
+            .is_some()
+    );
+    assert!(
+        application
+            .handlers()
+            .query(service, "TasksNamed")
+            .is_some()
+    );
+    assert!(
+        application
+            .handlers()
+            .report(service, "CountProjects")
+            .is_some()
+    );
+    assert!(
+        application
+            .handlers()
+            .report(service, "GetProjectById")
+            .is_some()
+    );
+    assert!(
+        application
+            .handlers()
+            .query(service, "GetAllServers")
+            .is_none()
+    );
     assert!(
         application
             .handlers()

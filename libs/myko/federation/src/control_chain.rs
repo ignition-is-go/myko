@@ -10,10 +10,13 @@ use crate::{
     CommandId, EventEnvelope, EventId, FrameworkControlEvent, NodeEvent, ScopeId,
     control_quorum::{
         ControlBallot, ControlEpochId, ControlHead, ControlQuorumVerifier, ControlSlot,
-        ControlValue, ControlVoteKind, ControllerId, SignedControlProposal, SignedControlVote,
-        controller_keys,
+        ControlTarget, ControlValue, ControlVoteKind, ControllerId, SignedControlProposal,
+        SignedControlVote, controller_keys,
     },
 };
+
+#[cfg(test)]
+mod index_tests;
 
 /// Independently provisioned root for a realm's control chain.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +55,15 @@ impl ControlAnchor {
     #[must_use]
     pub const fn genesis(&self) -> ControlHead {
         self.genesis
+    }
+
+    /// Address a predecessor in this realm without asserting that it is trusted or current.
+    #[must_use]
+    pub fn target(&self, head: ControlHead) -> ControlTarget {
+        ControlTarget {
+            realm: self.realm.clone(),
+            head,
+        }
     }
 }
 
@@ -197,7 +209,24 @@ impl CertifiedControlChain {
             heads: BTreeMap::new(),
             failures: BTreeMap::new(),
         };
-        chain.certify_reachable(&evidence)?;
+        chain.certify_reachable(&evidence, None)?;
+        Ok(chain)
+    }
+
+    /// Rebuild from a complete current snapshot under this chain's original anchor.
+    /// Historical certificates may be reused, never current authority or failures.
+    ///
+    /// # Errors
+    /// Rejects conflicting immutable origins and evidence encoding failures.
+    pub fn refresh(&self, history: &[EventEnvelope]) -> Result<Self, String> {
+        validate_immutable_origins(history)?;
+        let evidence = ControlEvidence::index(history, &self.anchor.realm)?;
+        let mut chain = Self {
+            anchor: self.anchor.clone(),
+            heads: BTreeMap::new(),
+            failures: BTreeMap::new(),
+        };
+        chain.certify_reachable(&evidence, Some(self))?;
         Ok(chain)
     }
 
@@ -278,7 +307,11 @@ impl CertifiedControlChain {
         ))
     }
 
-    fn certify_reachable(&mut self, evidence: &ControlEvidence<'_>) -> Result<(), String> {
+    fn certify_reachable(
+        &mut self,
+        evidence: &ControlEvidence<'_>,
+        previous: Option<&Self>,
+    ) -> Result<(), String> {
         let mut predecessor = self.anchor.genesis;
         let mut operations = BTreeSet::new();
         loop {
@@ -296,7 +329,8 @@ impl CertifiedControlChain {
                     .accepts
                     .get(&(head.0, proposal.message.ballot))
                     .map_or(&[][..], Vec::as_slice);
-                if let Ok(Some(candidate)) = self.certify_candidate(proposal, votes) {
+                if let Ok(Some(candidate)) = self.certify_candidate(head, proposal, votes, previous)
+                {
                     candidates.insert(candidate.head().0, candidate);
                 }
             }
@@ -332,26 +366,52 @@ impl CertifiedControlChain {
 
     fn certify_candidate(
         &self,
+        head: ControlHead,
         proposal: &SignedControlProposal,
         votes: &[&SignedControlVote],
+        previous: Option<&Self>,
     ) -> Result<Option<CandidateEvidence>, String> {
         let slot = proposal.message.slot.clone();
         let (epoch, controllers) = self.context_config(slot.predecessor)?;
         if slot.epoch != epoch {
             return Ok(None);
         }
+        if let Some(cached) = previous.and_then(|chain| {
+            if chain.context_config(slot.predecessor).ok()? != (epoch, controllers.clone()) {
+                return None;
+            }
+            chain.heads.get(&head.0)
+        }) && cached.evidence.proposal == *proposal
+            && cached
+                .evidence
+                .accepts
+                .iter()
+                .all(|vote| votes.contains(&vote))
+        {
+            // The same certified quorum remains present. New siblings are still
+            // examined by the outer walk before any successor enters the chain.
+            return Ok(Some(CandidateEvidence::Certified(Box::new(cached.clone()))));
+        }
         let verifier = ControlQuorumVerifier::new(slot.clone(), controllers.clone())
             .map_err(|error| error.to_string())?;
         proposal
             .verify_signature()
             .map_err(|error| error.to_string())?;
-        let accept_votes = valid_accept_votes(&slot, proposal, votes, &controllers);
         let prepared = verifier
             .verify_prepare(proposal.message.ballot, &proposal.message.prepare_votes)
             .map_err(|error| error.to_string())?;
-        let chosen = prepared
-            .verify_chosen(&proposal.message.value, &accept_votes)
-            .map_err(|error| error.to_string())?;
+        let mut accept_votes = votes.iter().map(|vote| (*vote).clone()).collect::<Vec<_>>();
+        // Clean retained quorums need one signature check; noisy history still
+        // uses the tolerant collector before the same full quorum verification.
+        let chosen =
+            if let Ok(chosen) = prepared.verify_chosen(&proposal.message.value, &accept_votes) {
+                chosen
+            } else {
+                accept_votes = valid_accept_votes(&slot, proposal, votes, &controllers);
+                prepared
+                    .verify_chosen(&proposal.message.value, &accept_votes)
+                    .map_err(|error| error.to_string())?
+            };
         let head = chosen.head().map_err(|error| error.to_string())?;
         let Ok(transition) = ControlTransition::from_control_value(&proposal.message.value) else {
             return Ok(Some(CandidateEvidence::Invalid {
@@ -476,6 +536,7 @@ impl<'a> ControlEvidence<'a> {
             proposals: BTreeMap::new(),
             accepts: BTreeMap::new(),
         };
+        let mut previous: Option<(&ControlSlot, &ControlValue, ControlHead)> = None;
         for event in history {
             match &event.event {
                 NodeEvent::FrameworkControl(FrameworkControlEvent::ControlProposal(proposal))
@@ -491,11 +552,20 @@ impl<'a> ControlEvidence<'a> {
                     if &vote.message.slot.realm == realm =>
                 {
                     if let ControlVoteKind::Accept { value } = &vote.message.vote {
-                        let head = vote
-                            .message
-                            .slot
-                            .head_for(value)
-                            .map_err(|error| error.to_string())?;
+                        let head = if let Some((slot, retained_value, head)) = previous
+                            && slot == &vote.message.slot
+                            && retained_value == value
+                        {
+                            head
+                        } else {
+                            let head = vote
+                                .message
+                                .slot
+                                .head_for(value)
+                                .map_err(|error| error.to_string())?;
+                            previous = Some((&vote.message.slot, value, head));
+                            head
+                        };
                         evidence
                             .accepts
                             .entry((head.0, vote.message.ballot))

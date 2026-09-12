@@ -70,6 +70,27 @@ pub(crate) struct DeriveCtx {
 }
 
 impl DeriveCtx {
+    pub fn schema_field(factory: &proc_macro2::TokenStream) -> proc_macro2::TokenStream {
+        if cfg!(feature = "schema") {
+            quote!(payload_schema: #factory,)
+        } else {
+            quote!()
+        }
+    }
+
+    pub fn schema_derive(&self) -> proc_macro2::TokenStream {
+        if cfg!(feature = "schema") {
+            let krate = &self.krate;
+            let schema_crate = quote!(#krate::schemars).to_string();
+            quote! {
+                #[derive(#krate::schemars::JsonSchema)]
+                #[schemars(crate = #schema_crate)]
+            }
+        } else {
+            quote!()
+        }
+    }
+
     pub fn new() -> Self {
         let krate = myko_path();
         if is_myko_crate() {
@@ -992,6 +1013,7 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
     let mut input = parse_macro_input!(input as syn::ItemStruct);
     let name = &input.ident;
     let ctx = DeriveCtx::new();
+    let schema = ctx.schema_derive();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
@@ -1016,6 +1038,7 @@ pub fn myko_report_output(_attr: TokenStream, input: TokenStream) -> TokenStream
 
     // ToValue is implemented via blanket impl for all Serialize types
     let expanded = quote! {
+        #schema
         #[derive(Debug, Clone, #serde_path::Serialize, #serde_path::Deserialize, #krate::TS)]
         #[ts(crate = "myko::ts_rs")]
         #serde_rename_attr
@@ -1269,6 +1292,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
     } else {
         quote!(, #serde_path::Serialize, #serde_path::Deserialize)
     };
+    let schema_derive = (!manual_serde).then(|| ctx.schema_derive());
     let has_export_override = export_as.is_some();
     let ts_derive_tokens = if has_export_override {
         quote!()
@@ -1320,6 +1344,7 @@ fn myko_subtype_expand(args: SubtypeArgs, mut item: syn::Item) -> proc_macro2::T
     // unconditionally — no consumer-side feature gate. Concrete declarations
     // register with the active backend; opaque inline mappings do not create files.
     quote! {
+        #schema_derive
         #[derive(Debug, Clone, PartialEq #serde_derive_tokens #ts_derive_tokens #extra_derive_tokens)]
         #ts_export_attr
         #serde_rename_attr

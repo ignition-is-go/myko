@@ -46,15 +46,16 @@ use crate::{
         FilteredCellMap, LiveFilterQuery, QueryContext, QueryFactory, QueryHandler, QueryParams,
         QueryRequest, QueryTestContext,
     },
-    report::{ReportContext, ReportHandler, ReportId},
+    report::{
+        AnyOutput, ReportBuildOutput as _, ReportContext, ReportHandler, ReportId, ReportValue,
+        WeakReportValue,
+    },
     request::RequestContext,
     search::SearchIndex,
     store::StoreRegistry,
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
     wire::{MEvent, MEventType},
 };
-
-type AnyItemArc = Arc<dyn AnyItem>;
 
 /// Where a mutation came from. This is the single policy point for the apply
 /// pipeline's loop-safety: it determines whether a mutation should run
@@ -193,28 +194,28 @@ trait ReportCacheEntryDyn: Any + Send + Sync {
     fn is_alive(&self) -> bool;
 }
 
-struct ReportCacheEntry<T> {
-    weak: hyphae::cell::WeakCell<T, CellImmutable>,
+struct ReportCacheEntry<T: AnyOutput + PartialEq> {
+    weak: WeakReportValue<T>,
 }
 
 impl<T> ReportCacheEntry<T>
 where
-    T: Clone + Send + Sync + 'static,
+    T: AnyOutput + PartialEq,
 {
-    fn new(cell: &Cell<T, CellImmutable>) -> Self {
+    fn new(cell: &ReportValue<T>) -> Self {
         Self {
-            weak: cell.downgrade(),
+            weak: WeakReportValue::new(cell),
         }
     }
 
-    fn get(&self) -> Option<Cell<T, CellImmutable>> {
+    fn get(&self) -> Option<ReportValue<T>> {
         self.weak.upgrade()
     }
 }
 
 impl<T> ReportCacheEntryDyn for ReportCacheEntry<T>
 where
-    T: Clone + Send + Sync + 'static,
+    T: AnyOutput + PartialEq,
 {
     fn as_any(&self) -> &dyn Any {
         self
@@ -226,7 +227,7 @@ where
 }
 
 struct MapCacheEntry {
-    weak: Option<WeakCellMap<Arc<str>, AnyItemArc>>,
+    source: crate::query::WeakQueryValue,
     #[cfg(not(target_arch = "wasm32"))]
     publication: Mutex<std::sync::Weak<super::native_map::NativeMapOutput>>,
     /// Lazily-created typed projections keyed by `TypeId` of the output
@@ -235,13 +236,13 @@ struct MapCacheEntry {
     typed: Mutex<HashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>>,
 }
 
-struct NativeMapGate<'a> {
+struct ComputationGate<'a> {
     gates: &'a DashMap<String, Arc<Mutex<()>>, ahash::RandomState>,
     key: &'a str,
     gate: &'a Arc<Mutex<()>>,
 }
 
-impl Drop for NativeMapGate<'_> {
+impl Drop for ComputationGate<'_> {
     fn drop(&mut self) {
         if let dashmap::mapref::entry::Entry::Occupied(entry) =
             self.gates.entry(self.key.to_owned())
@@ -273,8 +274,12 @@ impl BufferedIngestType {
 
 impl MapCacheEntry {
     fn new(map: &FilteredCellMap) -> Self {
+        Self::from_value(&crate::query::QueryValue::LocalMap(map.clone()))
+    }
+
+    fn from_value(value: &crate::query::QueryValue) -> Self {
         Self {
-            weak: Some(map.downgrade()),
+            source: crate::query::WeakQueryValue::new(value),
             #[cfg(not(target_arch = "wasm32"))]
             publication: Mutex::new(std::sync::Weak::new()),
             typed: Mutex::new(HashMap::new()),
@@ -282,33 +287,18 @@ impl MapCacheEntry {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn retained(output: &Arc<super::native_map::NativeMapOutput>) -> Self {
-        Self {
-            weak: None,
-            publication: Mutex::new(Arc::downgrade(output)),
-            typed: Mutex::new(HashMap::new()),
-        }
+    fn retained(
+        publication: myko_federation::LiveSubscription<super::native_map::NativeMap>,
+    ) -> Self {
+        Self::from_value(&crate::query::QueryValue::RetainedPublication(publication))
     }
 
     fn get(&self) -> Option<FilteredCellMap> {
-        self.weak.as_ref()?.upgrade().map(hyphae::CellMap::lock)
+        self.source.upgrade()?.into_local_map().ok()
     }
 
     fn is_alive(&self) -> bool {
-        if self.get().is_some() {
-            return true;
-        }
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            return self
-                .publication
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .upgrade()
-                .is_some();
-        }
-        #[cfg(target_arch = "wasm32")]
-        false
+        self.source.upgrade().is_some()
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -320,10 +310,17 @@ impl MapCacheEntry {
         if let Some(output) = publication.upgrade() {
             return Ok(Some(output));
         }
-        let Some(map) = self.get() else {
+        let Some(value) = self.source.upgrade() else {
             return Ok(None);
         };
-        let output = super::native_map::NativeMapOutput::new(map)?;
+        let output = match value {
+            crate::query::QueryValue::LocalMap(map) => {
+                super::native_map::NativeMapOutput::new(map)?
+            }
+            crate::query::QueryValue::RetainedPublication(live) => {
+                super::native_map::NativeMapOutput::from_retained(live)
+            }
+        };
         *publication = Arc::downgrade(&output);
         drop(publication);
         Ok(Some(output))
@@ -340,7 +337,7 @@ impl MapCacheEntry {
         F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     {
         let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
-        let source = self.weak.as_ref()?.upgrade()?.lock();
+        let source = self.get()?;
         let mut typed = self
             .typed
             .lock()
@@ -452,7 +449,7 @@ impl MykoServerContext {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let _lease = NativeMapGate {
+        let _lease = ComputationGate {
             gates: &self.compute_gates,
             key: &key,
             gate: &gate,
@@ -472,20 +469,39 @@ impl MykoServerContext {
         let server = Arc::new(self.clone());
         let (entry, output) = match handler.kind {
             myko_federation::HandlerKind::Query => {
-                let rows = self.handler_registry.open_federated_query(
+                let value = self.handler_registry.open_federated_query(
+                    handler
+                        .service_id
+                        .as_ref()
+                        .map(myko_federation::ServiceId::as_str),
                     &handler.handler_id,
                     handler.params.clone(),
                     request,
                     server,
                     source,
                 )?;
-                let entry = MapCacheEntry::new(&rows);
-                let output = entry.publication()?.ok_or_else(|| {
-                    "native map expired while constructing its publication".to_owned()
-                })?;
-                (entry, output)
+                match value {
+                    crate::query::QueryValue::LocalMap(rows) => {
+                        let entry = MapCacheEntry::new(&rows);
+                        let output = entry.publication()?.ok_or_else(|| {
+                            "native map expired while constructing its publication".to_owned()
+                        })?;
+                        (entry, output)
+                    }
+                    crate::query::QueryValue::RetainedPublication(publication) => {
+                        let entry = MapCacheEntry::retained(publication.clone());
+                        let output = entry
+                            .publication()?
+                            .ok_or_else(|| "query publication expired".to_owned())?;
+                        (entry, output)
+                    }
+                }
             }
             myko_federation::HandlerKind::View => match self.handler_registry.open_federated_view(
+                handler
+                    .service_id
+                    .as_ref()
+                    .map(myko_federation::ServiceId::as_str),
                 &handler.handler_id,
                 handler.params.clone(),
                 request,
@@ -500,8 +516,10 @@ impl MykoServerContext {
                     (entry, output)
                 }
                 crate::view::RegisteredViewOutput::RetainedPublication(publication) => {
-                    let output = super::native_map::NativeMapOutput::from_retained(publication);
-                    let entry = MapCacheEntry::retained(&output);
+                    let entry = MapCacheEntry::retained(publication.clone());
+                    let output = entry
+                        .publication()?
+                        .ok_or_else(|| "view publication expired".to_owned())?;
                     (entry, output)
                 }
             },
@@ -637,7 +655,11 @@ impl MykoServerContext {
         request: &RequestContext,
     ) -> String {
         let payload_hash = params.cache_key_hash();
-        format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
+        format!(
+            "{}:{kind}:{}:{id}:{payload_hash:016x}",
+            request.host_id,
+            std::any::type_name::<T>()
+        )
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2534,11 +2556,14 @@ impl MykoServerContext {
     ///
     /// The typed projection is cached — multiple callers with the same query
     /// share a single underlying map instead of each creating their own copy.
+    ///
+    /// # Errors
+    /// Returns setup errors and rejects retained output that cannot become a local map.
     pub fn query_map<Q>(
         &self,
         query: Q,
         request: Arc<RequestContext>,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    ) -> Result<crate::query::LocalQueryMap<Q::Item, <Q::Item as WithTypedId>::Id>, String>
     where
         Q: QueryParams + 'static,
         Q::Item: Eventable
@@ -2566,7 +2591,7 @@ impl MykoServerContext {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    ) -> Result<crate::query::LocalQueryMap<Q::Item, <Q::Item as WithTypedId>::Id>, String>
     where
         Q: QueryParams + 'static,
         Q::Item: Eventable
@@ -2588,10 +2613,13 @@ impl MykoServerContext {
             request,
             #[cfg(not(target_arch = "wasm32"))]
             federated,
-        );
-        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
-            typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
-        })
+        )?;
+        Ok(Self::typed_projection(
+            &self.query_cache,
+            &key,
+            &untyped,
+            |source| typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map"),
+        ))
     }
 
     /// Reactive filter parameters: `filter_cell` replaces a value-based
@@ -2620,11 +2648,14 @@ impl MykoServerContext {
     /// Run a reactive query and return a typed map keyed by canonical string ids.
     ///
     /// Prefer `query_map()` unless you specifically need string ids.
+    ///
+    /// # Errors
+    /// Returns setup errors and rejects retained output that cannot become a local map.
     pub fn query_map_by_str<Q>(
         &self,
         query: Q,
         request: Arc<RequestContext>,
-    ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
+    ) -> Result<crate::query::LocalQueryMap<Q::Item>, String>
     where
         Q: QueryParams + 'static,
         Q::Item:
@@ -2645,7 +2676,7 @@ impl MykoServerContext {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
+    ) -> Result<crate::query::LocalQueryMap<Q::Item>, String>
     where
         Q: QueryParams + 'static,
         Q::Item:
@@ -2659,16 +2690,22 @@ impl MykoServerContext {
             request,
             #[cfg(not(target_arch = "wasm32"))]
             federated,
-        );
-        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
-            typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
-        })
+        )?;
+        Ok(Self::typed_projection(
+            &self.query_cache,
+            &key,
+            &untyped,
+            |source| typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str"),
+        ))
     }
 
     /// Run a reactive query.
     ///
     /// Returns a type-erased map that updates whenever the query results change.
     /// The query's `test_entity` is applied with proper server context.
+    ///
+    /// # Errors
+    /// Returns setup errors and rejects retained output that cannot become a local map.
     ///
     /// # Example
     ///
@@ -2683,7 +2720,11 @@ impl MykoServerContext {
     ///     // _peer_servers is CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>
     /// }
     /// ```
-    pub fn query_map_untyped<Q>(&self, query: Q, request: Arc<RequestContext>) -> FilteredCellMap
+    pub fn query_map_untyped<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+    ) -> Result<FilteredCellMap, String>
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -2703,7 +2744,28 @@ impl MykoServerContext {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> FilteredCellMap
+    ) -> Result<FilteredCellMap, String>
+    where
+        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        self.query_value_routed(
+            query,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        )
+        .and_then(crate::query::QueryValue::into_local_map)
+    }
+
+    pub(crate) fn query_value_routed<Q>(
+        &self,
+        query: Q,
+        request: Arc<RequestContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            super::federated_source::FederatedRequest,
+        >,
+    ) -> Result<crate::query::QueryValue, String>
     where
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -2711,7 +2773,7 @@ impl MykoServerContext {
         let mut key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         #[cfg(not(target_arch = "wasm32"))]
         Self::append_federated_cache_key(&mut key, federated.as_ref());
-        self.compute_or_cache(&key, &self.query_cache, || {
+        self.compute_or_cache_value(&key, &self.query_cache, || {
             let query_req = QueryRequest::with_tx(query, request.tx.clone());
             let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
             Q::cell_factory(
@@ -2722,14 +2784,6 @@ impl MykoServerContext {
                 #[cfg(not(target_arch = "wasm32"))]
                 federated,
             )
-            .unwrap_or_else(|error| {
-                tracing::error!(
-                    query_id = %Q::query_id_static(),
-                    %error,
-                    "typed query factory failed; returning an empty query"
-                );
-                CellMap::new().lock()
-            })
         })
     }
 
@@ -2739,9 +2793,9 @@ impl MykoServerContext {
     fn try_get_cached(
         cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
         key: &str,
-    ) -> Option<FilteredCellMap> {
+    ) -> Option<crate::query::QueryValue> {
         let existing = cache.get(key)?;
-        if let Some(shared) = existing.value().get() {
+        if let Some(shared) = existing.value().source.upgrade() {
             return Some(shared);
         }
         drop(existing);
@@ -2781,58 +2835,12 @@ impl MykoServerContext {
         project(untyped.clone())
     }
 
-    /// Compute-gate + double-checked caching shared by `query_map_untyped` and
-    /// `view_map_untyped`. Returns the cached untyped map on a fast-path or
-    /// post-gate hit; otherwise runs `build` exactly once under the per-key
-    /// compute gate, caches the result, and releases the gate.
-    ///
-    /// `build` is the only per-caller difference — each caller keeps its exact
-    /// request-wrap and `cell_factory` invocation (queries pass
-    /// `Some(server_ctx)`, views pass `server_ctx`) inside the closure.
-    fn compute_or_cache(
+    fn compute_or_cache_value(
         &self,
         key: &str,
         cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
-        compute: impl FnOnce() -> FilteredCellMap,
-    ) -> FilteredCellMap {
-        // Fast path
-        if let Some(cell) = Self::try_get_cached(cache, key) {
-            return cell;
-        }
-
-        let gate = self
-            .compute_gates
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
-            .clone();
-        let _lock = gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Re-check after gate
-        if let Some(cell) = Self::try_get_cached(cache, key) {
-            return cell;
-        }
-
-        let computed = compute();
-        cache.insert(key.to_string(), MapCacheEntry::new(&computed));
-        // The gate's only job was deduping concurrent first-computation; once
-        // the cache entry above is visible, any racing caller's re-check will
-        // hit it directly, gate or no gate. Removing it here — rather than
-        // never, which is a compute_gates memory leak that grows with every
-        // distinct query/param combination ever computed — is safe regardless
-        // of ordering relative to `_lock`'s drop, since a fresh gate + a cache
-        // hit on re-check behaves identically to blocking on the old gate.
-        self.compute_gates.remove(key);
-        computed
-    }
-
-    fn compute_or_cache_result(
-        &self,
-        key: &str,
-        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
-        compute: impl FnOnce() -> Result<FilteredCellMap, String>,
-    ) -> Result<FilteredCellMap, String> {
+        compute: impl FnOnce() -> Result<crate::query::QueryValue, String>,
+    ) -> Result<crate::query::QueryValue, String> {
         if let Some(cell) = Self::try_get_cached(cache, key) {
             return Ok(cell);
         }
@@ -2841,7 +2849,7 @@ impl MykoServerContext {
             .entry(key.to_owned())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone();
-        let _lease = NativeMapGate {
+        let _lease = ComputationGate {
             gates: &self.compute_gates,
             key,
             gate: &gate,
@@ -2853,7 +2861,7 @@ impl MykoServerContext {
             return Ok(cell);
         }
         let computed = compute()?;
-        cache.insert(key.to_owned(), MapCacheEntry::new(&computed));
+        cache.insert(key.to_owned(), MapCacheEntry::from_value(&computed));
         Ok(computed)
     }
 
@@ -2892,21 +2900,50 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
+        self.view_value_routed(
+            view,
+            request,
+            #[cfg(not(target_arch = "wasm32"))]
+            federated,
+        )?
+        .into_local_map()
+    }
+
+    pub(crate) fn view_value_routed<V>(
+        &self,
+        view: V,
+        request: Arc<RequestContext>,
+        #[cfg(not(target_arch = "wasm32"))] federated: Option<
+            super::federated_source::FederatedRequest,
+        >,
+    ) -> Result<crate::query::QueryValue, String>
+    where
+        V: ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
         let mut key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
         #[cfg(not(target_arch = "wasm32"))]
         Self::append_federated_cache_key(&mut key, federated.as_ref());
-        self.compute_or_cache_result(&key, &self.view_cache, || {
+        self.compute_or_cache_value(&key, &self.view_cache, || {
             let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
             let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
-            V::cell_factory(
+            let output = V::cell_factory(
                 any_view,
                 self.registry.clone(),
                 request,
                 Arc::new(self.clone()),
                 #[cfg(not(target_arch = "wasm32"))]
                 federated,
-            )?
-            .into_local_map()
+            )?;
+            Ok(match output {
+                crate::view::RegisteredViewOutput::LocalMap(map) => {
+                    crate::query::QueryValue::LocalMap(map)
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                crate::view::RegisteredViewOutput::RetainedPublication(live) => {
+                    crate::query::QueryValue::RetainedPublication(live)
+                }
+            })
         })
     }
 
@@ -3006,11 +3043,15 @@ impl MykoServerContext {
             .collect()
     }
 
+    /// Open or reuse a report with its dependency lifecycle intact.
+    ///
+    /// # Errors
+    /// Returns errors from the report's dependency or resource setup.
     pub fn report<R>(
         &self,
         report: R,
         request: Arc<RequestContext>,
-    ) -> Cell<Arc<R::Output>, CellImmutable>
+    ) -> Result<ReportValue<R::Output>, String>
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
@@ -3029,7 +3070,7 @@ impl MykoServerContext {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> Cell<Arc<R::Output>, CellImmutable>
+    ) -> Result<ReportValue<R::Output>, String>
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
@@ -3050,7 +3091,7 @@ impl MykoServerContext {
                 report_id,
                 key,
             );
-            return cell;
+            return Ok(cell);
         }
 
         // NOTE(ts): Per-key gate prevents duplicate computation when multiple threads
@@ -3060,6 +3101,11 @@ impl MykoServerContext {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
+        let _lease = ComputationGate {
+            gates: &self.compute_gates,
+            key: &key,
+            gate: &gate,
+        };
         let _lock = gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -3073,7 +3119,7 @@ impl MykoServerContext {
                 report_id,
                 key,
             );
-            return cell;
+            return Ok(cell);
         }
 
         // Emit MISS_COMPUTE *before* compute() so the analyze pass can correlate
@@ -3102,33 +3148,31 @@ impl MykoServerContext {
             #[cfg(not(target_arch = "wasm32"))]
             federated,
         );
-        // The trait returns `impl Pipeline<...>`; materialize once here so the
-        // cache and downstream consumers get a concrete `Cell`. This is the only
-        // materialization per report, regardless of how deep the inner chain is.
-        let built = report.compute(nested_ctx).materialize();
+        let built = report.compute(nested_ctx)?.materialize_report();
         drop(report);
-        // Named by report id (bounded cardinality — one name per report
-        // *type*, not per invocation) so hyphae's `hyphae.fanout` span
-        // (under the `profiling` feature) surfaces `cell.name` instead of
-        // being anonymous. `Cell<T, CellImmutable>::with_name` is available
-        // post-materialize (unlike `CellMap`, which only exposes it pre-lock
-        // — query/view result maps can't be named at this seam the same way).
         #[cfg(feature = "profiling")]
-        let built = built.with_name(report_id.as_ref());
+        let built = match built {
+            ReportValue::LocalCell(cell) => {
+                ReportValue::LocalCell(cell.with_name(report_id.as_ref()))
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            ReportValue::RetainedPublication(publication) => {
+                let _named = publication
+                    .publication()
+                    .clone()
+                    .with_name(report_id.as_ref());
+                ReportValue::RetainedPublication(publication)
+            }
+        };
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
-        // See the matching comment in `query_map_untyped` — the gate is only
-        // needed to dedupe concurrent first-computation, not after the cache
-        // entry above is visible.
-        self.compute_gates.remove(&key);
-
         crate::server::report_cache_stats::record_miss(&report_id);
 
-        built
+        Ok(built)
     }
 
     /// Try to get a cached report cell. Returns None if missing or dead.
-    fn try_get_cached_report<R>(&self, key: &str) -> Option<Cell<Arc<R::Output>, CellImmutable>>
+    fn try_get_cached_report<R>(&self, key: &str) -> Option<ReportValue<R::Output>>
     where
         R: ReportHandler + 'static,
     {
@@ -3136,7 +3180,7 @@ impl MykoServerContext {
         if let Some(entry) = existing
             .value()
             .as_any()
-            .downcast_ref::<ReportCacheEntry<Arc<R::Output>>>()
+            .downcast_ref::<ReportCacheEntry<R::Output>>()
             && let Some(shared) = entry.get()
         {
             return Some(shared);
@@ -3315,15 +3359,38 @@ mod tests {
         )
     }
 
+    #[crate::myko_query(crate::entities::client::Client)]
+    #[derive(PartialEq, Eq)]
+    struct LocalClients;
+
+    impl crate::query::QueryHandler for LocalClients {
+        fn build_view(
+            ctx: crate::query::QueryBuildArgs<Self>,
+        ) -> Result<Option<impl crate::query::QueryBuildOutput>, String> {
+            Ok(Some(
+                ctx.query_context
+                    .registry()
+                    .get_or_create(crate::entities::client::Client::ENTITY_NAME_STATIC)
+                    .as_ref()
+                    .clone()
+                    .lock(),
+            ))
+        }
+    }
+
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_map_cache_shares_outputs_without_retaining_dead_owners() {
+    fn native_map_cache_shares_outputs_without_retaining_dead_owners() -> Result<(), String> {
+        use crate::query::QueryIdStatic as _;
         use hyphae::DepNode as _;
 
+        let _serial = crate::test_util::scheduler_test_serial();
         let ctx = make_ctx();
         let handler = myko_wire::HandlerRequest {
             kind: myko_federation::HandlerKind::Query,
-            handler_id: "GetAllClients".to_owned(),
+            handler_id: LocalClients::query_id_static().to_string(),
+            service_id: LocalClients::SERVICE_ID
+                .map(|service| myko_federation::ServiceId::new(service.as_str())),
             source_node: None,
             scope_id: None,
             params: serde_json::json!({}),
@@ -3344,45 +3411,76 @@ mod tests {
             })
         });
         let [left, right] = threads.map(std::thread::JoinHandle::join);
-        assert!(matches!(&left, Ok(Ok(_))));
-        assert!(matches!(&right, Ok(Ok(_))));
-        let (Ok(Ok(left)), Ok(Ok(right))) = (left, right) else {
-            return;
-        };
-        assert!(Arc::ptr_eq(&left, &right));
-        assert!(ctx.compute_gates.is_empty());
+        let left = left.map_err(|_| "left native map worker panicked".to_owned())??;
+        let right = right.map_err(|_| "right native map worker panicked".to_owned())??;
+        if !Arc::ptr_eq(&left, &right) {
+            return Err("concurrent native map opens did not share their output".to_owned());
+        }
+        if !ctx.compute_gates.is_empty() {
+            return Err("native map opens retained their compute gates".to_owned());
+        }
         let weak = Arc::downgrade(&left);
         drop((left, right));
-        assert!(weak.upgrade().is_none());
+        if weak.upgrade().is_some() {
+            return Err("native map output survived its last owner".to_owned());
+        }
         let root = ctx
             .registry
             .get_or_create(crate::entities::client::Client::ENTITY_NAME_STATIC);
-        assert_eq!(ctx.query_cache.len(), 1);
-        for entry in ctx.query_cache.iter() {
-            assert!(
-                entry
-                    .publication
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .upgrade()
-                    .is_none()
-            );
-            let map = entry.get();
-            assert!(map.is_some());
-            let Some(map) = map else {
-                return;
-            };
-            assert_eq!(
-                map.diffs().materialize().id(),
-                root.diffs().materialize().id()
-            );
+        if ctx.query_cache.len() != 1 {
+            return Err("native map opens did not share one cache entry".to_owned());
         }
+        for entry in ctx.query_cache.iter() {
+            if entry
+                .publication
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .upgrade()
+                .is_some()
+            {
+                return Err("cached native map retained an unowned publication".to_owned());
+            }
+            let map = entry.get().ok_or("cached root map expired")?;
+            if map.diffs().materialize().id() != root.diffs().materialize().id() {
+                return Err("cached native map no longer uses the live root".to_owned());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(not(target_arch = "wasm32"))]
+    fn generated_native_map_requires_a_federation_source() {
+        use crate::{entities::client::GetAllClients, query::QueryIdStatic as _};
+
+        let _serial = crate::test_util::scheduler_test_serial();
+        let ctx = make_ctx();
+        let handler = myko_wire::HandlerRequest {
+            kind: myko_federation::HandlerKind::Query,
+            handler_id: GetAllClients::query_id_static().to_string(),
+            service_id: GetAllClients::SERVICE_ID
+                .map(|service| myko_federation::ServiceId::new(service.as_str())),
+            source_node: None,
+            scope_id: None,
+            params: serde_json::json!({}),
+        };
+        let request = Arc::new(crate::request::RequestContext::internal(
+            Arc::from("missing-federation"),
+            ctx.host_id,
+            "native-test",
+        ));
+        assert!(matches!(ctx.open_native_map(&handler, request),
+            Err(message) if message == "query context has no federation source runtime"));
+        assert!(ctx.query_cache.is_empty());
+        assert!(ctx.compute_gates.is_empty());
     }
 
     #[test]
     #[cfg(not(target_arch = "wasm32"))]
     fn native_map_cache_releases_a_derived_map_after_its_last_owner() {
         use hyphae::SelectExt as _;
+
+        let _serial = crate::test_util::scheduler_test_serial();
         let root = hyphae::CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
         let derived = hyphae::MapQuery::materialize(root.clone().select(|_| true));
         let weak = derived.downgrade();
@@ -3406,6 +3504,7 @@ mod tests {
         let handler = myko_wire::HandlerRequest {
             kind: myko_federation::HandlerKind::Query,
             handler_id: "missing-native-handler".to_owned(),
+            service_id: None,
             source_node: None,
             scope_id: None,
             params: serde_json::json!({}),
@@ -3799,6 +3898,8 @@ mod tests {
             },
             request.clone(),
         );
+        assert!(status.is_ok());
+        let Ok(status) = status else { return };
         let connected_clients = ctx.view(ConnectedClients {}, request);
         assert!(connected_clients.is_ok());
         let Ok(connected_clients) = connected_clients else {
@@ -3806,7 +3907,7 @@ mod tests {
         };
         let await_liveness = |online| {
             let started = std::time::Instant::now();
-            while status.get().online != online
+            while status.read_current().map(|status| status.online) != Ok(online)
                 || connected_clients.get_value(&client_id).is_some() != online
             {
                 assert!(
@@ -3817,7 +3918,11 @@ mod tests {
             }
         };
 
-        assert!(!status.get().online, "replayed entity is not a live client");
+        assert_eq!(
+            status.read_current().map(|status| status.online),
+            Ok(false),
+            "replayed entity is not a live client"
+        );
         assert!(
             connected_clients.get_value(&client_id).is_none(),
             "replayed entity is absent from connected clients"
@@ -3827,7 +3932,7 @@ mod tests {
         registry.register(client_id.clone(), Arc::new(ClientStatusTestWriter));
         await_liveness(true);
         assert!(
-            status.get().online,
+            status.read_current().is_ok_and(|status| status.online),
             "registered writer makes the client live"
         );
         assert!(
@@ -3838,7 +3943,7 @@ mod tests {
         registry.unregister(&client_id);
         await_liveness(false);
         assert!(
-            !status.get().online,
+            status.read_current().is_ok_and(|status| !status.online),
             "unregistering the writer makes the client offline"
         );
         assert!(
@@ -3853,10 +3958,8 @@ mod tests {
 
     #[test]
     fn compute_gates_does_not_leak_after_report_cache_populates() {
-        // Same invariant as compute_gates_does_not_leak_after_cache_populates,
-        // exercised through the report() call site's independent gate-removal
-        // (a separate line, since it inserts into report_cache instead of
-        // query_cache — verified both were fixed, not just the query one).
+        // Exercise the report cache separately from the query cache. Both
+        // must release their computation gate after setup.
         use crate::{
             entities::client::{ClientId, ClientStatus},
             request::RequestContext,
@@ -3882,5 +3985,24 @@ mod tests {
 
         let _ = ctx.report(report, request);
         assert!(ctx.compute_gates.is_empty());
+    }
+
+    #[test]
+    fn failed_report_setup_releases_compute_gate() {
+        let ctx = make_ctx();
+        let result = ctx.report(
+            crate::report::ExportEntityTree {
+                root_type: "missing".into(),
+                root_id: "missing".into(),
+                as_of: Some("invalid-history-time".into()),
+            },
+            ctx.new_server_transaction(),
+        );
+        assert!(result.is_err());
+        assert!(
+            ctx.compute_gates.is_empty(),
+            "failed report setup leaked a compute gate"
+        );
+        assert!(ctx.report_cache.is_empty());
     }
 }

@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use hyphae::{CellImmutable, CellMap, CellMutable, MapExt as _};
+use hyphae::{CellImmutable, CellMap, CellMutable};
 use myko::{
     ApplicationHost, CommandContext, CommandError, CommandHandler, myko_report, myko_view,
     myko_view_item,
@@ -85,23 +85,20 @@ impl ReportHandler for DiscoverySettingsReport {
     fn compute(
         &self,
         context: ReportContext,
-    ) -> impl hyphae::Materialize<Arc<Self::Output>, hyphae::Definite> {
+    ) -> Result<impl myko::report::ReportBuildOutput<Self::Output>, String> {
         let id = DiscoverySettingsId::from(self.source_node.to_string());
-        myko::item::typed_map_arc_from_any_item::<DiscoverySettings>(
+        Ok(myko::report::RetainedReport::new(
             context
-                .federated_items::<DiscoverySettings>()
-                .expect("validated discovery-settings federation source"),
-            "DiscoverySettingsReport",
-        )
-        .entries()
-        .map(move |settings| {
-            Arc::new(
-                settings
-                    .iter()
-                    .find(|(_, setting)| setting.id == id)
-                    .map(|(_, setting)| setting.as_ref().clone()),
-            )
-        })
+                .federated_items::<DiscoverySettings>()?
+                .map_value(move |settings| {
+                    Arc::new(
+                        settings
+                            .iter()
+                            .find(|(_, setting)| setting.id == id)
+                            .map(|(_, setting)| setting.as_ref().clone()),
+                    )
+                }),
+        ))
     }
 }
 
@@ -178,14 +175,14 @@ impl ViewHandler for NearbyNodesView {
 
     fn build_cell(
         context: ViewBuildArgs<Self>,
-    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
-        myko::view::LocalView::new({
+    ) -> Result<impl myko::view::ViewBuildOutput<Item = Self::Item>, String> {
+        Ok(myko::view::LocalView::new(
             context
                 .resource::<DiscoveryViewState>()
-                .expect("discovery view resource is installed")
+                .map_err(|error| error.to_string())?
                 .nearby
-                .clone()
-        })
+                .clone(),
+        ))
     }
 }
 

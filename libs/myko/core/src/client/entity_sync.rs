@@ -117,7 +117,11 @@ where
         events
     }
 
-    pub fn new<QLocal, QRemote>(config: EntityStoreSyncConfig<T, QLocal, QRemote>) -> Arc<Self>
+    /// # Errors
+    /// Returns the local query's setup error before installing synchronization.
+    pub fn new<QLocal, QRemote>(
+        config: EntityStoreSyncConfig<T, QLocal, QRemote>,
+    ) -> Result<Arc<Self>, String>
     where
         T: DeserializeOwned + std::fmt::Debug,
         QLocal: QueryFactory + QueryHandler + QueryParams<Item = T> + Clone + Send + Sync + 'static,
@@ -132,7 +136,7 @@ where
             items_equal,
         } = config;
         let local_cell = local_ctx
-            .query_map_by_str(local_query, local_ctx.new_server_transaction())
+            .query_map_by_str(local_query, local_ctx.new_server_transaction())?
             .entries()
             .map(|entries: &Vec<(Arc<str>, Arc<T>)>| {
                 entries
@@ -159,9 +163,9 @@ where
             }
         });
 
-        Arc::new(Self {
+        Ok(Arc::new(Self {
             _sync_guard: joined_guard,
             _marker: PhantomData,
-        })
+        }))
     }
 }

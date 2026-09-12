@@ -13,7 +13,7 @@ use std::time::Duration;
 use hyphae::MapExt;
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::SwitchMapExt;
-use hyphae::{Cell, Definite, Materialize};
+use hyphae::{Cell, Materialize};
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::{DedupedExt, interval};
 use serde::{Deserialize, Serialize};
@@ -70,10 +70,15 @@ pub struct GetItemsByTypeAndIds {
 impl ReportHandler for GetItemsByTypeAndIds {
     type Output = Vec<serde_json::Value>;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Implement dynamic type lookup once we have entity registry
-        // For now, return empty - this requires runtime type resolution
-        Cell::new(Arc::new(Vec::new())).lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // TODO(ts): Implement dynamic type lookup once we have entity registry
+            // For now, return empty - this requires runtime type resolution
+            Cell::new(Arc::new(Vec::new())).lock()
+        })
     }
 }
 
@@ -87,10 +92,15 @@ pub struct ChildEntities {
 impl ReportHandler for ChildEntities {
     type Output = Vec<ItemStub>;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Implement using relationship manager
-        // This requires querying the relationship graph for direct children
-        Cell::new(Arc::new(Vec::new())).lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // TODO(ts): Implement using relationship manager
+            // This requires querying the relationship graph for direct children
+            Cell::new(Arc::new(Vec::new())).lock()
+        })
     }
 }
 
@@ -104,9 +114,14 @@ pub struct FullChildEntities {
 impl ReportHandler for FullChildEntities {
     type Output = Vec<ItemStub>;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Implement recursive traversal using relationship manager
-        Cell::new(Arc::new(Vec::new())).lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // TODO(ts): Implement recursive traversal using relationship manager
+            Cell::new(Arc::new(Vec::new())).lock()
+        })
     }
 }
 
@@ -120,9 +135,14 @@ pub struct ChildEntitiesAllTime {
 impl ReportHandler for ChildEntitiesAllTime {
     type Output = Vec<ItemStub>;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Implement with historical event store query
-        Cell::new(Arc::new(Vec::new())).lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // TODO(ts): Implement with historical event store query
+            Cell::new(Arc::new(Vec::new())).lock()
+        })
     }
 }
 
@@ -136,9 +156,14 @@ pub struct EntitySnapshotDifference {
 impl ReportHandler for EntitySnapshotDifference {
     type Output = EntitySnapshotDifferenceData;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Implement snapshot comparison
-        Cell::new(Arc::new(EntitySnapshotDifferenceData::default())).lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // TODO(ts): Implement snapshot comparison
+            Cell::new(Arc::new(EntitySnapshotDifferenceData::default())).lock()
+        })
     }
 }
 
@@ -166,16 +191,21 @@ pub struct Loggers {}
 impl ReportHandler for Loggers {
     type Output = Vec<String>;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Integrate with tracing subscriber to list available targets
-        Cell::new(Arc::new(vec![
-            "myko".to_string(),
-            "myko::server".to_string(),
-            "myko::query".to_string(),
-            "myko::command".to_string(),
-            "myko::report".to_string(),
-        ]))
-        .lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // TODO(ts): Integrate with tracing subscriber to list available targets
+            Cell::new(Arc::new(vec![
+                "myko".to_string(),
+                "myko::server".to_string(),
+                "myko::query".to_string(),
+                "myko::command".to_string(),
+                "myko::report".to_string(),
+            ]))
+            .lock()
+        })
     }
 }
 
@@ -188,9 +218,14 @@ pub struct ServerLogLevel {
 impl ReportHandler for ServerLogLevel {
     type Output = LogLevel;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Query actual log level from tracing config
-        Cell::new(Arc::new(LogLevel::Info)).lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // TODO(ts): Query actual log level from tracing config
+            Cell::new(Arc::new(LogLevel::Info)).lock()
+        })
     }
 }
 
@@ -223,21 +258,26 @@ pub struct PeerAlive {
 impl ReportHandler for PeerAlive {
     type Output = i64;
 
-    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        let peer_id = self.peer_id.clone();
-        let report_ctx = ctx.clone();
-        ctx.peer_clients_tick().switch_map(move |_| {
-            let Some(peer_client) = report_ctx.peer_client(peer_id.as_ref()) else {
-                return Cell::new(Arc::new(-1)).lock();
-            };
+    fn compute(
+        &self,
+        ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            let peer_id = self.peer_id.clone();
+            let report_ctx = ctx.clone();
+            ctx.peer_clients_tick().switch_map(move |_| {
+                let Some(peer_client) = report_ctx.peer_client(peer_id.as_ref()) else {
+                    return Cell::new(Arc::new(-1)).lock();
+                };
 
-            peer_client
-                .ping_ms()
-                .clone()
-                .map(|ping_ms| {
-                    Arc::new(ping_ms.map_or(-1, |ms| i64::try_from(ms).unwrap_or(i64::MAX)))
-                })
-                .materialize()
+                peer_client
+                    .ping_ms()
+                    .clone()
+                    .map(|ping_ms| {
+                        Arc::new(ping_ms.map_or(-1, |ms| i64::try_from(ms).unwrap_or(i64::MAX)))
+                    })
+                    .materialize()
+            })
         })
     }
 }
@@ -246,8 +286,11 @@ impl ReportHandler for PeerAlive {
 impl ReportHandler for PeerAlive {
     type Output = i64;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        Cell::new(Arc::new(-1)).lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({ Cell::new(Arc::new(-1)).lock() })
     }
 }
 
@@ -273,9 +316,14 @@ pub struct EventsForTransaction {
 impl ReportHandler for EventsForTransaction {
     type Output = Vec<crate::wire::MEvent>;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Query event store by transaction ID
-        Cell::new(Arc::new(Vec::new())).lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // TODO(ts): Query event store by transaction ID
+            Cell::new(Arc::new(Vec::new())).lock()
+        })
     }
 }
 
@@ -373,31 +421,36 @@ pub struct GetPersistHealth {}
 impl ReportHandler for GetPersistHealth {
     type Output = PersistHealthStatus;
 
-    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        let health = ctx.persist_health();
-        interval(Duration::from_millis(500))
-            .map(move |_tick| {
-                let queued = health.queued.load(Ordering::Relaxed);
-                let total_persisted = health.total_persisted.load(Ordering::Relaxed);
-                let total_errors = health.total_errors.load(Ordering::Relaxed);
-                let consecutive_errors = health.consecutive_errors.load(Ordering::Relaxed);
-                let last_error = health
-                    .last_error
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                let writes_per_second = health.writes_per_second();
-                Arc::new(PersistHealthStatus {
-                    queued,
-                    total_persisted,
-                    total_errors,
-                    consecutive_errors,
-                    last_error,
-                    healthy: consecutive_errors == 0,
-                    writes_per_second,
+    fn compute(
+        &self,
+        ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            let health = ctx.persist_health();
+            interval(Duration::from_millis(500))
+                .map(move |_tick| {
+                    let queued = health.queued.load(Ordering::Relaxed);
+                    let total_persisted = health.total_persisted.load(Ordering::Relaxed);
+                    let total_errors = health.total_errors.load(Ordering::Relaxed);
+                    let consecutive_errors = health.consecutive_errors.load(Ordering::Relaxed);
+                    let last_error = health
+                        .last_error
+                        .read()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    let writes_per_second = health.writes_per_second();
+                    Arc::new(PersistHealthStatus {
+                        queued,
+                        total_persisted,
+                        total_errors,
+                        consecutive_errors,
+                        last_error,
+                        healthy: consecutive_errors == 0,
+                        writes_per_second,
+                    })
                 })
-            })
-            .deduped()
+                .deduped()
+        })
     }
 }
 
@@ -405,17 +458,22 @@ impl ReportHandler for GetPersistHealth {
 impl ReportHandler for GetPersistHealth {
     type Output = PersistHealthStatus;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        Cell::new(Arc::new(PersistHealthStatus {
-            queued: 0,
-            total_persisted: 0,
-            total_errors: 0,
-            consecutive_errors: 0,
-            last_error: None,
-            healthy: true,
-            writes_per_second: 0.0,
-        }))
-        .lock()
+    fn compute(
+        &self,
+        _ctx: ReportContext,
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            Cell::new(Arc::new(PersistHealthStatus {
+                queued: 0,
+                total_persisted: 0,
+                total_errors: 0,
+                consecutive_errors: 0,
+                last_error: None,
+                healthy: true,
+                writes_per_second: 0.0,
+            }))
+            .lock()
+        })
     }
 }
 

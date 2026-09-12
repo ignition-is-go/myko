@@ -2,10 +2,10 @@
 
 use std::{any::Any, sync::Arc};
 
-use hyphae::{Cell, CellImmutable, MapExt, Materialize};
 use serde_json::Value;
 
 use super::{
+    ReportValue,
     request::ReportRequest,
     traits::{AnyReport, ReportParams},
 };
@@ -60,7 +60,7 @@ pub type ReportCellFactory = fn(
     Arc<RequestContext>,
     Arc<MykoServerContext>,
     Option<crate::server::federated_source::FederatedRequest>,
-) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
+) -> Result<ReportValue<dyn AnyOutput>, String>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // ReportRegistration - inventory-based registration
@@ -71,6 +71,8 @@ inventory::collect!(ReportRegistration);
 /// Registration entry for a report type.
 /// Collected via inventory for automatic discovery.
 pub struct ReportRegistration {
+    #[cfg(feature = "schema")]
+    pub payload_schema: Option<fn() -> crate::schema::HandlerPayloadSchema>,
     /// Report identifier (e.g., "`ServerStats`")
     pub report_id: &'static str,
     /// Typed service owner used by application activation.
@@ -122,7 +124,7 @@ pub trait ReportFactory: ReportParams {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String>;
+    ) -> Result<ReportValue<dyn AnyOutput>, String>;
 
     #[cfg(not(target_arch = "wasm32"))]
     /// Resolve typed source, scope, claims, and capabilities before opening.
@@ -144,6 +146,7 @@ impl<R: ReportParams> ReportFactory for R {
     ) -> Result<crate::server::HandlerAuthority, String> {
         let report: R = serde_json::from_value(value).map_err(|error| error.to_string())?;
         Ok(crate::server::HandlerAuthority {
+            service_id: None,
             source_node: report.source_node(local_node),
             scope_id: report.scope_id(local_node),
             resource_claims: report.authority_claims(local_node),
@@ -163,15 +166,13 @@ impl<R: ReportParams> ReportFactory for R {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> Result<Cell<Arc<dyn AnyOutput>, CellImmutable>, String> {
+    ) -> Result<ReportValue<dyn AnyOutput>, String> {
         // Downcast to the ReportRequest wrapper
         let any_ref: &dyn Any = any_report.as_ref();
         let request: ReportRequest<R> = crate::common::downcast::downcast_request(
             any_ref,
             &format!("report to ReportRequest<{}>", R::report_id_static()),
         )?;
-
-        let report_id = R::report_id_static();
 
         // Route through the canonical cached path so WS / QueryContext callers
         // share the same cached cell as internal sub-report subscribers (those
@@ -183,13 +184,8 @@ impl<R: ReportParams> ReportFactory for R {
             request_ctx,
             #[cfg(not(target_arch = "wasm32"))]
             federated,
-        );
+        )?;
 
-        // Map to type-erased output for the WS/report subscription layer.
-        let report_name = format!("report:{report_id}");
-        Ok(cell
-            .map(|output| -> Arc<dyn AnyOutput> { output.clone() })
-            .materialize()
-            .with_name(report_name.as_str()))
+        Ok(cell.map_value(|output| -> Arc<dyn AnyOutput> { output.clone() }))
     }
 }

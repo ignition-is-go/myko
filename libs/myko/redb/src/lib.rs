@@ -455,6 +455,68 @@ mod tests {
     }
 
     #[test]
+    fn incomplete_scope_admission_gate_survives_reopen() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("scope-readiness.redb");
+        let parent = timestamp_source()?;
+        let mut command = request(CommandId::new());
+        command.service_id = ServiceId::new("records");
+        command.scope_id = ScopeId::new("records/workspace:one");
+        command.command_type = "records.change".to_owned();
+        command.payload.clear();
+        let child = committed_envelope(
+            myko_federation::EventId::new(NodeId::new(), LogPosition::FIRST),
+            &command,
+            vec![parent.origin],
+            &parent,
+        );
+        let mut pending_command = command;
+        pending_command.id = CommandId::new();
+        {
+            let node = RedbJournal::open_node(&path)?;
+            let _policy = allow_commands(&node)?;
+            node.ingest(child)?;
+            let before = node.events_after(None)?;
+            if !matches!(
+                node.submit(pending_command.clone()),
+                Err(NodeError::ScopeHistoryIncomplete(_))
+            ) {
+                return Err("durable node accepted a command into incomplete scope history".into());
+            }
+            if node.events_after(None)? != before {
+                return Err("failed submission appended durable command history".into());
+            }
+        }
+        {
+            let node = RedbJournal::open_node(&path)?;
+            let _policy = allow_commands(&node)?;
+            if node.command(pending_command.id)?.is_some() {
+                return Err("reopen recovered a command that should not have been accepted".into());
+            }
+            if !matches!(
+                node.submit(pending_command.clone()),
+                Err(NodeError::ScopeHistoryIncomplete(_))
+            ) {
+                return Err("reopen lost the scope's unresolved-history admission gate".into());
+            }
+            node.ingest(parent)?;
+            if node.command(pending_command.id)?.is_some() {
+                return Err("supplying history implicitly accepted the rejected command".into());
+            }
+            node.submit(pending_command.clone())?;
+        }
+        let node = RedbJournal::open_node(&path)?;
+        if node
+            .command(pending_command.id)?
+            .map(|snapshot| snapshot.request)
+            != Some(pending_command)
+        {
+            return Err("explicit retry was not persisted after catch-up".into());
+        }
+        Ok(())
+    }
+
+    #[test]
     fn retained_history_verification_checks_exact_immutable_inclusion() -> Result<(), String> {
         let source = Node::in_memory();
         let _source_policy = allow_commands(&source)?;

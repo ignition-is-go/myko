@@ -4,7 +4,6 @@
 
 use std::{collections::BTreeSet, sync::Arc};
 
-use hyphae::{Definite, MapExt as _, Materialize};
 use myko::{
     CommandContext, CommandError, CommandHandler, myko_query, myko_report, myko_view,
     query::{QueryBuildArgs, QueryHandler},
@@ -44,6 +43,10 @@ myko::register_federated_item!(PeerRoster);
 /// replication to these durable values.
 #[myko_item(service = FederationService, scoped_by = PeerRoster)]
 pub struct Peer {
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "myko_iroh::schema::endpoint_addr_schema")
+    )]
     pub endpoint: EndpointAddr,
     pub source_node: Option<NodeId>,
     pub replication_enabled: bool,
@@ -54,12 +57,14 @@ myko::register_federated_item!(Peer);
 
 impl Eq for Peer {}
 
-/// One typed application service executable by an authoritative Myko node.
+/// One service declared executable by this node's composed application.
 ///
 /// Nodes publish this framework-owned catalog from their composed
 /// [`myko::MykoApplication`]. Followers therefore learn routing
 /// capabilities through the same durable, reactive federation log as every
 /// other Myko item.
+/// Advertisement does not establish an execution assignment, schema compatibility,
+/// or per-scope readiness.
 #[myko_item(service = FederationService, scoped_by = PeerRoster)]
 pub struct AdvertisedService {
     pub service_id: myko_federation::ServiceId,
@@ -353,11 +358,10 @@ pub struct GetPeers;
 impl QueryHandler for GetPeers {
     fn build_view(
         ctx: QueryBuildArgs<Self>,
-    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn myko::item::AnyItem>>> {
-        Some(
-            ctx.federated_items::<Peer>()
-                .expect("validated peer federation source"),
-        )
+    ) -> Result<Option<impl myko::query::QueryBuildOutput>, String> {
+        Ok(Some(myko::query::RetainedQuery::new(
+            ctx.federated_items::<Peer>()?,
+        )))
     }
 }
 
@@ -369,11 +373,10 @@ pub struct GetAdvertisedServices;
 impl QueryHandler for GetAdvertisedServices {
     fn build_view(
         ctx: QueryBuildArgs<Self>,
-    ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn myko::item::AnyItem>>> {
-        Some(
-            ctx.federated_items::<AdvertisedService>()
-                .expect("validated advertised-service federation source"),
-        )
+    ) -> Result<Option<impl myko::query::QueryBuildOutput>, String> {
+        Ok(Some(myko::query::RetainedQuery::new(
+            ctx.federated_items::<AdvertisedService>()?,
+        )))
     }
 }
 
@@ -393,14 +396,12 @@ impl ViewHandler for PeersView {
         Some(peer_scope(self.source_node))
     }
 
-    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
-        myko::view::LocalView::new({
-            myko::item::typed_map_arc_from_any_item::<Peer>(
-                ctx.federated_items::<Peer>()
-                    .expect("validated peer federation source"),
-                "PeersView",
-            )
-        })
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> Result<impl myko::view::ViewBuildOutput<Item = Self::Item>, String> {
+        Ok(myko::view::RetainedView::new(
+            ctx.federated_items::<Peer>()?,
+        ))
     }
 }
 
@@ -420,14 +421,12 @@ impl ViewHandler for AdvertisedServicesView {
         Some(peer_scope(self.source_node))
     }
 
-    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
-        myko::view::LocalView::new({
-            myko::item::typed_map_arc_from_any_item::<AdvertisedService>(
-                ctx.federated_items::<AdvertisedService>()
-                    .expect("validated advertised-service federation source"),
-                "AdvertisedServicesView",
-            )
-        })
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> Result<impl myko::view::ViewBuildOutput<Item = Self::Item>, String> {
+        Ok(myko::view::RetainedView::new(
+            ctx.federated_items::<AdvertisedService>()?,
+        ))
     }
 }
 
@@ -450,23 +449,21 @@ impl ReportHandler for PeerReport {
         Some(peer_scope(self.source_node))
     }
 
-    fn compute(&self, context: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+    fn compute(
+        &self,
+        context: ReportContext,
+    ) -> Result<impl myko::report::ReportBuildOutput<Self::Output>, String> {
         let peer_id = self.peer_id.clone();
-        myko::item::typed_map_arc_from_any_item::<Peer>(
-            context
-                .federated_items::<Peer>()
-                .expect("validated peer federation source"),
-            "PeerReport",
-        )
-        .entries()
-        .map(move |peers| {
-            Arc::new(
-                peers
-                    .iter()
-                    .find(|(_, peer)| peer.id == peer_id)
-                    .map(|(_, peer)| peer.as_ref().clone()),
-            )
-        })
+        Ok(myko::report::RetainedReport::new(
+            context.federated_items::<Peer>()?.map_value(move |peers| {
+                Arc::new(
+                    peers
+                        .iter()
+                        .find(|(_, peer)| peer.id == peer_id)
+                        .map(|(_, peer)| peer.as_ref().clone()),
+                )
+            }),
+        ))
     }
 }
 
@@ -501,22 +498,22 @@ impl ReportHandler for ServiceCapabilityReport {
         Some(peer_scope(self.source_node))
     }
 
-    fn compute(&self, context: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+    fn compute(
+        &self,
+        context: ReportContext,
+    ) -> Result<impl myko::report::ReportBuildOutput<Self::Output>, String> {
         let service_id = self.service_id.clone();
-        myko::item::typed_map_arc_from_any_item::<AdvertisedService>(
+        Ok(myko::report::RetainedReport::new(
             context
-                .federated_items::<AdvertisedService>()
-                .expect("validated advertised-service federation source"),
-            "ServiceCapabilityReport",
-        )
-        .entries()
-        .map(move |services| {
-            Arc::new(
-                services
-                    .iter()
-                    .any(|(_, service)| service.service_id == service_id),
-            )
-        })
+                .federated_items::<AdvertisedService>()?
+                .map_value(move |services| {
+                    Arc::new(
+                        services
+                            .iter()
+                            .any(|(_, service)| service.service_id == service_id),
+                    )
+                }),
+        ))
     }
 }
 

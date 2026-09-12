@@ -6,6 +6,7 @@
 // remains removed in favor of the unified report API.
 pub mod export_tree;
 mod handler;
+mod output;
 mod registration;
 mod request;
 mod traits;
@@ -23,6 +24,10 @@ pub type ReportStream<T> = Pin<Box<dyn Stream<Item = T> + Send>>;
 // to call live_report — only the server-side compute is native-gated.
 pub use export_tree::{EntityTreeExport, ExportEntityTree, ExportedEntity};
 pub use handler::{ReportContext, ReportHandler};
+#[cfg(not(target_arch = "wasm32"))]
+pub use output::RetainedReport;
+pub(crate) use output::WeakReportValue;
+pub use output::{ReportBuildOutput, ReportValue};
 // Re-export registration types (server-only)
 #[cfg(not(target_arch = "wasm32"))]
 pub use registration::ReportAuthorityFactory;

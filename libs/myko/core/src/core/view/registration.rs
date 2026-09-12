@@ -35,6 +35,8 @@ pub type ViewCellFactory = fn(
 /// Registration entry for a view type.
 /// Collected via inventory for automatic discovery.
 pub struct ViewRegistration {
+    #[cfg(feature = "schema")]
+    pub payload_schema: Option<fn() -> crate::schema::HandlerPayloadSchema>,
     /// View identifier (e.g., "`GetTargetTreeByParentFiltered`")
     pub view_id: &'static str,
     /// Typed service owner used by application activation.
@@ -111,6 +113,7 @@ where
     ) -> Result<crate::server::HandlerAuthority, String> {
         let view: V = serde_json::from_value(value).map_err(|error| error.to_string())?;
         Ok(crate::server::HandlerAuthority {
+            service_id: None,
             source_node: view.source_node(local_node),
             scope_id: view.scope_id(local_node),
             resource_claims: view.authority_claims(local_node),
@@ -164,7 +167,7 @@ where
             view_context: view_cell_ctx,
             #[cfg(not(target_arch = "wasm32"))]
             federated,
-        });
+        })?;
         tracing::trace!(
             "ViewFactory::cell_factory using build_cell view_id={}",
             V::view_id_static()

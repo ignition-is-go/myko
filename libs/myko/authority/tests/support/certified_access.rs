@@ -60,7 +60,7 @@ async fn installed_policy_certifies_item_reads_instead_of_using_the_local_fallba
             return Err("denied item read leaked a page".into());
         }
         let before_outage = AuthorityHistory::replay(&a, anchor()?)?.retained_head()?;
-        harness.b_transport.sessions().set_authority_control(None)?;
+        harness.b_transport.sessions().set_control_endpoint(myko_authority::authority_realm_scope(anchor()?.realm_id()), None)?;
         let mut unavailable = session.open_authenticated(reader, request).await;
         let frame = tokio::time::timeout(std::time::Duration::from_mins(1), unavailable.recv()).await?;
         if !matches!(frame, Some(NodeFrame::AuthorityUnavailable { reason: AuthorityUnavailable::CoordinationUnavailable })) {
@@ -195,8 +195,8 @@ async fn propose_candidate(
         .propose(
             &principal.id,
             &presentation,
-            AuthorityControlProposeRequest {
-                head,
+            ControlProposeRequest {
+                target: anchor()?.target(head),
                 ballot,
                 promises,
                 value,

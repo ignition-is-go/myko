@@ -42,6 +42,7 @@ type HmacSha256 = Hmac<Sha256>;
 /// The secret is serialized for QR/file transport but deliberately redacted
 /// from `Debug`. Servers retain only its SHA-256 verifier.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PairingInvitation {
     pub version: u32,
     pub invitation_id: Uuid,
@@ -91,6 +92,7 @@ impl PairingInvitation {
 
 /// Mutually identity-bound result of redeeming one invitation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct PairingReceipt {
     pub version: u32,
     pub invitation_id: Uuid,

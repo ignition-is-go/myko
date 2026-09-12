@@ -33,8 +33,8 @@ use myko::{
     },
     wire::{
         CancelSubscription, CommandError, CommandResponse, EncodedCommandMessage, MEvent,
-        MEventType, MykoMessage, QueryCursorWindowUpdate, QueryWindow, QueryWindowUpdate,
-        ViewError, ViewWindowUpdate, WrappedQuery, WrappedView,
+        MEventType, MykoMessage, QueryCursorWindowUpdate, QueryError, QueryWindow,
+        QueryWindowUpdate, ViewError, ViewWindowUpdate, WrappedQuery, WrappedView,
     },
 };
 use tokio::{
@@ -52,6 +52,12 @@ use crate::blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIP
 
 type LegacyViewCellMap =
     hyphae::CellMap<Arc<str>, Arc<dyn myko::item::AnyItem>, hyphae::CellImmutable>;
+
+fn legacy_query_cellmap(output: myko::query::QueryValue) -> Result<LegacyViewCellMap, String> {
+    output.into_local_map().map_err(|_| {
+        "retained query output is not supported by the legacy websocket query protocol".to_owned()
+    })
+}
 
 fn legacy_view_cellmap(
     output: myko::view::RegisteredViewOutput,
@@ -1020,7 +1026,10 @@ impl WsHandler {
             session.client_id.clone(),
             ctx.host_id,
         ));
-        if let Some(query_data) = ctx.handler_registry.query(&query_id) {
+        if let Some(query_data) = ctx
+            .handler_registry
+            .query(wrapped.service_id.as_deref(), &query_id)
+        {
             match (query_data.parse)(wrapped.query.clone()) {
                 Ok(query) => {
                     let registry = ctx.registry.clone();
@@ -1028,6 +1037,8 @@ impl WsHandler {
                     let window_factory = query_data.window_cell_factory;
                     let window = wrapped.window;
                     let sender = message_context.subscribe_tx.clone();
+                    let priority = message_context.priority_tx.clone();
+                    let logger = message_context.drop_logger.clone();
                     WS_SUBSCRIPTION_BLOCKING.spawn("query-subscription", move || {
                         if let (Some(window_factory), Some(initial_window)) =
                             (window_factory, window.clone())
@@ -1050,16 +1061,15 @@ impl WsHandler {
                                 }
                                 Ok(None) => {}
                                 Err(error) => {
-                                    tracing::error!(
-                                        "Failed to create pushed query window for {}: {}",
-                                        query_id,
-                                        error
+                                    return Self::send_query_error(
+                                        &priority, &logger, &tx_id, &query_id, error,
                                     );
-                                    return;
                                 }
                             }
                         }
-                        match factory(query, registry, request, Some(ctx), None) {
+                        match factory(query, registry, request, Some(ctx), None)
+                            .and_then(legacy_query_cellmap)
+                        {
                             Ok(cellmap) => {
                                 let _ = sender.blocking_send(SubscriptionReady::Query {
                                     tx_id,
@@ -1068,11 +1078,11 @@ impl WsHandler {
                                     window,
                                 });
                             }
-                            Err(error) => tracing::error!(
-                                "Failed to create query cell for {}: {}",
-                                query_id,
-                                error
-                            ),
+                            Err(error) => {
+                                Self::send_query_error(
+                                    &priority, &logger, &tx_id, &query_id, error,
+                                );
+                            }
                         }
                     });
                 }
@@ -1088,6 +1098,23 @@ impl WsHandler {
             let cellmap = hyphae::MapQuery::materialize(store.select(|_| true));
             session.subscribe_query(tx_id, query_id, cellmap, wrapped.window);
             drop(ctx);
+        }
+    }
+
+    fn send_query_error(
+        priority: &mpsc::Sender<MykoMessage>,
+        logger: &DropLogger,
+        tx_id: &str,
+        query_id: &str,
+        message: String,
+    ) {
+        let error = MykoMessage::QueryError(QueryError::new(
+            tx_id.to_string(),
+            query_id.to_string(),
+            message,
+        ));
+        if let Err(error) = priority.try_send(error) {
+            logger.on_drop("QueryError", &error);
         }
     }
 
@@ -1124,7 +1151,10 @@ impl WsHandler {
             session.client_id.clone(),
             ctx.host_id,
         ));
-        let Some(view_data) = ctx.handler_registry.view(&view_id) else {
+        let Some(view_data) = ctx
+            .handler_registry
+            .view(wrapped.service_id.as_deref(), &view_id)
+        else {
             let message = format!("No registered handler for view: {view_id}");
             Self::send_view_error(message_context, &tx_id, &view_id, message);
             drop(ctx);
@@ -1314,7 +1344,10 @@ impl WsHandler {
                     .unwrap_or("unknown")
                     .into();
                 let report_id = wrapped.report_id;
-                let Some(data) = ctx.handler_registry.report(&report_id) else {
+                let Some(data) = ctx
+                    .handler_registry
+                    .report(wrapped.service_id.as_deref(), &report_id)
+                else {
                     tracing::warn!("No registered handler for report: {}", report_id);
                     return;
                 };
@@ -1327,9 +1360,12 @@ impl WsHandler {
                         ));
                         let factory = data.cell_factory;
                         let sender = message_context.subscribe_tx.clone();
+                        let errors = message_context.priority_tx.clone();
                         WS_SUBSCRIPTION_BLOCKING.spawn(
                             "report-subscription",
-                            move || match factory(report, request, ctx, None) {
+                            move || match factory(report, request, ctx, None)
+                                .and_then(myko::report::ReportValue::into_local_cell)
+                            {
                                 Ok(cell) => {
                                     let _ = sender.blocking_send(SubscriptionReady::Report {
                                         tx_id: tx,
@@ -1337,11 +1373,20 @@ impl WsHandler {
                                         cell,
                                     });
                                 }
-                                Err(error) => tracing::error!(
-                                    "Failed to create report cell for {}: {}",
-                                    report_id,
-                                    error
-                                ),
+                                Err(error) => {
+                                    tracing::error!(
+                                        "Failed to create report cell for {}: {}",
+                                        report_id,
+                                        error
+                                    );
+                                    let _sent = errors.blocking_send(MykoMessage::ReportError(
+                                        myko::wire::ReportError::new(
+                                            tx.to_string(),
+                                            report_id,
+                                            error,
+                                        ),
+                                    ));
+                                }
                             },
                         );
                     }

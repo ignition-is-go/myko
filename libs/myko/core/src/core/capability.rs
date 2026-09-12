@@ -136,10 +136,13 @@ type QueryDiffCell<T> = Cell<Option<hyphae::MapDiff<Arc<str>, T>>, CellImmutable
 pub trait Querying: ServerScoped {
     /// Subscribe to a query and get a typed reactive `CellMap` keyed by the
     /// item's typed id.
+    ///
+    /// # Errors
+    /// Returns setup errors and rejects retained output that cannot become a local map.
     fn query_map<Q>(
         &self,
         query: Q,
-    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    ) -> Result<crate::query::LocalQueryMap<Q::Item, <Q::Item as WithTypedId>::Id>, String>
     where
         Q: QueryParams + 'static,
         Q::Item: Eventable
@@ -169,7 +172,10 @@ pub trait Querying: ServerScoped {
     }
 
     /// Subscribe to a query keyed by canonical `Arc<str>` ids.
-    fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
+    ///
+    /// # Errors
+    /// Returns setup errors and rejects retained output that cannot become a local map.
+    fn query_map_by_str<Q>(&self, query: Q) -> Result<crate::query::LocalQueryMap<Q::Item>, String>
     where
         Q: QueryParams + 'static,
         Q::Item: Eventable
@@ -199,7 +205,10 @@ pub trait Querying: ServerScoped {
     }
 
     /// Subscribe to a query and get an untyped (erased `AnyItem`) reactive map.
-    fn query_map_untyped<Q>(&self, query: Q) -> crate::query::FilteredCellMap
+    ///
+    /// # Errors
+    /// Returns setup errors and rejects retained output that cannot become a local map.
+    fn query_map_untyped<Q>(&self, query: Q) -> Result<crate::query::FilteredCellMap, String>
     where
         Q: crate::query::QueryFactory
             + crate::query::QueryHandler
@@ -226,7 +235,10 @@ pub trait Querying: ServerScoped {
     }
 
     /// Subscribe to a query and get its incremental `MapDiff` stream.
-    fn query_diff<Q>(&self, query: Q) -> QueryDiffCell<Q::Item>
+    ///
+    /// # Errors
+    /// Returns setup errors and rejects retained output without a local diff stream.
+    fn query_diff<Q>(&self, query: Q) -> Result<QueryDiffCell<Q::Item>, String>
     where
         Q: crate::query::QueryFactory
             + crate::query::QueryHandler
@@ -238,10 +250,11 @@ pub trait Querying: ServerScoped {
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         use hyphae::{MapExt, Materialize};
-        self.query_map_untyped(query)
+        Ok(self
+            .query_map_untyped(query)?
             .diffs()
             .map(|diff| crate::item::downcast_any_item_map_diff::<Q::Item>(diff, "query_diff"))
-            .materialize()
+            .materialize())
     }
 
     /// Reactive filter parameters: a live `Cell` filter instead of a value.
@@ -292,7 +305,10 @@ pub trait Searching: ServerScoped {
 pub trait Reporting: ServerScoped {
     /// Subscribe to a sub-report; the framework memoizes the compute by cache
     /// key so concurrent requests share one computation.
-    fn report<R>(&self, report: R) -> Cell<Arc<R::Output>, CellImmutable>
+    ///
+    /// # Errors
+    /// Returns errors from the report's dependency or resource setup.
+    fn report<R>(&self, report: R) -> Result<crate::report::ReportValue<R::Output>, String>
     where
         R: ReportHandler + ReportId + CacheKey + Clone + Serialize + 'static,
     {

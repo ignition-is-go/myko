@@ -74,6 +74,8 @@ impl<V: ViewId> ViewId for ViewRequest<V> {
 }
 
 impl<V: ViewIdStatic> ViewIdStatic for ViewRequest<V> {
+    const SERVICE_ID: Option<crate::ServiceTypeId> = V::SERVICE_ID;
+
     fn view_id_static() -> Arc<str> {
         V::view_id_static()
     }
@@ -92,7 +94,9 @@ impl<V: ViewItemType> ViewItemType for ViewRequest<V> {
 }
 
 impl<V: ViewHandler + Clone + Send + Sync + 'static> ViewHandler for ViewRequest<V> {
-    fn build_cell(ctx: ViewBuildArgs<Self>) -> impl super::ViewBuildOutput<Item = Self::Item> {
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> Result<impl super::ViewBuildOutput<Item = Self::Item>, String> {
         V::build_cell(ViewBuildArgs {
             view: Arc::new(ctx.view.view.clone()),
             view_context: ctx.view_context,
@@ -102,9 +106,13 @@ impl<V: ViewHandler + Clone + Send + Sync + 'static> ViewHandler for ViewRequest
     }
 }
 
-impl<V: ViewId + ViewItemType + Serialize + std::fmt::Debug + Send + Sync + 'static> AnyView
-    for ViewRequest<V>
+impl<V: ViewId + ViewIdStatic + ViewItemType + Serialize + std::fmt::Debug + Send + Sync + 'static>
+    AnyView for ViewRequest<V>
 {
+    fn service_id(&self) -> Option<crate::ServiceTypeId> {
+        V::SERVICE_ID
+    }
+
     fn view_item_type(&self) -> Arc<str> {
         ViewItemType::view_item_type(self)
     }

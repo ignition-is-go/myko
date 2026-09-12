@@ -294,6 +294,8 @@ impl MykoAuthority {
             .server()
             .handler_registry
             .open_federated_view(
+                <AuthorityGrantsView as myko::view::ViewIdStatic>::SERVICE_ID
+                    .map(myko::ServiceTypeId::as_str),
                 <AuthorityGrantsView as myko::view::ViewIdStatic>::view_id_static().as_ref(),
                 serde_json::to_value(AuthorityGrantsView {
                     source_node,

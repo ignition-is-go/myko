@@ -19,7 +19,7 @@
 
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, CellMap, Gettable, MapDiff, Mutable};
+use hyphae::{Cell, CellImmutable, CellMap, MapDiff, Mutable};
 
 use super::super::item::AnyItem;
 use crate::wire::{QueryCursorWindow, QueryWindow};
@@ -56,6 +56,12 @@ pub struct WindowedQuerySource {
 enum WindowSelection {
     Offset(Option<QueryWindow>),
     Cursor(QueryCursorWindow),
+}
+
+struct WindowState {
+    selection: WindowSelection,
+    // Publication can be deferred by a batch; filtering must use the queued page.
+    latest_snapshot: Arc<WindowedQuerySnapshot>,
 }
 
 impl WindowedQuerySource {
@@ -154,14 +160,16 @@ impl WindowedQuerySource {
             }
         }
 
-        let selection = Arc::new(std::sync::Mutex::new(WindowSelection::Offset(Some(
-            initial_window.clone(),
-        ))));
-        let snapshots = Cell::new(Arc::new(WindowedQuerySnapshot {
+        let initial = Arc::new(WindowedQuerySnapshot {
             entries: Vec::new(),
             total_count: 0,
-            window: Some(initial_window),
+            window: Some(initial_window.clone()),
+        });
+        let selection = Arc::new(std::sync::Mutex::new(WindowState {
+            selection: WindowSelection::Offset(Some(initial_window)),
+            latest_snapshot: initial.clone(),
         }));
+        let snapshots = Cell::new(initial);
         let dispatch = Arc::new(parking_lot::ReentrantMutex::new(()));
         let snapshots_weak = snapshots.downgrade();
         let map_weak = map.downgrade();
@@ -172,8 +180,10 @@ impl WindowedQuerySource {
             let Some(snapshots) = snapshots_weak.upgrade() else {
                 return;
             };
-            let current = snapshots.get();
-            if !affects_page(diff, &current.entries) {
+            let mut state = selection_for_diffs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !affects_page(diff, &state.latest_snapshot.entries) {
                 return;
             }
             let entries = match diff {
@@ -188,13 +198,10 @@ impl WindowedQuerySource {
                     map.snapshot()
                 }
             };
-            let next = {
-                let selection = selection_for_diffs
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                snapshot(entries, &selection)
-            };
-            snapshots.set(Arc::new(next));
+            let next = Arc::new(snapshot(entries, &state.selection));
+            state.latest_snapshot = next.clone();
+            drop(state);
+            snapshots.set(next);
         });
         snapshots.own(guard);
 
@@ -207,23 +214,24 @@ impl WindowedQuerySource {
         let dispatch_for_cursor = dispatch;
         let set_window = move |next: Option<QueryWindow>| {
             let _dispatch_guard = dispatch_for_window.lock();
-            let next_selection = {
-                let mut current = selection_for_window
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let next = WindowSelection::Offset(next);
-                if *current == next {
-                    return;
-                }
-                *current = next;
-                current.clone()
-            };
             let Some(map) = map_weak.upgrade() else {
                 return;
             };
-            let next_snapshot = snapshot(map.snapshot(), &next_selection);
+            let next_snapshot = {
+                let mut state = selection_for_window
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let next = WindowSelection::Offset(next);
+                if state.selection == next {
+                    return;
+                }
+                state.selection = next;
+                let next = Arc::new(snapshot(map.snapshot(), &state.selection));
+                state.latest_snapshot = next.clone();
+                next
+            };
             if let Some(snapshots) = snapshots_weak.upgrade() {
-                snapshots.set(Arc::new(next_snapshot));
+                snapshots.set(next_snapshot);
             }
         };
 
@@ -232,23 +240,24 @@ impl WindowedQuerySource {
                 return;
             }
             let _dispatch_guard = dispatch_for_cursor.lock();
-            let next_selection = {
-                let mut current = selection
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let next = WindowSelection::Cursor(next);
-                if *current == next {
-                    return;
-                }
-                *current = next;
-                current.clone()
-            };
             let Some(map) = map_for_cursor.upgrade() else {
                 return;
             };
-            let next_snapshot = snapshot(map.snapshot(), &next_selection);
+            let next_snapshot = {
+                let mut state = selection
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let next = WindowSelection::Cursor(next);
+                if state.selection == next {
+                    return;
+                }
+                state.selection = next;
+                let next = Arc::new(snapshot(map.snapshot(), &state.selection));
+                state.latest_snapshot = next.clone();
+                next
+            };
             if let Some(snapshots) = snapshots_for_cursor.upgrade() {
-                snapshots.set(Arc::new(next_snapshot));
+                snapshots.set(next_snapshot);
             }
         };
 

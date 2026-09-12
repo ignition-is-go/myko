@@ -705,7 +705,7 @@ impl MykoClient {
         let query_item_type = Q::query_item_type_static();
         let cache_key = format!(
             "query-map:{query_id}:{query_item_type}:{}:{:016x}",
-            std::any::type_name::<Q::Item>(),
+            std::any::type_name::<Q>(),
             supplied.query.cache_key_hash()
         );
         let _cache_gate = self
@@ -739,6 +739,7 @@ impl MykoClient {
         };
 
         let wrapped = WrappedQuery {
+            service_id: Q::SERVICE_ID.map(Into::into),
             query: query_value,
             query_id: query_id.clone(),
             query_item_type,
@@ -889,7 +890,7 @@ impl MykoClient {
         let query_item_type = Q::query_item_type_static();
         let cache_key = format!(
             "query-window:{query_id}:{query_item_type}:{}:{:016x}:{}:{}",
-            std::any::type_name::<Q::Item>(),
+            std::any::type_name::<Q>(),
             supplied.query.cache_key_hash(),
             initial_window.offset,
             initial_window.limit
@@ -937,6 +938,7 @@ impl MykoClient {
             return early_watch;
         };
         let wrapped = WrappedQuery {
+            service_id: Q::SERVICE_ID.map(Into::into),
             query: query_value,
             query_id: query_id.clone(),
             query_item_type,

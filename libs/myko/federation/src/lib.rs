@@ -15,9 +15,11 @@ mod access_failure;
 mod attestation;
 mod authority;
 mod causal;
+mod command_history;
 mod control;
 mod control_chain;
 pub mod control_quorum;
+mod execution_assignment;
 mod policy_decision;
 mod prepared_effect;
 mod publication;
@@ -29,10 +31,15 @@ pub use access_failure::{AuthorityUnavailable, AuthorizationFailure};
 pub use attestation::RetainedHistoryStatement;
 pub use authority::*;
 pub use causal::causal_replay;
+pub use command_history::{CommandHistoryTarget, CommandHistoryTargetError};
 pub use control::FrameworkControlEvent;
 pub use control_chain::{
     CertifiedControlChain, CertifiedControlContext, CertifiedControlEvidence, ControlAnchor,
     ControlTransition,
+};
+pub use execution_assignment::{
+    ExecutionAssignment, ExecutionAssignmentController, ExecutionAssignmentObservation,
+    ExecutionAssignmentsAtHead,
 };
 pub use policy_decision::PolicyDecision;
 pub use prepared_effect::PreparedCommandEffect;
@@ -40,11 +47,12 @@ pub use publication::{LivePublication, LivePublicationStream};
 pub use signed_statement::SignedRetainedHistoryStatement;
 
 pub use reactive::{
-    CollectionPlan, CompositeFrontier, LiveCollection, LiveCollectionError, LiveCollectionHandle,
-    LiveCollectionRevision, LiveCollectionRevisionStream, LiveCollectionState,
-    LiveCollectionWriter, LiveSubscription, LiveSubscriptionHandle, LiveSubscriptionState,
-    LiveSubscriptionWriter, MapCollectionPlan, RuntimeCollection, SubscriptionLiveness,
-    UnionCollectionPlan, live_collection, live_subscription,
+    AuthorizationBlock, CollectionPlan, CompositeFrontier, LiveCollection, LiveCollectionError,
+    LiveCollectionHandle, LiveCollectionRevision, LiveCollectionRevisionStream,
+    LiveCollectionState, LiveCollectionWriter, LiveSubscription, LiveSubscriptionHandle,
+    LiveSubscriptionState, LiveSubscriptionWriter, MapCollectionPlan, RuntimeCollection,
+    SubscriptionInterruption, SubscriptionLiveness, UnionCollectionPlan, WeakLiveSubscription,
+    live_collection, live_subscription,
 };
 
 use std::{

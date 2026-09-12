@@ -382,15 +382,14 @@ impl CommandContext {
     where
         R: crate::report::ReportParams + Clone,
     {
-        {
-            use hyphae::Gettable;
-            Ok(self
-                .server_ctx()
-                .report(report, self.req.clone())
-                .get()
-                .as_ref()
-                .clone())
-        }
+        Ok(self
+            .server_ctx()
+            .report(report, self.req.clone())
+            .map_err(CommandError::reject)?
+            .read_current()
+            .map_err(CommandError::reject)?
+            .as_ref()
+            .clone())
     }
 
     /// Look up the existing edge occupying the candidate's unique pair and
@@ -956,11 +955,33 @@ pub type CommandExecutorFactory = fn() -> Box<dyn DynCommandExecutor>;
 
 /// Registration entry for command handlers
 pub struct CommandHandlerRegistration {
+    #[cfg(feature = "schema")]
+    pub payload_schema: Option<fn() -> crate::schema::HandlerPayloadSchema>,
     pub command_id: &'static str,
     pub service_id: Option<crate::ServiceTypeId>,
     pub factory: CommandExecutorFactory,
     #[cfg(not(target_arch = "wasm32"))]
     pub durable_factory: Option<fn() -> Arc<dyn DurableCommandExecutor>>,
+}
+
+impl CommandHandlerRegistration {
+    /// Local registration without a durable executor or service schema evidence.
+    #[must_use]
+    pub const fn new(
+        command_id: &'static str,
+        service_id: Option<crate::ServiceTypeId>,
+        factory: CommandExecutorFactory,
+    ) -> Self {
+        Self {
+            #[cfg(feature = "schema")]
+            payload_schema: None,
+            command_id,
+            service_id,
+            factory,
+            #[cfg(not(target_arch = "wasm32"))]
+            durable_factory: None,
+        }
+    }
 }
 
 inventory::collect!(CommandHandlerRegistration);
@@ -979,23 +1000,42 @@ macro_rules! register_command_handler {
     };
     ($cmd:ty, service_id = $service_id:expr) => {
         $crate::inventory::submit! {
-            $crate::command::CommandHandlerRegistration {
-                command_id: <$cmd as $crate::command::CommandIdStatic>::COMMAND_ID,
-                service_id: $service_id,
-                factory: || Box::new($crate::command::CommandExecutorAdapter::<$cmd>::new()),
-                durable_factory: None,
-            }
+            $crate::command::CommandHandlerRegistration::new(
+                <$cmd as $crate::command::CommandIdStatic>::COMMAND_ID,
+                $service_id,
+                || Box::new($crate::command::CommandExecutorAdapter::<$cmd>::new()),
+            )
         }
     };
 }
 
 /// Register a generated durable command on the retained handler catalog.
-#[cfg(not(target_arch = "wasm32"))]
+// Select the macro in Myko, not with a feature gate expanded inside the caller.
+#[cfg(all(not(target_arch = "wasm32"), not(feature = "schema")))]
 #[macro_export]
 macro_rules! register_durable_command_handler {
     ($cmd:ty, service_id = $service_id:expr) => {
         $crate::inventory::submit! {
             $crate::command::CommandHandlerRegistration {
+                command_id: <$cmd as $crate::command::CommandIdStatic>::COMMAND_ID,
+                service_id: Some($service_id),
+                factory: || Box::new($crate::command::CommandExecutorAdapter::<$cmd>::new()),
+                durable_factory: Some($crate::command::durable_command_executor::<$cmd>),
+            }
+        }
+    };
+}
+
+/// Register a durable command and its typed JSON payload contracts.
+#[cfg(all(not(target_arch = "wasm32"), feature = "schema"))]
+#[macro_export]
+macro_rules! register_durable_command_handler {
+    ($cmd:ty, service_id = $service_id:expr) => {
+        $crate::inventory::submit! {
+            $crate::command::CommandHandlerRegistration {
+                payload_schema: Some($crate::schema::HandlerPayloadSchema::value::<
+                    $cmd, <$cmd as $crate::command::CommandResultType>::Result
+                >),
                 command_id: <$cmd as $crate::command::CommandIdStatic>::COMMAND_ID,
                 service_id: Some($service_id),
                 factory: || Box::new($crate::command::CommandExecutorAdapter::<$cmd>::new()),

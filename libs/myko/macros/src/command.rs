@@ -47,6 +47,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let schema = (owner.is_some() && !custom_serialize).then(|| ctx.schema_derive());
 
     // Reflection metadata for the MCP `search()` operation index — see
     // `myko::reflection` and the matching comment in `query.rs`. The Args
@@ -152,6 +153,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
         .collect::<Vec<_>>();
 
     let expanded = quote! {
+        #schema
         #derives
         #input_struct
 

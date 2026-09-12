@@ -23,6 +23,7 @@ use super::{
         BelongsToRoute, CompoundFkExtractor, CompoundKey, ID_ROUTE_FIELD_NAMES, LiveFilterQuery,
         QueryRoute,
     },
+    output::{QueryBuildOutput as _, QueryValue},
     request::QueryRequest,
     traits::{
         AnyQuery, QueryBuildArgs, QueryHandler, QueryParams, QueryTestContext, QueryWindowBuildArgs,
@@ -52,7 +53,7 @@ pub type QueryCellFactory = fn(
     Arc<RequestContext>,
     Option<Arc<MykoServerContext>>,
     Option<crate::server::federated_source::FederatedRequest>,
-) -> Result<FilteredCellMap, String>;
+) -> Result<QueryValue, String>;
 
 /// Type-erased factory for a query that can push a requested window into its
 /// backing source instead of materializing the complete result map.
@@ -1388,6 +1389,8 @@ where
 /// Registration entry for a query type.
 /// Collected via inventory for automatic discovery.
 pub struct QueryRegistration {
+    #[cfg(feature = "schema")]
+    pub payload_schema: Option<fn() -> crate::schema::HandlerPayloadSchema>,
     /// Query identifier (e.g., "`GetAllTargets`")
     pub query_id: &'static str,
     /// Entity type this query returns (e.g., "Target")
@@ -1453,7 +1456,7 @@ pub trait QueryFactory: QueryParams {
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> Result<FilteredCellMap, String>;
+    ) -> Result<QueryValue, String>;
 
     /// Create a source-level bounded query window when the handler supports
     /// pushdown.
@@ -1483,6 +1486,7 @@ where
     ) -> Result<crate::server::HandlerAuthority, String> {
         let query: Q = serde_json::from_value(value).map_err(|error| error.to_string())?;
         Ok(crate::server::HandlerAuthority {
+            service_id: None,
             source_node: query.source_node(local_node),
             scope_id: query.scope_id(local_node),
             resource_claims: query.authority_claims(local_node),
@@ -1503,7 +1507,7 @@ where
         #[cfg(not(target_arch = "wasm32"))] federated: Option<
             crate::server::federated_source::FederatedRequest,
         >,
-    ) -> Result<FilteredCellMap, String> {
+    ) -> Result<QueryValue, String> {
         QUERY_CELL_FACTORIES_CREATED.fetch_add(1, Ordering::Relaxed);
         let query_id = Q::query_id_static();
         // Bounded cardinality (one span per query *registration*, not per
@@ -1531,14 +1535,14 @@ where
             query_context: query_cell_ctx,
             #[cfg(not(target_arch = "wasm32"))]
             federated,
-        }) {
-            return Ok(hyphae::MapQuery::materialize(built));
+        })? {
+            return Ok(built.materialize_query());
         }
 
         let store: crate::store::EntityStore =
             (*registry.get_or_create(&Q::query_item_type_static())).clone();
-        Ok(hyphae::MapQuery::materialize(store.select(
-            move |item_any: &AnyItemArc| {
+        Ok(QueryValue::LocalMap(hyphae::MapQuery::materialize(
+            store.select(move |item_any: &AnyItemArc| {
                 downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory")
                     .is_some_and(|item| {
                         Q::test_entity(QueryTestContext {
@@ -1547,7 +1551,7 @@ where
                             query_context: query_ctx.clone(),
                         })
                     })
-            },
+            }),
         )))
     }
 

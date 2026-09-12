@@ -1750,6 +1750,7 @@ fn one_late_parent_releases_two_commands_as_one_catalog_batch() {
     let parent = parent_source.submit(request(CommandId::new())).unwrap();
     let parent_envelope = parent_source.events_after(None).unwrap().pop().unwrap();
     let source = allow_all_node();
+    source.ingest(parent_envelope.clone()).unwrap();
     for _ in 0..2 {
         let command = request(CommandId::new());
         let executing = source.admit(command.clone()).unwrap().snapshot().clone();
@@ -1761,7 +1762,9 @@ fn one_late_parent_releases_two_commands_as_one_catalog_batch() {
     }
     let target = allow_all_node();
     for event in source.events_after(None).unwrap() {
-        target.ingest(event).unwrap();
+        if event.origin != parent_envelope.origin {
+            target.ingest(event).unwrap();
+        }
     }
     let request = CommandStateRequest {
         source_node: Some(source.node_id()),
@@ -2743,9 +2746,8 @@ fn item_projection_reports_lifecycle_changes_when_the_value_is_unchanged() {
         .events_after(snapshot.through)
         .unwrap()
         .iter()
-        .find_map(|envelope| watch.apply(envelope).transpose())
-        .transpose()
-        .unwrap()
+        .map(|envelope| watch.apply(envelope).unwrap())
+        .find(|update| update.diff.is_some())
         .unwrap();
     assert!(matches!(
         update.diff,
@@ -2760,6 +2762,36 @@ fn item_projection_reports_lifecycle_changes_when_the_value_is_unchanged() {
             && new_value.last_changed_at() > old_value.last_changed_at()
             && new_value.change_index() == 0
     ));
+}
+
+#[test]
+fn item_projection_advances_unchanged_rows_through_every_consumed_cut() {
+    let node = allow_all_node();
+    commit_test_record(&node, "record-1", "stable");
+    let (snapshot, mut watch) = node
+        .watch_item_projection::<TestRecord>(
+            Some(node.node_id()),
+            Some(ScopeId::new("session:test")),
+        )
+        .unwrap();
+    let other = allow_all_node();
+    commit_test_record(&other, "record-1", "another origin");
+    commit_test_record_in(
+        &other,
+        ScopeId::new("session:other"),
+        "unrelated",
+        "another scope",
+    );
+    node.ingest_batch(other.export(None).unwrap()).unwrap();
+    let events = node.events_after(snapshot.through).unwrap();
+    assert!(!events.is_empty());
+    for envelope in events {
+        let update = watch.apply(&envelope).unwrap();
+        assert_eq!(update.position, envelope.position);
+        assert_eq!(update.projection, snapshot.projection);
+        assert_eq!(update.liveness, SubscriptionLiveness::Current);
+        assert!(update.diff.is_none());
+    }
 }
 
 #[test]

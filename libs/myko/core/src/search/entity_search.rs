@@ -96,13 +96,15 @@ impl ReportHandler for EntitySearch {
     fn compute(
         &self,
         ctx: ReportContext,
-    ) -> impl hyphae::Materialize<Arc<Self::Output>, hyphae::Definite> {
-        // Perform search via ReportContext (sync call)
-        let ids = ctx.search(&self.entity_type, &self.query, self.limit);
+    ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+        Ok({
+            // Perform search via ReportContext (sync call)
+            let ids = ctx.search(&self.entity_type, &self.query, self.limit);
 
-        // Create an immutable cell with the search result
-        // Note: This report returns a single result and doesn't update reactively.
-        // For reactive search, you would need to subscribe to entity changes.
-        hyphae::Cell::new(Arc::new(EntitySearchResult { ids })).lock()
+            // Create an immutable cell with the search result
+            // Note: This report returns a single result and doesn't update reactively.
+            // For reactive search, you would need to subscribe to entity changes.
+            hyphae::Cell::new(Arc::new(EntitySearchResult { ids })).lock()
+        })
     }
 }

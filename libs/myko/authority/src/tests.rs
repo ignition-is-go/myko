@@ -373,6 +373,8 @@ fn authority_grants_view_keeps_revoked_records_live() -> Result<(), String> {
         "test",
     ));
     let output = retained.server().handler_registry.open_federated_view(
+        <AuthorityGrantsView as myko::view::ViewIdStatic>::SERVICE_ID
+            .map(myko::ServiceTypeId::as_str),
         AuthorityGrantsView::view_id_static().as_ref(),
         serde_json::to_value(AuthorityGrantsView {
             source_node: application.node_id(),

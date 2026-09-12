@@ -4,7 +4,7 @@
 //! remain typed until the session converts their pending updates into these
 //! transport-facing values.
 
-use myko_federation::{HandlerKind, NodeId, ScopeId, SubscriptionLiveness};
+use myko_federation::{HandlerKind, NodeId, ScopeId, ServiceId, SubscriptionLiveness};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -23,6 +23,8 @@ pub struct HandlerStreamRevision {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HandlerRequest {
     pub kind: HandlerKind,
+    /// Expected registered owner. The serving application validates this identity.
+    pub service_id: Option<ServiceId>,
     pub handler_id: String,
     pub source_node: Option<NodeId>,
     pub scope_id: Option<ScopeId>,
@@ -32,7 +34,18 @@ pub struct HandlerRequest {
 /// Type-erased lifecycle state used only at transport boundaries.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ErasedHandlerState {
+    /// An omitted field carries no value; explicit null is a published nullable result.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_value"
+    )]
     pub value: Option<Value>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_value"
+    )]
     pub through: Option<Value>,
     pub liveness: SubscriptionLiveness,
     /// Stable row identities for a keyed collection snapshot.
@@ -64,8 +77,20 @@ pub struct ErasedViewDelta {
     /// `None` retains the preceding order, so a content-only update does not
     /// repeat every row ID.
     pub order: Option<Vec<String>>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_present_value"
+    )]
     pub through: Option<Value>,
     pub liveness: SubscriptionLiveness,
+}
+
+fn deserialize_present_value<'de, D>(deserializer: D) -> Result<Option<Value>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Value::deserialize(deserializer).map(Some)
 }
 
 #[cfg(test)]
@@ -73,9 +98,60 @@ mod tests {
     use super::*;
 
     #[test]
+    fn handler_state_preserves_absent_and_present_null_payloads()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for value in [
+            Some(Value::Null),
+            None,
+            Some(serde_json::json!({"count": 1})),
+        ] {
+            let state = ErasedHandlerState {
+                value: value.clone(),
+                through: value,
+                liveness: SubscriptionLiveness::Current,
+                row_keys: None,
+            };
+            let encoded = serde_json::to_value(&state)?;
+            if serde_json::from_value::<ErasedHandlerState>(encoded.clone())? != state
+                || encoded.get("value").is_some() != state.value.is_some()
+                || encoded.get("through").is_some() != state.through.is_some()
+            {
+                return Err("handler state lost absent/present-null distinctions".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn view_delta_preserves_absent_and_present_null_cursors()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for through in [
+            Some(Value::Null),
+            None,
+            Some(serde_json::json!({"offset": 1})),
+        ] {
+            let delta = ErasedViewDelta {
+                upserts: Vec::new(),
+                deletes: Vec::new(),
+                order: None,
+                through,
+                liveness: SubscriptionLiveness::Current,
+            };
+            let encoded = serde_json::to_value(&delta)?;
+            if serde_json::from_value::<ErasedViewDelta>(encoded.clone())? != delta
+                || encoded.get("through").is_some() != delta.through.is_some()
+            {
+                return Err("view delta lost absent/present-null cursor distinctions".into());
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn handler_request_round_trips_without_application_types() {
         let request = HandlerRequest {
             kind: HandlerKind::View,
+            service_id: Some(ServiceId::new("messages")),
             handler_id: "conversation_messages".to_owned(),
             source_node: Some(NodeId::new()),
             scope_id: None,

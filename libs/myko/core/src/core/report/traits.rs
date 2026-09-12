@@ -22,6 +22,9 @@ pub trait ReportId {
 
 /// Static report ID for registration
 pub trait ReportIdStatic {
+    /// Generated service owner, or `None` for a global report.
+    const SERVICE_ID: Option<crate::ServiceTypeId> = None;
+
     fn report_id_static() -> &'static str;
 }
 
@@ -44,6 +47,7 @@ pub enum ReportOutput {
 /// Type-erased report trait for dynamic dispatch.
 /// All reports implement this via the `#[myko_report]` macro.
 pub trait AnyReport: WithTransaction + ReportId + Debug + Send + Sync + 'static {
+    fn service_id(&self) -> Option<crate::ServiceTypeId>;
     /// Serialize this report to a JSON Value.
     fn to_value(&self) -> Value;
 }
@@ -53,6 +57,7 @@ impl From<&dyn AnyReport> for WrappedReport {
     fn from(report: &dyn AnyReport) -> Self {
         Self {
             report: report.to_value(),
+            service_id: report.service_id().map(Into::into),
             report_id: report.report_id().to_string(),
         }
     }

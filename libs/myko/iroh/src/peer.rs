@@ -73,6 +73,7 @@ impl IrohLiveEventSubscription {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Approval { .. }
             | ReplicationFrame::ControlVote { .. }
             | ReplicationFrame::ControlProposal { .. } => Err(IrohReplicationError::Stream(

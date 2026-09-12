@@ -78,7 +78,7 @@ impl AuthorityDecisionCoordinator {
     ) -> Result<CoordinatedAuthorityRevalidation, String> {
         let _turn = self.proposal_turn.lock().await;
         self.synchronize().await?;
-        let history = self.history_for_exact_snapshot()?;
+        let history = self.history_for_exact_snapshot().await?;
         history.context_at(head)?;
         let root = request.root(self.anchor.realm_id(), request_id)?;
         let mut expected = request.request.clone();
@@ -88,7 +88,7 @@ impl AuthorityDecisionCoordinator {
         let mut counter = counter.max(super::runtime::next_counter(&history, head)?);
         for _ in 0..self.max_rounds {
             self.synchronize().await?;
-            let history = self.history_for_exact_snapshot()?;
+            let history = self.history_for_exact_snapshot().await?;
             let original = history
                 .decision_at(head, &root)?
                 .ok_or_else(|| "authority revalidation has no original decision".to_owned())?;
@@ -113,7 +113,7 @@ impl AuthorityDecisionCoordinator {
             if evidence.proposal.message.value != desired {
                 continue;
             }
-            let history = self.history_for_exact_snapshot()?;
+            let history = self.history_for_exact_snapshot().await?;
             history.context_at(head)?;
             return Ok(CoordinatedAuthorityRevalidation {
                 head,

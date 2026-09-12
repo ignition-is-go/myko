@@ -95,7 +95,10 @@ async fn native_selection_preserves_records_and_recovers_after_outage_and_reopen
             return Err("selection operation identity accepted different records".into());
         }
         let revocation = record_revocation(&a)?;
-        harness.b_transport.sessions().set_authority_control(None)?;
+        harness.b_transport.sessions().set_control_endpoint(
+            myko_authority::authority_realm_scope(anchor()?.realm_id()),
+            None,
+        )?;
         if coordinator.certify_selection(&revocation).await.is_ok()
             || AuthorityHistory::replay(&a, anchor()?)?.retained_head()? != chosen
         {

@@ -96,6 +96,8 @@ impl<R: ReportId> ReportId for ReportRequest<R> {
 }
 
 impl<R: ReportIdStatic> ReportIdStatic for ReportRequest<R> {
+    const SERVICE_ID: Option<crate::ServiceTypeId> = R::SERVICE_ID;
+
     fn report_id_static() -> &'static str {
         R::report_id_static()
     }
@@ -105,7 +107,13 @@ impl<R: ReportOutputType> ReportOutputType for ReportRequest<R> {
     type Output = R::Output;
 }
 
-impl<R: ReportId + Serialize + Debug + Send + Sync + 'static> AnyReport for ReportRequest<R> {
+impl<R: ReportId + ReportIdStatic + Serialize + Debug + Send + Sync + 'static> AnyReport
+    for ReportRequest<R>
+{
+    fn service_id(&self) -> Option<crate::ServiceTypeId> {
+        R::SERVICE_ID
+    }
+
     fn to_value(&self) -> Value {
         serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }

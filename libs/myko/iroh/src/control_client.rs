@@ -1,10 +1,8 @@
-use myko::server::{
-    AuthorityControlEndpoint, AuthorityControlFuture, AuthorityControlProposeRequest,
-};
+use myko::server::{ControlEndpoint, ControlFuture, ControlProposeRequest};
 use myko_federation::{
     AccessAttempt, AccessOperation, AccessTarget, AuthorityPresentation, AuthorityUnavailable,
     AuthorizationDecision, AuthorizationFailure, AuthorizationPhase, PrincipalId,
-    control_quorum::{ControlBallot, ControlHead, SignedControlProposal, SignedControlVote},
+    control_quorum::{ControlBallot, ControlTarget, SignedControlProposal, SignedControlVote},
 };
 
 use crate::{IrohCommandClient, IrohReplicationError, endpoint_principal_id};
@@ -42,17 +40,17 @@ impl IrohCommandClient {
     }
 }
 
-impl AuthorityControlEndpoint for IrohCommandClient {
+impl ControlEndpoint for IrohCommandClient {
     fn prepare<'a>(
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
-    ) -> AuthorityControlFuture<'a, SignedControlVote> {
+    ) -> ControlFuture<'a, SignedControlVote> {
         Box::pin(async move {
             self.control_sender(principal, presentation)?
-                .prepare_control(head, ballot)
+                .prepare_control(target, ballot)
                 .await
                 .map_err(control_failure)
         })
@@ -62,12 +60,12 @@ impl AuthorityControlEndpoint for IrohCommandClient {
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        request: AuthorityControlProposeRequest,
-    ) -> AuthorityControlFuture<'a, SignedControlProposal> {
+        request: ControlProposeRequest,
+    ) -> ControlFuture<'a, SignedControlProposal> {
         Box::pin(async move {
             self.control_sender(principal, presentation)?
                 .propose_control(
-                    request.head,
+                    request.target,
                     request.ballot,
                     request.promises,
                     request.value,
@@ -81,12 +79,12 @@ impl AuthorityControlEndpoint for IrohCommandClient {
         &'a self,
         principal: &'a PrincipalId,
         presentation: &'a AuthorityPresentation,
-        head: ControlHead,
+        target: ControlTarget,
         proposal: SignedControlProposal,
-    ) -> AuthorityControlFuture<'a, SignedControlVote> {
+    ) -> ControlFuture<'a, SignedControlVote> {
         Box::pin(async move {
             self.control_sender(principal, presentation)?
-                .accept_control(head, proposal)
+                .accept_control(target, proposal)
                 .await
                 .map_err(control_failure)
         })

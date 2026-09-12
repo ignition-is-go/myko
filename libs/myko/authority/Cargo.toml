@@ -8,7 +8,11 @@ license = "AGPL-3.0-or-later"
 [lints]
 workspace = true
 
+[features]
+schema = ["dep:schemars", "myko/schema"]
+
 [dependencies]
+schemars = { workspace = true, optional = true }
 chrono.workspace = true
 ed25519-dalek = "3.0.0"
 flume.workspace = true
@@ -20,6 +24,7 @@ serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
@@ -29,3 +34,4 @@ myko-node.workspace = true
 myko-redb.workspace = true
 myko-wire.workspace = true
 tempfile = "3"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }

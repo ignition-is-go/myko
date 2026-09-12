@@ -40,6 +40,7 @@ impl AuthorityDecisionCoordinator {
             .map_err(|_| AuthorityUnavailable::CoordinationUnavailable)?;
         let history = self
             .history_for_exact_snapshot()
+            .await
             .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
         if access.authorization_phase == AuthorizationPhase::Continuation {
             return self.continue_scoped_access(&history, access).await;
@@ -62,6 +63,7 @@ impl AuthorityDecisionCoordinator {
         }
         let history = self
             .history_for_exact_snapshot()
+            .await
             .map_err(|_| AuthorityUnavailable::HistoryUnavailable)?;
         self.revalidate_scoped_access(&history, request_id, request)
             .await

@@ -101,13 +101,15 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
                 .to_string();
             let request = ctx_clone.new_server_transaction();
             // Each different category produces a different cache key (different payload_hash)
-            let query_result = ctx_clone.query_map(
-                GetBenchItemsByQuery(BenchItemQuery {
-                    category: Some(StringFilter::Eq(category.into())),
-                    ..Default::default()
-                }),
-                request,
-            );
+            let query_result = ctx_clone
+                .query_map(
+                    GetBenchItemsByQuery(BenchItemQuery {
+                        category: Some(StringFilter::Eq(category.into())),
+                        ..Default::default()
+                    }),
+                    request,
+                )
+                .expect("switched query builds");
             query_result.items().materialize()
         })
         .materialize();
@@ -176,6 +178,7 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
                     }),
                     request,
                 )
+                .expect("switched query builds")
                 .items()
                 .materialize()
         })
@@ -242,6 +245,7 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
                     }),
                     request,
                 )
+                .expect("switched query builds")
                 .items()
                 .materialize()
         })
@@ -304,25 +308,29 @@ fn query_cache_live_count_tracks_reachable_entries() {
 
     // Create a query_map and hold onto it
     let request = ctx.new_server_transaction();
-    let map = ctx.query_map(
-        GetBenchItemsByQuery(BenchItemQuery {
-            category: Some(StringFilter::Eq("test".into())),
-            ..Default::default()
-        }),
-        request,
-    );
+    let map = ctx
+        .query_map(
+            GetBenchItemsByQuery(BenchItemQuery {
+                category: Some(StringFilter::Eq("test".into())),
+                ..Default::default()
+            }),
+            request,
+        )
+        .expect("first cached query builds");
 
     assert_eq!(ctx.query_cache_live_count(), 1);
 
     // Create another with different params
     let request2 = ctx.new_server_transaction();
-    let map2 = ctx.query_map(
-        GetBenchItemsByQuery(BenchItemQuery {
-            category: Some(StringFilter::Eq("other".into())),
-            ..Default::default()
-        }),
-        request2,
-    );
+    let map2 = ctx
+        .query_map(
+            GetBenchItemsByQuery(BenchItemQuery {
+                category: Some(StringFilter::Eq("other".into())),
+                ..Default::default()
+            }),
+            request2,
+        )
+        .expect("second cached query builds");
 
     assert_eq!(ctx.query_cache_live_count(), 2);
 
@@ -361,15 +369,17 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     // Create the report — this calls SwitchMapReport::compute() which sets up
     // the switch_map + nested query_map chain
     let request = ctx.new_server_transaction();
-    let report_cell = ctx.report(
-        SwitchMapReport {
-            category: "alpha".to_string(),
-        },
-        request,
-    );
+    let report_cell = ctx
+        .report(
+            SwitchMapReport {
+                category: "alpha".to_string(),
+            },
+            request,
+        )
+        .expect("switch-map report builds");
 
     // Should see all 10 item names
-    assert_eq!(report_cell.get().len(), 10);
+    assert_eq!(report_cell.read_current().map(|items| items.len()), Ok(10));
 
     let cache_after_report = ctx.query_cache_len();
     let report_cache_after_report = ctx.report_cache_len();
@@ -390,7 +400,7 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     }
 
     // Report should reflect the new items
-    assert_eq!(report_cell.get().len(), 30); // 10 original + 20 new
+    assert_eq!(report_cell.read_current().map(|items| items.len()), Ok(30)); // 10 original + 20 new
 
     let cache_during = ctx.query_cache_len();
 
@@ -424,14 +434,16 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
     }
 
     let request = ctx.new_server_transaction();
-    let report_cell = ctx.report(
-        SwitchMapReport {
-            category: "beta".to_string(),
-        },
-        request,
-    );
+    let report_cell = ctx
+        .report(
+            SwitchMapReport {
+                category: "beta".to_string(),
+            },
+            request,
+        )
+        .expect("switch-map report builds");
 
-    assert_eq!(report_cell.get().len(), 5);
+    assert_eq!(report_cell.read_current().map(|items| items.len()), Ok(5));
 
     // Run 100 rounds of mutations — each triggers switch_map to recreate
     // the inner query_map with new IDs
@@ -444,7 +456,7 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
         );
     }
 
-    assert_eq!(report_cell.get().len(), 105); // 5 + 100
+    assert_eq!(report_cell.read_current().map(|items| items.len()), Ok(105)); // 5 + 100
 
     // Sweep mid-flight to reclaim dead entries
     ctx.sweep_dead_cache_entries();

@@ -25,6 +25,10 @@ use crate::{ConfiguredPeer, Peer, node_status_capability_id, peer::peer_scope};
 pub struct NodeStatus {
     pub id: Arc<str>,
     pub source_node: Option<NodeId>,
+    #[cfg_attr(
+        feature = "schema",
+        schemars(schema_with = "myko_iroh::schema::endpoint_id_schema")
+    )]
     pub endpoint_id: EndpointId,
     pub local: bool,
     pub pinned: bool,
@@ -98,14 +102,14 @@ impl ViewHandler for NodeStatusView {
 
     fn build_cell(
         context: ViewBuildArgs<Self>,
-    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
-        myko::view::LocalView::new({
+    ) -> Result<impl myko::view::ViewBuildOutput<Item = Self::Item>, String> {
+        Ok(myko::view::LocalView::new(
             context
                 .resource::<NodeStatusViewState>()
-                .expect("node status resource is installed")
+                .map_err(|error| error.to_string())?
                 .nodes
-                .clone()
-        })
+                .clone(),
+        ))
     }
 }
 

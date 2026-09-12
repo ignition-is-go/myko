@@ -4,9 +4,6 @@ use std::{
     sync::{Arc, RwLock},
 };
 
-#[cfg(not(target_arch = "wasm32"))]
-use hyphae::{MapExt as _, Materialize as _};
-
 use crate::{MykoService, ServiceTypeId, server::HandlerRegistry};
 
 /// Failure while composing or executing a retained application.
@@ -109,14 +106,20 @@ impl ApplicationResources {
 
 #[cfg(not(target_arch = "wasm32"))]
 mod prepared_request;
+#[cfg(feature = "schema")]
+mod service_contract;
 #[cfg(not(target_arch = "wasm32"))]
 pub use myko_federation::AccessTarget;
 #[cfg(not(target_arch = "wasm32"))]
 pub use prepared_request::{HistorySelection, PreparedEnvelope, PreparedRequest};
+#[cfg(feature = "schema")]
+pub use service_contract::{ServiceContract, ServiceContractError, ServiceHandlerKind};
 
 /// An immutable selection of application services and their retained handlers.
 pub struct MykoApplication {
     services: BTreeSet<ServiceTypeId>,
+    #[cfg(feature = "schema")]
+    service_schemas: BTreeMap<ServiceTypeId, Vec<crate::schema::ItemSchema>>,
     handlers: Arc<HandlerRegistry>,
     resources: ApplicationResources,
     capabilities: BTreeMap<myko_federation::CapabilityId, myko_federation::ApplicationCapability>,
@@ -167,6 +170,8 @@ impl MykoApplication {
 #[derive(Debug, Default)]
 pub struct MykoApplicationBuilder {
     services: BTreeSet<ServiceTypeId>,
+    #[cfg(feature = "schema")]
+    service_schemas: BTreeMap<ServiceTypeId, Vec<crate::schema::ItemSchema>>,
     resources: ApplicationResources,
     capabilities: BTreeMap<myko_federation::CapabilityId, myko_federation::ApplicationCapability>,
 }
@@ -757,6 +762,10 @@ impl ApplicationHost {
             }
             myko_federation::HandlerKind::Report => {
                 let report = self.server.handler_registry.open_federated_report(
+                    request
+                        .service_id
+                        .as_ref()
+                        .map(myko_federation::ServiceId::as_str),
                     &request.handler_id,
                     request.params,
                     request_context,
@@ -778,6 +787,10 @@ impl ApplicationHost {
     ) -> Result<crate::server::HandlerAuthority, String> {
         self.application.handlers.handler_authority(
             request.kind,
+            request
+                .service_id
+                .as_ref()
+                .map(myko_federation::ServiceId::as_str),
             &request.handler_id,
             request.params.clone(),
             self.node.node_id(),
@@ -808,6 +821,7 @@ impl ApplicationHost {
             .application
             .handlers
             .open_federated_view(
+                <V as crate::view::ViewIdStatic>::SERVICE_ID.map(ServiceTypeId::as_str),
                 V::view_id_static().as_ref(),
                 serde_json::to_value(view).map_err(|error| error.to_string())?,
                 request,
@@ -885,10 +899,7 @@ impl ApplicationHost {
         source_node: Option<myko_federation::NodeId>,
         scope_id: Option<myko_federation::ScopeId>,
         report: &R,
-    ) -> Result<
-        hyphae::Cell<Arc<<R as crate::report::ReportHandler>::Output>, hyphae::CellImmutable>,
-        String,
-    >
+    ) -> Result<crate::report::ReportValue<<R as crate::report::ReportHandler>::Output>, String>
     where
         R: crate::report::ReportParams
             + crate::report::ReportOutputType<Output = <R as crate::report::ReportHandler>::Output>,
@@ -899,6 +910,7 @@ impl ApplicationHost {
             "node-report",
         ));
         let report = self.application.handlers.open_federated_report(
+            <R as crate::report::ReportIdStatic>::SERVICE_ID.map(ServiceTypeId::as_str),
             R::report_id_static(),
             serde_json::to_value(report).map_err(|error| error.to_string())?,
             request,
@@ -908,17 +920,15 @@ impl ApplicationHost {
                 scope_id,
             },
         )?;
-        Ok(report
-            .map(|value| {
-                Arc::new(
-                    value
-                        .as_any()
-                        .downcast_ref::<<R as crate::report::ReportHandler>::Output>()
-                        .expect("report registration returned its declared output type")
-                        .clone(),
-                )
-            })
-            .materialize())
+        Ok(report.map_value(|value| {
+            Arc::new(
+                value
+                    .as_any()
+                    .downcast_ref::<<R as crate::report::ReportHandler>::Output>()
+                    .expect("report registration returned its declared output type")
+                    .clone(),
+            )
+        }))
     }
 
     /// Open a typed retained report using its declared source and scope.
@@ -929,10 +939,7 @@ impl ApplicationHost {
     pub fn watch_report<R>(
         &self,
         report: &R,
-    ) -> Result<
-        hyphae::Cell<Arc<<R as crate::report::ReportHandler>::Output>, hyphae::CellImmutable>,
-        String,
-    >
+    ) -> Result<crate::report::ReportValue<<R as crate::report::ReportHandler>::Output>, String>
     where
         R: crate::report::ReportParams
             + crate::report::ReportOutputType<Output = <R as crate::report::ReportHandler>::Output>,
@@ -953,7 +960,10 @@ impl ApplicationHost {
         &self,
         report: &R,
     ) -> Result<
-        myko_federation::LiveSubscription<<R as crate::report::ReportHandler>::Output>,
+        myko_federation::LiveSubscription<
+            <R as crate::report::ReportHandler>::Output,
+            serde_json::Value,
+        >,
         String,
     >
     where
@@ -961,15 +971,10 @@ impl ApplicationHost {
             + crate::report::ReportOutputType<Output = <R as crate::report::ReportHandler>::Output>,
         <R as crate::report::ReportHandler>::Output: hyphae::CellValue,
     {
-        let state = self
+        Ok(self
             .watch_report(report)?
-            .map(|value| myko_federation::LiveSubscriptionState {
-                value: Some(value.as_ref().clone()),
-                through: None::<myko_federation::LogPosition>,
-                liveness: myko_federation::SubscriptionLiveness::Current,
-            })
-            .materialize();
-        Ok(myko_federation::LiveSubscription::from_state_cell(state))
+            .into_live()
+            .map_value(|value| value.as_ref().clone()))
     }
 
     pub async fn shutdown(&self) {
@@ -1076,6 +1081,12 @@ impl MykoApplicationBuilder {
     #[must_use]
     pub fn service<S: MykoService>(mut self) -> Self {
         self.services.insert(S::SERVICE_ID);
+        #[cfg(feature = "schema")]
+        if let Some(items) = S::item_schemas() {
+            self.service_schemas.insert(S::SERVICE_ID, items);
+        } else {
+            self.service_schemas.remove(&S::SERVICE_ID);
+        }
         self
     }
 
@@ -1151,22 +1162,19 @@ impl MykoApplicationBuilder {
     #[must_use]
     pub fn build(self) -> MykoApplication {
         let handlers = Arc::new(HandlerRegistry::for_services(&self.services));
-        let durable_commands = inventory::iter::<crate::command::CommandHandlerRegistration>
-            .into_iter()
+        let durable_commands = handlers
+            .commands()
             .filter_map(|registration| {
-                let service = registration.service_id?;
-                self.services
-                    .contains(&service)
-                    .then_some((service, registration))
-            })
-            .filter_map(|(service, registration)| {
-                registration
-                    .durable_factory
-                    .map(|factory| ((service, registration.command_id), factory()))
+                Some((
+                    (registration.service_id?, registration.command_id),
+                    (registration.durable_factory?)(),
+                ))
             })
             .collect();
         MykoApplication {
             services: self.services,
+            #[cfg(feature = "schema")]
+            service_schemas: self.service_schemas,
             handlers,
             resources: self.resources,
             capabilities: self.capabilities,
@@ -1185,13 +1193,14 @@ impl MykoApplication {
     #[doc(hidden)]
     #[must_use]
     pub fn with_framework_service<S: MykoService>(self) -> Self {
-        let mut builder = MykoApplicationBuilder {
+        let builder = MykoApplicationBuilder {
             services: self.services,
+            #[cfg(feature = "schema")]
+            service_schemas: self.service_schemas,
             resources: self.resources,
             capabilities: self.capabilities,
         };
-        builder.services.insert(S::SERVICE_ID);
-        builder.build()
+        builder.service::<S>().build()
     }
 
     /// Declare a framework resource capability before the value is installed.
@@ -1202,6 +1211,8 @@ impl MykoApplication {
     ) -> Result<Self, AppError> {
         let builder = MykoApplicationBuilder {
             services: self.services,
+            #[cfg(feature = "schema")]
+            service_schemas: self.service_schemas,
             resources: self.resources,
             capabilities: self.capabilities,
         };

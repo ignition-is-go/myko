@@ -106,6 +106,46 @@ impl ViewBuildContext {
     pub const fn new(view_context: Arc<ViewContext>) -> Self {
         Self { view_context }
     }
+
+    /// Compose a durable view without detaching its rows from dependency lifecycle.
+    ///
+    /// # Errors
+    /// Rejects a missing federation runtime or a view that produces only a local map.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn view_snapshots<V>(
+        &self,
+        view: V,
+    ) -> Result<
+        myko_federation::LiveSubscription<crate::server::federated_source::ItemSnapshot<V::Item>>,
+        String,
+    >
+    where
+        V: super::ViewFactory + Clone + Send + Sync + 'static,
+        V::Item: serde::de::DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let server = &self.view_context.server_ctx;
+        let local_node = server
+            .federated()
+            .ok_or_else(|| "view context has no federation runtime".to_owned())?
+            .node_id();
+        let route = crate::server::federated_source::FederatedRequest {
+            source_node: view.source_node(local_node),
+            scope_id: view.scope_id(local_node),
+        };
+        let publication = server
+            .view_value_routed(view, self.view_context.req.clone(), Some(route))?
+            .into_retained()?;
+        Ok(publication.try_map_value(|rows| {
+            rows.iter()
+                .map(|(key, value)| {
+                    let item =
+                        crate::item::downcast_any_item_arc::<V::Item>(value, "view_snapshots")
+                            .ok_or_else(|| format!("view row {key} has the wrong item type"))?;
+                    Ok::<_, String>((Arc::clone(key), item))
+                })
+                .collect()
+        }))
+    }
 }
 
 impl crate::core::capability::sealed::Sealed for ViewBuildContext {}

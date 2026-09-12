@@ -2,6 +2,7 @@ use super::*;
 use crate::session_mux::{
     LocalInitialBody, LocalMultiplexedSession, MuxRouteEvent, MuxSubscription, serve_session_mux,
 };
+use myko_federation::{AuthorizationBlock, SubscriptionInterruption};
 fn authorized_request_envelope(
     destination: Option<NodeId>,
     authority: Option<AuthorityPresentation>,
@@ -523,7 +524,12 @@ impl HandlerConnector for LocalHandlerConnector {
             .session
             .mux()
             .await
-            .open(self.envelope(PeerRequest::FollowHandler { request }))
+            .open(
+                self.envelope(PeerRequest::FollowHandler(myko_wire::HandlerOpenRequest {
+                    request,
+                    observed_contract: None,
+                })),
+            )
             .await?;
         let initial = subscription
             .recv_authorized()
@@ -829,8 +835,9 @@ impl ItemClient for LocalItemClient {
 
 /// Command client bound to one owner-local Myko peer socket.
 ///
-/// Connection attempts continue until the socket becomes available or the
-/// pending operation is cancelled.
+/// Reads and watches reconnect until cancelled. Submissions do not queue through
+/// an outage or replay after connection loss. A lost acknowledgement reports the
+/// command ID with unknown acceptance; inspect that identity before retrying.
 #[derive(Debug, Clone)]
 pub struct LocalCommandClient {
     session: Arc<LocalMultiplexedSession>,
@@ -985,12 +992,12 @@ impl LocalCommandClient {
     /// authority coordination is unavailable, or the response is malformed.
     pub async fn prepare_control(
         &self,
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
     ) -> Result<SignedControlVote, LocalPeerError> {
         let mut subscription = open_local(
             &self.session,
-            self.envelope(PeerRequest::ControlPrepare { head, ballot }),
+            self.envelope(PeerRequest::ControlPrepare { target, ballot }),
         )
         .await?;
         match read_authorized_mux_frame(&mut subscription).await? {
@@ -1014,7 +1021,7 @@ impl LocalCommandClient {
     /// authority coordination is unavailable, or the response is malformed.
     pub async fn propose_control(
         &self,
-        head: ControlHead,
+        target: ControlTarget,
         ballot: ControlBallot,
         promises: Vec<SignedControlVote>,
         value: ControlValue,
@@ -1022,7 +1029,7 @@ impl LocalCommandClient {
         let mut subscription = open_local(
             &self.session,
             self.envelope(PeerRequest::ControlPropose {
-                head,
+                target,
                 ballot,
                 promises,
                 value,
@@ -1050,13 +1057,13 @@ impl LocalCommandClient {
     /// authority coordination is unavailable, or the response is malformed.
     pub async fn accept_control(
         &self,
-        head: ControlHead,
+        target: ControlTarget,
         proposal: SignedControlProposal,
     ) -> Result<SignedControlVote, LocalPeerError> {
         let mut subscription = open_local(
             &self.session,
             self.envelope(PeerRequest::ControlAccept {
-                head,
+                target,
                 proposal: Box::new(proposal),
             }),
         )
@@ -1320,9 +1327,17 @@ where
                 Ok(LocalItemQueryEvent::Resynchronizing { reason }) => {
                     task_writer.resynchronizing(reason.to_string());
                 }
-                Err(LocalPeerError::AuthorityUnavailable(reason)) => {
-                    task_writer.resynchronizing(reason.to_string());
-                    match retry_item_watch(&client, &request, &query).await {
+                Err(error) => {
+                    let Some(interruption) = local_item_interruption(&error) else {
+                        task_writer.invalidate(error.to_string());
+                        return;
+                    };
+                    task_writer.interrupt(interruption);
+                    match retry_item_watch(&client, &request, &query, |interruption| {
+                        task_writer.interrupt(interruption);
+                    })
+                    .await
+                    {
                         Ok((snapshot, next)) => {
                             subscription = next;
                             task_writer.publish(snapshot.value, snapshot.through);
@@ -1332,10 +1347,6 @@ where
                             return;
                         }
                     }
-                }
-                Err(error) => {
-                    task_writer.invalidate(error.to_string());
-                    return;
                 }
             }
         }
@@ -1347,6 +1358,7 @@ async fn retry_item_watch<Q: ItemQuery>(
     client: &LocalItemClient,
     request: &ItemStateRequest,
     query: &Q,
+    on_retry: impl Fn(SubscriptionInterruption),
 ) -> Result<
     (
         ItemQuerySnapshot<ItemQueryResult<Q>>,
@@ -1359,7 +1371,11 @@ async fn retry_item_watch<Q: ItemQuery>(
     loop {
         tokio::time::sleep(delay).await;
         match client.watch_request(request.clone(), query.clone()).await {
-            Err(LocalPeerError::AuthorityUnavailable(_)) => {
+            Err(error) => {
+                let Some(interruption) = local_item_interruption(&error) else {
+                    return Err(error);
+                };
+                on_retry(interruption);
                 delay = policy.next_delay(delay);
             }
             result => return result,
@@ -1367,32 +1383,21 @@ async fn retry_item_watch<Q: ItemQuery>(
     }
 }
 
-pub async fn connect_local_peer(socket_path: &Path, policy: ReconnectPolicy) -> UnixStream {
-    let mut delay = policy.initial_delay();
-    let mut attempts = 0_u64;
-    loop {
-        attempts = attempts.saturating_add(1);
-        match UnixStream::connect(socket_path).await {
-            Ok(stream) => {
-                tracing::debug!(
-                    socket_path = %socket_path.display(),
-                    attempts,
-                    "connected to local Myko transport"
-                );
-                return stream;
-            }
-            Err(error) => {
-                tracing::debug!(
-                    socket_path = %socket_path.display(),
-                    attempts,
-                    retry_after_ms = delay.as_millis(),
-                    error = %error,
-                    "local Myko transport unavailable; retrying"
-                );
-            }
+fn local_item_interruption(error: &LocalPeerError) -> Option<SubscriptionInterruption> {
+    match error {
+        LocalPeerError::AuthorityUnavailable(_) => {
+            Some(SubscriptionInterruption::Resynchronizing {
+                reason: error.to_string(),
+            })
         }
-        tokio::time::sleep(delay).await;
-        delay = policy.next_delay(delay);
+        LocalPeerError::Authorization(decision) => {
+            AuthorizationBlock::from_decision(*decision.clone())
+                .map(|block| SubscriptionInterruption::AuthorizationBlocked { block })
+        }
+        LocalPeerError::Node(_)
+        | LocalPeerError::Io(_)
+        | LocalPeerError::Json(_)
+        | LocalPeerError::Protocol(_) => None,
     }
 }
 
@@ -1604,6 +1609,7 @@ async fn read_authorized_mux_frame(
 
 fn local_mux_error(error: HandlerClientError) -> LocalPeerError {
     match error {
+        HandlerClientError::Authorization(decision) => LocalPeerError::Authorization(decision),
         HandlerClientError::Decode(error) => LocalPeerError::Json(error),
         HandlerClientError::AuthorityUnavailable(reason) => {
             LocalPeerError::AuthorityUnavailable(reason)

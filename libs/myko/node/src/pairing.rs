@@ -4,7 +4,6 @@
 
 use std::{collections::HashSet, hash::Hash, sync::Arc, time::Duration};
 
-use hyphae::{Definite, MapEntriesExt as _, MapExt as _, Materialize};
 use myko::{
     ApplicationHost, CommandContext, CommandError, CommandHandler, myko_report, myko_view,
     myko_view_item,
@@ -479,23 +478,23 @@ impl ReportHandler for PairingRedemptionReport {
         Some(peer_scope(self.source_node))
     }
 
-    fn compute(&self, context: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+    fn compute(
+        &self,
+        context: ReportContext,
+    ) -> Result<impl myko::report::ReportBuildOutput<Self::Output>, String> {
         let redemption_id = self.redemption_id.clone();
-        myko::item::typed_map_arc_from_any_item::<PairingRedemption>(
+        Ok(myko::report::RetainedReport::new(
             context
-                .federated_items::<PairingRedemption>()
-                .expect("validated pairing-redemption federation source"),
-            "PairingRedemptionReport",
-        )
-        .entries()
-        .map(move |redemptions| {
-            Arc::new(
-                redemptions
-                    .iter()
-                    .find(|(_, redemption)| redemption.id == redemption_id)
-                    .map(|(_, redemption)| redemption.as_ref().clone()),
-            )
-        })
+                .federated_items::<PairingRedemption>()?
+                .map_value(move |redemptions| {
+                    Arc::new(
+                        redemptions
+                            .iter()
+                            .find(|(_, redemption)| redemption.id == redemption_id)
+                            .map(|(_, redemption)| redemption.as_ref().clone()),
+                    )
+                }),
+        ))
     }
 }
 
@@ -518,23 +517,23 @@ impl ReportHandler for PairingInitiationReport {
         Some(peer_scope(self.source_node))
     }
 
-    fn compute(&self, context: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+    fn compute(
+        &self,
+        context: ReportContext,
+    ) -> Result<impl myko::report::ReportBuildOutput<Self::Output>, String> {
         let initiation_id = self.initiation_id.clone();
-        myko::item::typed_map_arc_from_any_item::<PairingInitiation>(
+        Ok(myko::report::RetainedReport::new(
             context
-                .federated_items::<PairingInitiation>()
-                .expect("validated pairing-initiation federation source"),
-            "PairingInitiationReport",
-        )
-        .entries()
-        .map(move |initiations| {
-            Arc::new(
-                initiations
-                    .iter()
-                    .find(|(_, initiation)| initiation.id == initiation_id)
-                    .map(|(_, initiation)| initiation.as_ref().clone()),
-            )
-        })
+                .federated_items::<PairingInitiation>()?
+                .map_value(move |initiations| {
+                    Arc::new(
+                        initiations
+                            .iter()
+                            .find(|(_, initiation)| initiation.id == initiation_id)
+                            .map(|(_, initiation)| initiation.as_ref().clone()),
+                    )
+                }),
+        ))
     }
 }
 
@@ -557,25 +556,25 @@ impl ViewHandler for PairingReceiptsView {
 
     fn build_cell(
         context: ViewBuildArgs<Self>,
-    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
-        myko::view::LocalView::new({
-            myko::item::typed_map_arc_from_any_item::<PendingPairingReceipt>(
-                context
-                    .federated_items::<PendingPairingReceipt>()
-                    .expect("validated pairing-receipt federation source"),
-                "PairingReceiptsView",
-            )
-            .map_entries(|_, pending| {
-                let id = Arc::from(pending.receipt.invitation_id.to_string());
-                (
-                    Arc::clone(&id),
-                    Arc::new(PairingReceiptRow {
-                        id,
-                        receipt: pending.receipt.clone(),
-                    }),
-                )
-            })
-        })
+    ) -> Result<impl myko::view::ViewBuildOutput<Item = Self::Item>, String> {
+        Ok(myko::view::RetainedView::new(
+            context
+                .federated_items::<PendingPairingReceipt>()?
+                .map_value(|rows| {
+                    rows.values()
+                        .map(|pending| {
+                            let id = Arc::from(pending.receipt.invitation_id.to_string());
+                            (
+                                Arc::clone(&id),
+                                Arc::new(PairingReceiptRow {
+                                    id,
+                                    receipt: pending.receipt.clone(),
+                                }),
+                            )
+                        })
+                        .collect()
+                }),
+        ))
     }
 }
 

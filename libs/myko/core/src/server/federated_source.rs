@@ -81,19 +81,13 @@ pub type SourcedItemSnapshot<T> = BTreeMap<SourcedItemKey<<T as MykoItem>::Id>, 
 type SourcedProjection<T> = SourcedItemSnapshot<T>;
 type SourcedProjectionDiff<T> = MapDiff<SourcedItemKey<<T as MykoItem>::Id>, Arc<SourcedItem<T>>>;
 
-struct SourcedDriver<T>
-where
-    T: MykoItem,
-{
-    writer: LiveSubscriptionWriter<SourcedProjection<T>>,
+struct ProjectionDriver<T: hyphae::CellValue> {
+    writer: LiveSubscriptionWriter<T>,
     armed: bool,
 }
 
-impl<T> SourcedDriver<T>
-where
-    T: MykoItem,
-{
-    fn replace(&self, state: myko_federation::LiveSubscriptionState<SourcedProjection<T>>) {
+impl<T: hyphae::CellValue> ProjectionDriver<T> {
+    fn replace(&self, state: myko_federation::LiveSubscriptionState<T>) {
         self.writer.replace(state);
     }
 
@@ -103,14 +97,10 @@ where
     }
 }
 
-impl<T> Drop for SourcedDriver<T>
-where
-    T: MykoItem,
-{
+impl<T: hyphae::CellValue> Drop for ProjectionDriver<T> {
     fn drop(&mut self) {
         if self.armed {
-            self.writer
-                .invalidate("multi-source projection driver stopped");
+            self.writer.invalidate("retained projection driver stopped");
         }
     }
 }
@@ -146,7 +136,7 @@ where
         replace_sourced_rows(&rows_writer, &initial_publication.state);
         let mut events = node.subscribe(through).map_err(|error| error.to_string())?;
         let task_node = node.clone();
-        let mut driver = SourcedDriver {
+        let mut driver = ProjectionDriver {
             writer,
             armed: true,
         };
@@ -275,9 +265,13 @@ where
     }
 }
 
+/// One coherent typed item snapshot from a durable source.
+pub type ItemSnapshot<T> = BTreeMap<Arc<str>, Arc<T>>;
+
 /// A durable item projection materialized directly into Myko's retained map.
 pub struct FederatedMapSource {
     rows: FilteredCellMap,
+    snapshots: Arc<dyn Any + Send + Sync>,
     revision: Cell<MapRevision, CellImmutable>,
     published: Arc<Mutex<MapRevision>>,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -301,6 +295,15 @@ impl FederatedMapSource {
         let (initial, mut watch) = node
             .watch_item_projection::<T>(source_node, scope_id)
             .map_err(|error| error.to_string())?;
+        let (writer, snapshots) = live_subscription(myko_federation::LiveSubscriptionState {
+            value: Some(item_snapshot(&initial.projection)),
+            through: initial.through,
+            liveness: initial.liveness.clone(),
+        });
+        let mut driver = ProjectionDriver {
+            writer,
+            armed: true,
+        };
         let rows_writer = CellMap::<Arc<str>, Arc<dyn AnyItem>, CellMutable>::new()
             .with_name("myko.federated.rows");
         let initial_rows = initial
@@ -318,7 +321,7 @@ impl FederatedMapSource {
             }),
             frontier: initial.through,
             epoch: 0,
-            liveness: SubscriptionLiveness::Current,
+            liveness: initial.liveness,
         };
         let revision_writer =
             Cell::new(initial_revision.clone()).with_name("myko.federated.revision");
@@ -335,19 +338,25 @@ impl FederatedMapSource {
                             diff: diff.clone(),
                             frontier: Some(update.position),
                             epoch: 0,
-                            liveness: SubscriptionLiveness::Current,
+                            liveness: update.liveness.clone(),
                         };
                         hyphae::batch(|| {
                             if let Some(diff) = diff {
                                 rows_writer.apply_diff_owned(diff);
                             }
                             revision_writer.set(next.clone());
+                            driver.replace(myko_federation::LiveSubscriptionState {
+                                value: Some(item_snapshot(&update.projection)),
+                                through: Some(update.position),
+                                liveness: update.liveness,
+                            });
                         });
                         *published_for_task
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner) = next;
                     }
                     Err(error) => {
+                        driver.invalidate(error.to_string());
                         let previous = revision_writer.get();
                         let invalid = MapRevision {
                             diff: None,
@@ -368,6 +377,7 @@ impl FederatedMapSource {
         });
         Ok(Self {
             rows,
+            snapshots: Arc::new(snapshots),
             revision,
             published,
             task: Some(task),
@@ -377,6 +387,20 @@ impl FederatedMapSource {
     #[must_use]
     pub fn rows(&self) -> FilteredCellMap {
         self.rows.clone()
+    }
+
+    /// Returns coherent typed snapshots with their local causal completeness.
+    ///
+    /// # Errors
+    /// Rejects a different item type from the one used to construct this source.
+    pub fn snapshots<T>(&self) -> Result<LiveSubscription<ItemSnapshot<T>>, String>
+    where
+        T: MykoItem + AnyItem,
+    {
+        self.snapshots
+            .downcast_ref::<LiveSubscription<ItemSnapshot<T>>>()
+            .cloned()
+            .ok_or_else(|| "federated item snapshot type mismatch".to_owned())
     }
 
     #[must_use]
@@ -390,6 +414,16 @@ impl FederatedMapSource {
             let _stopped = task.await;
         }
     }
+}
+
+fn item_snapshot<T>(projection: &myko_federation::ItemProjection<T>) -> ItemSnapshot<T>
+where
+    T: MykoItem + AnyItem,
+{
+    projection
+        .values()
+        .map(|item| (item.id(), Arc::new(item.clone())))
+        .collect()
 }
 
 impl Drop for FederatedMapSource {
@@ -632,8 +666,9 @@ impl FederatedRuntime {
         Ok(source)
     }
 
-    /// Return whether every opened source for this selection is current at
-    /// the authoritative frontier.
+    /// Check opened sources for local causal completeness at the supplied cut.
+    ///
+    /// This does not establish remote coverage or authority to serve the scope.
     #[must_use]
     pub fn selection_is_current_at(
         &self,
@@ -821,12 +856,15 @@ where
     clippy::unwrap_used
 )]
 mod tests {
+    mod generated;
+    mod readiness;
+
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     };
 
-    use hyphae::{Definite, Gettable as _, MapExt as _, Materialize, Signal, Watchable as _};
+    use hyphae::{Gettable as _, Signal, Watchable as _};
     use myko_federation::{
         AuthorityPresentation, BatchId, ChangeBatch, CommandId, CommandRequest, ItemMutation,
         PrincipalId, ResourceClaim, ResourceClaimKind, ServiceId,
@@ -836,7 +874,6 @@ mod tests {
     use crate::{
         ApplicationHost, MykoApplication, MykoService,
         common::with_id::WithId as _,
-        core::capability::Viewing as _,
         myko_item, myko_query, myko_report, myko_report_output, myko_service, myko_view,
         request::RequestContext,
         search::SearchIndex,
@@ -885,13 +922,32 @@ mod tests {
     pub struct ProjectionRecords;
 
     impl crate::query::QueryHandler for ProjectionRecords {
+        fn scope_id(&self, _local_node: NodeId) -> Option<ScopeId> {
+            Some(ScopeId::for_item::<ProjectionRecord>(
+                &ProjectionRecordId::from("record"),
+            ))
+        }
+
         fn build_view(
             ctx: crate::query::QueryBuildArgs<Self>,
-        ) -> Option<impl hyphae::MapQuery<Key = Arc<str>, Value = Arc<dyn AnyItem>>> {
-            Some(
-                ctx.federated_items::<ProjectionRecord>()
-                    .expect("test federation source is configured"),
-            )
+        ) -> Result<Option<impl crate::query::QueryBuildOutput>, String> {
+            Ok({
+                Some(crate::query::RetainedQuery::new(
+                    ctx.federated_items::<ProjectionRecord>()?,
+                ))
+            })
+        }
+    }
+
+    #[myko_query(ProjectionRecord, item = ProjectionRecord)]
+    #[derive(PartialEq, Eq)]
+    pub struct NestedProjectionRecords;
+
+    impl crate::query::QueryHandler for NestedProjectionRecords {
+        fn build_view(
+            ctx: crate::query::QueryBuildArgs<Self>,
+        ) -> Result<Option<impl crate::query::QueryBuildOutput>, String> {
+            Ok(Some(ctx.query_context.query(ProjectionRecords)?))
         }
     }
 
@@ -908,14 +964,10 @@ mod tests {
 
         fn build_cell(
             ctx: crate::view::ViewBuildArgs<Self>,
-        ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
-            crate::view::LocalView::new({
-                crate::item::typed_map_arc_from_any_item::<ProjectionRecord>(
-                    ctx.federated_items::<ProjectionRecord>()
-                        .expect("test federation source is configured"),
-                    "ProjectionRecordView",
-                )
-            })
+        ) -> Result<impl crate::view::ViewBuildOutput<Item = Self::Item>, String> {
+            Ok(crate::view::RetainedView::new(
+                ctx.federated_items::<ProjectionRecord>()?,
+            ))
         }
     }
 
@@ -932,19 +984,20 @@ mod tests {
 
         fn build_cell(
             ctx: crate::view::ViewBuildArgs<Self>,
-        ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
-            let selection = ScopeSelection::Exact(ScopeId::for_item::<ProjectionRecord>(
-                &ProjectionRecordId::from("record"),
-            ));
-            let publication = ctx
-                .sourced_snapshots_selected::<ProjectionRecord>(selection)
-                .expect("test federation source is configured")
-                .map_value(|rows| {
-                    rows.values()
-                        .map(|row| (row.item.id(), Arc::new(row.item.clone())))
-                        .collect()
-                });
-            crate::view::RetainedView::new(publication)
+        ) -> Result<impl crate::view::ViewBuildOutput<Item = Self::Item>, String> {
+            Ok({
+                let selection = ScopeSelection::Exact(ScopeId::for_item::<ProjectionRecord>(
+                    &ProjectionRecordId::from("record"),
+                ));
+                let publication = ctx
+                    .sourced_snapshots_selected::<ProjectionRecord>(selection)?
+                    .map_value(|rows| {
+                        rows.values()
+                            .map(|row| (row.item.id(), Arc::new(row.item.clone())))
+                            .collect()
+                    });
+                crate::view::RetainedView::new(publication)
+            })
         }
     }
 
@@ -955,12 +1008,12 @@ mod tests {
     impl crate::view::ViewHandler for NestedProjectionRecordView {
         fn build_cell(
             ctx: crate::view::ViewBuildArgs<Self>,
-        ) -> impl crate::view::ViewBuildOutput<Item = Self::Item> {
-            crate::view::LocalView::new(
-                ctx.view_context
-                    .view(ProjectionRecordView)
-                    .expect("nested test view is a local map"),
-            )
+        ) -> Result<impl crate::view::ViewBuildOutput<Item = Self::Item>, String> {
+            Ok({
+                crate::view::RetainedView::new(
+                    ctx.view_context.view_snapshots(ProjectionRecordView)?,
+                )
+            })
         }
     }
 
@@ -980,11 +1033,13 @@ mod tests {
         fn compute(
             &self,
             ctx: crate::report::ReportContext,
-        ) -> impl Materialize<Arc<Self::Output>, Definite> {
-            ctx.federated_items::<ProjectionRecord>()
-                .expect("test federation source is configured")
-                .size()
-                .map(|count| Arc::new(FederatedProjectionCount { count: *count }))
+        ) -> Result<impl crate::report::ReportBuildOutput<Self::Output>, String> {
+            Ok({
+                crate::report::RetainedReport::new(
+                    ctx.federated_items::<ProjectionRecord>()?
+                        .map_value(|rows| Arc::new(FederatedProjectionCount { count: rows.len() })),
+                )
+            })
         }
     }
 
@@ -1059,6 +1114,7 @@ mod tests {
 
     #[tokio::test]
     async fn revision_observers_see_matching_rows_in_the_same_wave() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let scope_id = ScopeId::for_item::<ProjectionRecord>(&ProjectionRecordId::from("record"));
         let source = FederatedMapSource::start::<ProjectionRecord>(
@@ -1118,6 +1174,7 @@ mod tests {
     #[tokio::test]
     async fn sourced_projection_preserves_colliding_ids_and_revision_metadata() -> Result<(), String>
     {
+        let _serial = crate::test_util::scheduler_test_serial();
         let local = Node::in_memory();
         let remote = Node::in_memory();
         commit(
@@ -1228,6 +1285,7 @@ mod tests {
     #[tokio::test]
     async fn sourced_projection_withholds_a_write_until_its_causal_parent_arrives()
     -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let dependency_envelope = unrelated_dependency_event()?;
         let dependency = dependency_envelope.origin;
 
@@ -1307,6 +1365,7 @@ mod tests {
     #[tokio::test]
     async fn sourced_deletion_waits_for_its_parent_without_changing_an_earlier_cut()
     -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record = ProjectionRecord {
             id: ProjectionRecordId::from("record"),
@@ -1381,6 +1440,7 @@ mod tests {
 
     #[test]
     fn application_snapshot_reports_pending_then_released_selected_history() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record = ProjectionRecord {
             id: ProjectionRecordId::from("record"),
@@ -1445,6 +1505,7 @@ mod tests {
 
     #[tokio::test]
     async fn sourced_snapshot_advances_cut_when_rows_do_not_change() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let selection = ScopeSelection::Exact(ScopeId::for_item::<ProjectionRecord>(
             &ProjectionRecordId::from("record"),
@@ -1479,6 +1540,7 @@ mod tests {
 
     #[tokio::test]
     async fn stopping_sourced_driver_invalidates_and_retains_its_payload() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record = ProjectionRecord {
             id: ProjectionRecordId::from("record"),
@@ -1514,6 +1576,7 @@ mod tests {
 
     #[tokio::test]
     async fn releasing_one_consumer_keeps_the_node_owned_source_live() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let scope_id = ScopeId::for_item::<ProjectionRecord>(&ProjectionRecordId::from("record"));
         let runtime = FederatedRuntime::new(node.clone())?;
@@ -1545,6 +1608,7 @@ mod tests {
 
     #[tokio::test]
     async fn retained_query_registration_materializes_the_durable_source() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record_id = ProjectionRecordId::from("record");
         let scope_id = ScopeId::for_item::<ProjectionRecord>(&record_id);
@@ -1564,6 +1628,7 @@ mod tests {
             chrono::Utc::now().to_rfc3339(),
         ));
         let rows = server.handler_registry.open_federated_query(
+            Some(<ProjectionRecord as crate::MykoItem>::SERVICE_ID.as_str()),
             "ProjectionRecords",
             serde_json::json!({}),
             request,
@@ -1573,11 +1638,19 @@ mod tests {
                 scope_id: Some(scope_id),
             },
         )?;
-        assert_eq!(rows.snapshot().len(), 1);
+        let crate::query::QueryValue::RetainedPublication(rows) = rows else {
+            return Err("durable query lost its retained publication".to_owned());
+        };
+        assert_eq!(rows.current().value.as_ref().map(BTreeMap::len), Some(1));
 
         commit(&node, None)?;
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while !rows.snapshot().is_empty() {
+            while rows
+                .current()
+                .value
+                .as_ref()
+                .is_none_or(|rows| !rows.is_empty())
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -1588,6 +1661,7 @@ mod tests {
 
     #[tokio::test]
     async fn retained_view_registration_materializes_the_durable_source() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record_id = ProjectionRecordId::from("record");
         let scope_id = ScopeId::for_item::<ProjectionRecord>(&record_id);
@@ -1606,24 +1680,30 @@ mod tests {
             server.host_id,
             chrono::Utc::now().to_rfc3339(),
         ));
-        let rows = server
-            .handler_registry
-            .open_federated_view(
-                "ProjectionRecordView",
-                serde_json::json!({}),
-                request,
-                Arc::clone(&server),
-                FederatedRequest {
-                    source_node: Some(node.node_id()),
-                    scope_id: Some(scope_id),
-                },
-            )?
-            .into_local_map()?;
-        assert_eq!(rows.snapshot().len(), 1);
+        let rows = server.handler_registry.open_federated_view(
+            Some(<ProjectionRecord as crate::MykoItem>::SERVICE_ID.as_str()),
+            "ProjectionRecordView",
+            serde_json::json!({}),
+            request,
+            Arc::clone(&server),
+            FederatedRequest {
+                source_node: Some(node.node_id()),
+                scope_id: Some(scope_id),
+            },
+        )?;
+        let crate::view::RegisteredViewOutput::RetainedPublication(rows) = rows else {
+            return Err("durable view lost its retained publication".to_owned());
+        };
+        assert_eq!(rows.current().value.as_ref().map(BTreeMap::len), Some(1));
 
         commit(&node, None)?;
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
-            while !rows.snapshot().is_empty() {
+            while rows
+                .current()
+                .value
+                .as_ref()
+                .is_none_or(|rows| !rows.is_empty())
+            {
                 tokio::task::yield_now().await;
             }
         })
@@ -1634,6 +1714,7 @@ mod tests {
 
     #[tokio::test]
     async fn nested_views_preserve_the_federated_source_request() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record_id = ProjectionRecordId::from("record");
         commit(
@@ -1649,26 +1730,27 @@ mod tests {
             server.host_id,
             "test",
         ));
-        let rows = server
-            .handler_registry
-            .open_federated_view(
-                "NestedProjectionRecordView",
-                serde_json::json!({}),
-                request,
-                Arc::clone(&server),
-                FederatedRequest {
-                    source_node: Some(node.node_id()),
-                    scope_id: Some(ScopeId::new("outer-scope")),
-                },
-            )?
-            .into_local_map()?;
-
-        assert_eq!(rows.snapshot().len(), 1);
+        let rows = server.handler_registry.open_federated_view(
+            Some(<ProjectionRecord as crate::MykoItem>::SERVICE_ID.as_str()),
+            "NestedProjectionRecordView",
+            serde_json::json!({}),
+            request,
+            Arc::clone(&server),
+            FederatedRequest {
+                source_node: Some(node.node_id()),
+                scope_id: Some(ScopeId::new("outer-scope")),
+            },
+        )?;
+        let crate::view::RegisteredViewOutput::RetainedPublication(rows) = rows else {
+            return Err("nested view lost its retained publication".to_owned());
+        };
+        assert_eq!(rows.current().value.as_ref().map(BTreeMap::len), Some(1));
         Ok(())
     }
 
     #[tokio::test]
     async fn retained_report_registration_materializes_the_durable_source() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record_id = ProjectionRecordId::from("record");
         let scope_id = ScopeId::for_item::<ProjectionRecord>(&record_id);
@@ -1688,6 +1770,7 @@ mod tests {
             chrono::Utc::now().to_rfc3339(),
         ));
         let count = server.handler_registry.open_federated_report(
+            Some(<ProjectionRecord as crate::MykoItem>::SERVICE_ID.as_str()),
             "FederatedProjectionCountReport",
             serde_json::json!({}),
             request,
@@ -1699,7 +1782,7 @@ mod tests {
         )?;
         assert_eq!(
             count
-                .get()
+                .read_current()?
                 .as_any()
                 .downcast_ref::<FederatedProjectionCount>()
                 .map(|output| output.count),
@@ -1709,7 +1792,7 @@ mod tests {
         commit(&node, None)?;
         tokio::time::timeout(std::time::Duration::from_secs(1), async {
             loop {
-                let current = count.get();
+                let current = count.read_current().expect("test report is current");
                 let count = current
                     .as_any()
                     .downcast_ref::<FederatedProjectionCount>()
@@ -1727,6 +1810,7 @@ mod tests {
 
     #[tokio::test]
     async fn application_host_opens_handlers_in_the_retained_session() -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record_id = ProjectionRecordId::from("record");
         let scope_id = ScopeId::for_item::<ProjectionRecord>(&record_id);
@@ -1752,6 +1836,9 @@ mod tests {
             Arc::from("handler-request"),
             myko_wire::HandlerRequest {
                 kind: myko_federation::HandlerKind::Query,
+                service_id: Some(myko_federation::ServiceId::new(
+                    <ProjectionRecord as crate::MykoItem>::SERVICE_ID.as_str(),
+                )),
                 handler_id: "ProjectionRecords".to_owned(),
                 source_node: Some(node.node_id()),
                 scope_id: Some(scope_id),
@@ -1783,6 +1870,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn registered_retained_view_gates_cached_output_and_preserves_publications()
     -> Result<(), String> {
+        let _serial = crate::test_util::scheduler_test_serial();
         let node = Node::in_memory();
         let record = ProjectionRecord {
             id: ProjectionRecordId::from("record"),
@@ -1795,6 +1883,9 @@ mod tests {
         let host = ApplicationHost::new(node.clone(), application)?;
         let request = myko_wire::HandlerRequest {
             kind: myko_federation::HandlerKind::View,
+            service_id: Some(myko_federation::ServiceId::new(
+                <ProjectionRecord as crate::MykoItem>::SERVICE_ID.as_str(),
+            )),
             handler_id: "RetainedProjectionRecordView".to_owned(),
             source_node: Some(node.node_id()),
             scope_id: Some(ScopeId::for_item::<ProjectionRecord>(&record.id)),

@@ -1,4 +1,8 @@
 use super::*;
+
+#[cfg(test)]
+mod scoped_evidence_tests;
+
 impl FollowSelection {
     pub(super) const fn replication(selection: ReplicationSelection) -> Self {
         Self::Selected(selection)
@@ -1020,6 +1024,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Authorization { .. }
             | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
@@ -1100,6 +1105,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Authorization { .. }
             | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
@@ -1173,6 +1179,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Authorization { .. }
             | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
@@ -1199,6 +1206,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Authorization { .. }
             | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
@@ -1407,6 +1415,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Authorization { .. }
             | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
@@ -1433,6 +1442,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Authorization { .. }
             | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }
@@ -1526,6 +1536,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Approval { .. }
             | ReplicationFrame::ControlVote { .. }
             | ReplicationFrame::ControlProposal { .. }
@@ -1661,6 +1672,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Approval { .. }
             | ReplicationFrame::ControlVote { .. }
             | ReplicationFrame::ControlProposal { .. }
@@ -2094,6 +2106,7 @@ impl IrohReplicator {
             | ReplicationFrame::ItemUpdate { .. }
             | ReplicationFrame::HandlerState { .. }
             | ReplicationFrame::HandlerViewDelta { .. }
+            | ReplicationFrame::HandlerContract { .. }
             | ReplicationFrame::Authorization { .. }
             | ReplicationFrame::AuthorityUnavailable { .. }
             | ReplicationFrame::Approval { .. }

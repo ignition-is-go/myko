@@ -39,6 +39,10 @@ mod context;
 pub mod dispatch_metrics;
 pub mod entity_set_stats;
 #[cfg(not(target_arch = "wasm32"))]
+mod execution_control;
+#[cfg(not(target_arch = "wasm32"))]
+mod execution_coordinator;
+#[cfg(not(target_arch = "wasm32"))]
 mod federated_session;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod federated_source;
@@ -56,9 +60,15 @@ pub use client_session::{ClientSession, NodeFrameSend, PendingQueryResponse, Ses
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 #[cfg(not(target_arch = "wasm32"))]
+pub use execution_control::ExecutionControlEndpoint;
+#[cfg(not(target_arch = "wasm32"))]
+pub use execution_coordinator::{
+    ExecutionAssignmentCoordinator, ExecutionAssignmentReceipt, ExecutionControllerPeer,
+};
+#[cfg(not(target_arch = "wasm32"))]
 pub use federated_session::{
-    AuthorityControlEndpoint, AuthorityControlFuture, AuthorityControlProposeRequest,
-    FederatedSession, NodeFrameStream, NodeRequestRouter, NodeRouteFuture,
+    ControlEndpoint, ControlFuture, ControlProposeRequest, FederatedSession, NodeFrameStream,
+    NodeRequestRouter, NodeRouteFuture,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use federated_source::{SourcedItem, SourcedItemKey, SourcedItemMap, SourcedItemSnapshot};

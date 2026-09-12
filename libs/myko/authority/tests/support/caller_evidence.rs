@@ -71,7 +71,7 @@ async fn check_proposer_routes(
         .prepare(
             &a.id,
             &AuthorityPresentation::direct(a.clone()),
-            genesis,
+            anchor()?.target(genesis),
             ControlBallot {
                 counter: 2,
                 proposer: controller_id(&keys[0]),
@@ -90,7 +90,7 @@ async fn check_proposer_routes(
         .prepare(
             &b.id,
             &AuthorityPresentation::direct(b.clone()),
-            genesis,
+            anchor()?.target(genesis),
             ControlBallot {
                 counter: 3,
                 proposer: controller_id(&keys[1]),
@@ -104,7 +104,7 @@ async fn check_proposer_routes(
         .prepare(
             &b.id,
             &AuthorityPresentation::direct(b.clone()),
-            genesis,
+            anchor()?.target(genesis),
             ControlBallot {
                 counter: 3,
                 proposer: controller_id(&keys[1]),
@@ -138,13 +138,10 @@ async fn native_controller_selects_evidence_by_authenticated_proposer() -> TestR
         )))?;
     }
     let keys = keys3();
-    transports[2]
-        .sessions()
-        .set_authority_control(Some(Arc::new(controller_endpoint(
-            &nodes,
-            &transports,
-            &keys,
-        )?)))?;
+    transports[2].sessions().set_control_endpoint(
+        myko_authority::authority_realm_scope(anchor()?.realm_id()),
+        Some(Arc::new(controller_endpoint(&nodes, &transports, &keys)?)),
+    )?;
     let outcome = check_proposer_routes(&nodes, &transports, &keys).await;
     for transport in transports {
         transport.shutdown().await?;

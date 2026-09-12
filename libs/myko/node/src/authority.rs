@@ -168,7 +168,10 @@ impl Node {
         let (runtime, policy) = PreparedAuthorityRuntime::new(coordinator, non_effect_policy);
         self.set_access_policy(policy)?;
         self.sessions()
-            .set_authority_control(Some(endpoint))
+            .set_control_endpoint(
+                myko_authority::authority_realm_scope(&config.realm),
+                Some(endpoint),
+            )
             .map_err(NodeError::State)?;
         self.certified_authority = Some(runtime.start(report).map_err(NodeError::State)?);
         Ok(())

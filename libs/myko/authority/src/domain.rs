@@ -126,16 +126,14 @@ impl ViewHandler for AuthorityGrantsView {
         Some(authority_realm_scope(&self.realm_id))
     }
 
-    #[allow(clippy::expect_used)]
     fn build_cell(
         context: ViewBuildArgs<Self>,
-    ) -> impl myko::view::ViewBuildOutput<Item = Self::Item> {
+    ) -> Result<impl myko::view::ViewBuildOutput<Item = Self::Item>, String> {
         let source_node = context.view.source_node;
         let scope = ScopeSelection::Exact(authority_realm_scope(&context.view.realm_id));
-        myko::view::RetainedView::new(
+        Ok(myko::view::RetainedView::new(
             context
-                .sourced_snapshots_selected::<GrantRecord>(scope)
-                .expect("validated authority-grant federation source")
+                .sourced_snapshots_selected::<GrantRecord>(scope)?
                 .map_value(move |rows| {
                     rows.iter()
                         .filter(|(key, _record)| key.source_node == source_node)
@@ -145,7 +143,7 @@ impl ViewHandler for AuthorityGrantsView {
                         })
                         .collect()
                 }),
-        )
+        ))
     }
 }
 

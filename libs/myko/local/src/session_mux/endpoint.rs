@@ -112,7 +112,7 @@ impl MuxSubscription {
                 }
                 MuxRouteEvent::Frame(PeerFrame::Authorization { decision }) => {
                     tracing::warn!(decision = ?decision, "local multiplexed Myko request authorization failed");
-                    return Err(HandlerClientError::Protocol(decision.public_message()));
+                    return Err(HandlerClientError::Authorization(decision));
                 }
                 MuxRouteEvent::Frame(PeerFrame::AuthorityUnavailable { reason }) => {
                     tracing::debug!(
