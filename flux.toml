@@ -47,4 +47,9 @@ bun = """cp package.json package.json.bak \
   && bun "$(git rev-parse --show-toplevel)/scripts/apply-publish-config.ts" \
   && VERSION=$(bun -p "require('./package.json').version") \
   && if echo "$VERSION" | grep -q '-'; then TAG=canary; else TAG=latest; fi \
-  && npm publish --provenance --access public --tag "$TAG" ; mv package.json.bak package.json"""
+  && npm publish --provenance=false --access public --tag "$TAG"; status=$?; mv package.json.bak package.json; exit $status"""
+# `--provenance=false`: npm rejects provenance from self-hosted runners (E422),
+# and the old `; mv` made that failure the exit status of `mv`, so every npm
+# publish since the runner move silently failed while the workflow stayed green
+# (@myko/core sat at 6.5.4 through v6.5.12). Trusted publishing still
+# authenticates the job. Same fix as marshal#111.
