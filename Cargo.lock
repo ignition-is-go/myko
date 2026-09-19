@@ -3453,9 +3453,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "3.1.1"
+version = "3.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "864b64cc6e50132fe6e5bb29d9823ac41acb0466a308ebb90aafe010e41cf3db"
+checksum = "48206718b1c0c105091461563531131364d48cd23bb05fbe3602601f1b046de9"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3507,7 +3507,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]

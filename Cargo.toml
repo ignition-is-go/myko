@@ -95,7 +95,7 @@ parking_lot = "0.12"
 
 # The scheduler is required by Myko's batched store propagation. Keep the
 # Leptos adapter on the same Hyphae major so its extension traits share types.
-hyphae = { version = "^3.0", features = ["scheduler"] }
+hyphae = { version = "^3.1.5", features = ["scheduler"] }
 hyphae-leptos = { version = "^3.0" }
 # Pin the published bridge so Myko and Hyphae share one GPUI type universe.
 hyphae-gpui = "=3.1.2"
