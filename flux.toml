@@ -26,6 +26,16 @@ bun = ["bun", "test"]
 cargo = ["cargo", "clippy", "--all-targets", "--features", "ci", "--", "-D", "warnings"]
 bun = ["bun", "run", "lint"]
 
+[tasks.format-rust]
+root = ["cargo", "fmt", "--all"]
+
+# Snapshot hydration and history adapter tests; no database is required.
+[tasks.test-postgres]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--lib", "postgres::tests", "--", "--test-threads=1"]
+
+[tasks.check-server]
+root = ["cargo", "clippy", "--jobs", "4", "-p", "myko-server", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
 [tasks.check-wasm]
 # wasm32 coverage for the crates that actually ship to a browser/wasm target
 # (myko, autosocket, myko-leptos — see each crate's `[package.metadata.flux]`

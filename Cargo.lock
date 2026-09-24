@@ -3453,9 +3453,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "3.1.1"
+version = "3.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "864b64cc6e50132fe6e5bb29d9823ac41acb0466a308ebb90aafe010e41cf3db"
+checksum = "d4df04c40d3a59d93729fe28e7087426b8879a44feeb2ccb7e56a78ee2886605"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3467,7 +3467,6 @@ dependencies = [
  "parking_lot",
  "rayon",
  "rustc-hash 2.1.3",
- "spin_sleep",
  "tracing",
  "uuid",
  "wasm-bindgen-futures",
@@ -3507,7 +3506,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.61.2",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -7184,15 +7183,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "023a211cb3138dbc438680b32560ad89f699977624c9f8dbb95a47d5b4c07dd3"
 dependencies = [
  "lock_api",
-]
-
-[[package]]
-name = "spin_sleep"
-version = "1.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c07347b7c0301b9adba4350bdcf09c039d0e7160922050db0439b3c6723c8ab"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
