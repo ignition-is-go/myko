@@ -29,6 +29,12 @@ bun = ["bun", "run", "lint"]
 [tasks.format-rust]
 root = ["cargo", "fmt", "--all"]
 
+[tasks.test-live-query]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko", "live_bucket_replays_queued_write_during_reconciliation", "--lib"]
+
+[tasks.test-live-query-integration]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--test", "query_live_test"]
+
 # Snapshot hydration and history adapter tests; no database is required.
 [tasks.test-postgres]
 root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--lib", "postgres::tests", "--", "--test-threads=1"]
