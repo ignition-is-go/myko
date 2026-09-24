@@ -930,7 +930,8 @@ struct LiveFilterGeneration<F> {
 #[derive(Default)]
 struct LiveQuerySynchronization {
     generation: AtomicU64,
-    reconciliation_gate: Mutex<()>,
+    // subscribe_diffs can synchronously replay queued writes before returning.
+    reconciliation_gate: parking_lot::ReentrantMutex<()>,
 }
 
 impl<F> Default for LiveQueryState<F> {
@@ -980,10 +981,7 @@ where
         let Some(result) = result_weak.upgrade() else {
             return;
         };
-        let _reconciliation = synchronization
-            .reconciliation_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _reconciliation = synchronization.reconciliation_gate.lock();
         let mut state = state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -1067,10 +1065,7 @@ fn build_live_diff_callback<F: LiveFilterQuery>(
             }
             return;
         }
-        let _reconciliation = synchronization
-            .reconciliation_gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let _reconciliation = synchronization.reconciliation_gate.lock();
         let Some(filter) = current_live_filter(&filter_state, &synchronization) else {
             return;
         };
@@ -1532,6 +1527,53 @@ mod belongs_to_source_index_tests {
 
     use super::*;
     use crate::common::with_id::WithId;
+
+    #[test]
+    fn live_bucket_replays_queued_write_during_reconciliation() {
+        let (done, completed) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            use crate::entities::client::{Client, ClientQuery};
+            let make_client = |id: &str| -> AnyItemArc {
+                Arc::new(Client {
+                    id: id.into(),
+                    server_id: "server".into(),
+                    address: None,
+                    windback: None,
+                })
+            };
+            let bucket = AnyItemMap::new();
+            bucket.insert("first".into(), make_client("first"));
+            let result = AnyItemMap::new();
+            let write_bucket = bucket.clone();
+            let second = make_client("second");
+            let written = AtomicBool::new(false);
+            let _write_guard = result.subscribe_diffs(move |diff| {
+                if matches!(diff, MapDiff::Insert { .. }) && !written.swap(true, Ordering::SeqCst) {
+                    write_bucket.insert("second".into(), second.clone());
+                }
+            });
+            let synchronization = Arc::new(LiveQuerySynchronization::default());
+            let filter = Arc::new(Mutex::new(LiveFilterGeneration {
+                generation: 0,
+                filter: ClientQuery::default(),
+            }));
+            let _reconciliation = synchronization.reconciliation_gate.lock();
+            let _guard = bucket.subscribe_diffs(build_live_diff_callback(
+                &result,
+                filter,
+                &synchronization,
+                LiveDiffScope::Bucket,
+            ));
+            assert_eq!(result.snapshot().len(), 2);
+            assert!(done.send(()).is_ok());
+        });
+        assert!(
+            completed
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .is_ok(),
+            "queued subscription replay must not lock its own reconciliation gate"
+        );
+    }
 
     #[derive(Debug, Clone, PartialEq, Serialize)]
     struct TestChild {
