@@ -1565,11 +1565,14 @@ mod belongs_to_source_index_tests {
                 LiveDiffScope::Bucket,
             ));
             assert_eq!(result.snapshot().len(), 2);
-            done.send(()).unwrap();
+            assert!(done.send(()).is_ok());
         });
-        completed
-            .recv_timeout(std::time::Duration::from_secs(3))
-            .expect("queued subscription replay must not lock its own reconciliation gate");
+        assert!(
+            completed
+                .recv_timeout(std::time::Duration::from_secs(3))
+                .is_ok(),
+            "queued subscription replay must not lock its own reconciliation gate"
+        );
     }
 
     #[derive(Debug, Clone, PartialEq, Serialize)]
