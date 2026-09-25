@@ -195,6 +195,9 @@ where
     let mut result = Vec::new();
     let mut visited: HashSet<(Arc<str>, Arc<str>)> = HashSet::new();
     let mut queue: VecDeque<(Arc<str>, Arc<str>)> = VecDeque::new();
+    // NOTE(ts): Index each FK on first use rather than rescanning the whole
+    // child store for every parent, which makes large exports quadratic.
+    let mut child_indices = HashMap::<_, HashMap<Arc<str>, Vec<Arc<str>>>>::new();
 
     let root_type: Arc<str> = root_type.into();
     let root_id: Arc<str> = root_id.into();
@@ -222,18 +225,25 @@ where
             continue;
         };
 
-        for child_rel in children {
+        for (relation_index, child_rel) in children.iter().enumerate() {
             match &child_rel.kind {
-                ChildKind::BelongsTo { extract_fk } => {
-                    // Scan child store for entities whose FK matches this entity's ID
-                    let Some(child_store) = registry.get(child_rel.child_type) else {
-                        continue;
-                    };
-                    for (child_id, child_item) in child_store.snapshot() {
-                        if let Some(fk) = extract_fk(child_item.as_any())
-                            && fk == entity_id
-                        {
-                            let key = (Arc::<str>::from(child_rel.child_type), child_id);
+                ChildKind::BelongsTo { extract_fk } | ChildKind::EnsureFor { extract_fk } => {
+                    let by_parent = child_indices
+                        .entry((entity_type.clone(), relation_index))
+                        .or_insert_with(|| {
+                            let mut index = HashMap::<_, Vec<_>>::new();
+                            if let Some(store) = registry.get(child_rel.child_type) {
+                                for (id, item) in store.snapshot() {
+                                    if let Some(parent) = extract_fk(item.as_any()) {
+                                        index.entry(parent).or_default().push(id);
+                                    }
+                                }
+                            }
+                            index
+                        });
+                    if let Some(ids) = by_parent.get(&entity_id) {
+                        for child_id in ids {
+                            let key = (Arc::<str>::from(child_rel.child_type), child_id.clone());
                             if visited.insert(key.clone()) {
                                 queue.push_back(key);
                             }
@@ -245,22 +255,6 @@ where
                     if let Some(ids) = extract_ids(entity.as_any()) {
                         for child_id in ids {
                             let key = (Arc::<str>::from(child_rel.child_type), child_id);
-                            if visited.insert(key.clone()) {
-                                queue.push_back(key);
-                            }
-                        }
-                    }
-                }
-                ChildKind::EnsureFor { extract_fk } => {
-                    // Scan the ensured entity store for entities whose FK matches this entity's ID
-                    let Some(ensured_store) = registry.get(child_rel.child_type) else {
-                        continue;
-                    };
-                    for (ensured_id, ensured_item) in ensured_store.snapshot() {
-                        if let Some(fk) = extract_fk(ensured_item.as_any())
-                            && fk == entity_id
-                        {
-                            let key = (Arc::<str>::from(child_rel.child_type), ensured_id);
                             if visited.insert(key.clone()) {
                                 queue.push_back(key);
                             }
