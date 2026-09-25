@@ -1,0 +1,5 @@
+[tasks.test-export-tree]
+root = ["cargo", "test", "--jobs", "4", "--test", "export_tree_test", "--", "--nocapture"]
+
+[tasks.check-export-tree]
+root = ["cargo", "clippy", "--jobs", "4", "--lib", "--test", "export_tree_test", "--no-deps", "--", "-D", "warnings"]
