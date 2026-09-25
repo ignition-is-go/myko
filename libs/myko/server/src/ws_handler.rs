@@ -44,7 +44,9 @@ use tokio::{
 };
 use tokio_tungstenite::{
     accept_async_with_config,
-    tungstenite::{Message, protocol::WebSocketConfig},
+    tungstenite::{
+        Error as WebSocketError, Message, error::ProtocolError, protocol::WebSocketConfig,
+    },
 };
 use uuid::Uuid;
 
@@ -57,6 +59,22 @@ struct WsBenchmarkStats {
 
 static WS_BENCHMARK_STATS: OnceLock<Arc<WsBenchmarkStats>> = OnceLock::new();
 static WS_BENCHMARK_LOGGER_STARTED: AtomicBool = AtomicBool::new(false);
+
+fn is_routine_websocket_disconnect(error: &WebSocketError) -> bool {
+    match error {
+        WebSocketError::ConnectionClosed
+        | WebSocketError::AlreadyClosed
+        | WebSocketError::Protocol(ProtocolError::ResetWithoutClosingHandshake) => true,
+        WebSocketError::Io(error) => matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
+    }
+}
 
 fn ws_benchmark_stats() -> Arc<WsBenchmarkStats> {
     WS_BENCHMARK_STATS
@@ -527,7 +545,19 @@ impl WsHandler {
                     let msg = match msg {
                         Ok(m) => m,
                         Err(e) => {
-                            tracing::error!("WebSocket read error from {}: {}", state.client_id, e);
+                            if is_routine_websocket_disconnect(&e) {
+                                tracing::debug!(
+                                    "WebSocket peer {} disconnected: {}",
+                                    state.client_id,
+                                    e
+                                );
+                            } else {
+                                tracing::error!(
+                                    "WebSocket read error from {}: {}",
+                                    state.client_id,
+                                    e
+                                );
+                            }
                             break;
                         }
                     };
@@ -1666,9 +1696,35 @@ impl WsWriter for ChannelWriter {
 
 #[cfg(test)]
 mod tests {
+    use std::io;
+
     use myko::{hyphae::Cell, query::WindowedQuerySnapshot};
+    use tungstenite::{Error as WebSocketError, error::ProtocolError};
 
     use super::*;
+
+    #[test]
+    fn classifies_routine_websocket_disconnects() {
+        assert!(is_routine_websocket_disconnect(
+            &WebSocketError::ConnectionClosed
+        ));
+        assert!(is_routine_websocket_disconnect(
+            &WebSocketError::AlreadyClosed
+        ));
+        assert!(is_routine_websocket_disconnect(&WebSocketError::Protocol(
+            ProtocolError::ResetWithoutClosingHandshake
+        )));
+        assert!(is_routine_websocket_disconnect(&WebSocketError::Io(
+            io::Error::from(io::ErrorKind::ConnectionReset)
+        )));
+
+        assert!(!is_routine_websocket_disconnect(&WebSocketError::Protocol(
+            ProtocolError::InvalidOpcode(3)
+        )));
+        assert!(!is_routine_websocket_disconnect(&WebSocketError::Io(
+            io::Error::from(io::ErrorKind::PermissionDenied)
+        )));
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn query_window_worker_runs_callbacks_outside_tokio_in_fifo_order() {
