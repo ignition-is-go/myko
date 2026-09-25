@@ -390,6 +390,22 @@ pub trait EventPublishing: ServerScoped {
             .map_err(|e| self.__emit_err(e))
     }
 
+    /// Atomically reconcile mixed type-erased upserts and deletions as one
+    /// final-state reactive batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when authoritative validation or persistence fails.
+    fn emit_replace_any_batch<U, D>(&self, upserts: U, deletes: D) -> Result<(), CommandError>
+    where
+        U: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
+        D: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
+    {
+        self.__server_ctx()
+            .replace_batch_any(upserts, deletes)
+            .map_err(|e| self.__emit_err(e))
+    }
+
     /// Apply a batch of pre-built raw events (SET or DEL), applied immediately.
     ///
     /// The one raw-`MEvent` path — for type-erased imports where the caller
