@@ -12,3 +12,6 @@ root = ["cargo", "clippy", "--jobs", "4", "--lib", "--tests", "--no-deps", "--",
 
 [tasks.test-local-views]
 root = ["cargo", "test", "--jobs", "4", "--lib", "--", "--test-threads=1"]
+
+[tasks.test-typegen-views]
+root = ["cargo", "test", "--jobs", "4", "--lib", "--features", "codegen-ts", "codegen::typescript::tests", "--", "--test-threads=1"]

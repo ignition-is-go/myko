@@ -3200,6 +3200,15 @@ mod tests {
     #[crate::myko_view(crate::entities::client::Client)]
     struct CallerScopedClientView {}
 
+    #[test]
+    fn qualified_view_path_uses_canonical_item_name() {
+        assert_eq!(
+            <CallerScopedClientView as crate::prelude::ViewItemType>::view_item_type_static()
+                .as_ref(),
+            "Client"
+        );
+    }
+
     impl crate::view::ViewHandler for CallerScopedClientView {
         fn request_cache_scope() -> crate::request::RequestCacheScope {
             crate::request::RequestCacheScope::PerClient
