@@ -423,16 +423,20 @@ impl MykoServerContext {
             RequestCacheScope::Shared => {
                 format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
             }
-            RequestCacheScope::PerClient => match request.client_id.as_deref() {
-                Some(client_id) => format!(
-                    "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}",
-                    request.host_id
-                ),
-                None => format!(
-                    "{}:{kind}:{id}:{payload_hash:016x}:request-server",
-                    request.host_id
-                ),
-            },
+            RequestCacheScope::PerClient => request.client_id.as_deref().map_or_else(
+                || {
+                    format!(
+                        "{}:{kind}:{id}:{payload_hash:016x}:request-server",
+                        request.host_id
+                    )
+                },
+                |client_id| {
+                    format!(
+                        "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}",
+                        request.host_id
+                    )
+                },
+            ),
         }
     }
 
@@ -3215,7 +3219,7 @@ mod tests {
             rows.insert(
                 client_id.clone(),
                 Arc::new(crate::entities::client::Client {
-                    id: ClientId::from(client_id.clone()),
+                    id: ClientId::from(client_id),
                     server_id: ServerId::from(Arc::<str>::from(
                         ctx.view_context.host_id().to_string(),
                     )),
@@ -3232,14 +3236,16 @@ mod tests {
         tx: &str,
         client_id: Option<&str>,
     ) -> Arc<crate::request::RequestContext> {
-        Arc::new(match client_id {
-            Some(client_id) => crate::request::RequestContext::from_client(
-                Arc::<str>::from(tx),
-                Arc::<str>::from(client_id),
-                host_id,
-            ),
-            None => crate::request::RequestContext::internal(Arc::<str>::from(tx), host_id, "test"),
-        })
+        Arc::new(client_id.map_or_else(
+            || crate::request::RequestContext::internal(Arc::<str>::from(tx), host_id, "test"),
+            |client_id| {
+                crate::request::RequestContext::from_client(
+                    Arc::<str>::from(tx),
+                    Arc::<str>::from(client_id),
+                    host_id,
+                )
+            },
+        ))
     }
 
     #[test]

@@ -136,9 +136,18 @@ mod sampling_tests {
         ] {
             assert!(ViewSampleRate::try_from(rate).is_err());
         }
-        let rate = ViewSampleRate::try_from(29.97).unwrap();
-        let json = serde_json::to_string(&rate).unwrap();
-        assert_eq!(serde_json::from_str::<ViewSampleRate>(&json).unwrap(), rate);
-        assert!(rate.interval().as_secs_f64() > 1.0 / 30.0);
+        let rate = ViewSampleRate::try_from(29.97);
+        assert!(rate.is_ok());
+        if let Ok(rate) = rate {
+            let json = serde_json::to_string(&rate);
+            assert!(json.is_ok());
+            if let Ok(json) = json {
+                assert_eq!(
+                    serde_json::from_str::<ViewSampleRate>(&json).ok(),
+                    Some(rate)
+                );
+            }
+            assert!(rate.interval().as_secs_f64() > 1.0 / 30.0);
+        }
     }
 }

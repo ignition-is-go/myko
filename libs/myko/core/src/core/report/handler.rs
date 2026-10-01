@@ -133,6 +133,7 @@ pub trait ReportHandler: Sized {
     /// Override this with [`RequestCacheScope::PerClient`] when `compute`
     /// reads request-scoped caller identity. The default preserves shared
     /// materialization for context-free reports.
+    #[must_use]
     fn request_cache_scope() -> RequestCacheScope {
         RequestCacheScope::Shared
     }
