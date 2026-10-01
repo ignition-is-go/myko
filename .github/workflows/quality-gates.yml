@@ -2,7 +2,6 @@ name: Quality gates
 
 on:
   pull_request:
-    branches: [main, dev]
 
 permissions:
   contents: read
@@ -17,7 +16,9 @@ env:
 jobs:
   native:
     name: Native quality gates
-    runs-on: ci-public-linux-ephemeral
+    runs-on:
+      group: ci-untrusted
+      labels: [self-hosted, Linux, X64, ram-ge-16g, disk-ge-100g]
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -83,7 +84,9 @@ jobs:
 
   wasm:
     name: WebAssembly check
-    runs-on: ci-public-linux-ephemeral
+    runs-on:
+      group: ci-untrusted
+      labels: [self-hosted, Linux, X64, ram-ge-16g, disk-ge-100g]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4

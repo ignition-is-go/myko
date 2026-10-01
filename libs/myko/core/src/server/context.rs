@@ -47,7 +47,7 @@ use crate::{
         QueryRequest, QueryTestContext,
     },
     report::{ReportContext, ReportHandler, ReportId},
-    request::RequestContext,
+    request::{RequestCacheScope, RequestContext},
     search::SearchIndex,
     store::StoreRegistry,
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
@@ -408,8 +408,32 @@ impl MykoServerContext {
         params: &T,
         request: &RequestContext,
     ) -> String {
+        Self::cache_key_with_scope(kind, id, params, request, RequestCacheScope::Shared)
+    }
+
+    fn cache_key_with_scope<T: CacheKey>(
+        kind: &str,
+        id: &str,
+        params: &T,
+        request: &RequestContext,
+        scope: RequestCacheScope,
+    ) -> String {
         let payload_hash = params.cache_key_hash();
-        format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
+        match scope {
+            RequestCacheScope::Shared => {
+                format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
+            }
+            RequestCacheScope::PerClient => match request.client_id.as_deref() {
+                Some(client_id) => format!(
+                    "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}",
+                    request.host_id
+                ),
+                None => format!(
+                    "{}:{kind}:{id}:{payload_hash:016x}:request-server",
+                    request.host_id
+                ),
+            },
+        }
     }
 
     /// Get the search index.
@@ -2509,7 +2533,13 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        let key = Self::cache_key_with_scope(
+            "view",
+            V::view_id_static().as_ref(),
+            &view,
+            &request,
+            V::request_cache_scope(),
+        );
         self.compute_or_cache(&key, &self.view_cache, || {
             let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
             let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
@@ -2536,7 +2566,13 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key("view", V::view_id_static().as_ref(), &view, &request);
+        let key = Self::cache_key_with_scope(
+            "view",
+            V::view_id_static().as_ref(),
+            &view,
+            &request,
+            V::request_cache_scope(),
+        );
         let untyped = self.view_map_untyped(view, request);
         if let Some(entry) = self.view_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
@@ -2596,7 +2632,13 @@ impl MykoServerContext {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
-        let key = Self::cache_key("report", report.report_id().as_ref(), &report, &request);
+        let key = Self::cache_key_with_scope(
+            "report",
+            report.report_id().as_ref(),
+            &report,
+            &request,
+            R::request_cache_scope(),
+        );
         let report_id = report.report_id();
 
         // Fast path: cache hit with live cell.
@@ -3149,6 +3191,207 @@ mod tests {
             *seen
         );
         drop(seen);
+    }
+
+    #[crate::myko_view(crate::entities::client::Client)]
+    struct CallerScopedClientView {}
+
+    impl crate::view::ViewHandler for CallerScopedClientView {
+        fn request_cache_scope() -> crate::request::RequestCacheScope {
+            crate::request::RequestCacheScope::PerClient
+        }
+
+        fn build_cell(
+            ctx: crate::view::ViewBuildArgs<Self>,
+        ) -> impl crate::hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+            use crate::{
+                core::capability::RequestScoped,
+                entities::{client::ClientId, server::ServerId},
+                hyphae::CellMap,
+            };
+
+            let client_id = Arc::<str>::from(ctx.view_context.client_id().unwrap_or("server"));
+            let rows = CellMap::new();
+            rows.insert(
+                client_id.clone(),
+                Arc::new(crate::entities::client::Client {
+                    id: ClientId::from(client_id.clone()),
+                    server_id: ServerId::from(Arc::<str>::from(
+                        ctx.view_context.host_id().to_string(),
+                    )),
+                    address: None,
+                    windback: None,
+                }),
+            );
+            rows.lock()
+        }
+    }
+
+    fn request_for(
+        host_id: Uuid,
+        tx: &str,
+        client_id: Option<&str>,
+    ) -> Arc<crate::request::RequestContext> {
+        Arc::new(match client_id {
+            Some(client_id) => crate::request::RequestContext::from_client(
+                Arc::<str>::from(tx),
+                Arc::<str>::from(client_id),
+                host_id,
+            ),
+            None => crate::request::RequestContext::internal(Arc::<str>::from(tx), host_id, "test"),
+        })
+    }
+
+    #[test]
+    fn request_scoped_view_cache_partitions_callers_but_not_transactions() {
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let first = ctx.view(
+            CallerScopedClientView {},
+            request_for(ctx.host_id, "tx-a-1", Some("client-a")),
+        );
+        let same_caller = ctx.view(
+            CallerScopedClientView {},
+            request_for(ctx.host_id, "tx-a-2", Some("client-a")),
+        );
+        assert_eq!(
+            ctx.view_cache_len(),
+            1,
+            "transaction IDs must not split a caller cache"
+        );
+        assert!(
+            same_caller
+                .get_value(&Arc::<str>::from("client-a"))
+                .is_some()
+        );
+
+        let other_caller = ctx.view(
+            CallerScopedClientView {},
+            request_for(ctx.host_id, "tx-b", Some("client-b")),
+        );
+        assert_eq!(ctx.view_cache_len(), 2);
+        assert!(
+            other_caller
+                .get_value(&Arc::<str>::from("client-b"))
+                .is_some()
+        );
+        assert!(
+            other_caller
+                .get_value(&Arc::<str>::from("client-a"))
+                .is_none()
+        );
+
+        let server = ctx.view(
+            CallerScopedClientView {},
+            request_for(ctx.host_id, "tx-server", None),
+        );
+        assert_eq!(
+            ctx.view_cache_len(),
+            3,
+            "internal callers need their own cache scope"
+        );
+        assert!(server.get_value(&Arc::<str>::from("server")).is_some());
+        assert!(first.get_value(&Arc::<str>::from("server")).is_none());
+    }
+
+    #[test]
+    fn context_free_handlers_remain_shared_across_callers() {
+        use crate::entities::client::{ClientId, ClientStatus, ConnectedClients};
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let first = request_for(ctx.host_id, "tx-a", Some("client-a"));
+        let second = request_for(ctx.host_id, "tx-b", Some("client-b"));
+
+        let first_view = ctx.view(ConnectedClients {}, first.clone());
+        let second_view = ctx.view(ConnectedClients {}, second.clone());
+        assert_eq!(ctx.view_cache_len(), 1);
+        assert_eq!(
+            first_view.len().materialize().get(),
+            second_view.len().materialize().get()
+        );
+
+        let report = ClientStatus {
+            client_id: ClientId::from(Arc::<str>::from("unconnected-client")),
+        };
+        let first_report = ctx.report(report.clone(), first);
+        let second_report = ctx.report(report, second);
+        assert_eq!(ctx.report_cache_len(), 1);
+        assert_eq!(first_report.get(), second_report.get());
+    }
+
+    #[test]
+    fn request_scoped_report_cache_partitions_callers_but_not_transactions() {
+        use crate::{
+            entities::{
+                client::{Client, ClientId, WindbackStatus},
+                server::ServerId,
+            },
+            request::RequestContext,
+        };
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let clients = ctx.registry.get_or_create(Client::ENTITY_NAME_STATIC);
+        for (id, windback) in [
+            ("client-a", "2026-01-01T00:00:00Z"),
+            ("client-b", "2026-02-01T00:00:00Z"),
+        ] {
+            let client: Arc<dyn AnyItem> = Arc::new(Client {
+                id: ClientId::from(Arc::<str>::from(id)),
+                server_id: ServerId::from(Arc::<str>::from(ctx.host_id.to_string())),
+                address: None,
+                windback: Some(Arc::<str>::from(windback)),
+            });
+            clients.insert(Arc::<str>::from(id), client);
+        }
+
+        let first = ctx.report(
+            WindbackStatus {},
+            request_for(ctx.host_id, "tx-a-1", Some("client-a")),
+        );
+        let same_caller = ctx.report(
+            WindbackStatus {},
+            request_for(ctx.host_id, "tx-a-2", Some("client-a")),
+        );
+        assert_eq!(
+            ctx.report_cache_len(),
+            1,
+            "transaction IDs must not split a caller cache"
+        );
+        assert_eq!(
+            first.get().windback.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            same_caller.get().windback.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+
+        let other_caller = ctx.report(
+            WindbackStatus {},
+            request_for(ctx.host_id, "tx-b", Some("client-b")),
+        );
+        assert_eq!(ctx.report_cache_len(), 2);
+        assert_eq!(
+            other_caller.get().windback.as_deref(),
+            Some("2026-02-01T00:00:00Z")
+        );
+
+        let server = ctx.report(
+            WindbackStatus {},
+            Arc::new(RequestContext::internal(
+                Arc::<str>::from("tx-server"),
+                ctx.host_id,
+                "test",
+            )),
+        );
+        assert_eq!(
+            ctx.report_cache_len(),
+            3,
+            "internal callers need their own cache scope"
+        );
+        assert_eq!(server.get().windback, None);
     }
 
     #[test]

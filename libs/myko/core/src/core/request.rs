@@ -32,6 +32,22 @@ use uuid::Uuid;
 
 use crate::entities::client::ClientId;
 
+/// How a view or report cache is partitioned across request callers.
+///
+/// Handlers that read [`RequestContext::client_id`] must use
+/// [`Self::PerClient`](RequestCacheScope::PerClient), because their reactive
+/// graph captures the caller that first materializes it. Transaction IDs are
+/// intentionally excluded: they correlate a request but do not change the
+/// graph a caller should share.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RequestCacheScope {
+    /// One graph is shared by every caller with identical operation parameters.
+    #[default]
+    Shared,
+    /// One graph per client identity, with internal/server callers in their own scope.
+    PerClient,
+}
+
 /// Context that propagates through request processing.
 ///
 /// Created when a request arrives via WebSocket and flows through
