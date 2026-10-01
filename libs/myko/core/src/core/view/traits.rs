@@ -5,7 +5,10 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::context::ViewBuildContext;
-use crate::{cache::CacheKey, common::with_transaction::WithTransaction, wire::WrappedView};
+use crate::{
+    cache::CacheKey, common::with_transaction::WithTransaction, request::RequestCacheScope,
+    wire::WrappedView,
+};
 
 pub trait ViewId {
     fn view_id(&self) -> Arc<str>;
@@ -36,6 +39,15 @@ pub struct ViewBuildArgs<TView: ViewItemType> {
 /// `format!("{sort_field}\x1F{unique_id}")` where `\x1F` (Unit Separator) sorts
 /// before all printable characters.
 pub trait ViewHandler: ViewItemType + Sized {
+    /// Select cache partitioning for this view.
+    ///
+    /// Override this with [`RequestCacheScope::PerClient`] when `build_cell`
+    /// reads request-scoped caller identity. The default preserves shared
+    /// materialization for context-free views.
+    fn request_cache_scope() -> RequestCacheScope {
+        RequestCacheScope::Shared
+    }
+
     /// Build a reactive map plan for this view.
     ///
     /// Returns `impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>` so impls can chain

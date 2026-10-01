@@ -5578,6 +5578,22 @@ mod tests {
         )
     }
 
+    fn command_context(
+        context: &crate::server::MykoServerContext,
+        command_id: &str,
+    ) -> CommandContext {
+        let request = Arc::new(crate::request::RequestContext::from_client(
+            Uuid::new_v4().to_string().into(),
+            "graph-command-test".into(),
+            context.host_id,
+        ));
+        CommandContext::new(command_id.into(), request, Arc::new(context.clone()))
+    }
+
+    fn erased<T: AnyItem + 'static>(item: T) -> Arc<dyn AnyItem> {
+        Arc::new(item)
+    }
+
     #[test]
     fn macros_emit_separate_graph_registrations() {
         fn accepts_target<T: InCategory<TagTarget>>() {}
@@ -7692,6 +7708,205 @@ mod tests {
             diffs.first(),
             Some(hyphae::MapDiff::Batch { changes }) if changes.len() == 3
         ));
+    }
+
+    #[test]
+    fn command_context_mixed_replace_emits_one_final_state_batch_per_entity_type() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let old_article = Article {
+            title: "Old article".into(),
+            id: ArticleId::from("mixed-replace-article-update"),
+        };
+        let removed_article = Article {
+            title: "Removed article".into(),
+            id: ArticleId::from("mixed-replace-article-remove"),
+        };
+        let old_tag = Tag {
+            name: "old tag".into(),
+            id: TagId::from("mixed-replace-tag-update"),
+        };
+        let removed_tag = Tag {
+            name: "removed tag".into(),
+            id: TagId::from("mixed-replace-tag-remove"),
+        };
+        for article in [&old_article, &removed_article] {
+            assert!(context.set(article).is_ok());
+        }
+        for tag in [&old_tag, &removed_tag] {
+            assert!(context.set(tag).is_ok());
+        }
+
+        let article_store = context.registry.get_or_create(Article::ENTITY_NAME_STATIC);
+        let article_batches = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_article_batches = article_batches.clone();
+        let _article_guard = article_store.subscribe_diffs(move |diff| {
+            captured_article_batches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(match diff {
+                    hyphae::MapDiff::Batch { changes } => Some(changes.len()),
+                    _ => None,
+                });
+        });
+        article_batches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        let tag_store = context.registry.get_or_create(Tag::ENTITY_NAME_STATIC);
+        let tag_batches = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_tag_batches = tag_batches.clone();
+        let _tag_guard = tag_store.subscribe_diffs(move |diff| {
+            captured_tag_batches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(match diff {
+                    hyphae::MapDiff::Batch { changes } => Some(changes.len()),
+                    _ => None,
+                });
+        });
+        tag_batches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        let updated_article = Article {
+            title: "Updated article".into(),
+            ..old_article.clone()
+        };
+        let updated_tag = Tag {
+            name: "updated tag".into(),
+            ..old_tag.clone()
+        };
+        command_context(&context, "MixedReplace")
+            .emit_replace_any_batch(
+                vec![erased(updated_article.clone()), erased(updated_tag.clone())],
+                vec![erased(removed_article.clone()), erased(removed_tag.clone())],
+            )
+            .expect("mixed replacement");
+
+        assert!(
+            article_store
+                .get_value(&updated_article.id())
+                .is_some_and(|item| item.equals(&updated_article))
+        );
+        assert!(article_store.get_value(&removed_article.id()).is_none());
+        assert!(
+            tag_store
+                .get_value(&updated_tag.id())
+                .is_some_and(|item| item.equals(&updated_tag))
+        );
+        assert!(tag_store.get_value(&removed_tag.id()).is_none());
+        assert_eq!(
+            *article_batches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![Some(2)]
+        );
+        assert_eq!(
+            *tag_batches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![Some(2)]
+        );
+    }
+
+    #[test]
+    fn command_context_mixed_replace_rejects_overlapping_entity() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let article = Article {
+            title: "Original".into(),
+            id: ArticleId::from("mixed-replace-overlap"),
+        };
+        assert!(context.set(&article).is_ok());
+        let article_store = context.registry.get_or_create(Article::ENTITY_NAME_STATIC);
+        let diffs = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured_diffs = diffs.clone();
+        let _guard = article_store.subscribe_diffs(move |diff| {
+            captured_diffs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("{diff:?}"));
+        });
+        diffs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        let updated = Article {
+            title: "Updated".into(),
+            ..article.clone()
+        };
+
+        let error = command_context(&context, "OverlappingMixedReplace")
+            .emit_replace_any_batch(vec![erased(updated)], vec![erased(article.clone())])
+            .expect_err("overlapping replacement rejected");
+
+        assert!(error.message.contains("same entity ID more than once"));
+        assert!(
+            article_store
+                .get_value(&article.id())
+                .is_some_and(|item| item.equals(&article))
+        );
+        assert!(
+            diffs
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn command_context_mixed_replace_preserves_state_on_validation_error() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let context = context();
+        let tag = Tag {
+            name: "existing tag".into(),
+            id: TagId::from("mixed-replace-validation-source"),
+        };
+        let article = Article {
+            title: "Keep after validation error".into(),
+            id: ArticleId::from("mixed-replace-validation-article"),
+        };
+        assert!(context.set(&tag).is_ok());
+        assert!(context.set(&article).is_ok());
+        let inserted_tag = Tag {
+            name: "must not be inserted".into(),
+            id: TagId::from("mixed-replace-validation-insert"),
+        };
+        let invalid_edge = TagAssignment {
+            tag_id: tag.id.clone(),
+            target: EntityRef::from(&tag),
+            id: TagAssignmentId::from("mixed-replace-validation-edge"),
+        };
+
+        let error = command_context(&context, "InvalidMixedReplace")
+            .emit_replace_any_batch(
+                vec![erased(inserted_tag.clone()), erased(invalid_edge.clone())],
+                vec![erased(article.clone())],
+            )
+            .expect_err("invalid graph replacement rejected");
+
+        assert!(error.message.contains("rejects entity type Tag"));
+        assert!(
+            context
+                .registry
+                .get(Article::ENTITY_NAME_STATIC)
+                .is_some_and(|store| store.get_value(&article.id()).is_some())
+        );
+        assert!(
+            context
+                .registry
+                .get(Tag::ENTITY_NAME_STATIC)
+                .is_some_and(|store| store.get_value(&inserted_tag.id()).is_none())
+        );
+        assert!(
+            context
+                .registry
+                .get(TagAssignment::ENTITY_NAME_STATIC)
+                .is_none_or(|store| store.get_value(&invalid_edge.id()).is_none())
+        );
     }
 
     #[test]
