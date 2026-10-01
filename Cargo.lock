@@ -3453,9 +3453,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "3.1.7"
+version = "3.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "84310e203036ddbbfe2c0697a36d0e3e1b7d16e02faa90f304ae9c8e78731bcf"
+checksum = "2cc422b98b0e75cb9ec0775a7e718a4ef28db5e7ee89bae433030426d8fecf6c"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3486,9 +3486,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-leptos"
-version = "3.1.1"
+version = "3.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ce6773efa2daa6545dfc9c2ee9f3472bc3e97220a78f2181018e92612cd9377"
+checksum = "fb07147a4b2f915db338422716799ec534d032e2481f4bcfb757e7f26e6187b9"
 dependencies = [
  "hyphae",
  "leptos",
@@ -3506,7 +3506,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -5863,7 +5863,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.14.0",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
