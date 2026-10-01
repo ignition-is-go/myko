@@ -1,0 +1,5 @@
+[tasks.test-view-sampling]
+root = ["cargo", "test", "--jobs", "4", "--lib", "view_sampling::tests", "--", "--test-threads=1"]
+
+[tasks.check-view-sampling]
+root = ["cargo", "clippy", "--jobs", "4", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]

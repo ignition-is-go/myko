@@ -193,11 +193,11 @@ mod tests {
             sequence,
             upsert_items: rows
                 .iter()
-                .map(|(id, value)| {
+                .map(|(id, value)| -> Arc<dyn AnyItem> {
                     Arc::new(Row {
                         id: (*id).into(),
                         value: *value,
-                    }) as Arc<dyn AnyItem>
+                    })
                 })
                 .collect(),
             deletes: deletes.iter().map(|id| (*id).into()).collect(),
@@ -207,21 +207,26 @@ mod tests {
         }
     }
 
+    fn rate(fps: f64) -> Option<ViewSampleRate> {
+        let rate = ViewSampleRate::try_from(fps).ok();
+        assert!(rate.is_some(), "invalid test sample rate");
+        rate
+    }
+
     fn sampled(now: Instant) -> ViewDelivery {
         let mut delivery = ViewDelivery::default();
         delivery.control(
             ViewDeliveryControl::Subscribe {
                 tx: "view".into(),
-                rate: Some(ViewSampleRate::try_from(30.0).unwrap()),
+                rate: rate(30.0),
             },
             now,
         );
         assert_eq!(
             delivery
                 .push(response(0, &[("a", 0)], &[]), now)
-                .unwrap()
-                .sequence,
-            0
+                .map(|frame| frame.sequence),
+            Some(0)
         );
         delivery
     }
@@ -247,18 +252,24 @@ mod tests {
         );
         assert!(delivery.push(response(4, &[("a", 4)], &[]), now).is_none());
         assert!(delivery.take_due(now + Duration::from_millis(30)).is_none());
-        let frame = delivery.take_due(now + Duration::from_millis(34)).unwrap();
-        assert_eq!(frame.sequence, 1);
-        assert_eq!(frame.deletes, vec![Arc::<str>::from("b")]);
-        let values: Vec<_> = frame
-            .upsert_items
-            .iter()
-            .map(|r| {
-                let r = r.as_any().downcast_ref::<Row>().unwrap();
-                (r.id.as_ref(), r.value)
-            })
-            .collect();
-        assert_eq!(values, vec![("a", 4), ("c", 3)]);
+        let frame = delivery.take_due(now + Duration::from_millis(34));
+        assert_eq!(frame.as_ref().map(|frame| frame.sequence), Some(1));
+        assert_eq!(
+            frame.as_ref().map(|frame| frame.deletes.as_slice()),
+            Some([Arc::<str>::from("b")].as_slice())
+        );
+        let values: Option<Vec<_>> = frame.as_ref().and_then(|frame| {
+            frame
+                .upsert_items
+                .iter()
+                .map(|row| {
+                    row.as_any()
+                        .downcast_ref::<Row>()
+                        .map(|row| (row.id.as_ref(), row.value))
+                })
+                .collect()
+        });
+        assert_eq!(values, Some(vec![("a", 4), ("c", 3)]));
         assert!(delivery.next_deadline().is_none());
         delivery.push(
             response(5, &[("a", 5)], &[]),
@@ -267,9 +278,8 @@ mod tests {
         assert_eq!(
             delivery
                 .take_due(now + Duration::from_millis(68))
-                .unwrap()
-                .sequence,
-            2
+                .map(|frame| frame.sequence),
+            Some(2)
         );
     }
 
@@ -285,18 +295,17 @@ mod tests {
             },
             now,
         );
-        assert_eq!(delivery.take_due(now).unwrap().sequence, 1);
+        assert_eq!(delivery.take_due(now).map(|frame| frame.sequence), Some(1));
         assert_eq!(
             delivery
                 .push(response(2, &[("a", 2)], &[]), now)
-                .unwrap()
-                .sequence,
-            2
+                .map(|frame| frame.sequence),
+            Some(2)
         );
         delivery.control(
             ViewDeliveryControl::SetRate {
                 tx: "view".into(),
-                rate: Some(ViewSampleRate::try_from(60.0).unwrap()),
+                rate: rate(60.0),
             },
             now,
         );
@@ -305,9 +314,8 @@ mod tests {
         assert_eq!(
             delivery
                 .take_due(now + Duration::from_millis(17))
-                .unwrap()
-                .sequence,
-            3
+                .map(|frame| frame.sequence),
+            Some(3)
         );
     }
 
@@ -319,9 +327,8 @@ mod tests {
         assert_eq!(
             delivery
                 .push(response(0, &[("new", 1)], &[]), now)
-                .unwrap()
-                .sequence,
-            0
+                .map(|frame| frame.sequence),
+            Some(0)
         );
         assert!(delivery.next_deadline().is_none());
         delivery.push(response(1, &[("new", 2)], &[]), now);
@@ -345,8 +352,7 @@ mod tests {
         assert_eq!(
             delivery
                 .take_due(now + Duration::from_millis(34))
-                .unwrap()
-                .window_order_ids,
+                .and_then(|frame| frame.window_order_ids),
             Some(vec!["a".into(), "b".into()])
         );
     }
