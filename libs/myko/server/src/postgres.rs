@@ -5,6 +5,7 @@
 //! - Consumer replays table rows (catch-up), then follows new inserts via LISTEN/NOTIFY.
 
 use std::{
+    collections::HashMap,
     fmt::Write as _,
     sync::{
         Arc,
@@ -19,6 +20,7 @@ use confique::Config as _;
 use myko::{
     event::{MEvent, MEventType},
     hyphae::{Cell, CellImmutable, CellMutable, Mutable},
+    item::AnyItem,
     server::{
         CommittedHistoryEvent, HandlerRegistry, HistoryEntityKey, HistoryEvent, HistoryPage,
         PersistError, PersistHealth, Persister,
@@ -44,6 +46,9 @@ const PG_KEEPALIVE_RETRIES: u32 = 3;
 /// until the catch-up timeout (the lv-8c2f "boot convoy").
 const PG_TCP_USER_TIMEOUT_SECS: u64 = 30;
 const PG_PRODUCER_MAX_BATCH: usize = 256;
+const PG_SNAPSHOT_STORE_BATCH: usize = 512;
+
+type SnapshotEntries = HashMap<Arc<str>, Vec<(Arc<str>, Arc<dyn AnyItem>)>>;
 
 /// `PostgreSQL` configuration.
 #[derive(Debug, Clone)]
@@ -874,21 +879,67 @@ fn load_consumer_snapshot(
             format_pg_error("query(snapshot latest events)", Some(&config.url), &error)
         })?;
     let mut count = 0_usize;
+    let mut pending = SnapshotEntries::new();
     while let Some(row) = rows.next().map_err(|error| {
         format_pg_error("stream(snapshot latest events)", Some(&config.url), &error)
     })? {
         let id: i64 = row.get(0);
         let event_json: String = row.get(1);
         match MEvent::from_str_trim(&event_json) {
-            Ok(event) => apply_remote_event(&event, host_id, handler_registry, registry),
+            Ok(event) => {
+                queue_snapshot_event(&event, host_id, handler_registry, registry, &mut pending);
+            }
             Err(error) => error!("Invalid postgres snapshot row id={id}: {error}"),
         }
         count = count.saturating_add(1);
     }
+    flush_snapshot_entries(registry, pending);
     let fetch_sql = format!(
         "SELECT id, item_type, item_id, event::text FROM {table} WHERE id > $1 ORDER BY id ASC LIMIT $2"
     );
     Ok((high_water, count, fetch_sql))
+}
+
+fn flush_snapshot_entries(registry: &StoreRegistry, pending: SnapshotEntries) {
+    for (entity_type, entries) in pending {
+        registry.get_or_create(&entity_type).insert_many(entries);
+    }
+}
+
+fn queue_snapshot_event(
+    event: &MEvent,
+    host_id: &str,
+    handler_registry: &HandlerRegistry,
+    registry: &StoreRegistry,
+    pending: &mut SnapshotEntries,
+) {
+    if event.source_id.as_deref().is_some_and(|id| id == host_id) {
+        return;
+    }
+    let Some(parse) = handler_registry.item_parser(&event.item_type) else {
+        warn!("No parser for entity type: {}", event.item_type);
+        return;
+    };
+    let item = match parse(event.item.clone()) {
+        Ok(item) => item,
+        Err(error) => {
+            let message = error.to_string();
+            let short = message
+                .find(", expected one of")
+                .and_then(|position| message.get(..position).map(str::to_string))
+                .unwrap_or(message);
+            error!("Failed to parse {}: {short}", event.item_type);
+            return;
+        }
+    };
+    let entity_type: Arc<str> = item.entity_type().into();
+    let entries = pending.entry(entity_type.clone()).or_default();
+    entries.push((item.id(), item));
+    if entries.len() >= PG_SNAPSHOT_STORE_BATCH {
+        registry
+            .get_or_create(&entity_type)
+            .insert_many(std::mem::take(entries));
+    }
 }
 
 fn run_consumer_loop(
@@ -1224,6 +1275,54 @@ mod tests {
     use myko::{hyphae::Gettable, server::HistoryReplayProvider};
 
     use super::*;
+
+    #[test]
+    fn snapshot_batches_preserve_all_entities_and_flush_the_tail() {
+        use myko::{
+            common::with_id::WithId,
+            entities::{client::Client, server::ServerId},
+            item::AnyItem,
+        };
+
+        let registry = StoreRegistry::new();
+        let handlers = HandlerRegistry::new();
+        let mut pending = SnapshotEntries::new();
+        let mut expected = Vec::new();
+        let mut entity_type = String::new();
+        for index in 0..PG_SNAPSHOT_STORE_BATCH.saturating_add(3) {
+            let client = Client {
+                id: format!("snapshot-{index}").into(),
+                server_id: ServerId::from(Arc::<str>::from("snapshot-server")),
+                address: None,
+                windback: None,
+            };
+            expected.push(client.id());
+            entity_type = client.entity_type().to_string();
+            let event = MEvent::from_item(&client, MEventType::SET, "snapshot-test");
+            queue_snapshot_event(&event, "local-host", &handlers, &registry, &mut pending);
+            let mut echoed_event = event;
+            echoed_event.source_id = Some("local-host".into());
+            queue_snapshot_event(
+                &echoed_event,
+                "local-host",
+                &handlers,
+                &registry,
+                &mut pending,
+            );
+        }
+        let store = registry.get_or_create(&entity_type);
+        assert_eq!(store.items_snapshot().len(), PG_SNAPSHOT_STORE_BATCH);
+        assert_eq!(pending.values().map(Vec::len).sum::<usize>(), 3);
+        flush_snapshot_entries(&registry, pending);
+        let mut actual: Vec<_> = store
+            .items_snapshot()
+            .iter()
+            .map(|item| item.id())
+            .collect();
+        expected.sort();
+        actual.sort();
+        assert_eq!(actual, expected);
+    }
 
     #[test]
     fn committed_rows_flow_through_the_history_notification_cell() {
