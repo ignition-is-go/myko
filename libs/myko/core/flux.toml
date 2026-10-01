@@ -1,0 +1,11 @@
+[tasks.test-export-tree]
+root = ["cargo", "test", "--jobs", "4", "--test", "export_tree_test", "--", "--nocapture"]
+
+[tasks.check-export-tree]
+root = ["cargo", "clippy", "--jobs", "4", "--lib", "--test", "export_tree_test", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-query-buckets]
+root = ["cargo", "test", "--jobs", "4", "--lib", "core::query::registration::belongs_to_source_index_tests", "--", "--test-threads=1"]
+
+[tasks.check-query-buckets]
+root = ["cargo", "clippy", "--jobs", "4", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]

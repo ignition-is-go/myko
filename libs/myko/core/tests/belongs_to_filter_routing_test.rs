@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use myko::{
     entities::{
-        client::{Client, ClientQuery, GetClientsByQuery},
+        client::{Client, ClientQuery, GetClientsByIds, GetClientsByQuery},
         server::ServerId,
     },
     hyphae::{Gettable, Materialize},
@@ -270,4 +270,44 @@ fn id_filter_routes_through_per_id_cells_and_stays_reactive() {
     let snap = cell.snapshot();
     assert_eq!(snap.len(), 1);
     assert_eq!(snap.first().map(|entry| entry.0.as_ref()), Some("c2"));
+}
+
+#[test]
+fn id_query_concurrent_construction_and_same_id_update_never_strands_old_value() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+
+    for iteration in 0..1_000 {
+        let id = format!("racing-client-{iteration}");
+        insert_client(&ctx, &id, "server-old");
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let query_ctx = ctx.clone();
+        let query_id = id.clone();
+        let query_barrier = barrier.clone();
+        let query_thread = std::thread::spawn(move || {
+            query_barrier.wait();
+            query_ctx.query_map(
+                GetClientsByIds {
+                    ids: vec![query_id.into()],
+                },
+                request(&query_ctx, "tx-race"),
+            )
+        });
+        barrier.wait();
+        insert_client(&ctx, &id, "server-new");
+        let query = query_thread.join();
+        assert!(
+            query.is_ok(),
+            "query thread panicked at iteration {iteration}"
+        );
+        let Ok(query) = query else { return };
+        let snapshot = query.snapshot();
+        assert_eq!(
+            snapshot
+                .first()
+                .map(|(_, client)| client.server_id.as_ref()),
+            Some("server-new"),
+            "query stranded an old value at iteration {iteration}"
+        );
+    }
 }
