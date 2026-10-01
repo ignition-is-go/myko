@@ -293,7 +293,7 @@ impl MykoClient {
                 <<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EntityEndpointSpec>::Entity,
                 MapKey = Arc<str>,
             >,
-    {
+{
         self.watch_query_map_state(E::targets_from_query(endpoint))
     }
 
@@ -316,7 +316,7 @@ impl MykoClient {
                 <<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EntityEndpointSpec>::Entity,
                 MapKey = Arc<str>,
             >,
-    {
+{
         self.watch_query_map_state(E::targets_from_many_query(endpoints))
     }
 
@@ -338,7 +338,7 @@ impl MykoClient {
                 <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
                 MapKey = Arc<str>,
             >,
-    {
+{
         self.watch_query_map_state(E::sources_to_query(endpoint))
     }
 
@@ -361,7 +361,7 @@ impl MykoClient {
                 <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
                 MapKey = Arc<str>,
             >,
-    {
+{
         self.watch_query_map_state(E::sources_to_many_query(endpoints))
     }
 
@@ -383,7 +383,7 @@ impl MykoClient {
                 <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EntityEndpointSpec>::Entity,
                 MapKey = Arc<str>,
             >,
-    {
+{
         self.watch_query_map_state(E::neighbors_query(endpoint))
     }
 
