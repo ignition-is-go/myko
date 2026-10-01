@@ -9,3 +9,12 @@ root = ["cargo", "test", "--jobs", "4", "--lib", "core::query::registration::bel
 
 [tasks.check-query-buckets]
 root = ["cargo", "clippy", "--jobs", "4", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-local-views]
+root = ["cargo", "test", "--jobs", "4", "--lib", "--", "--test-threads=1"]
+
+[tasks.test-typegen-views]
+root = ["cargo", "test", "--jobs", "4", "--lib", "--features", "codegen-ts", "codegen::typescript::tests", "--", "--test-threads=1"]
+
+[tasks.test-core-ci]
+root = ["cargo", "test", "--jobs", "4", "--features", "ci", "--", "--test-threads=1"]

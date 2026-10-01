@@ -29,6 +29,7 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
         item_type,
         cache_key_impl,
     } = expansion;
+    let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
     quote! {
         #derives
         #input_struct
@@ -60,7 +61,7 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
             }
 
             fn view_item_type_static() -> std::sync::Arc<str> {
-                stringify!(#item_type).into()
+                stringify!(#item_type_name).into()
             }
         }
 
@@ -144,6 +145,7 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let non_hash_cache_key = crate::take_non_hash_cache_key_attr(&mut input_struct);
     let struct_name = &input_struct.ident;
     let item_type = args.item_type;
+    let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
@@ -192,7 +194,7 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let view_registration = quote! {
         #krate::prelude::ViewRegistration {
             view_id: stringify!(#struct_name),
-            view_item_type: stringify!(#item_type),
+            view_item_type: stringify!(#item_type_name),
             crate_name: module_path!(),
             parse: <#struct_name as #krate::view::ViewFactory>::parse,
             cell_factory: <#struct_name as #krate::view::ViewFactory>::cell_factory,

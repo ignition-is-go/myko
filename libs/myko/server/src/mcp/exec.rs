@@ -210,6 +210,7 @@ async fn client_execute_view(
                 view_id: reg.view_id.into(),
                 view_item_type: reg.view_item_type.into(),
                 window: None,
+                sample_rate: None,
             };
 
             let cell = client.watch_view_raw(wrapped);

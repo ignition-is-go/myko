@@ -441,6 +441,7 @@ type QueryState<T> = Arc<Mutex<HashMap<Arc<str>, Arc<T>>>>;
 type SharedMapWatchParts<T> = (
     CellMap<Arc<str>, Arc<T>, CellImmutable>,
     Cell<bool, CellImmutable>,
+    Option<Arc<view_map::ViewSamplingControl>>,
 );
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -735,6 +736,7 @@ struct ClientMapWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
     map: WeakCellMap<Arc<str>, Arc<T>>,
     ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+    sampling: Option<Arc<view_map::ViewSamplingControl>>,
 }
 
 impl<T: CellValue> ClientMapWatchCacheEntry<T> {
@@ -742,16 +744,22 @@ impl<T: CellValue> ClientMapWatchCacheEntry<T> {
         tx: Arc<str>,
         map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
         ready: &Cell<bool, CellImmutable>,
+        sampling: Option<Arc<view_map::ViewSamplingControl>>,
     ) -> Self {
         Self {
             tx,
             map: map.downgrade(),
             ready: ready.downgrade(),
+            sampling,
         }
     }
 
     fn get(&self) -> Option<SharedMapWatchParts<T>> {
-        Some((self.map.upgrade()?.lock(), self.ready.upgrade()?))
+        Some((
+            self.map.upgrade()?.lock(),
+            self.ready.upgrade()?,
+            self.sampling.clone(),
+        ))
     }
 }
 
@@ -908,10 +916,11 @@ impl MykoClient {
         tx: Arc<str>,
         map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
         ready: &Cell<bool, CellImmutable>,
+        sampling: Option<Arc<view_map::ViewSamplingControl>>,
     ) {
         self.inner.map_watch_cache.insert(
             cache_key,
-            Box::new(ClientMapWatchCacheEntry::new(tx, map, ready)),
+            Box::new(ClientMapWatchCacheEntry::new(tx, map, ready, sampling)),
         );
     }
 
@@ -2073,9 +2082,10 @@ impl MykoClient {
         let supplied: ViewRequest<V> = view.into();
         let view_id = supplied.view.view_id();
         let cache_key = format!(
-            "view-list:{view_id}:{}:{:016x}",
+            "view-list:{view_id}:{}:{:016x}:{:?}",
             std::any::type_name::<V::Item>(),
-            supplied.view.cache_key_hash()
+            supplied.view.cache_key_hash(),
+            supplied.sample_rate
         );
         let _cache_gate = self
             .inner
@@ -2097,7 +2107,7 @@ impl MykoClient {
         let ready_weak = ready.downgrade();
         let ready_read = ready.clone().lock();
 
-        let Ok(wrapped) = wrap_view(tx.clone(), &view.view) else {
+        let Ok(mut wrapped) = wrap_view(tx.clone(), &view.view) else {
             error!("Could not serialize view request for {view_id}");
             return ViewWatch {
                 items: cell.lock(),
@@ -2105,6 +2115,7 @@ impl MykoClient {
             };
         };
 
+        wrapped.sample_rate = supplied.sample_rate;
         let msg = MykoMessage::View(wrapped);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode view request for {view_id}");
@@ -2828,6 +2839,7 @@ mod callback_dispatch_tests {
             view_id: "RegressionView".into(),
             view_item_type: "RegressionItem".into(),
             window: None,
+            sample_rate: None,
         });
         let tx = registered_query_tx(&client)?;
         assert_subscription_retirement_does_not_deadlock(&client, &tx, subscription, "view");
