@@ -41,16 +41,19 @@ impl std::fmt::Debug for ErasedWrappedItem {
 
 impl Serialize for ErasedWrappedItem {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{Error as _, SerializeStruct};
+        use serde::ser::SerializeStruct;
         // Human-readable serializers (JSON) go through the typed shim emitted
         // by `myko_item`, which monomorphizes the inner `Serialize` and skips
         // erased_serde entirely. Non-human-readable serializers (CBOR) and
         // unregistered types (e.g. client-side `ValueItem`) fall back to the
         // erased path. Bench: JSON path is ~2.5× faster than erased_serde.
         let json_raw = if serializer.is_human_readable() {
+            // Registrations are indexed by unqualified entity name. Distinct
+            // crates can register the same name; their concrete serializers
+            // cannot serialize each other's items. The erased serializer below
+            // dispatches through the actual item and retains serializer errors.
             lookup_item_registration(self.item_type.as_ref())
-                .map(|reg| (reg.serialize_json)(&*self.item).map_err(S::Error::custom))
-                .transpose()?
+                .and_then(|reg| (reg.serialize_json)(&*self.item).ok())
         } else {
             None
         };
