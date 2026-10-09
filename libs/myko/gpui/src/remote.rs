@@ -869,7 +869,7 @@ mod tests {
     use myko::hyphae::{Cell, CellMap, Mutable as _};
 
     use super::{
-        BridgeEvent, ClientReportSpec, LoadState, Remote, build_store, build_store_with_status,
+        BridgeEvent, ClientReportSpec, LoadState, Remote, build_store_with_status,
         observe_crud_store, wrap_client_report,
     };
     use crate::{CrudCommands, CrudController};
@@ -947,10 +947,8 @@ mod tests {
         source.insert(Arc::<str>::from("two"), Arc::new(2_u32));
         let source_read = source.lock();
         let ready = Cell::new(true).lock();
-        let store = cx.update(|cx| {
-            crate::provide_myko("ws://127.0.0.1:1", cx);
-            build_store(&source_read, &ready, cx)
-        });
+        let status = Cell::new(ConnectionStatus::Connected("test".into())).lock();
+        let store = cx.update(|cx| build_store_with_status(&source_read, &ready, &status, cx));
         cx.run_until_parked();
         store.update(cx, |store, _cx| {
             store.keys = vec![Arc::from("one"), Arc::from("two")];
@@ -1015,10 +1013,7 @@ mod tests {
         // At construction the source is ready while the GPUI map driver has
         // not applied its initial snapshot yet. Equal keys alone are not
         // sufficient: the row value must also have arrived.
-        let store = cx.update(|cx| {
-            crate::provide_myko("ws://127.0.0.1:1", cx);
-            build_store_with_status(&source_read, &ready_read, &status, cx)
-        });
+        let store = cx.update(|cx| build_store_with_status(&source_read, &ready_read, &status, cx));
         assert!(!store.read_with(cx, |store, _| store.is_ready()));
         assert!(store.read_with(cx, |store, _| store.keys().is_empty()));
 
@@ -1040,10 +1035,7 @@ mod tests {
         let ready = Cell::new(true);
         let ready_read = ready.clone().lock();
         let status = Cell::new(ConnectionStatus::Connected("test".into())).lock();
-        let store = cx.update(|cx| {
-            crate::provide_myko("ws://127.0.0.1:1", cx);
-            build_store_with_status(&source_read, &ready_read, &status, cx)
-        });
+        let store = cx.update(|cx| build_store_with_status(&source_read, &ready_read, &status, cx));
         cx.run_until_parked();
 
         let observed_ready_values: Arc<Mutex<Vec<Vec<u32>>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1107,10 +1099,7 @@ mod tests {
         let source_read = source.lock();
         let ready = Cell::new(true).lock();
         let status = Cell::new(ConnectionStatus::Connected("test".into())).lock();
-        let store = cx.update(|cx| {
-            crate::provide_myko("ws://127.0.0.1:1", cx);
-            build_store_with_status(&source_read, &ready, &status, cx)
-        });
+        let store = cx.update(|cx| build_store_with_status(&source_read, &ready, &status, cx));
 
         assert!(!store.read_with(cx, |store, _| store.is_ready()));
         cx.run_until_parked();
@@ -1130,10 +1119,7 @@ mod tests {
         let source_read = source.clone().lock();
         let ready = Cell::new(true).lock();
         let status = Cell::new(ConnectionStatus::Connected("test".into())).lock();
-        let store = cx.update(|cx| {
-            crate::provide_myko("ws://127.0.0.1:1", cx);
-            build_store_with_status(&source_read, &ready, &status, cx)
-        });
+        let store = cx.update(|cx| build_store_with_status(&source_read, &ready, &status, cx));
         cx.run_until_parked();
 
         let row_entries = store.read_with(cx, |store, _| {
@@ -1213,10 +1199,8 @@ mod tests {
         let ready_read = ready.clone().lock();
         let status = Cell::new(ConnectionStatus::Connected("test".into()));
         let status_read = status.clone().lock();
-        let store = cx.update(|cx| {
-            crate::provide_myko("ws://127.0.0.1:1", cx);
-            build_store_with_status(&source_read, &ready_read, &status_read, cx)
-        });
+        let store =
+            cx.update(|cx| build_store_with_status(&source_read, &ready_read, &status_read, cx));
         cx.run_until_parked();
         assert!(store.read_with(cx, |store, _| store.is_ready()));
 
