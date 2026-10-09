@@ -988,26 +988,33 @@ impl MykoClient {
         let rx = transport.read_rx();
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
             let cancelled = Arc::new(AtomicBool::new(false));
-            let cancelled_for_thread = Arc::clone(&cancelled);
+            let worker_cancelled = Arc::clone(&cancelled);
             let handle = std::thread::spawn(move || {
                 loop {
-                    if cancelled_for_thread.load(Ordering::SeqCst) {
+                    let selected = flume::Selector::new()
+                        .recv(&cancel_rx, |_| None)
+                        .recv(&rx, Some)
+                        .wait();
+                    if worker_cancelled.load(Ordering::Acquire) {
                         break;
                     }
-                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                        Ok(frame) => {
+                    match selected {
+                        Some(Ok(frame)) => {
                             let Some(inner) = weak.upgrade() else { break };
                             Self::handle_frame(&inner, &frame);
                         }
-                        Err(flume::RecvTimeoutError::Timeout) => {}
-                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                        Some(Err(_)) | None => break,
                     }
                 }
             });
             CallbackGuard::new(move || {
-                cancelled.store(true, Ordering::SeqCst);
-                let _ = handle.join();
+                cancelled.store(true, Ordering::Release);
+                let _ = cancel_tx.send(());
+                if handle.thread().id() != std::thread::current().id() {
+                    let _ = handle.join();
+                }
             })
         }
         #[cfg(target_arch = "wasm32")]
@@ -1052,26 +1059,33 @@ impl MykoClient {
         let rx = receiver.clone();
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
             let cancelled = Arc::new(AtomicBool::new(false));
-            let cancelled_for_thread = Arc::clone(&cancelled);
+            let worker_cancelled = Arc::clone(&cancelled);
             let handle = std::thread::spawn(move || {
                 loop {
-                    if cancelled_for_thread.load(Ordering::SeqCst) {
+                    let selected = flume::Selector::new()
+                        .recv(&cancel_rx, |_| None)
+                        .recv(&rx, Some)
+                        .wait();
+                    if worker_cancelled.load(Ordering::Acquire) {
                         break;
                     }
-                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                        Ok((tx, response)) => {
+                    match selected {
+                        Some(Ok((tx, response))) => {
                             let Some(inner) = weak.upgrade() else { break };
                             dispatch_report_response(&inner.report_handlers, &tx, response);
                         }
-                        Err(flume::RecvTimeoutError::Timeout) => {}
-                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                        Some(Err(_)) | None => break,
                     }
                 }
             });
             CallbackGuard::new(move || {
-                cancelled.store(true, Ordering::SeqCst);
-                let _ = handle.join();
+                cancelled.store(true, Ordering::Release);
+                let _ = cancel_tx.send(());
+                if handle.thread().id() != std::thread::current().id() {
+                    let _ = handle.join();
+                }
             })
         }
         #[cfg(target_arch = "wasm32")]
