@@ -1663,24 +1663,22 @@ impl MykoClient {
 
     /// Send a frame, or queue it if disconnected.
     fn send_or_queue(&self, frame: WsFrame) {
-        if let ConnectionStatus::Connected(_) = self.inner.socket.actual_connection_state().get() {
-            let _ = self.inner.socket.send(frame);
-        } else {
-            let len = {
-                let mut pending = self
-                    .inner
-                    .pending_sends
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pending.push(frame);
-                pending.len()
-            };
-            if len == 1 || len.is_multiple_of(10_000) {
+        match admit_send(&self.inner.pending_sends, frame, || {
+            matches!(
+                self.inner.socket.actual_connection_state().get(),
+                ConnectionStatus::Connected(_)
+            )
+        }) {
+            Ok(frame) => {
+                let _ = self.inner.socket.send(frame);
+            }
+            Err(len) if len == 1 || len.is_multiple_of(10_000) => {
                 warn!(
                     "MykoClient queued frame while disconnected; pending_sends={}",
                     len
                 );
             }
+            Err(_) => {}
         }
     }
 
@@ -2991,6 +2989,92 @@ mod address_tests {
         assert_eq!(
             normalize_myko_address("agents.example:80").ok().as_deref(),
             Some("ws://agents.example/myko")
+        );
+    }
+}
+
+// The status check and enqueue share the reconnect drain's mutex. Otherwise a
+// sender can observe Disconnected before the drain, then enqueue after it.
+fn admit_send(
+    pending: &Mutex<Vec<WsFrame>>,
+    frame: WsFrame,
+    connected: impl FnOnce() -> bool,
+) -> Result<WsFrame, usize> {
+    let mut pending = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if connected() {
+        Ok(frame)
+    } else {
+        pending.push(frame);
+        Err(pending.len())
+    }
+}
+
+#[cfg(test)]
+mod send_admission_tests {
+    use super::*;
+
+    #[test]
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "test assertions verify ordering; Result propagates setup errors"
+    )]
+    fn reconnect_cannot_drain_between_status_check_and_enqueue()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let sender_pending = pending.clone();
+        let sender = std::thread::spawn(move || {
+            admit_send(
+                &sender_pending,
+                WsFrame::Text("registration".into()),
+                || {
+                    assert!(checked_tx.send(()).is_ok());
+                    assert!(continue_rx.recv().is_ok());
+                    false
+                },
+            )
+        });
+        checked_rx.recv_timeout(std::time::Duration::from_secs(2))?;
+        // Connected publication's drain must wait for admission to finish.
+        assert!(pending.try_lock().is_err());
+        continue_tx.send(())?;
+        assert!(matches!(
+            sender
+                .join()
+                .map_err(|_| std::io::Error::other("sender panicked"))?,
+            Err(1)
+        ));
+        let drained: Vec<_> = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect();
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(drained.first(), Some(WsFrame::Text(text)) if text == "registration"));
+        assert!(
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sender_after_reconnect_sends_instead_of_waiting_for_another_connect() {
+        let pending = Mutex::new(Vec::new());
+        let frame = WsFrame::Text("registration".into());
+        assert!(
+            matches!(admit_send(&pending, frame, || true), Ok(WsFrame::Text(text)) if text == "registration")
+        );
+        assert!(
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
         );
     }
 }
