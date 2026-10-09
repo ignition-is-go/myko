@@ -650,4 +650,83 @@ mod tests {
         socket.close();
         Ok(())
     }
+
+    #[test]
+    #[ignore = "native idle-socket timing probe; run filtered and isolated"]
+    fn native_idle_receive_latency_probe() -> std::io::Result<()> {
+        const EVENTS: u64 = 64;
+
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = format!("ws://{}/latency", listener.local_addr()?);
+        let (sent_tx, sent_rx) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            let (stream, _) = listener.accept()?;
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+            let mut websocket = tungstenite::accept(stream).map_err(std::io::Error::other)?;
+            for event_id in 0..EVENTS {
+                // Keep the reader idle between events so this measures wakeup
+                // delivery rather than draining an already-readable burst.
+                thread::sleep(Duration::from_millis(23));
+                let sent_at = Instant::now();
+                websocket
+                    .send(Message::Text(format!("event:{event_id}").into()))
+                    .map_err(std::io::Error::other)?;
+                sent_tx
+                    .send((event_id, sent_at))
+                    .map_err(std::io::Error::other)?;
+            }
+            Ok(())
+        });
+
+        let socket = AutoReconnectSocket::with_auto_reconnect(false);
+        let incoming = SocketTransport::read_rx(&socket);
+        SocketTransport::set_addr(&socket, Some(address.clone()));
+        if !wait_until_connected(&socket, &address) {
+            return Err(std::io::Error::other("latency probe did not connect"));
+        }
+
+        let mut latencies = Vec::with_capacity(EVENTS as usize);
+        for expected_id in 0..EVENTS {
+            let (sent_id, sent_at) = sent_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(std::io::Error::other)?;
+            let frame = incoming
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(std::io::Error::other)?;
+            let WsFrame::Text(text) = frame else {
+                return Err(std::io::Error::other("latency probe received binary frame"));
+            };
+            let received_id = text
+                .strip_prefix("event:")
+                .and_then(|value| value.parse::<u64>().ok())
+                .ok_or_else(|| std::io::Error::other("latency probe received invalid event id"))?;
+            if sent_id != expected_id || received_id != expected_id {
+                return Err(std::io::Error::other(format!(
+                    "latency probe event order mismatch: expected={expected_id} sent={sent_id} received={received_id}"
+                )));
+            }
+            latencies.push(sent_at.elapsed());
+        }
+        SocketTransport::close(&socket);
+        server
+            .join()
+            .map_err(|_| std::io::Error::other("latency probe server panicked"))??;
+
+        latencies.sort_unstable();
+        let percentile =
+            |percent: usize| latencies[(latencies.len() - 1) * percent / 100].as_micros();
+        println!(
+            "AUTOSOCKET_IDLE_RECEIVE events={} p50_us={} p95_us={} p99_us={} max_us={}",
+            latencies.len(),
+            percentile(50),
+            percentile(95),
+            percentile(99),
+            latencies.last().expect("latencies").as_micros()
+        );
+        assert!(
+            latencies.last().expect("latencies") < &Duration::from_millis(100),
+            "idle socket delivery exceeded 100ms"
+        );
+        Ok(())
+    }
 }
