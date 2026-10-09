@@ -555,8 +555,8 @@ struct PreparedItem {
     ingest_registration: Option<TokenStream>,
 }
 
-fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
-    let relationships = relationship::collect_relationships(&input_struct);
+fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> syn::Result<PreparedItem> {
+    let relationships = relationship::collect_relationships(&input_struct)?;
     let setters = setter::collect_setter_fields(&input_struct);
     let name = input_struct.ident.clone();
     let name_str = name.to_string();
@@ -641,7 +641,7 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
             }
         }
     });
-    PreparedItem {
+    Ok(PreparedItem {
         input_struct,
         relationships,
         setters,
@@ -654,7 +654,7 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> PreparedItem {
         partial_eq_impl,
         post_deserialize,
         ingest_registration,
-    }
+    })
 }
 
 fn generate_foreign_key_impls(
@@ -859,6 +859,10 @@ fn required_belongs_to(
 }
 
 pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream {
+    prepare_item(args, input_struct).map_or_else(|err| err.to_compile_error(), expand_prepared_item)
+}
+
+fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
     let PreparedItem {
         input_struct,
         relationships: rel_info,
@@ -872,7 +876,7 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
         partial_eq_impl,
         post_deserialize: post_deserialize_impl,
         ingest_registration: ingest_buffer_registration,
-    } = prepare_item(args, input_struct);
+    } = prepared;
     let name = &name;
     let krate = &ctx.krate;
 
