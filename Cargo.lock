@@ -3509,7 +3509,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4513,10 +4513,9 @@ dependencies = [
  "hyphae",
  "inventory",
  "myko",
+ "myko-telemetry",
  "num-traits",
  "opentelemetry",
- "opentelemetry-otlp",
- "opentelemetry_sdk",
  "postgres",
  "reqwest 0.12.28",
  "rquickjs",
@@ -4526,10 +4525,25 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
- "tracing-opentelemetry",
- "tracing-subscriber",
  "tungstenite",
  "uuid",
+]
+
+[[package]]
+name = "myko-telemetry"
+version = "6.7.0"
+dependencies = [
+ "log",
+ "opentelemetry",
+ "opentelemetry-appender-tracing",
+ "opentelemetry-otlp",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "tracing",
+ "tracing-opentelemetry",
+ "tracing-subscriber",
+ "url",
 ]
 
 [[package]]
@@ -5183,6 +5197,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry-appender-tracing"
+version = "0.32.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2c0080f0dc1d7c786f467cd85a4e395fcab11ee852004f39a29a18ab7c25d837"
+dependencies = [
+ "opentelemetry",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "opentelemetry-http"
 version = "0.32.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5236,8 +5262,6 @@ dependencies = [
  "portable-atomic",
  "rand 0.9.5",
  "thiserror 2.0.20",
- "tokio",
- "tokio-stream",
 ]
 
 [[package]]
@@ -5866,7 +5890,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.13.0",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -7967,17 +7991,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "whoami",
-]
-
-[[package]]
-name = "tokio-stream"
-version = "0.1.19"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3d06f0b082ba57c26b79407372e57cf2a1e28124f78e9479fe80322cf53420b"
-dependencies = [
- "futures-core",
- "pin-project-lite",
- "tokio",
 ]
 
 [[package]]
@@ -10123,19 +10136,3 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "myko"
-version = "6.5.1"
-
-[[patch.unused]]
-name = "myko-leptos"
-version = "6.5.1"
-
-[[patch.unused]]
-name = "myko-macros"
-version = "6.5.1"
-
-[[patch.unused]]
-name = "myko-server"
-version = "6.5.1"
