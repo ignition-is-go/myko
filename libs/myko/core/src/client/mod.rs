@@ -988,26 +988,33 @@ impl MykoClient {
         let rx = transport.read_rx();
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
             let cancelled = Arc::new(AtomicBool::new(false));
-            let cancelled_for_thread = Arc::clone(&cancelled);
+            let worker_cancelled = Arc::clone(&cancelled);
             let handle = std::thread::spawn(move || {
                 loop {
-                    if cancelled_for_thread.load(Ordering::SeqCst) {
+                    let selected = flume::Selector::new()
+                        .recv(&cancel_rx, |_| None)
+                        .recv(&rx, Some)
+                        .wait();
+                    if worker_cancelled.load(Ordering::Acquire) {
                         break;
                     }
-                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                        Ok(frame) => {
+                    match selected {
+                        Some(Ok(frame)) => {
                             let Some(inner) = weak.upgrade() else { break };
                             Self::handle_frame(&inner, &frame);
                         }
-                        Err(flume::RecvTimeoutError::Timeout) => {}
-                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                        Some(Err(_)) | None => break,
                     }
                 }
             });
             CallbackGuard::new(move || {
-                cancelled.store(true, Ordering::SeqCst);
-                let _ = handle.join();
+                cancelled.store(true, Ordering::Release);
+                let _ = cancel_tx.send(());
+                if handle.thread().id() != std::thread::current().id() {
+                    let _ = handle.join();
+                }
             })
         }
         #[cfg(target_arch = "wasm32")]
@@ -1052,26 +1059,33 @@ impl MykoClient {
         let rx = receiver.clone();
         #[cfg(not(target_arch = "wasm32"))]
         {
+            let (cancel_tx, cancel_rx) = flume::bounded(1);
             let cancelled = Arc::new(AtomicBool::new(false));
-            let cancelled_for_thread = Arc::clone(&cancelled);
+            let worker_cancelled = Arc::clone(&cancelled);
             let handle = std::thread::spawn(move || {
                 loop {
-                    if cancelled_for_thread.load(Ordering::SeqCst) {
+                    let selected = flume::Selector::new()
+                        .recv(&cancel_rx, |_| None)
+                        .recv(&rx, Some)
+                        .wait();
+                    if worker_cancelled.load(Ordering::Acquire) {
                         break;
                     }
-                    match rx.recv_timeout(std::time::Duration::from_millis(100)) {
-                        Ok((tx, response)) => {
+                    match selected {
+                        Some(Ok((tx, response))) => {
                             let Some(inner) = weak.upgrade() else { break };
                             dispatch_report_response(&inner.report_handlers, &tx, response);
                         }
-                        Err(flume::RecvTimeoutError::Timeout) => {}
-                        Err(flume::RecvTimeoutError::Disconnected) => break,
+                        Some(Err(_)) | None => break,
                     }
                 }
             });
             CallbackGuard::new(move || {
-                cancelled.store(true, Ordering::SeqCst);
-                let _ = handle.join();
+                cancelled.store(true, Ordering::Release);
+                let _ = cancel_tx.send(());
+                if handle.thread().id() != std::thread::current().id() {
+                    let _ = handle.join();
+                }
             })
         }
         #[cfg(target_arch = "wasm32")]
@@ -1649,24 +1663,22 @@ impl MykoClient {
 
     /// Send a frame, or queue it if disconnected.
     fn send_or_queue(&self, frame: WsFrame) {
-        if let ConnectionStatus::Connected(_) = self.inner.socket.actual_connection_state().get() {
-            let _ = self.inner.socket.send(frame);
-        } else {
-            let len = {
-                let mut pending = self
-                    .inner
-                    .pending_sends
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                pending.push(frame);
-                pending.len()
-            };
-            if len == 1 || len.is_multiple_of(10_000) {
+        match admit_send(&self.inner.pending_sends, frame, || {
+            matches!(
+                self.inner.socket.actual_connection_state().get(),
+                ConnectionStatus::Connected(_)
+            )
+        }) {
+            Ok(frame) => {
+                let _ = self.inner.socket.send(frame);
+            }
+            Err(len) if len == 1 || len.is_multiple_of(10_000) => {
                 warn!(
                     "MykoClient queued frame while disconnected; pending_sends={}",
                     len
                 );
             }
+            Err(_) => {}
         }
     }
 
@@ -2977,6 +2989,92 @@ mod address_tests {
         assert_eq!(
             normalize_myko_address("agents.example:80").ok().as_deref(),
             Some("ws://agents.example/myko")
+        );
+    }
+}
+
+// The status check and enqueue share the reconnect drain's mutex. Otherwise a
+// sender can observe Disconnected before the drain, then enqueue after it.
+fn admit_send(
+    pending: &Mutex<Vec<WsFrame>>,
+    frame: WsFrame,
+    connected: impl FnOnce() -> bool,
+) -> Result<WsFrame, usize> {
+    let mut pending = pending
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if connected() {
+        Ok(frame)
+    } else {
+        pending.push(frame);
+        Err(pending.len())
+    }
+}
+
+#[cfg(test)]
+mod send_admission_tests {
+    use super::*;
+
+    #[test]
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "test assertions verify ordering; Result propagates setup errors"
+    )]
+    fn reconnect_cannot_drain_between_status_check_and_enqueue()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let pending = Arc::new(Mutex::new(Vec::new()));
+        let (checked_tx, checked_rx) = std::sync::mpsc::channel();
+        let (continue_tx, continue_rx) = std::sync::mpsc::channel();
+        let sender_pending = pending.clone();
+        let sender = std::thread::spawn(move || {
+            admit_send(
+                &sender_pending,
+                WsFrame::Text("registration".into()),
+                || {
+                    assert!(checked_tx.send(()).is_ok());
+                    assert!(continue_rx.recv().is_ok());
+                    false
+                },
+            )
+        });
+        checked_rx.recv_timeout(std::time::Duration::from_secs(2))?;
+        // Connected publication's drain must wait for admission to finish.
+        assert!(pending.try_lock().is_err());
+        continue_tx.send(())?;
+        assert!(matches!(
+            sender
+                .join()
+                .map_err(|_| std::io::Error::other("sender panicked"))?,
+            Err(1)
+        ));
+        let drained: Vec<_> = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain(..)
+            .collect();
+        assert_eq!(drained.len(), 1);
+        assert!(matches!(drained.first(), Some(WsFrame::Text(text)) if text == "registration"));
+        assert!(
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn sender_after_reconnect_sends_instead_of_waiting_for_another_connect() {
+        let pending = Mutex::new(Vec::new());
+        let frame = WsFrame::Text("registration".into());
+        assert!(
+            matches!(admit_send(&pending, frame, || true), Ok(WsFrame::Text(text)) if text == "registration")
+        );
+        assert!(
+            pending
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
         );
     }
 }
