@@ -4,6 +4,7 @@ members = [
   "libs/myko/core",
   "libs/myko/macros",
   "libs/myko/server",
+  "libs/myko/telemetry",
   "libs/myko/leptos",
   "libs/myko/gpui",
   "libs/autosocket",

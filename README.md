@@ -170,10 +170,10 @@ All endpoints share a single TCP listener; the front-door router peeks at the HT
 | `MYKO_POSTGRES_URL`              | —                     | Postgres connection string                 |
 | `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` | `300`             | Maximum startup snapshot/catch-up wait before the server exits; `0` disables the limit |
 | `MYKO_PORT`                      | `5155`                | Server bind port (when wired through env)  |
-| `MYKO_TRACING_ENDPOINT`          | —                     | OTLP/HTTP endpoint for traces+metrics (see `myko_server::telemetry::init_from_env`); unset = local console logging only |
+| `MYKO_TRACING_ENDPOINT`          | —                     | Fallback OTLP/HTTP base endpoint for logs, traces, and metrics (see `myko_server::telemetry::init_from_env`); unset = local console logging only |
 | `MYKO_CCMD_MONITOR`              | `0`                   | Set `1` to log command timing              |
 | `MYKO_CCMD_TIMEOUT_MS`           | —                     | Slow-command threshold for warn logs       |
-| `MYKO_MEM_PROFILE_INTERVAL_SECS` | `60`                  | Metrics export interval (seconds); only applies when `MYKO_TRACING_ENDPOINT` is set |
+| `MYKO_MEM_PROFILE_INTERVAL_SECS` | `60`                  | Metrics export interval (seconds); applies when OTLP export is configured |
 | `MYKO_MALLOC_TRIM_INTERVAL_SECS` | —                     | Periodic `malloc_trim(0)` probe: logs RSS before/after returning free glibc arena pages (distinguishes allocator page retention from real retention). Unset/0 = off; glibc-only. Measures glibc arenas only — meaningless if the host binary sets a non-glibc `#[global_allocator]` (e.g. jemalloc); use that allocator's own stats instead |
 
 ---
@@ -400,3 +400,25 @@ Every non-trivial change starts with a spec under `docs/superpowers/specs/<date>
 
 MIT OR Apache-2.0 for the framework crates (`myko`, `myko-macros`, `autosocket`).
 The server runtime (`myko-server`) is AGPL-3.0-or-later. See individual crate `Cargo.toml` for specifics.
+
+### Shared application telemetry
+
+Rust applications and SDK hosts can depend on `myko-telemetry` without the server runtime. Initialize once before constructing clients, and hold the guard until process shutdown:
+
+```rust,no_run
+let _telemetry = myko_telemetry::init_from_env();
+```
+
+This installs console logging, bridges existing `log` macros into `tracing`, and optionally exports logs, traces, and metrics over OTLP HTTP/protobuf. Remove an earlier `env_logger::init()` call. Hosts with custom subscribers can compose `myko_telemetry::otel_layer_from_env()` instead; the server module re-exports both entry points.
+
+```sh
+OTEL_EXPORTER_OTLP_ENDPOINT=http://telemetry-01.lucid.host:4318
+OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+OTEL_SERVICE_NAME=phosphor
+OTEL_RESOURCE_ATTRIBUTES=host.name=phosphor-01,deployment.environment.name=hrlv
+RUST_LOG=info,phosphor=debug,rship_sdk=debug
+```
+
+The base endpoint receives `/v1/logs`, `/v1/traces`, and `/v1/metrics` requests. Standard `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT` overrides are complete per-signal URLs, including their path. They take precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`, which takes precedence over the legacy `MYKO_TRACING_ENDPOINT` base URL. Exporter headers and timeouts use the standard OTel variables. Only HTTP/protobuf is supported; gRPC and HTTP/JSON protocol settings are rejected with a stderr diagnostic. Without any endpoint, logging stays local.
+
+`OTEL_SERVICE_NAME` overrides a `service.name` in `OTEL_RESOURCE_ATTRIBUTES`; otherwise the default is `myko-server`. Give each host application its own service name. Log batches use the SDK's bounded queue and are flushed when the guard drops. Exporter diagnostics remain local to prevent recursive log export.
