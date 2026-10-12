@@ -86,6 +86,9 @@ root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--lib", "mcp::"]
 [tasks.test-mcp-http]
 root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--test", "mcp_code_mode"]
 
+[tasks.test-mcp-http-codegen]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--features", "myko/ci", "--test", "mcp_code_mode"]
+
 [tasks.test-mcp-contract]
 root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--lib", "operation_index"]
 

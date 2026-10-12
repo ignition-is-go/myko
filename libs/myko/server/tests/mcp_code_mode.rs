@@ -22,7 +22,8 @@ impl CommandHandler for StrictEcho {
     }
 }
 
-#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, myko::TS)]
+#[ts(crate = "myko::ts_rs")]
 struct NestedInput {
     label: String,
 }
