@@ -63,11 +63,18 @@ async fn registered_saga_receives_prestart_and_running_updates()
     let running = server.clone();
     let task = tokio::spawn(async move { running.run().await.map_err(|error| error.to_string()) });
     let first = tokio::time::timeout(Duration::from_secs(5), OBSERVED.1.recv_async()).await;
-    assert_eq!(first??, "before-start");
+    let first = first??;
+    if first != "before-start" {
+        task.abort();
+        return Err(format!("expected before-start saga event, got {first}").into());
+    }
     status.name = "after-start".into();
     ctx.set(&status)?;
     let second = tokio::time::timeout(Duration::from_secs(5), OBSERVED.1.recv_async()).await;
     task.abort();
-    assert_eq!(second??, "after-start");
+    let second = second??;
+    if second != "after-start" {
+        return Err(format!("expected after-start saga event, got {second}").into());
+    }
     Ok(())
 }
