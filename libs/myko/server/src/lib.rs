@@ -843,6 +843,63 @@ impl MykoServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use myko::entities::demo::{DemoStatus, DemoStatusId};
+
+    #[test]
+    fn no_sagas_do_not_retain_same_entity_updates() {
+        assert!(inventory::iter::<SagaRegistration>().next().is_none());
+        let server = MykoServer::builder()
+            .with_default_persister(Arc::new(NullPersister))
+            .build();
+        server.start_saga_runtime();
+        let ctx = server.ctx();
+        let id = DemoStatusId::from("stable-status");
+        for update in 0..1000 {
+            ctx.set(&DemoStatus {
+                id: id.clone(),
+                name: update.to_string(),
+                color: String::new(),
+                emoji: String::new(),
+            })
+            .expect("publish status");
+        }
+        assert_eq!(ctx.entity_snapshot::<DemoStatus>(&id).unwrap().name, "999");
+        let queued = server
+            .saga_event_rx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, flume::Receiver::len);
+        assert_eq!(queued, 0, "a server without sagas must not retain event history");
+    }
+
+    #[test]
+    fn transient_updates_do_not_enter_saga_queue() {
+        assert!(inventory::iter::<SagaRegistration>().next().is_none());
+        let server = MykoServer::builder()
+            .with_default_persister(Arc::new(NullPersister))
+            .build();
+        server.start_saga_runtime();
+        let ctx = server.ctx();
+        let id = DemoStatusId::from("transient-status");
+        for update in 0..1000 {
+            ctx.set_transient(&DemoStatus {
+                id: id.clone(),
+                name: update.to_string(),
+                color: String::new(),
+                emoji: String::new(),
+            })
+            .expect("publish transient status");
+        }
+        assert_eq!(ctx.entity_snapshot::<DemoStatus>(&id).unwrap().name, "999");
+        let queued = server
+            .saga_event_rx
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map_or(0, flume::Receiver::len);
+        assert_eq!(queued, 0);
+    }
 
     #[test]
     fn test_server_creation() {
