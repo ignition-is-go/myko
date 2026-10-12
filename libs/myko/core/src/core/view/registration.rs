@@ -83,7 +83,7 @@ where
 {
     fn parse(value: Value) -> Result<Arc<dyn AnyView>, anyhow::Error> {
         tracing::trace!("ViewFactory::parse view_id={}", V::view_id_static());
-        let view = serde_json::from_value::<ViewRequest<V>>(value)?;
+        let view = crate::reflection::deserialize_operation::<ViewRequest<V>>(value)?;
         Ok(Arc::new(view))
     }
 

@@ -129,6 +129,7 @@ pub use myko_macros::TsNoop as TS;
 // as `myko::myko_item`, `myko::myko_subtype`, etc. without adding a separate
 // `myko-macros` dependency.
 pub use myko_macros::*;
+pub use schemars;
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
 pub use tracing; // For proc macro generated tracing::debug!/warn! in typed sagas

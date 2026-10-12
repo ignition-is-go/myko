@@ -8,9 +8,12 @@
 //!
 //! Every type decorated with `#[myko_query]`, `#[myko_view]`,
 //! `#[myko_report]`, or `#[myko_command]` is auto-discovered via
-//! `inventory` and exposed as an MCP tool with prefix `query:`, `view:`,
-//! `report:`, or `command:`. The tool's input schema also surfaces as a
-//! resource at `myko://schema/<kind>/<id>`.
+//! `inventory`. The `search` tool discovers operations, and `execute` runs
+//! JavaScript with `myko.query`, `myko.view`, `myko.report`, and `myko.command`.
+//! `myko.describe(kind, id)` returns one operation contract inside the sandbox.
+//! Typed operation parsers validate input before building cells or running handlers.
+//! Legacy schema resources remain available at
+//! `myko://schema/<kind>/<id>`.
 //!
 //! ## Client filters
 //!
@@ -41,11 +44,14 @@
 //! `MykoClient` and connects out over WebSocket. It will be removed once
 //! all consumers have migrated to the in-server `/myko/mcp` endpoint.
 
+mod contract;
 pub mod dispatch;
+mod domain;
 pub mod exec;
 pub mod filter;
 pub mod http;
 pub mod sandbox;
+mod schema;
 mod server;
 mod types;
 pub mod ws;

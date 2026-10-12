@@ -115,7 +115,7 @@ pub trait ReportFactory: ReportParams {
 
 impl<R: ReportParams> ReportFactory for R {
     fn parse(value: Value) -> Result<Arc<dyn AnyReport>, anyhow::Error> {
-        let report = serde_json::from_value::<ReportRequest<R>>(value)?;
+        let report = crate::reflection::deserialize_operation::<ReportRequest<R>>(value)?;
         Ok(Arc::new(report))
     }
 
