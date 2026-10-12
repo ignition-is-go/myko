@@ -20,8 +20,31 @@ fn make_args_struct(
         syn::parse_quote!(#[derive(Clone, Debug, #serde_path::Serialize, #serde_path::Deserialize)]),
         syn::parse_quote!(#[derive(#krate::TS)]),
         syn::parse_quote!(#[ts(crate = "myko::ts_rs")]),
-        syn::parse_quote!(#serde_rename_attr),
     ];
+    for attr in input
+        .attrs
+        .iter()
+        .filter(|attr| attr.path().is_ident("serde"))
+    {
+        if let Ok(properties) = attr.parse_args_with(
+            syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+        ) {
+            let properties: Vec<_> = properties
+                .into_iter()
+                .filter(|property| {
+                    property.path().is_ident("rename_all")
+                        || property.path().is_ident("deny_unknown_fields")
+                })
+                .collect();
+            if !properties.is_empty() {
+                args.attrs
+                    .push(syn::parse_quote!(#[serde(#(#properties),*)]));
+            }
+        }
+    }
+    if !serde_rename_attr.is_empty() {
+        args.attrs.push(syn::parse_quote!(#serde_rename_attr));
+    }
     args
 }
 
@@ -36,14 +59,13 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let serde_rename_attr = crate::operation_contract::serde_rename_attr(&ctx, &input_struct.attrs);
 
     // Reflection metadata for the MCP `search()` operation index — see
     // `myko::reflection` and the matching comment in `query.rs`. The Args
     // struct is field-identical to `input_struct` (cloned below), so
     // capturing from `input_struct.fields` covers both.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
-    let input_contract = crate::input_contract_tokens(&input_struct, "command", krate);
 
     crate::gate_ts_attrs(&mut input_struct.attrs);
     crate::gate_field_ts_attrs(&mut input_struct.fields);
@@ -51,7 +73,8 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let ts_cfg_derive = quote!(#[derive(#krate::TS)] #[ts(crate = "myko::ts_rs")]);
 
     // Args remains field-identical for wire compatibility.
-    let serde_rename_attr_clone = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let serde_rename_attr_clone =
+        crate::operation_contract::serde_rename_attr(&ctx, &input_struct.attrs);
     let args_struct = make_args_struct(
         &input_struct,
         &args_struct_name,
@@ -96,7 +119,6 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let expanded = quote! {
         #derives
         #input_struct
-        #input_contract
 
         #args_struct
 

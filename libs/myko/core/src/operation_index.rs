@@ -34,8 +34,11 @@ use std::{
 };
 
 use crate::{
-    command::CommandRegistration, query::QueryRegistration, reflection::OperationArgField,
-    report::ReportRegistration, view::ViewRegistration,
+    command::CommandRegistration,
+    query::QueryRegistration,
+    reflection::{OperationArgField, OperationArgPresence},
+    report::ReportRegistration,
+    view::ViewRegistration,
 };
 
 /// One argument of an [`OperationSchema`], rendered from the
@@ -45,25 +48,40 @@ use crate::{
 pub struct OperationArg {
     pub name: String,
     pub ts_type: String,
-    pub optional: bool,
     pub rust_type: String,
+    pub optional: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub aliases: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub flattened: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub defaulted: bool,
+    #[serde(skip)]
+    pub input_schema: serde_json::Value,
 }
 
 impl From<&OperationArgField> for OperationArg {
     fn from(field: &OperationArgField) -> Self {
         Self {
             name: field.name.to_string(),
-            ts_type: rust_type_to_ts(field.rust_type),
-            optional: field.optional,
             rust_type: field.rust_type.to_string(),
+            ts_type: if field.custom_deserializer {
+                "unknown".to_string()
+            } else {
+                rust_type_to_ts(field.rust_type)
+            },
+            optional: field.presence != OperationArgPresence::Required,
             aliases: field
                 .aliases
                 .iter()
                 .map(|alias| (*alias).to_string())
                 .collect(),
+            description: field.description.map(str::to_string),
             flattened: field.flattened,
+            defaulted: field.presence == OperationArgPresence::Defaulted,
+            input_schema: (field.input_schema)(),
         }
     }
 }
@@ -162,6 +180,50 @@ impl ResultContract {
 }
 
 impl OperationSchema {
+    /// Structural input constraints. Custom and unresolved types remain unconstrained.
+    #[must_use]
+    pub fn input_schema(&self) -> serde_json::Value {
+        let mut properties = serde_json::Map::new();
+        let mut definitions = serde_json::Map::new();
+        let mut required = Vec::new();
+        let mut alternatives = Vec::new();
+        for (index, arg) in self
+            .args
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| !arg.flattened)
+        {
+            let key = format!("arg{index}");
+            let reference = format!("#/$defs/{key}");
+            let mut schema = arg.input_schema.clone();
+            rebase_local_refs(&mut schema, &reference);
+            definitions.insert(key, schema);
+            properties.insert(arg.name.clone(), serde_json::json!({"$ref": reference}));
+            for alias in &arg.aliases {
+                properties.insert(alias.clone(), serde_json::json!({"$ref": reference}));
+            }
+            if !arg.optional {
+                if arg.aliases.is_empty() {
+                    required.push(arg.name.clone());
+                } else {
+                    alternatives.push(serde_json::json!({"anyOf": std::iter::once(&arg.name).chain(arg.aliases.iter())
+                        .map(|name| serde_json::json!({"required": [name]})).collect::<Vec<_>>() }));
+                }
+            }
+        }
+        let mut schema = serde_json::json!({
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "type": "object", "properties": properties, "required": required, "$defs": definitions,
+            "additionalProperties": true,
+        });
+        if !alternatives.is_empty()
+            && let Some(object) = schema.as_object_mut()
+        {
+            object.insert("allOf".to_string(), serde_json::json!(alternatives));
+        }
+        schema
+    }
+
     /// Return a detailed description only when requested, keeping discovery compact.
     #[must_use]
     pub fn describe(&self) -> serde_json::Value {
@@ -183,12 +245,13 @@ impl OperationSchema {
         serde_json::json!({
             "operation": self,
             "inputType": self.args,
+            "inputSchema": self.input_schema(),
             "outputType": result_contract.describe(&self.output_type),
             "payloadType": self.output_type,
             "exampleArgs": example_args,
             "example": example,
             "exampleUnavailable": if example_args.is_none() {
-                Some("No valid example is registered for these input types. The application can use register_operation_example! to supply one.")
+                Some("No example is available for these input types. The application can use register_operation_example! to supply one.")
             } else { None },
         })
     }
@@ -199,7 +262,6 @@ impl OperationSchema {
             .find(|entry| entry.kind == self.kind && entry.id == self.id)
         {
             let args = (registration.example)();
-            crate::reflection::validate_operation_input(&self.kind, &self.id, &args).ok()?;
             return Some(args);
         }
 
@@ -216,7 +278,6 @@ impl OperationSchema {
             })
             .collect::<Option<serde_json::Map<_, _>>>()?;
         let args = serde_json::Value::Object(args);
-        crate::reflection::validate_operation_input(&self.kind, &self.id, &args).ok()?;
         Some(args)
     }
 }
@@ -248,6 +309,27 @@ fn example_value(rust_type: &str) -> Option<serde_json::Value> {
         | "usize" | "f32" | "f64" => Some(serde_json::json!(0)),
         "Value" | "()" => Some(serde_json::Value::Null),
         _ => None,
+    }
+}
+
+fn rebase_local_refs(schema: &mut serde_json::Value, base: &str) {
+    match schema {
+        serde_json::Value::Object(object) => {
+            if let Some(serde_json::Value::String(reference)) = object.get_mut("$ref")
+                && (reference == "#" || reference.starts_with("#/"))
+            {
+                *reference = format!("{base}{}", reference.trim_start_matches('#'));
+            }
+            for value in object.values_mut() {
+                rebase_local_refs(value, base);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                rebase_local_refs(value, base);
+            }
+        }
+        _ => {}
     }
 }
 
@@ -678,44 +760,6 @@ mod tests {
         }
     }
 
-    #[crate::myko_command(u32)]
-    pub struct InvalidExampleFixture {
-        value: u32,
-    }
-
-    impl crate::command::CommandHandler for InvalidExampleFixture {
-        fn execute(
-            self,
-            _ctx: crate::command::CommandContext,
-        ) -> Result<u32, crate::command::CommandError> {
-            Ok(self.value)
-        }
-    }
-
-    crate::register_operation_example!(
-        "command",
-        InvalidExampleFixture,
-        serde_json::json!({"value": "wrong type"})
-    );
-
-    #[test]
-    #[allow(clippy::panic_in_result_fn)]
-    fn invalid_registered_examples_are_not_advertised() -> Result<(), String> {
-        let index = build_operation_index();
-        let operation = index
-            .iter()
-            .find(|operation| operation.id == "InvalidExampleFixture")
-            .ok_or("fixture missing")?;
-        let descriptor = operation.describe();
-        assert_eq!(descriptor.get("example"), Some(&serde_json::Value::Null));
-        assert!(
-            descriptor
-                .get("exampleUnavailable")
-                .is_some_and(serde_json::Value::is_string)
-        );
-        Ok(())
-    }
-
     #[test]
     #[allow(clippy::panic_in_result_fn)]
     fn wire_descriptions_follow_serde_and_examples_validate() -> Result<(), String> {
@@ -746,22 +790,18 @@ mod tests {
             .get("exampleArgs")
             .ok_or("missing example args")?;
         assert!(
-            crate::reflection::validate_operation_input("command", "WireContractFixture", example)
+            crate::reflection::deserialize_operation::<WireContractFixture>(example.clone())
                 .is_ok()
         );
         assert!(
-            crate::reflection::validate_operation_input(
-                "command",
-                "WireContractFixture",
-                &serde_json::json!({"legacyName":"legacy"})
+            crate::reflection::deserialize_operation::<WireContractFixture>(
+                serde_json::json!({"legacyName":"legacy"})
             )
             .is_ok()
         );
         assert!(
-            crate::reflection::validate_operation_input(
-                "command",
-                "WireContractFixture",
-                &serde_json::json!({"savedName":"wrong direction"})
+            crate::reflection::deserialize_operation::<WireContractFixture>(
+                serde_json::json!({"savedName":"wrong direction"})
             )
             .is_err()
         );

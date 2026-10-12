@@ -292,7 +292,8 @@ join, deduplicate, filter, and aggregate their payloads. Return the calculated
 answer so raw data and arithmetic do not need another model round trip.
 
 Every `myko.*` call inside a script checks visibility, argument constraints,
-and the operation's compiled Serde deserializer before dispatch. Diagnostics
+and reflected structural input constraints before local dispatch. The authoritative
+Serde parser runs once at the execution boundary. Diagnostics
 identify the operation and failing field path, including nested fields. Errors
 can be caught within the script, so one rejected call need not discard the
 other calls in a batch.
@@ -308,10 +309,17 @@ myko::register_operation_example!("command", MyCommand, serde_json::json!({
 }));
 ```
 
-Examples are checked against the compiled deserializer before discovery returns
-them. If no valid example can be constructed, detailed discovery says so rather
-than returning an invalid call. Types remain nominal: discovery does not expand
-custom DTOs into a complete JSON Schema or run a TypeScript compiler.
+Examples are checked against known structural constraints without invoking custom
+deserializers. Application rules and live resource validity remain the handler’s
+responsibility. Nested types can opt into JSON Schema with `myko::schemars::JsonSchema`;
+unsupported and custom representations remain explicitly opaque. TypeScript hints
+are descriptive; the sandbox does not run a TypeScript compiler.
+
+Entity and field Rust doc comments are available through `search` with
+`kind: "entity"`. Use `kind: "relationship"` for the registered relationship map,
+and `myko::register_domain_guide!` to add application vocabulary and workflows.
+Detailed entries are also available through `myko.describe(kind, id)` and
+`myko://domain/<kind>/<id>` resources. See [the MCP guide](docs/mcp-code-mode.md).
 
 Schema resources remain available at `myko://schema/<kind>/<id>`; use detailed
 `search` for the execution contract and examples.

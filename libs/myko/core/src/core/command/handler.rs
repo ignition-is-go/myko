@@ -458,7 +458,7 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
         }
 
         // Deserialize the command
-        let cmd: C = serde_json::from_value(command).map_err(|e| {
+        let cmd: C = crate::reflection::deserialize_operation(command).map_err(|e| {
             CommandError::new(
                 ctx.tx(),
                 C::command_id_static(),
