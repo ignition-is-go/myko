@@ -448,7 +448,9 @@ impl MykoServer {
                     self.search_index.clone(),
                     myko::server::MykoServerRuntime {
                         peer_clients: self.peer_clients.clone(),
-                        event_sink: Some(self.saga_event_tx.clone()),
+                        event_sink: inventory::iter::<SagaRegistration>()
+                            .next()
+                            .map(|_| self.saga_event_tx.clone()),
                         history_replay,
                     },
                 )
@@ -869,7 +871,10 @@ mod tests {
             .unwrap()
             .as_ref()
             .map_or(0, flume::Receiver::len);
-        assert_eq!(queued, 0, "a server without sagas must not retain event history");
+        assert_eq!(
+            queued, 0,
+            "a server without sagas must not retain event history"
+        );
     }
 
     #[test]
