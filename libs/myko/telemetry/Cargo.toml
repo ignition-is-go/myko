@@ -1,0 +1,30 @@
+[package]
+name = "myko-telemetry"
+version = "6.7.0"
+edition = "2024"
+description = "Shared Myko application telemetry over OTLP"
+license = "MIT OR Apache-2.0"
+
+[lints]
+workspace = true
+
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish"]
+
+[dependencies]
+tracing.workspace = true
+url = "2"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+opentelemetry = "0.32.0"
+opentelemetry_sdk = "0.32.1"
+opentelemetry-otlp = { version = "0.32.0", features = ["http-proto", "reqwest-blocking-client", "trace", "metrics", "logs"] }
+opentelemetry-appender-tracing = "0.32.0"
+tracing-opentelemetry = "0.33.0"
+
+[features]
+ci = []
+
+[dev-dependencies]
+log = "0.4"
+prost = "0.14"
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "logs"] }

@@ -69,3 +69,9 @@ bun = """cp package.json package.json.bak \
 # publish since the runner move silently failed while the workflow stayed green
 # (@myko/core sat at 6.5.4 through v6.5.12). Trusted publishing still
 # authenticates the job. Same fix as marshal#111.
+
+[tasks.check-telemetry]
+root = ["cargo", "clippy", "-p", "myko-telemetry", "--all-targets", "--", "-D", "warnings"]
+
+[tasks.test-telemetry]
+root = ["cargo", "test", "-p", "myko-telemetry"]

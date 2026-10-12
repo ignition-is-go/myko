@@ -50,11 +50,8 @@ httparse = "1.9"
 
 # Sandboxed JS execution for MCP "Code Mode" (execute() tool)
 rquickjs = { version = "0.12", features = ["full-async", "parallel", "macro"] }
-tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
 opentelemetry = "0.32.0"
-opentelemetry_sdk = { version = "0.32.1", features = ["rt-tokio"] }
-opentelemetry-otlp = { version = "0.32.0", features = ["http-proto", "reqwest-blocking-client", "trace", "metrics"] }
-tracing-opentelemetry = "0.33.0"
+myko-telemetry = { version = "6.7.0", path = "../telemetry" }
 
 [dev-dependencies]
 # Demo entities belong to examples, not the published server runtime.
