@@ -19,8 +19,10 @@ struct RecordStatus(String);
 
 impl SagaCommand for RecordStatus {
     fn execute_boxed(self: Box<Self>, _ctx: CommandContext) -> Result<(), CommandError> {
-        OBSERVED.0.try_send(self.0).expect("record saga command");
-        Ok(())
+        OBSERVED
+            .0
+            .try_send(self.0)
+            .map_err(|error| CommandError::new("saga-test", "RecordStatus", error.to_string()))
     }
 
     fn command_name(&self) -> &'static str {
@@ -42,7 +44,8 @@ impl SagaHandler for StatusSaga {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn registered_saga_receives_prestart_and_running_updates() {
+async fn registered_saga_receives_prestart_and_running_updates()
+-> Result<(), Box<dyn std::error::Error>> {
     let server = Arc::new(
         MykoServer::builder()
             .with_bind_addr(([127, 0, 0, 1], 0).into())
@@ -56,26 +59,15 @@ async fn registered_saga_receives_prestart_and_running_updates() {
         color: String::new(),
         emoji: String::new(),
     };
-    ctx.set(&status).expect("publish prestart event");
+    ctx.set(&status)?;
     let running = server.clone();
-    let task = tokio::spawn(async move {
-        running.run().await.expect("run server");
-    });
+    let task = tokio::spawn(async move { running.run().await.map_err(|error| error.to_string()) });
     let first = tokio::time::timeout(Duration::from_secs(5), OBSERVED.1.recv_async()).await;
-    assert_eq!(
-        first
-            .expect("prestart delivery timeout")
-            .expect("saga receiver"),
-        "before-start"
-    );
+    assert_eq!(first??, "before-start");
     status.name = "after-start".into();
-    ctx.set(&status).expect("publish running event");
+    ctx.set(&status)?;
     let second = tokio::time::timeout(Duration::from_secs(5), OBSERVED.1.recv_async()).await;
     task.abort();
-    assert_eq!(
-        second
-            .expect("running delivery timeout")
-            .expect("saga receiver"),
-        "after-start"
-    );
+    assert_eq!(second??, "after-start");
+    Ok(())
 }

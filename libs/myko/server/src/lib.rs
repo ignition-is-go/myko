@@ -848,7 +848,7 @@ mod tests {
     use myko::entities::demo::{DemoStatus, DemoStatusId};
 
     #[test]
-    fn no_sagas_do_not_retain_same_entity_updates() {
+    fn no_sagas_do_not_retain_same_entity_updates() -> Result<(), Box<dyn std::error::Error>> {
         assert!(inventory::iter::<SagaRegistration>().next().is_none());
         let server = MykoServer::builder()
             .with_default_persister(Arc::new(NullPersister))
@@ -862,24 +862,27 @@ mod tests {
                 name: update.to_string(),
                 color: String::new(),
                 emoji: String::new(),
-            })
-            .expect("publish status");
+            })?;
         }
-        assert_eq!(ctx.entity_snapshot::<DemoStatus>(&id).unwrap().name, "999");
+        let latest = ctx
+            .entity_snapshot::<DemoStatus>(&id)
+            .ok_or("status missing")?;
+        assert_eq!(latest.name, "999");
         let queued = server
             .saga_event_rx
             .lock()
-            .unwrap()
+            .map_err(|_| "saga queue lock poisoned")?
             .as_ref()
             .map_or(0, flume::Receiver::len);
         assert_eq!(
             queued, 0,
             "a server without sagas must not retain event history"
         );
+        Ok(())
     }
 
     #[test]
-    fn transient_updates_do_not_enter_saga_queue() {
+    fn transient_updates_do_not_enter_saga_queue() -> Result<(), Box<dyn std::error::Error>> {
         assert!(inventory::iter::<SagaRegistration>().next().is_none());
         let server = MykoServer::builder()
             .with_default_persister(Arc::new(NullPersister))
@@ -893,17 +896,20 @@ mod tests {
                 name: update.to_string(),
                 color: String::new(),
                 emoji: String::new(),
-            })
-            .expect("publish transient status");
+            })?;
         }
-        assert_eq!(ctx.entity_snapshot::<DemoStatus>(&id).unwrap().name, "999");
+        let latest = ctx
+            .entity_snapshot::<DemoStatus>(&id)
+            .ok_or("status missing")?;
+        assert_eq!(latest.name, "999");
         let queued = server
             .saga_event_rx
             .lock()
-            .unwrap()
+            .map_err(|_| "saga queue lock poisoned")?
             .as_ref()
             .map_or(0, flume::Receiver::len);
         assert_eq!(queued, 0);
+        Ok(())
     }
 
     #[test]
