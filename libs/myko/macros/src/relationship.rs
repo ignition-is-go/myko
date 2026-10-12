@@ -140,9 +140,28 @@ fn is_option_type(ty: &syn::Type) -> bool {
     false
 }
 
+/// The type a relationship attribute names. Anything but a single type is an
+/// error, not a skipped attribute: `is_relationship_attr` strips the attribute
+/// either way, so a skipped one compiled without its relationship and without
+/// a warning (myko#93).
+fn relationship_type(attr: &Attribute, name: &str, hint: &str) -> syn::Result<String> {
+    let invalid = || {
+        syn::Error::new_spanned(
+            attr,
+            format!("`#[{name}]` takes a single type, e.g. `#[{name}(Session)]`{hint}"),
+        )
+    };
+    let path = attr.parse_args::<Path>().map_err(|_| invalid())?;
+    let segment = path.segments.last().ok_or_else(invalid)?;
+    Ok(segment.ident.to_string())
+}
+
 /// Parse `belongs_to` attribute from a field
-pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
-    let field_name = field.ident.as_ref()?.to_string();
+pub fn parse_belongs_to(field: &Field) -> syn::Result<Option<BelongsToInfo>> {
+    let Some(ident) = field.ident.as_ref() else {
+        return Ok(None);
+    };
+    let field_name = ident.to_string();
     let field_name_json = to_camel_case(&field_name);
     let is_optional = is_option_type(&field.ty);
     let exclude_from_tree = field
@@ -151,43 +170,46 @@ pub fn parse_belongs_to(field: &Field) -> Option<BelongsToInfo> {
         .any(|a| a.path().is_ident("exclude_from_tree"));
 
     for attr in &field.attrs {
-        if attr.path().is_ident("belongs_to")
-            && let Ok(path) = attr.parse_args::<Path>()
-        {
-            let foreign_type = path.segments.last()?.ident.to_string();
-            return Some(BelongsToInfo {
+        if attr.path().is_ident("belongs_to") {
+            let foreign_type = relationship_type(
+                attr,
+                "belongs_to",
+                "; an `Option<_>` field is already optional",
+            )?;
+            return Ok(Some(BelongsToInfo {
                 field_name,
                 field_name_json,
                 foreign_type,
                 is_optional,
                 exclude_from_tree,
-            });
+            }));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Parse `owns_many` attribute from a field
-pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
-    let field_name = field.ident.as_ref()?.to_string();
+pub fn parse_owns_many(field: &Field) -> syn::Result<Option<OwnsManyInfo>> {
+    let Some(ident) = field.ident.as_ref() else {
+        return Ok(None);
+    };
+    let field_name = ident.to_string();
     let exclude_from_tree = field
         .attrs
         .iter()
         .any(|a| a.path().is_ident("exclude_from_tree"));
 
     for attr in &field.attrs {
-        if attr.path().is_ident("owns_many")
-            && let Ok(path) = attr.parse_args::<Path>()
-        {
-            let foreign_type = path.segments.last()?.ident.to_string();
-            return Some(OwnsManyInfo {
+        if attr.path().is_ident("owns_many") {
+            let foreign_type = relationship_type(attr, "owns_many", "")?;
+            return Ok(Some(OwnsManyInfo {
                 field_name,
                 foreign_type,
                 exclude_from_tree,
-            });
+            }));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Parse `ensure_for` attribute from a field.
@@ -208,8 +230,11 @@ pub fn parse_owns_many(field: &Field) -> Option<OwnsManyInfo> {
 /// }
 /// // Creates one BundleStatus per Session×Bundle combination
 /// ```
-pub fn parse_ensure_for_field(field: &Field) -> Option<EnsureForFieldInfo> {
-    let field_name = field.ident.as_ref()?.to_string();
+pub fn parse_ensure_for_field(field: &Field) -> syn::Result<Option<EnsureForFieldInfo>> {
+    let Some(ident) = field.ident.as_ref() else {
+        return Ok(None);
+    };
+    let field_name = ident.to_string();
     let field_name_json = to_camel_case(&field_name);
     let exclude_from_tree = field
         .attrs
@@ -217,19 +242,17 @@ pub fn parse_ensure_for_field(field: &Field) -> Option<EnsureForFieldInfo> {
         .any(|a| a.path().is_ident("exclude_from_tree"));
 
     for attr in &field.attrs {
-        if attr.path().is_ident("ensure_for")
-            && let Ok(path) = attr.parse_args::<Path>()
-        {
-            let foreign_type = path.segments.last()?.ident.to_string();
-            return Some(EnsureForFieldInfo {
+        if attr.path().is_ident("ensure_for") {
+            let foreign_type = relationship_type(attr, "ensure_for", "")?;
+            return Ok(Some(EnsureForFieldInfo {
                 field_name,
                 field_name_json,
                 foreign_type,
                 exclude_from_tree,
-            });
+            }));
         }
     }
-    None
+    Ok(None)
 }
 
 /// Parse `default_value` attribute from a field
@@ -416,19 +439,19 @@ impl RelationshipInfo {
 }
 
 /// Collect all relationship information from an item struct
-pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
+pub fn collect_relationships(input: &ItemStruct) -> syn::Result<RelationshipInfo> {
     let mut info = RelationshipInfo::default();
 
     // Collect field-level relationships
     if let syn::Fields::Named(ref fields) = input.fields {
         for field in &fields.named {
-            if let Some(bt) = parse_belongs_to(field) {
+            if let Some(bt) = parse_belongs_to(field)? {
                 info.belongs_to.push(bt);
             }
-            if let Some(om) = parse_owns_many(field) {
+            if let Some(om) = parse_owns_many(field)? {
                 info.owns_many.push(om);
             }
-            if let Some(ef) = parse_ensure_for_field(field) {
+            if let Some(ef) = parse_ensure_for_field(field)? {
                 info.ensure_for_fields.push(ef);
             }
             if let Some(dv) = parse_default_value(field) {
@@ -449,7 +472,7 @@ pub fn collect_relationships(input: &ItemStruct) -> RelationshipInfo {
         }
     }
 
-    info
+    Ok(info)
 }
 
 fn generate_belongs_to_registrations(
@@ -797,6 +820,76 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn relationship_error(item: &ItemStruct) -> String {
+        collect_relationships(item)
+            .err()
+            .map(|err| err.to_string())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn belongs_to_takes_one_type() {
+        let item: ItemStruct = syn::parse_quote! {
+            struct Message { #[belongs_to(Session)] to_session_id: Option<SessionId> }
+        };
+        let info = collect_relationships(&item);
+        assert!(
+            matches!(
+                info.as_ref().map(|info| info.belongs_to.as_slice()),
+                Ok([bt]) if bt.foreign_type == "Session" && bt.is_optional
+            ),
+            "{info:?}"
+        );
+    }
+
+    #[test]
+    fn belongs_to_takes_a_qualified_type_by_its_last_segment() {
+        let item: ItemStruct = syn::parse_quote! {
+            struct Message { #[belongs_to(crate::entities::Session)] to_session_id: SessionId }
+        };
+        let info = collect_relationships(&item);
+        assert!(
+            matches!(
+                info.as_ref().map(|info| info.belongs_to.as_slice()),
+                Ok([bt]) if bt.foreign_type == "Session" && !bt.is_optional
+            ),
+            "{info:?}"
+        );
+    }
+
+    #[test]
+    fn belongs_to_with_optional_is_rejected() {
+        let err = relationship_error(&syn::parse_quote! {
+            struct Message { #[belongs_to(Session, optional)] to_session_id: Option<SessionId> }
+        });
+        assert!(err.contains("`#[belongs_to]` takes a single type"), "{err}");
+        assert!(err.contains("Option<_>"), "{err}");
+    }
+
+    #[test]
+    fn belongs_to_without_a_type_is_rejected() {
+        let err = relationship_error(&syn::parse_quote! {
+            struct Message { #[belongs_to()] to_session_id: SessionId }
+        });
+        assert!(err.contains("`#[belongs_to]` takes a single type"), "{err}");
+    }
+
+    #[test]
+    fn owns_many_with_an_extra_argument_is_rejected() {
+        let err = relationship_error(&syn::parse_quote! {
+            struct Room { #[owns_many(Member, cascade)] member_ids: Vec<MemberId> }
+        });
+        assert!(err.contains("`#[owns_many]` takes a single type"), "{err}");
+    }
+
+    #[test]
+    fn ensure_for_with_an_extra_argument_is_rejected() {
+        let err = relationship_error(&syn::parse_quote! {
+            struct Status { #[ensure_for(Session, Bundle)] session_id: SessionId }
+        });
+        assert!(err.contains("`#[ensure_for]` takes a single type"), "{err}");
+    }
 
     #[test]
     fn test_to_camel_case() {
