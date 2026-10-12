@@ -699,6 +699,7 @@ mod tests {
     );
 
     #[test]
+    #[allow(clippy::panic_in_result_fn)]
     fn invalid_registered_examples_are_not_advertised() -> Result<(), String> {
         let index = build_operation_index();
         let operation = index
@@ -716,6 +717,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::panic_in_result_fn)]
     fn wire_descriptions_follow_serde_and_examples_validate() -> Result<(), String> {
         let index = build_operation_index();
         let operation = index

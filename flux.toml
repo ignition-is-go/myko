@@ -88,3 +88,6 @@ root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--test", "mcp_code
 
 [tasks.test-mcp-contract]
 root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--lib", "operation_index"]
+
+[tasks.lint-mcp-contract]
+root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
