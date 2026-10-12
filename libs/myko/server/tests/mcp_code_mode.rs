@@ -22,6 +22,64 @@ impl CommandHandler for StrictEcho {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+struct NestedInput {
+    label: String,
+}
+
+#[myko_command(String)]
+#[serde(deny_unknown_fields)]
+pub struct WireEcho {
+    #[serde(rename = "wireValue", alias = "oldValue")]
+    rust_value: String,
+    nested: NestedInput,
+    #[serde(default)]
+    max_count: u32,
+}
+
+impl CommandHandler for WireEcho {
+    fn execute(self, _ctx: CommandContext) -> Result<String, CommandError> {
+        Ok(format!(
+            "{}:{}:{}",
+            self.rust_value, self.nested.label, self.max_count
+        ))
+    }
+}
+
+myko::register_operation_example!(
+    "command",
+    WireEcho,
+    serde_json::json!({
+        "wireValue": "example", "nested": {"label": "nested"}
+    })
+);
+
+#[myko_command(Vec<serde_json::Value>)]
+pub struct Records {}
+
+impl CommandHandler for Records {
+    fn execute(self, _ctx: CommandContext) -> Result<Vec<serde_json::Value>, CommandError> {
+        Ok(vec![
+            serde_json::json!({"id": "a"}),
+            serde_json::json!({"id": "b"}),
+        ])
+    }
+}
+
+#[myko_command(Vec<serde_json::Value>)]
+pub struct References {}
+
+impl CommandHandler for References {
+    fn execute(self, _ctx: CommandContext) -> Result<Vec<serde_json::Value>, CommandError> {
+        Ok(vec![
+            serde_json::json!({"group": "one", "recordId": "a"}),
+            serde_json::json!({"group": "one", "recordId": "a"}),
+            serde_json::json!({"group": "one", "recordId": "missing"}),
+            serde_json::json!({"group": "two", "recordId": "b"}),
+        ])
+    }
+}
+
 async fn post_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -226,6 +284,140 @@ async fn assert_strict_commands(client: &reqwest::Client, url: &str) {
     );
 }
 
+async fn execute_code(
+    client: &reqwest::Client,
+    url: &str,
+    code: &str,
+) -> Result<serde_json::Value, String> {
+    let response = post_with_retry(
+        client,
+        url,
+        &tool_call(20, "execute", serde_json::json!({"code": code})),
+    )
+    .await
+    .ok_or("missing execute response")?;
+    assert_ne!(
+        response.pointer("/result/isError"),
+        Some(&serde_json::json!(true)),
+        "{response}"
+    );
+    let text = response
+        .pointer("/result/content/0/text")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing result text")?;
+    serde_json::from_str(text).map_err(|error| error.to_string())
+}
+
+async fn assert_contract_discovery(client: &reqwest::Client, url: &str) -> Result<(), String> {
+    let response = post_with_retry(
+        client,
+        url,
+        &tool_call(
+            21,
+            "search",
+            serde_json::json!({
+                "query": "WireEcho", "kind": "command", "details": true
+            }),
+        ),
+    )
+    .await
+    .ok_or("missing search response")?;
+    let text = response
+        .pointer("/result/content/0/text")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing search text")?;
+    let body: serde_json::Value = serde_json::from_str(text).map_err(|error| error.to_string())?;
+    let description = body.pointer("/operations/0").ok_or("missing description")?;
+    assert_eq!(
+        description.get("outputType"),
+        Some(&serde_json::json!({
+            "command_id": "string", "success": "true", "result": "string"
+        }))
+    );
+    assert_eq!(
+        description.pointer("/inputType/0/name"),
+        Some(&serde_json::json!("wireValue"))
+    );
+    assert_eq!(
+        description.pointer("/inputType/0/aliases"),
+        Some(&serde_json::json!(["oldValue"]))
+    );
+    assert_eq!(
+        description.pointer("/inputType/2/name"),
+        Some(&serde_json::json!("maxCount"))
+    );
+    assert_eq!(
+        description.pointer("/inputType/2/optional"),
+        Some(&serde_json::json!(true))
+    );
+    let example = description
+        .get("example")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing validated example")?;
+    assert_eq!(
+        execute_code(client, url, example).await?.get("result"),
+        Some(&serde_json::json!("example:nested:0"))
+    );
+    Ok(())
+}
+
+async fn assert_validation_and_computation(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<(), String> {
+    let diagnostics = execute_code(
+        client,
+        url,
+        r"
+        const failures = await Promise.all([
+          myko.command('WireEcho', {wireValue: 'x', nested: {label: 7}}).catch(e => e.message),
+          myko.command('WireEcho', []).catch(e => e.message),
+          myko.command('WireEcho', {rust_value: 'x', nested: {label: 'y'}}).catch(e => e.message),
+        ]);
+        const valid = await myko.command('WireEcho', {oldValue: 'x', nested: {label: 'y'}});
+        return {failures, valid: valid.result};
+    ",
+    )
+    .await?;
+    let nested = diagnostics
+        .pointer("/failures/0")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing nested diagnostic")?;
+    let array = diagnostics
+        .pointer("/failures/1")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing array diagnostic")?;
+    let unknown = diagnostics
+        .pointer("/failures/2")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("missing unknown field diagnostic")?;
+    assert!(nested.contains("nested.label"), "{nested}");
+    assert!(array.contains("expected an argument object"), "{array}");
+    assert!(unknown.contains("rust_value"), "{unknown}");
+    assert_eq!(diagnostics.get("valid"), Some(&serde_json::json!("x:y:0")));
+
+    let computed = execute_code(
+        client,
+        url,
+        r"
+        const [records, references] = await Promise.all([
+          myko.command('Records', {}), myko.command('References', {})
+        ]);
+        const ids = new Set(records.result.map(record => record.id));
+        const members = new Map();
+        for (const reference of references.result) {
+          if (!ids.has(reference.recordId)) continue;
+          if (!members.has(reference.group)) members.set(reference.group, new Set());
+          members.get(reference.group).add(reference.recordId);
+        }
+        return Object.fromEntries([...members].map(([group, ids]) => [group, ids.size]));
+    ",
+    )
+    .await?;
+    assert_eq!(computed, serde_json::json!({"one": 1, "two": 1}));
+    Ok(())
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn search_then_execute_round_trip_over_http() {
     let _strict_args_type_is_used = StrictEchoArgs {
@@ -254,6 +446,10 @@ async fn search_then_execute_round_trip_over_http() {
     assert_query_execution(&client, &url).await;
 
     assert_strict_commands(&client, &url).await;
+    let discovery = assert_contract_discovery(&client, &url).await;
+    assert!(discovery.is_ok(), "{discovery:?}");
+    let computation = assert_validation_and_computation(&client, &url).await;
+    assert!(computation.is_ok(), "{computation:?}");
 
     handle.abort();
 }

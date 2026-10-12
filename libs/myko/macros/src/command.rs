@@ -43,6 +43,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     // struct is field-identical to `input_struct` (cloned below), so
     // capturing from `input_struct.fields` covers both.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
+    let input_contract = crate::input_contract_tokens(&input_struct, "command", krate);
 
     crate::gate_ts_attrs(&mut input_struct.attrs);
     crate::gate_field_ts_attrs(&mut input_struct.fields);
@@ -95,6 +96,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let expanded = quote! {
         #derives
         #input_struct
+        #input_contract
 
         #args_struct
 

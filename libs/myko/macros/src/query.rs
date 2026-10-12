@@ -57,6 +57,7 @@ pub fn myko_query_impl(
     // mutation, since it's always the ground truth regardless of whether
     // ts-rs codegen has run. See `myko::reflection`.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
+    let input_contract = crate::input_contract_tokens(&input_struct, "query", krate);
 
     // Also gate any user-written `#[ts(...)]` attrs on the fields; see the
     // comment on `gate_ts_attrs` in the crate root.
@@ -115,6 +116,7 @@ pub fn myko_query_impl(
     quote! {
         #derives
         #input_struct
+        #input_contract
 
         // Registration is server-only (requires QueryFactory which depends on hyphae/store)
         #[cfg(not(target_arch = "wasm32"))]

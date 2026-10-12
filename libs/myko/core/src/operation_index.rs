@@ -46,6 +46,9 @@ pub struct OperationArg {
     pub name: String,
     pub ts_type: String,
     pub optional: bool,
+    pub rust_type: String,
+    pub aliases: Vec<String>,
+    pub flattened: bool,
 }
 
 impl From<&OperationArgField> for OperationArg {
@@ -54,6 +57,13 @@ impl From<&OperationArgField> for OperationArg {
             name: field.name.to_string(),
             ts_type: rust_type_to_ts(field.rust_type),
             optional: field.optional,
+            rust_type: field.rust_type.to_string(),
+            aliases: field
+                .aliases
+                .iter()
+                .map(|alias| (*alias).to_string())
+                .collect(),
+            flattened: field.flattened,
         }
     }
 }
@@ -73,6 +83,174 @@ pub struct OperationSchema {
     pub output_type: String,
 }
 
+/// Fields shared by result serialization and on-demand MCP descriptions.
+#[derive(Clone, Copy)]
+enum ResultField {
+    Id,
+    TypeName,
+    Count,
+    Success,
+    Payload,
+}
+
+pub struct ResultContract(&'static [(&'static str, ResultField)]);
+
+pub const QUERY_RESULT: ResultContract = ResultContract(&[
+    ("query_id", ResultField::Id),
+    ("item_type", ResultField::TypeName),
+    ("count", ResultField::Count),
+    ("items", ResultField::Payload),
+]);
+pub const VIEW_RESULT: ResultContract = ResultContract(&[
+    ("view_id", ResultField::Id),
+    ("item_type", ResultField::TypeName),
+    ("count", ResultField::Count),
+    ("items", ResultField::Payload),
+]);
+pub const REPORT_RESULT: ResultContract = ResultContract(&[
+    ("report_id", ResultField::Id),
+    ("output_type", ResultField::TypeName),
+    ("result", ResultField::Payload),
+]);
+pub const COMMAND_RESULT: ResultContract = ResultContract(&[
+    ("command_id", ResultField::Id),
+    ("success", ResultField::Success),
+    ("result", ResultField::Payload),
+]);
+
+impl ResultContract {
+    /// Construct the exact object returned to an `execute` script.
+    #[must_use]
+    pub fn wrap(
+        &self,
+        id: &str,
+        type_name: &str,
+        mut payload: serde_json::Value,
+    ) -> serde_json::Value {
+        let count = payload.as_array().map_or(0, Vec::len);
+        self.0
+            .iter()
+            .map(|(name, field)| {
+                let value = match field {
+                    ResultField::Id => serde_json::json!(id),
+                    ResultField::TypeName => serde_json::json!(type_name),
+                    ResultField::Count => serde_json::json!(count),
+                    ResultField::Success => serde_json::json!(true),
+                    ResultField::Payload => std::mem::take(&mut payload),
+                };
+                ((*name).to_string(), value)
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    }
+
+    fn describe(&self, payload_type: &str) -> serde_json::Value {
+        self.0
+            .iter()
+            .map(|(name, field)| {
+                let value = match field {
+                    ResultField::Id | ResultField::TypeName => "string",
+                    ResultField::Count => "number",
+                    ResultField::Success => "true",
+                    ResultField::Payload => payload_type,
+                };
+                ((*name).to_string(), serde_json::json!(value))
+            })
+            .collect::<serde_json::Map<_, _>>()
+            .into()
+    }
+}
+
+impl OperationSchema {
+    /// Return a detailed description only when requested, keeping discovery compact.
+    #[must_use]
+    pub fn describe(&self) -> serde_json::Value {
+        let result_contract = match self.kind.as_str() {
+            "query" => &QUERY_RESULT,
+            "view" => &VIEW_RESULT,
+            "report" => &REPORT_RESULT,
+            _ => &COMMAND_RESULT,
+        };
+        let example_args = self.example_args();
+        let example = example_args.as_ref().map(|args| {
+            format!(
+                "return await myko.{}({}, {});",
+                self.kind,
+                serde_json::json!(self.id),
+                args,
+            )
+        });
+        serde_json::json!({
+            "operation": self,
+            "inputType": self.args,
+            "outputType": result_contract.describe(&self.output_type),
+            "payloadType": self.output_type,
+            "exampleArgs": example_args,
+            "example": example,
+            "exampleUnavailable": if example_args.is_none() {
+                Some("No valid example is registered for these input types. The application can use register_operation_example! to supply one.")
+            } else { None },
+        })
+    }
+
+    fn example_args(&self) -> Option<serde_json::Value> {
+        if let Some(registration) = inventory::iter::<crate::reflection::OperationExample>
+            .into_iter()
+            .find(|entry| entry.kind == self.kind && entry.id == self.id)
+        {
+            let args = (registration.example)();
+            crate::reflection::validate_operation_input(&self.kind, &self.id, &args).ok()?;
+            return Some(args);
+        }
+
+        let args = self
+            .args
+            .iter()
+            .filter(|arg| !arg.optional)
+            .map(|arg| {
+                if arg.flattened {
+                    return None;
+                }
+                let value = example_value(&arg.rust_type)?;
+                Some((arg.name.clone(), value))
+            })
+            .collect::<Option<serde_json::Map<_, _>>>()?;
+        let args = serde_json::Value::Object(args);
+        crate::reflection::validate_operation_input(&self.kind, &self.id, &args).ok()?;
+        Some(args)
+    }
+}
+
+fn wire_output_type(rust_type: &str) -> String {
+    if rust_type.trim() == "()" {
+        "null".into()
+    } else {
+        rust_type_to_ts(rust_type)
+    }
+}
+
+fn example_value(rust_type: &str) -> Option<serde_json::Value> {
+    let canonical = rust_type.replace(' ', "");
+    if let Some((outer, inner)) = split_outer_generic(&canonical) {
+        return match outer_leaf(outer) {
+            "Option" => Some(serde_json::Value::Null),
+            "Vec" | "HashSet" | "BTreeSet" => Some(serde_json::json!([])),
+            "HashMap" | "BTreeMap" => Some(serde_json::json!({})),
+            "Arc" | "Box" => example_value(inner),
+            _ => None,
+        };
+    }
+    match outer_leaf(&canonical) {
+        "String" | "str" => Some(serde_json::json!("example")),
+        "Uuid" => Some(serde_json::json!("00000000-0000-4000-8000-000000000001")),
+        "bool" => Some(serde_json::json!(false)),
+        "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "u8" | "u16" | "u32" | "u64" | "u128"
+        | "usize" | "f32" | "f64" => Some(serde_json::json!(0)),
+        "Value" | "()" => Some(serde_json::Value::Null),
+        _ => None,
+    }
+}
+
 /// Build the full operation index from `inventory`-registered
 ///
 /// query/view/report/command operations. Pure in-memory, no I/O, no
@@ -88,7 +266,7 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
             kind: "query".to_string(),
             description: reg.description.map(str::to_string),
             args: reg.args.iter().map(OperationArg::from).collect(),
-            output_type: format!("{}[]", reg.query_item_type),
+            output_type: format!("{}[]", rust_type_to_ts(reg.query_item_type)),
         });
     }
     for reg in inventory::iter::<ViewRegistration> {
@@ -97,7 +275,7 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
             kind: "view".to_string(),
             description: reg.description.map(str::to_string),
             args: reg.args.iter().map(OperationArg::from).collect(),
-            output_type: format!("{}[]", reg.view_item_type),
+            output_type: format!("{}[]", rust_type_to_ts(reg.view_item_type)),
         });
     }
     for reg in inventory::iter::<ReportRegistration> {
@@ -106,7 +284,7 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
             kind: "report".to_string(),
             description: reg.description.map(str::to_string),
             args: reg.args.iter().map(OperationArg::from).collect(),
-            output_type: reg.output_type.to_string(),
+            output_type: wire_output_type(reg.output_type),
         });
     }
     for reg in inventory::iter::<CommandRegistration> {
@@ -115,7 +293,7 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
             kind: "command".to_string(),
             description: reg.description.map(str::to_string),
             args: reg.args.iter().map(OperationArg::from).collect(),
-            output_type: reg.result_type.to_string(),
+            output_type: wire_output_type(reg.result_type),
         });
     }
 
@@ -477,6 +655,142 @@ fn normalize_jsdoc(block: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[crate::myko_command(String)]
+    pub struct WireContractFixture {
+        #[serde(
+            rename(deserialize = "wireName", serialize = "savedName"),
+            alias = "legacyName"
+        )]
+        rust_name: String,
+        #[serde(default)]
+        batch_limit: u32,
+        #[serde(skip_deserializing)]
+        ignored: String,
+    }
+
+    impl crate::command::CommandHandler for WireContractFixture {
+        fn execute(
+            self,
+            _ctx: crate::command::CommandContext,
+        ) -> Result<String, crate::command::CommandError> {
+            Ok(self.rust_name)
+        }
+    }
+
+    #[crate::myko_command(u32)]
+    pub struct InvalidExampleFixture {
+        value: u32,
+    }
+
+    impl crate::command::CommandHandler for InvalidExampleFixture {
+        fn execute(
+            self,
+            _ctx: crate::command::CommandContext,
+        ) -> Result<u32, crate::command::CommandError> {
+            Ok(self.value)
+        }
+    }
+
+    crate::register_operation_example!(
+        "command",
+        InvalidExampleFixture,
+        serde_json::json!({"value": "wrong type"})
+    );
+
+    #[test]
+    fn invalid_registered_examples_are_not_advertised() -> Result<(), String> {
+        let index = build_operation_index();
+        let operation = index
+            .iter()
+            .find(|operation| operation.id == "InvalidExampleFixture")
+            .ok_or("fixture missing")?;
+        let descriptor = operation.describe();
+        assert_eq!(descriptor.get("example"), Some(&serde_json::Value::Null));
+        assert!(
+            descriptor
+                .get("exampleUnavailable")
+                .is_some_and(serde_json::Value::is_string)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn wire_descriptions_follow_serde_and_examples_validate() -> Result<(), String> {
+        let index = build_operation_index();
+        let operation = index
+            .iter()
+            .find(|operation| operation.id == "WireContractFixture")
+            .ok_or("fixture must be registered")?;
+        let descriptor = operation.describe();
+        assert_eq!(
+            descriptor.pointer("/inputType/0/name"),
+            Some(&serde_json::json!("wireName"))
+        );
+        assert_eq!(
+            descriptor.pointer("/inputType/0/aliases"),
+            Some(&serde_json::json!(["legacyName"]))
+        );
+        assert_eq!(
+            descriptor.pointer("/inputType/1/name"),
+            Some(&serde_json::json!("batchLimit"))
+        );
+        assert_eq!(
+            descriptor.pointer("/inputType/1/optional"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(operation.args.len(), 2, "skipped fields are not arguments");
+        let example = descriptor
+            .get("exampleArgs")
+            .ok_or("missing example args")?;
+        assert!(
+            crate::reflection::validate_operation_input("command", "WireContractFixture", example)
+                .is_ok()
+        );
+        assert!(
+            crate::reflection::validate_operation_input(
+                "command",
+                "WireContractFixture",
+                &serde_json::json!({"legacyName":"legacy"})
+            )
+            .is_ok()
+        );
+        assert!(
+            crate::reflection::validate_operation_input(
+                "command",
+                "WireContractFixture",
+                &serde_json::json!({"savedName":"wrong direction"})
+            )
+            .is_err()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn result_wrappers_and_descriptions_share_all_fields() {
+        for (contract, payload) in [
+            (&QUERY_RESULT, serde_json::json!([1, 2])),
+            (&VIEW_RESULT, serde_json::json!([])),
+            (&REPORT_RESULT, serde_json::json!(42)),
+            (&COMMAND_RESULT, serde_json::Value::Null),
+        ] {
+            let result = contract.wrap("Example", "Payload", payload);
+            let shape = contract.describe("Payload");
+            let result_keys = result
+                .as_object()
+                .map(|object| object.keys().collect::<Vec<_>>());
+            let described_keys = shape
+                .as_object()
+                .map(|object| object.keys().collect::<Vec<_>>());
+            assert_eq!(result_keys, described_keys);
+        }
+        assert_eq!(
+            QUERY_RESULT
+                .wrap("Example", "number", serde_json::json!([1, 2]))
+                .get("count"),
+            Some(&serde_json::json!(2))
+        );
+    }
 
     #[test]
     fn extracts_object_body_and_fields() {
