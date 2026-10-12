@@ -271,17 +271,50 @@ Myko ships an MCP endpoint so AI agents can call your queries / reports / comman
 1. **In-server HTTP/WS/SSE** at `/myko/mcp` on the same port as the Myko gateway. Auto-discovered tools, per-client filtering via headers. See [Endpoints](#endpoints) above.
 2. **Stdio binary** (`myko::mcp::McpServer::run_stdio`) for editor integrations that prefer stdio MCP. Connects to a running Myko server via `MYKO_ADDRESS`.
 
-### Tool naming
+### Discover and execute
 
-| Prefix              | Source                | Example                              |
-| ------------------- | --------------------- | ------------------------------------ |
-| `query:`            | `QueryRegistration`   | `query:GetAllTargets`                |
-| `view:`             | `ViewRegistration`    | `view:GetTargetTreeByParentFiltered` |
-| `report:`           | `ReportRegistration`  | `report:CountAllTargets`             |
-| `command:`          | `CommandRegistration` | `command:DeleteTarget`               |
-| `connection_status` | built-in              | health check                         |
+The MCP tools are `search`, `execute`, and `connection_status`. `search`
+returns compact entries for registered queries, views, reports, and commands.
+Request `{"query": "GetAllServers", "kind": "query", "details": true}` to
+include wire argument names, aliases, Rust/TypeScript types, defaulted fields,
+the exact result wrapper, and a small validated example.
 
-Each prefix also surfaces as a resource at `myko://schema/<prefix>/<id>` so MCP clients can fetch the input schema separately from calling the tool.
+`execute` accepts a JavaScript async function body:
+
+```javascript
+const servers = await myko.query('GetAllServers', {})
+return { count: servers.items.length }
+```
+
+Query/view results contain `items` and `count`; report/command payloads are in
+`result`. Use `Promise.all` for independent calls and JavaScript collections to
+join, deduplicate, filter, and aggregate their payloads. Return the calculated
+answer so raw data and arithmetic do not need another model round trip.
+
+Every `myko.*` call inside a script checks visibility, argument constraints,
+and the operation's compiled Serde deserializer before dispatch. Diagnostics
+identify the operation and failing field path, including nested fields. Errors
+can be caught within the script, so one rejected call need not discard the
+other calls in a batch.
+
+Wire metadata comes from Serde's attribute parser, and wrapper descriptions
+share their definition with result serialization. Primitive/container inputs
+get examples automatically. For custom types, the application can register
+example arguments without adding domain concepts to Myko:
+
+```rust
+myko::register_operation_example!("command", MyCommand, serde_json::json!({
+    "input": { "mode": "example" }
+}));
+```
+
+Examples are checked against the compiled deserializer before discovery returns
+them. If no valid example can be constructed, detailed discovery says so rather
+than returning an invalid call. Types remain nominal: discovery does not expand
+custom DTOs into a complete JSON Schema or run a TypeScript compiler.
+
+Schema resources remain available at `myko://schema/<kind>/<id>`; use detailed
+`search` for the execution contract and examples.
 
 ### Per-client filtering
 

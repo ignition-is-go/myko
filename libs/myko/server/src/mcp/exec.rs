@@ -174,12 +174,11 @@ async fn client_execute_query(
             });
 
             return match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
-                Ok(Ok(items)) => Ok(json!({
-                    "query_id": query_id,
-                    "item_type": reg.query_item_type,
-                    "count": items.len(),
-                    "items": items,
-                })),
+                Ok(Ok(items)) => Ok(myko::operation_index::QUERY_RESULT.wrap(
+                    query_id,
+                    reg.query_item_type,
+                    Value::Array(items),
+                )),
                 Ok(Err(_)) => Err("Query channel closed".to_string()),
                 Err(_) => Err("Timeout waiting for query response".to_string()),
             };
@@ -239,12 +238,11 @@ async fn client_execute_view(
             });
 
             return match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
-                Ok(Ok(items)) => Ok(json!({
-                    "view_id": view_id,
-                    "item_type": reg.view_item_type,
-                    "count": items.len(),
-                    "items": items,
-                })),
+                Ok(Ok(items)) => Ok(myko::operation_index::VIEW_RESULT.wrap(
+                    view_id,
+                    reg.view_item_type,
+                    Value::Array(items),
+                )),
                 Ok(Err(_)) => Err("View channel closed".to_string()),
                 Err(_) => Err("Timeout waiting for view response".to_string()),
             };
@@ -284,11 +282,11 @@ async fn client_execute_report(
             });
 
             return match tokio::time::timeout(REPORT_TIMEOUT, result_rx).await {
-                Ok(Ok(value)) => Ok(json!({
-                    "report_id": report_id,
-                    "output_type": reg.output_type,
-                    "result": value,
-                })),
+                Ok(Ok(value)) => Ok(myko::operation_index::REPORT_RESULT.wrap(
+                    report_id,
+                    reg.output_type,
+                    value,
+                )),
                 Ok(Err(_)) => Err("Report channel closed".to_string()),
                 Err(_) => Err("Timeout waiting for report response".to_string()),
             };
@@ -350,11 +348,9 @@ async fn client_execute_command(
     });
 
     match tokio::time::timeout(COMMAND_TIMEOUT, resp_rx).await {
-        Ok(Ok(Ok(response))) => Ok(json!({
-            "command_id": command_id,
-            "success": true,
-            "result": response,
-        })),
+        Ok(Ok(Ok(response))) => {
+            Ok(myko::operation_index::COMMAND_RESULT.wrap(command_id, "", response))
+        }
         Ok(Ok(Err(e))) => Err(e),
         _ => Err("Timeout waiting for response".to_string()),
     }
@@ -409,12 +405,11 @@ fn in_process_execute_query(
         .collect();
     drop(ctx);
 
-    Ok(json!({
-        "query_id": query_id,
-        "item_type": registration.query_item_type,
-        "count": items.len(),
-        "items": items,
-    }))
+    Ok(myko::operation_index::QUERY_RESULT.wrap(
+        query_id,
+        registration.query_item_type,
+        Value::Array(items),
+    ))
 }
 
 fn in_process_execute_view(
@@ -458,12 +453,11 @@ fn in_process_execute_view(
         .collect();
     drop(ctx);
 
-    Ok(json!({
-        "view_id": view_id,
-        "item_type": registration.view_item_type,
-        "count": items.len(),
-        "items": items,
-    }))
+    Ok(myko::operation_index::VIEW_RESULT.wrap(
+        view_id,
+        registration.view_item_type,
+        Value::Array(items),
+    ))
 }
 
 async fn in_process_execute_report(
@@ -508,11 +502,11 @@ async fn in_process_execute_report(
     });
 
     match tokio::time::timeout(REPORT_TIMEOUT, rx_resp).await {
-        Ok(Ok(value)) => Ok(json!({
-            "report_id": report_id,
-            "output_type": registration.output_type,
-            "result": value,
-        })),
+        Ok(Ok(value)) => Ok(myko::operation_index::REPORT_RESULT.wrap(
+            report_id,
+            registration.output_type,
+            value,
+        )),
         Ok(Err(_)) => Err("Report cell dropped before emitting".to_string()),
         Err(_) => Err("Timeout waiting for report value".to_string()),
     }
@@ -537,11 +531,9 @@ fn in_process_execute_command(
             let cmd_ctx = CommandContext::new(cmd_id, req, ctx);
 
             return match executor.execute_from_value(command_json, cmd_ctx) {
-                Ok(result) => Ok(json!({
-                    "command_id": command_id,
-                    "success": true,
-                    "result": result,
-                })),
+                Ok(result) => {
+                    Ok(myko::operation_index::COMMAND_RESULT.wrap(command_id, "", result))
+                }
                 Err(err) => Err(err.message),
             };
         }

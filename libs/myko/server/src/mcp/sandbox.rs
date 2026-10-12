@@ -160,6 +160,10 @@ async fn call_operation(
         return json_error(message);
     }
 
+    if let Err(message) = myko::reflection::validate_operation_input(kind, id, &args) {
+        return json_error(message);
+    }
+
     let result = match kind {
         "query" => executor.execute_query(id, args).await,
         "view" => executor.execute_view(id, args).await,
@@ -231,7 +235,7 @@ mod tests {
         assert!(
             arr.first()
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|message| message.contains("Query not found"))
+                .is_some_and(|message| message.contains("Unknown operation"))
         );
         assert!(
             arr.get(1)
@@ -258,6 +262,24 @@ mod tests {
         assert_eq!(
             result,
             serde_json::json!("Unknown operation: query_GetAllServers")
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_arguments_are_rejected_before_remote_connection() {
+        let result = execute(
+            "return await myko.command('DeleteServer', {id: 17}).catch(e => e.message);",
+            dummy_executor(),
+            ClientFilters::allow_all(),
+        )
+        .await;
+        assert!(
+            result
+                .as_ref()
+                .is_ok_and(|value| value.as_str().is_some_and(|message| message
+                    .contains("Invalid arguments for command_DeleteServer")
+                    && message.contains("id"))),
+            "{result:?}"
         );
     }
 

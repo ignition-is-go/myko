@@ -21,6 +21,7 @@ proc-macro = true
 proc-macro2.workspace = true
 syn.workspace = true
 quote.workspace = true
+serde_derive_internals = "0.29.1"
 
 [features]
 default = []

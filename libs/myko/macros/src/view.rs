@@ -17,6 +17,7 @@ struct ViewExpansion<'a> {
     struct_name: &'a syn::Ident,
     item_type: &'a Path,
     cache_key_impl: &'a TokenStream,
+    input_contract: &'a TokenStream,
 }
 
 fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
@@ -28,11 +29,13 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
         struct_name,
         item_type,
         cache_key_impl,
+        input_contract,
     } = expansion;
     let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
     quote! {
         #derives
         #input_struct
+        #input_contract
 
         #[cfg(not(target_arch = "wasm32"))]
         #krate::submit! {
@@ -154,6 +157,7 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     // Reflection metadata for the MCP `search()` operation index — see
     // `myko::reflection` and the matching comment in `query.rs`.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
+    let input_contract = crate::input_contract_tokens(&input_struct, "view", krate);
 
     crate::gate_ts_attrs(&mut input_struct.attrs);
     crate::gate_field_ts_attrs(&mut input_struct.fields);
@@ -231,5 +235,6 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
         struct_name,
         item_type: &item_type,
         cache_key_impl: &cache_key_impl,
+        input_contract: &input_contract,
     })
 }

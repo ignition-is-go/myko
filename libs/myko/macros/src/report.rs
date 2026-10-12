@@ -14,6 +14,7 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
     // Reflection metadata for the MCP `search()` operation index — see
     // `myko::reflection` and the matching comment in `query.rs`.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
+    let input_contract = crate::input_contract_tokens(&input_struct, "report", krate);
 
     // Gate user-written `#[ts(...)]` attrs behind the codegen-ts feature.
     crate::gate_ts_attrs(&mut input_struct.attrs);
@@ -91,6 +92,7 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
     let expanded = quote! {
         #derives
         #input_struct
+        #input_contract
 
         // Registration is server-only (requires ReportFactory which depends on hyphae)
         #[cfg(not(target_arch = "wasm32"))]

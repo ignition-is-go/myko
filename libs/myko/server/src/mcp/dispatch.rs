@@ -173,7 +173,8 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
             name: SEARCH_TOOL.to_string(),
             description: "Search the index of available Myko queries/views/reports/commands. \
                 Returns compact {id, kind, args, outputType} entries — call this before \
-                `execute` to find operation ids and argument shapes."
+                `execute` to find operation ids and argument shapes. Set `details: true` to \
+                get wire argument names, input/output types, result wrappers, and a validated example."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -181,6 +182,10 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
                     "query": {
                         "type": "string",
                         "description": "Case-insensitive substring match against operation id/description."
+                    },
+                    "details": {
+                        "type": "boolean",
+                        "description": "Include exact wire arguments, result wrapper types, and a validated example for each matching operation."
                     },
                     "kind": {
                         "type": "string",
@@ -200,7 +205,9 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
                 function body — use `await myko.query(id, args)`, `myko.view(id, args)`, \
                 `myko.report(id, args)`, or `myko.command(id, args)` (ids/args from `search`), \
                 and optionally `return` a JSON-serializable value. Chain multiple calls in one \
-                script instead of one `execute` call per operation. Each call resolves to a \
+                script instead of one `execute` call per operation. Use Promise.all for independent calls; \
+                join, filter, aggregate, and count the returned data in JavaScript, then return a compact \
+                answer rather than raw datasets for the model to calculate. Each call resolves to a \
                 wrapper object, not the raw payload directly: query/view resolve to \
                 {query_id|view_id, item_type, count, items} (items is the payload); \
                 report resolves to {report_id, output_type, result} (result is the payload); \
@@ -349,7 +356,15 @@ fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]
         })
         .collect();
 
-    json!({ "operations": operations })
+    if args
+        .get("details")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        json!({ "operations": operations.iter().map(|op| op.describe()).collect::<Vec<_>>() })
+    } else {
+        json!({ "operations": operations })
+    }
 }
 
 async fn handle_execute(
