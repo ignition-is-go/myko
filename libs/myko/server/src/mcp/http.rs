@@ -50,7 +50,6 @@ pub async fn handle_post(
     .await
 }
 
-/// Handle `POST /myko/mcp` using an explicit ingress policy.
 pub(crate) async fn handle_post_with_policy(
     mut stream: TcpStream,
     ctx: Arc<MykoServerContext>,

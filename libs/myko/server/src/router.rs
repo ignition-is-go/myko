@@ -165,7 +165,6 @@ pub async fn route_connection(
     .await
 }
 
-/// Route a freshly-accepted connection using an explicit ingress policy.
 pub(crate) async fn route_connection_with_policy(
     mut stream: TcpStream,
     addr: SocketAddr,

@@ -928,7 +928,6 @@ impl WsHandler {
         .await
     }
 
-    /// Handle an upgraded WebSocket connection using an explicit ingress policy.
     #[allow(clippy::too_many_lines)]
     pub(crate) async fn handle_upgraded_with_policy(
         ws_stream: tokio_tungstenite::WebSocketStream<TcpStream>,

@@ -1,4 +1,4 @@
-#![allow(clippy::arithmetic_side_effects, clippy::expect_used)]
+#![allow(clippy::expect_used)]
 
 use std::{sync::Arc, time::Duration};
 
@@ -14,7 +14,8 @@ use myko::{
 use myko_server::MykoServer;
 
 async fn wait_until(mut condition: impl FnMut() -> bool) {
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let now = tokio::time::Instant::now();
+    let deadline = now.checked_add(Duration::from_secs(3)).unwrap_or(now);
     while !condition() {
         assert!(
             tokio::time::Instant::now() < deadline,
@@ -25,7 +26,6 @@ async fn wait_until(mut condition: impl FnMut() -> bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-#[allow(clippy::too_many_lines)]
 async fn read_only_server_streams_allowed_query_and_denies_json_cbor_and_mcp_mutations() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -105,6 +105,16 @@ async fn read_only_server_streams_allowed_query_and_denies_json_cbor_and_mcp_mut
 
     assert_raw_ingress_denials(address, &updated).await;
 
+    assert_mcp_http_denial(address, &tasks).await;
+    assert_mcp_websocket_denials(address).await;
+
+    server_task.abort();
+}
+
+async fn assert_mcp_http_denial(
+    address: std::net::SocketAddr,
+    tasks: &hyphae::Cell<Vec<Arc<DemoTask>>, hyphae::CellImmutable>,
+) {
     let response = reqwest::Client::new()
         .post(format!("http://{address}/myko/mcp"))
         .header("content-type", "application/json")
@@ -136,8 +146,67 @@ async fn read_only_server_streams_allowed_query_and_denies_json_cbor_and_mcp_mut
             .iter()
             .any(|item| item.id.as_ref() == "mcp-denied")
     );
+}
 
-    server_task.abort();
+async fn assert_mcp_websocket_denials(address: std::net::SocketAddr) {
+    let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/myko/mcp"))
+        .await
+        .expect("connect MCP WebSocket");
+
+    for (id, method, params) in [
+        (2, "tools/list", serde_json::Value::Null),
+        (
+            3,
+            "tools/call",
+            serde_json::json!({"name": "connection_status", "arguments": {}}),
+        ),
+        (
+            4,
+            "tools/call",
+            serde_json::json!({
+                "name": "execute",
+                "arguments": {"code": "return await myko.query('GetAllServers', {});"}
+            }),
+        ),
+    ] {
+        let request = if params.is_null() {
+            serde_json::json!({"jsonrpc": "2.0", "id": id, "method": method})
+        } else {
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": method, "params": params
+            })
+        };
+        socket
+            .send(tokio_tungstenite::tungstenite::Message::Text(
+                request.to_string().into(),
+            ))
+            .await
+            .expect("send MCP WebSocket request");
+        let response = socket
+            .next()
+            .await
+            .expect("MCP WebSocket response")
+            .expect("MCP WebSocket frame")
+            .into_text()
+            .expect("MCP WebSocket text");
+        let response: serde_json::Value = serde_json::from_str(&response).expect("MCP JSON");
+        if id == 2 {
+            let tools = response
+                .pointer("/result/tools")
+                .and_then(serde_json::Value::as_array)
+                .expect("tools list");
+            assert!(
+                !tools.iter().any(|tool| {
+                    tool.get("name") == Some(&serde_json::json!("connection_status"))
+                })
+            );
+        } else {
+            assert_eq!(
+                response.pointer("/result/isError"),
+                Some(&serde_json::json!(true))
+            );
+        }
+    }
 }
 
 async fn assert_raw_ingress_denials(address: std::net::SocketAddr, task: &DemoTask) {
@@ -169,32 +238,42 @@ async fn assert_raw_ingress_denials(address: std::net::SocketAddr, task: &DemoTa
 
     let event = MEvent::from_item(task, MEventType::SET, "test-client");
     let denied = [
-        MykoMessage::Report(WrappedReport {
-            report: serde_json::json!({"tx": "report"}),
-            report_id: "ClientStatus".to_owned(),
-        }),
-        MykoMessage::View(WrappedView {
-            view: serde_json::json!({"tx": "view"}),
-            view_id: Arc::from("ConnectedClients"),
-            view_item_type: Arc::from("Client"),
-            window: None,
-            sample_rate: None,
-        }),
-        MykoMessage::Event(event.clone()),
-        MykoMessage::EventBatch(vec![event]),
+        (
+            MykoMessage::Report(WrappedReport {
+                report: serde_json::json!({"tx": "report"}),
+                report_id: "ClientStatus".to_owned(),
+            }),
+            false,
+        ),
+        (
+            MykoMessage::View(WrappedView {
+                view: serde_json::json!({"tx": "view"}),
+                view_id: Arc::from("ConnectedClients"),
+                view_item_type: Arc::from("Client"),
+                window: None,
+                sample_rate: None,
+            }),
+            false,
+        ),
+        (MykoMessage::Event(event.clone()), true),
+        (MykoMessage::EventBatch(vec![event]), false),
     ];
-    for message in denied {
+    for (message, cbor) in denied {
         let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{address}/myko"))
             .await
             .expect("connect denial socket");
-        socket
-            .send(tokio_tungstenite::tungstenite::Message::Text(
+        let frame = if cbor {
+            let mut bytes = Vec::new();
+            ciborium::ser::into_writer(&message, &mut bytes).expect("serialize denied CBOR");
+            tokio_tungstenite::tungstenite::Message::Binary(bytes.into())
+        } else {
+            tokio_tungstenite::tungstenite::Message::Text(
                 serde_json::to_string(&message)
                     .expect("serialize denied message")
                     .into(),
-            ))
-            .await
-            .expect("send denied message");
+            )
+        };
+        socket.send(frame).await.expect("send denied message");
         let closed = tokio::time::timeout(Duration::from_secs(1), socket.next())
             .await
             .expect("server must answer or close promptly");

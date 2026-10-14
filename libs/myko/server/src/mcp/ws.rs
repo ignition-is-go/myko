@@ -50,7 +50,6 @@ pub async fn handle_mcp_ws_upgrade(
     .await
 }
 
-/// Upgrade `/myko/mcp` using an explicit ingress policy.
 pub(crate) async fn handle_mcp_ws_upgrade_with_policy(
     stream: TcpStream,
     ctx: Arc<MykoServerContext>,
@@ -101,7 +100,6 @@ pub async fn handle_myko_ws_upgrade(
     .await
 }
 
-/// Upgrade `/myko` using an explicit ingress policy.
 pub(crate) async fn handle_myko_ws_upgrade_with_policy(
     stream: TcpStream,
     addr: SocketAddr,

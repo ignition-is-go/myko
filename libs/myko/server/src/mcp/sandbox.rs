@@ -69,7 +69,6 @@ pub async fn execute(
     execute_with_policy(code, executor, filter, MykoIngressPolicy::Unrestricted).await
 }
 
-/// Run code using an explicit ingress policy.
 pub(crate) async fn execute_with_policy(
     code: &str,
     executor: Arc<Executor>,

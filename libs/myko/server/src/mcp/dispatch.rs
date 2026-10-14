@@ -128,7 +128,6 @@ pub async fn handle_request(
     .await
 }
 
-/// Dispatch one JSON-RPC request using an explicit ingress policy.
 pub(crate) async fn handle_request_with_policy(
     request: McpRequest,
     filter: &ClientFilters,
@@ -139,7 +138,7 @@ pub(crate) async fn handle_request_with_policy(
     match request.method.as_str() {
         "initialize" => Some(handle_initialize(request.id, info)),
         "notifications/initialized" | "notifications/cancelled" => None,
-        "tools/list" => Some(handle_tools_list(request.id, filter)),
+        "tools/list" => Some(handle_tools_list(request.id, filter, ingress_policy)),
         "tools/call" => Some(
             handle_tools_call(
                 request.id,
@@ -185,10 +184,14 @@ fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
     McpResponse::success(id, payload)
 }
 
-fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
+fn handle_tools_list(
+    id: Value,
+    filter: &ClientFilters,
+    ingress_policy: &MykoIngressPolicy,
+) -> McpResponse {
     let mut tools: Vec<McpTool> = Vec::new();
 
-    if filter.meta_tool_visible(CONNECTION_STATUS_TOOL) {
+    if !ingress_policy.is_read_only() && filter.meta_tool_visible(CONNECTION_STATUS_TOOL) {
         tools.push(McpTool {
             name: CONNECTION_STATUS_TOOL.to_string(),
             description: "Check the connection status to the Myko server".to_string(),
@@ -362,6 +365,9 @@ async fn execute_tool(
     args: Value,
 ) -> Result<Value, String> {
     match tool_name {
+        CONNECTION_STATUS_TOOL if ingress_policy.is_read_only() => {
+            Err("connection_status is disabled by the server ingress policy".to_owned())
+        }
         CONNECTION_STATUS_TOOL => Ok(executor.connection_status(info)),
         SEARCH_TOOL => Ok(handle_search(
             &args,
