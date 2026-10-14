@@ -16,7 +16,7 @@ use std::{fmt::Write as _, net::SocketAddr, sync::Arc};
 use myko::server::MykoServerContext;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-use crate::{mcp, mcp::dispatch::ServerInfo};
+use crate::{MykoIngressPolicy, mcp, mcp::dispatch::ServerInfo};
 
 /// Cap on the header section (request line + headers).
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -150,10 +150,28 @@ fn find_header_terminator(buf: &[u8]) -> Option<usize> {
 ///
 /// Returns an error when the selected HTTP or WebSocket handler fails.
 pub async fn route_connection(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    route_connection_with_policy(
+        stream,
+        addr,
+        ctx,
+        server_info,
+        Arc::new(MykoIngressPolicy::Unrestricted),
+    )
+    .await
+}
+
+/// Route a freshly-accepted connection using an explicit ingress policy.
+pub(crate) async fn route_connection_with_policy(
     mut stream: TcpStream,
     addr: SocketAddr,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
+    ingress_policy: Arc<MykoIngressPolicy>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match read_request_head(&mut stream).await {
         Ok(Some(h)) => h,
@@ -181,15 +199,35 @@ pub async fn route_connection(
             // tungstenite, which requires the unmodified raw bytes. We've
             // already consumed the request, so finish the handshake here
             // and pass the upgraded stream to the WS gateway.
-            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Myko).await
+            handle_ws_upgrade(
+                stream,
+                addr,
+                ctx,
+                server_info,
+                ingress_policy,
+                head,
+                WsTarget::Myko,
+            )
+            .await
         }
         ("GET", "/myko/mcp") if head.is_websocket_upgrade() => {
-            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Mcp).await
+            handle_ws_upgrade(
+                stream,
+                addr,
+                ctx,
+                server_info,
+                ingress_policy,
+                head,
+                WsTarget::Mcp,
+            )
+            .await
         }
         ("GET", "/myko/mcp") if head.wants_event_stream() => {
             mcp::http::handle_sse(stream, ctx, head).await
         }
-        ("POST", "/myko/mcp") => mcp::http::handle_post(stream, ctx, server_info, head).await,
+        ("POST", "/myko/mcp") => {
+            mcp::http::handle_post_with_policy(stream, ctx, server_info, ingress_policy, head).await
+        }
         ("GET", "/myko/mcp") => {
             // No SSE accept, no WS upgrade — caller probably wants a quick
             // status check or hit the URL in a browser.
@@ -223,6 +261,7 @@ async fn handle_ws_upgrade(
     addr: SocketAddr,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
+    ingress_policy: Arc<MykoIngressPolicy>,
     head: HttpRequestHead,
     target: WsTarget,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -241,8 +280,20 @@ async fn handle_ws_upgrade(
     }
 
     match target {
-        WsTarget::Myko => mcp::ws::handle_myko_ws_upgrade(stream, addr, ctx, head).await,
-        WsTarget::Mcp => mcp::ws::handle_mcp_ws_upgrade(stream, ctx, server_info, head).await,
+        WsTarget::Myko => {
+            mcp::ws::handle_myko_ws_upgrade_with_policy(stream, addr, ctx, ingress_policy, head)
+                .await
+        }
+        WsTarget::Mcp => {
+            mcp::ws::handle_mcp_ws_upgrade_with_policy(
+                stream,
+                ctx,
+                server_info,
+                ingress_policy,
+                head,
+            )
+            .await
+        }
     }
 }
 

@@ -12,6 +12,7 @@
 mod blocking_work;
 mod view_sampling;
 
+pub mod ingress;
 pub mod mcp;
 pub mod peer_persister;
 pub mod peer_registry;
@@ -21,6 +22,8 @@ pub mod server_ownership;
 pub mod telemetry;
 pub mod ws_handler;
 pub mod ws_timing;
+
+pub use ingress::{IngressPolicyError, MykoIngressPolicy};
 
 // Re-export all tokio-free server types from myko
 use std::{
@@ -102,6 +105,7 @@ pub struct MykoServerBuilder {
     /// set; binaries override this to advertise their own name / version /
     /// instructions on the `/myko/mcp` endpoint.
     server_info: Option<mcp::dispatch::ServerInfo>,
+    ingress_policy: MykoIngressPolicy,
 }
 
 type AfterInitCallback = Box<dyn FnOnce(&MykoServer) + Send>;
@@ -202,6 +206,21 @@ impl MykoServerBuilder {
         self
     }
 
+    /// Restrict this server to subscriptions for the named queries.
+    ///
+    /// The allowlist is validated against linked query registrations when the
+    /// listener starts. Both Myko WebSocket and MCP ingress reject all mutations
+    /// and non-allowlisted read operations.
+    #[must_use]
+    pub fn with_read_only_queries<I, S>(mut self, query_ids: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.ingress_policy = MykoIngressPolicy::read_only_queries(query_ids);
+        self
+    }
+
     /// Build the server.
     #[must_use]
     pub fn build(self) -> MykoServer {
@@ -221,6 +240,7 @@ impl MykoServerBuilder {
             persister_overrides: self.persister_overrides,
             peer_clients: self.peer_clients,
         });
+        server.ingress_policy = self.ingress_policy;
         server.after_init = std::sync::Mutex::new(self.after_init);
         server.server_info = server_info;
         server
@@ -264,6 +284,8 @@ pub struct MykoServer {
     /// Set via [`MykoServerBuilder::with_server_info`]; defaults to
     /// `ServerInfo::default()`.
     server_info: Arc<mcp::dispatch::ServerInfo>,
+    /// Network ingress policy configured by the builder.
+    ingress_policy: MykoIngressPolicy,
     /// Sender for local+replicated event fan-out to saga runtime.
     saga_event_tx: flume::Sender<MEvent>,
     /// Receiver consumed when saga runtime starts.
@@ -377,6 +399,7 @@ impl MykoServer {
             peer_clients,
             after_init: std::sync::Mutex::new(None),
             server_info: Arc::new(mcp::dispatch::ServerInfo::default()),
+            ingress_policy: MykoIngressPolicy::Unrestricted,
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
@@ -638,6 +661,8 @@ impl MykoServer {
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
+        self.ingress_policy.validate()?;
+
         // Persisters can veto startup via startup healthchecks.
         let entity_types: Vec<&str> = self
             .handler_registry
@@ -756,7 +781,7 @@ impl MykoServer {
         }
 
         tracing::info!("Server started");
-        self.run_ws_accept_loop(listener).await
+        self.run_ws_listener(listener).await
     }
 
     /// Run just the accept loop (no Postgres / relations / saga startup).
@@ -766,19 +791,29 @@ impl MykoServer {
     pub async fn run_ws_loop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
+        self.ingress_policy.validate()?;
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         tracing::info!("MykoServer listening on {}", self.config.bind_addr);
         tracing::info!(
             "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
             self.config.bind_addr
         );
-        self.run_ws_accept_loop(listener).await
+        self.run_ws_listener(listener).await
     }
 
-    async fn run_ws_accept_loop(
+    /// Serve gateway connections from a listener that the caller already bound.
+    ///
+    /// This lets embedded services report bind failures before starting their
+    /// background runtime and stop cleanly by cancelling the returned future.
+    /// It does not start Postgres, relations, sagas, or peer discovery.
+    /// # Errors
+    ///
+    /// Returns an error when the listener cannot accept connections.
+    pub async fn run_ws_listener(
         &self,
         listener: tokio::net::TcpListener,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.ingress_policy.validate()?;
         let ready = self.ready.clone();
         let sweep_ctx = self.ctx();
         // Bound tombstone retention even while the listener is otherwise idle.
@@ -830,9 +865,18 @@ impl MykoServer {
 
             let ctx = Arc::new(self.ctx());
             let server_info = self.server_info.clone();
+            let ingress_policy = Arc::new(self.ingress_policy.clone());
 
             tokio::spawn(async move {
-                if let Err(e) = router::route_connection(stream, addr, ctx, server_info).await {
+                if let Err(e) = router::route_connection_with_policy(
+                    stream,
+                    addr,
+                    ctx,
+                    server_info,
+                    ingress_policy,
+                )
+                .await
+                {
                     tracing::error!("Connection error from {}: {}", addr, e);
                 }
             });

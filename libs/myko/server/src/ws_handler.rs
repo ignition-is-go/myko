@@ -2,7 +2,10 @@
 //!
 //! Handles WebSocket connections using `ClientSession` for subscription management.
 
-use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
+use crate::{
+    MykoIngressPolicy,
+    view_sampling::{ViewDelivery, ViewDeliveryControl},
+};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -313,6 +316,7 @@ struct ReadLoopState {
     subscribe_tx: mpsc::UnboundedSender<SubscriptionReady>,
     view_delivery_tx: mpsc::UnboundedSender<ViewDeliveryControl>,
     overload_rx: watch::Receiver<bool>,
+    ingress_policy: Arc<MykoIngressPolicy>,
 }
 
 struct WriterState {
@@ -408,7 +412,7 @@ impl WsHandler {
         session: &mut ClientSession<W>,
         state: &ReadLoopState,
         message: MykoMessage,
-    ) {
+    ) -> bool {
         Self::handle_message(
             session,
             state.ctx.clone(),
@@ -426,7 +430,8 @@ impl WsHandler {
                 view_delivery_tx: &state.view_delivery_tx,
             },
             message,
-        );
+            &state.ingress_policy,
+        )
     }
 
     async fn handle_ws_frame<W: WsWriter>(
@@ -447,7 +452,9 @@ impl WsHandler {
                 }
                 match ciborium::de::from_reader::<MykoMessage, _>(data.as_ref()) {
                     Ok(message) => {
-                        Self::dispatch_incoming(session, state, message);
+                        if !Self::dispatch_incoming(session, state, message) {
+                            return false;
+                        }
                         tokio::task::yield_now().await;
                     }
                     Err(error) => tracing::warn!(
@@ -459,7 +466,9 @@ impl WsHandler {
             }
             Message::Text(text) => match serde_json::from_str::<MykoMessage>(&text) {
                 Ok(message) => {
-                    Self::dispatch_incoming(session, state, message);
+                    if !Self::dispatch_incoming(session, state, message) {
+                        return false;
+                    }
                     tokio::task::yield_now().await;
                 }
                 Err(error) => tracing::warn!(
@@ -910,6 +919,23 @@ impl WsHandler {
         addr: SocketAddr,
         ctx: Arc<MykoServerContext>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Self::handle_upgraded_with_policy(
+            ws_stream,
+            addr,
+            ctx,
+            Arc::new(MykoIngressPolicy::Unrestricted),
+        )
+        .await
+    }
+
+    /// Handle an upgraded WebSocket connection using an explicit ingress policy.
+    #[allow(clippy::too_many_lines)]
+    pub(crate) async fn handle_upgraded_with_policy(
+        ws_stream: tokio_tungstenite::WebSocketStream<TcpStream>,
+        addr: SocketAddr,
+        ctx: Arc<MykoServerContext>,
+        ingress_policy: Arc<MykoIngressPolicy>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (write, read) = ws_stream.split();
 
         // Create a bounded channel for sending messages to the client
@@ -1009,6 +1035,7 @@ impl WsHandler {
                 subscribe_tx: subscribe_tx.clone(),
                 view_delivery_tx,
                 overload_rx,
+                ingress_policy,
             },
         )
         .await;
@@ -1235,12 +1262,58 @@ impl WsHandler {
         ctx: Arc<MykoServerContext>,
         message_context: &MessageContext<'_>,
         msg: MykoMessage,
-    ) {
+        ingress_policy: &MykoIngressPolicy,
+    ) -> bool {
         crate::ws_timing::record_inbound_for_client(
             crate::ws_timing::message_kind(&msg),
             &session.client_id,
             crate::ws_timing::message_tag(&msg),
         );
+        if ingress_policy.is_read_only() {
+            match &msg {
+                MykoMessage::Query(wrapped) if ingress_policy.allows_query(&wrapped.query_id) => {}
+                MykoMessage::Query(wrapped) => {
+                    let tx = wrapped
+                        .query
+                        .get("tx")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown");
+                    let error = MykoMessage::QueryError(myko::wire::QueryError::new(
+                        tx,
+                        wrapped.query_id.to_string(),
+                        "query is not allowed by the server ingress policy",
+                    ));
+                    let _ = message_context.priority_tx.try_send(error);
+                    return true;
+                }
+                MykoMessage::Command(wrapped) => {
+                    let tx = wrapped
+                        .command
+                        .get("tx")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("unknown");
+                    let error = MykoMessage::CommandError(CommandError::new(
+                        tx,
+                        wrapped.command_id.clone(),
+                        "commands are disabled by the server ingress policy",
+                    ));
+                    let _ = message_context.priority_tx.try_send(error);
+                    return true;
+                }
+                MykoMessage::Ping(_)
+                | MykoMessage::QueryCancel(_)
+                | MykoMessage::QueryWindow(_)
+                | MykoMessage::QueryCursorWindow(_) => {}
+                _ => {
+                    tracing::warn!(
+                        client = %session.client_id,
+                        kind = crate::ws_timing::message_kind(&msg),
+                        "closing connection after disallowed read-only server ingress"
+                    );
+                    return false;
+                }
+            }
+        }
         match msg {
             MykoMessage::Query(wrapped) => {
                 Self::handle_query_request(session, ctx, message_context, wrapped);
@@ -1289,6 +1362,7 @@ impl WsHandler {
                 drop(ctx);
             }
         }
+        true
     }
 
     fn handle_subscription_control<W: WsWriter>(

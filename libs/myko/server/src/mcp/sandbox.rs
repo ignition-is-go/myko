@@ -31,6 +31,7 @@ use rquickjs::{
 use serde_json::Value;
 
 use super::{exec::Executor, filter::ClientFilters};
+use crate::MykoIngressPolicy;
 
 /// Wall-clock budget for one `execute()` call, including native async hops.
 const EXECUTE_TIMEOUT: Duration = Duration::from_secs(30);
@@ -65,6 +66,16 @@ pub async fn execute(
     executor: Arc<Executor>,
     filter: ClientFilters,
 ) -> Result<Value, String> {
+    execute_with_policy(code, executor, filter, MykoIngressPolicy::Unrestricted).await
+}
+
+/// Run code using an explicit ingress policy.
+pub(crate) async fn execute_with_policy(
+    code: &str,
+    executor: Arc<Executor>,
+    filter: ClientFilters,
+    ingress_policy: MykoIngressPolicy,
+) -> Result<Value, String> {
     let rt = AsyncRuntime::new().map_err(|e| format!("Failed to start sandbox: {e}"))?;
     rt.set_memory_limit(MEMORY_LIMIT_BYTES).await;
     let now = Instant::now();
@@ -91,7 +102,7 @@ pub async fn execute(
     );
 
     let run = ctx.async_with(async move |ctx| {
-        install_myko_bindings(&ctx, executor, filter).map_err(|e| e.to_string())?;
+        install_myko_bindings(&ctx, executor, filter, ingress_policy).map_err(|e| e.to_string())?;
         ctx.eval::<(), _>(wrapped.into_bytes())
             .map_err(|e| e.to_string())?;
         let promise: rquickjs::Promise =
@@ -118,6 +129,7 @@ fn install_myko_bindings(
     ctx: &Ctx<'_>,
     executor: Arc<Executor>,
     filter: ClientFilters,
+    ingress_policy: MykoIngressPolicy,
 ) -> rquickjs::Result<()> {
     let call = Function::new(
         ctx.clone(),
@@ -127,7 +139,11 @@ fn install_myko_bindings(
                   args_json: Opt<std::string::String>| {
                 let executor = executor.clone();
                 let filter = filter.clone();
-                async move { call_operation(&executor, &filter, &kind, &id, args_json.0).await }
+                let ingress_policy = ingress_policy.clone();
+                async move {
+                    call_operation(&executor, &filter, &ingress_policy, &kind, &id, args_json.0)
+                        .await
+                }
             },
         ),
     )?
@@ -140,13 +156,14 @@ fn install_myko_bindings(
 async fn call_operation(
     executor: &Executor,
     filter: &ClientFilters,
+    ingress_policy: &MykoIngressPolicy,
     kind: &str,
     id: &str,
     args_json: Option<std::string::String>,
 ) -> std::string::String {
     let name = format!("{kind}_{id}");
 
-    if !filter.tool_visible(&name) {
+    if !ingress_policy.allows_operation(kind, id) || !filter.tool_visible(&name) {
         return json_error(format!("Unknown operation: {name}"));
     }
 

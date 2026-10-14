@@ -23,7 +23,10 @@ use super::{
     },
     types::{McpError, McpRequest, McpResponse},
 };
-use crate::router::{HttpRequestHead, write_status};
+use crate::{
+    MykoIngressPolicy,
+    router::{HttpRequestHead, write_status},
+};
 
 const MCP_SUBPROTOCOL: &str = "mcp";
 
@@ -35,6 +38,24 @@ pub async fn handle_mcp_ws_upgrade(
     stream: TcpStream,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_mcp_ws_upgrade_with_policy(
+        stream,
+        ctx,
+        server_info,
+        Arc::new(MykoIngressPolicy::Unrestricted),
+        head,
+    )
+    .await
+}
+
+/// Upgrade `/myko/mcp` using an explicit ingress policy.
+pub(crate) async fn handle_mcp_ws_upgrade_with_policy(
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    ingress_policy: Arc<MykoIngressPolicy>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let filter = ClientFilters::from_strings(
@@ -57,7 +78,7 @@ pub async fn handle_mcp_ws_upgrade(
         }
     };
 
-    run_mcp_loop(ws_stream, ctx, server_info, filter).await
+    run_mcp_loop(ws_stream, ctx, server_info, ingress_policy, filter).await
 }
 
 /// Upgrade `/myko` to a WebSocket and hand off to the existing Myko gateway.
@@ -70,6 +91,24 @@ pub async fn handle_myko_ws_upgrade(
     ctx: Arc<MykoServerContext>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_myko_ws_upgrade_with_policy(
+        stream,
+        addr,
+        ctx,
+        Arc::new(MykoIngressPolicy::Unrestricted),
+        head,
+    )
+    .await
+}
+
+/// Upgrade `/myko` using an explicit ingress policy.
+pub(crate) async fn handle_myko_ws_upgrade_with_policy(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    ingress_policy: Arc<MykoIngressPolicy>,
+    head: HttpRequestHead,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ws_stream = match perform_handshake(stream, &head, false).await {
         Ok(s) => s,
         Err(e) => {
@@ -77,7 +116,8 @@ pub async fn handle_myko_ws_upgrade(
             return Ok(());
         }
     };
-    crate::ws_handler::WsHandler::handle_upgraded(ws_stream, addr, ctx).await
+    crate::ws_handler::WsHandler::handle_upgraded_with_policy(ws_stream, addr, ctx, ingress_policy)
+        .await
 }
 
 async fn perform_handshake(
@@ -121,6 +161,7 @@ async fn run_mcp_loop(
     ws_stream: WebSocketStream<TcpStream>,
     ctx: Arc<MykoServerContext>,
     info: Arc<ServerInfo>,
+    ingress_policy: Arc<MykoIngressPolicy>,
     filter: ClientFilters,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let (mut write, mut read) = ws_stream.split();
@@ -152,8 +193,14 @@ async fn run_mcp_loop(
                     }
                 };
 
-                if let Some(response) =
-                    dispatch::handle_request(request, &filter, &executor, &info).await
+                if let Some(response) = dispatch::handle_request_with_policy(
+                    request,
+                    &filter,
+                    &executor,
+                    &info,
+                    &ingress_policy,
+                )
+                .await
                     && send_response(&mut write, &response).await.is_err()
                 {
                     break;

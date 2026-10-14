@@ -19,7 +19,10 @@ use super::{
     },
     types::{McpError, McpRequest, McpResponse},
 };
-use crate::router::{HttpRequestHead, shutdown_cleanly, write_full, write_status};
+use crate::{
+    MykoIngressPolicy,
+    router::{HttpRequestHead, shutdown_cleanly, write_full, write_status},
+};
 
 /// Cap on incoming MCP JSON-RPC body size.
 const MAX_BODY_BYTES: usize = 1024 * 1024;
@@ -32,9 +35,27 @@ const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 ///
 /// Returns an error when the HTTP request cannot be read or its response cannot be written.
 pub async fn handle_post(
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_post_with_policy(
+        stream,
+        ctx,
+        server_info,
+        Arc::new(MykoIngressPolicy::Unrestricted),
+        head,
+    )
+    .await
+}
+
+/// Handle `POST /myko/mcp` using an explicit ingress policy.
+pub(crate) async fn handle_post_with_policy(
     mut stream: TcpStream,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
+    ingress_policy: Arc<MykoIngressPolicy>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let content_length: usize = head
@@ -65,9 +86,15 @@ pub async fn handle_post(
         Ok(req) => {
             // Notifications (no id, no response expected) get an empty 204
             // body anyway — MCP HTTP keeps the request/response shape.
-            dispatch::handle_request(req, &filter, &executor, &server_info)
-                .await
-                .unwrap_or_else(|| McpResponse::success(Value::Null, Value::Null))
+            dispatch::handle_request_with_policy(
+                req,
+                &filter,
+                &executor,
+                &server_info,
+                &ingress_policy,
+            )
+            .await
+            .unwrap_or_else(|| McpResponse::success(Value::Null, Value::Null))
         }
         Err(e) => McpResponse::error(Value::Null, McpError::parse_error(e.to_string())),
     };

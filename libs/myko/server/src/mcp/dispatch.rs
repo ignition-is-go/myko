@@ -76,6 +76,7 @@ use super::{
     sandbox,
     types::{McpError, McpRequest, McpResource, McpResponse, McpTool},
 };
+use crate::MykoIngressPolicy;
 
 const CONNECTION_STATUS_TOOL: &str = "connection_status";
 const SEARCH_TOOL: &str = "search";
@@ -117,15 +118,46 @@ pub async fn handle_request(
     executor: &Executor,
     info: &ServerInfo,
 ) -> Option<McpResponse> {
+    handle_request_with_policy(
+        request,
+        filter,
+        executor,
+        info,
+        &MykoIngressPolicy::Unrestricted,
+    )
+    .await
+}
+
+/// Dispatch one JSON-RPC request using an explicit ingress policy.
+pub(crate) async fn handle_request_with_policy(
+    request: McpRequest,
+    filter: &ClientFilters,
+    executor: &Executor,
+    info: &ServerInfo,
+    ingress_policy: &MykoIngressPolicy,
+) -> Option<McpResponse> {
     match request.method.as_str() {
         "initialize" => Some(handle_initialize(request.id, info)),
         "notifications/initialized" | "notifications/cancelled" => None,
         "tools/list" => Some(handle_tools_list(request.id, filter)),
-        "tools/call" => {
-            Some(handle_tools_call(request.id, request.params, filter, executor, info).await)
-        }
-        "resources/list" => Some(handle_resources_list(request.id, filter)),
-        "resources/read" => Some(handle_resources_read(request.id, request.params, filter)),
+        "tools/call" => Some(
+            handle_tools_call(
+                request.id,
+                request.params,
+                filter,
+                executor,
+                info,
+                ingress_policy,
+            )
+            .await,
+        ),
+        "resources/list" => Some(handle_resources_list(request.id, filter, ingress_policy)),
+        "resources/read" => Some(handle_resources_read(
+            request.id,
+            request.params,
+            filter,
+            ingress_policy,
+        )),
         _ => Some(McpResponse::error(
             request.id,
             McpError::method_not_found(&request.method),
@@ -236,6 +268,7 @@ async fn handle_tools_call(
     filter: &ClientFilters,
     executor: &Executor,
     info: &ServerInfo,
+    ingress_policy: &MykoIngressPolicy,
 ) -> McpResponse {
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
@@ -287,7 +320,15 @@ async fn handle_tools_call(
         );
     }
 
-    let result = execute_tool(executor, info, filter, &tool_name, arguments).await;
+    let result = execute_tool(
+        executor,
+        info,
+        filter,
+        ingress_policy,
+        &tool_name,
+        arguments,
+    )
+    .await;
 
     match result {
         Ok(data) => McpResponse::success(
@@ -316,13 +357,19 @@ async fn execute_tool(
     executor: &Executor,
     info: &ServerInfo,
     filter: &ClientFilters,
+    ingress_policy: &MykoIngressPolicy,
     tool_name: &str,
     args: Value,
 ) -> Result<Value, String> {
     match tool_name {
         CONNECTION_STATUS_TOOL => Ok(executor.connection_status(info)),
-        SEARCH_TOOL => Ok(handle_search(&args, filter, &info.operation_index)),
-        EXECUTE_TOOL => handle_execute(&args, executor, filter).await,
+        SEARCH_TOOL => Ok(handle_search(
+            &args,
+            filter,
+            ingress_policy,
+            &info.operation_index,
+        )),
+        EXECUTE_TOOL => handle_execute(&args, executor, filter, ingress_policy).await,
         // Most commonly hit by a client with a cached pre-Code-Mode tool
         // name (e.g. `report_ServerStats`) from before this server
         // collapsed to search/execute — point it at the fix directly
@@ -334,7 +381,12 @@ async fn execute_tool(
     }
 }
 
-fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]) -> Value {
+fn handle_search(
+    args: &Value,
+    filter: &ClientFilters,
+    ingress_policy: &MykoIngressPolicy,
+    index: &[OperationSchema],
+) -> Value {
     let query = args
         .get("query")
         .and_then(|v| v.as_str())
@@ -343,6 +395,7 @@ fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]
 
     let operations: Vec<&OperationSchema> = index
         .iter()
+        .filter(|op| ingress_policy.allows_operation(&op.kind, &op.id))
         .filter(|op| filter.tool_visible(&format!("{}_{}", op.kind, op.id)))
         .filter(|op| kind.is_none_or(|k| op.kind == k))
         .filter(|op| {
@@ -371,17 +424,31 @@ async fn handle_execute(
     args: &Value,
     executor: &Executor,
     filter: &ClientFilters,
+    ingress_policy: &MykoIngressPolicy,
 ) -> Result<Value, String> {
     let Some(code) = args.get("code").and_then(|v| v.as_str()) else {
         return Err("Missing required `code` argument".to_string());
     };
-    sandbox::execute(code, Arc::new(executor.clone()), filter.clone()).await
+    sandbox::execute_with_policy(
+        code,
+        Arc::new(executor.clone()),
+        filter.clone(),
+        ingress_policy.clone(),
+    )
+    .await
 }
 
-fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_list(
+    id: Value,
+    filter: &ClientFilters,
+    ingress_policy: &MykoIngressPolicy,
+) -> McpResponse {
     let mut resources: Vec<McpResource> = Vec::new();
 
     for reg in inventory::iter::<QueryRegistration> {
+        if !ingress_policy.allows_query(reg.query_id) {
+            continue;
+        }
         let tool_name = format!("query_{}", reg.query_id);
         if !filter.tool_visible(&tool_name) {
             continue;
@@ -395,6 +462,9 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<ViewRegistration> {
+        if ingress_policy.is_read_only() {
+            continue;
+        }
         let tool_name = format!("view_{}", reg.view_id);
         if !filter.tool_visible(&tool_name) {
             continue;
@@ -408,6 +478,9 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<ReportRegistration> {
+        if ingress_policy.is_read_only() {
+            continue;
+        }
         let tool_name = format!("report_{}", reg.report_id);
         if !filter.tool_visible(&tool_name) {
             continue;
@@ -421,6 +494,9 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     }
 
     for reg in inventory::iter::<CommandRegistration> {
+        if ingress_policy.is_read_only() {
+            continue;
+        }
         let tool_name = format!("command_{}", reg.command_id);
         if !filter.tool_visible(&tool_name) {
             continue;
@@ -436,7 +512,12 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     McpResponse::success(id, json!({ "resources": resources }))
 }
 
-fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_read(
+    id: Value,
+    params: Option<Value>,
+    filter: &ClientFilters,
+    ingress_policy: &MykoIngressPolicy,
+) -> McpResponse {
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
     };
@@ -447,6 +528,16 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
     if let Some(path) = uri.strip_prefix("myko://schema/")
         && let Some((schema_type, schema_id)) = path.split_once('/')
     {
+        if !ingress_policy.allows_operation(schema_type, schema_id) {
+            return McpResponse::error(
+                id,
+                McpError {
+                    code: McpError::INVALID_PARAMS,
+                    message: format!("Resource not accessible: {uri}"),
+                    data: None,
+                },
+            );
+        }
         let tool_name = format!("{schema_type}:{schema_id}");
         if !filter.tool_visible(&tool_name) {
             return McpResponse::error(
