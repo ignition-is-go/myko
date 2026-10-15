@@ -172,6 +172,8 @@ struct PendingMutation {
 }
 
 struct CausalState {
+    // Cloned contexts share counters; distinct servers must never share a queue.
+    owner: Arc<CausalCounters>,
     root_tx: Uuid,
     queue: VecDeque<PendingMutation>,
     seen: HashSet<TransitionKey>,
@@ -182,7 +184,7 @@ struct CausalState {
 }
 
 thread_local! {
-    static CAUSAL_STATE: RefCell<Option<CausalState>> = const { RefCell::new(None) };
+    static CAUSAL_STATES: RefCell<Vec<CausalState>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Weak-ref report cache entry. The cell stays alive as long as someone is
@@ -1225,9 +1227,12 @@ impl MykoServerContext {
             .causal_limits
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        CAUSAL_STATE.with(|slot| {
+        CAUSAL_STATES.with(|slot| {
             let mut slot = slot.borrow_mut();
-            let Some(state) = slot.as_mut() else {
+            let Some(state) = slot
+                .iter_mut()
+                .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
+            else {
                 return Err(Self::causal_error(
                     first.as_ref(),
                     "internal causal state was not initialized".to_string(),
@@ -1328,9 +1333,12 @@ impl MykoServerContext {
             .causal_limits
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        CAUSAL_STATE.with(|slot| {
+        CAUSAL_STATES.with(|slot| {
             let mut slot = slot.borrow_mut();
-            let Some(state) = slot.as_mut() else {
+            let Some(state) = slot
+                .iter_mut()
+                .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
+            else {
                 return Err(Self::causal_error(
                     first.as_ref(),
                     "internal causal state was not initialized".to_string(),
@@ -1440,7 +1448,11 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
-        let nested = CAUSAL_STATE.with(|slot| slot.borrow().is_some());
+        let nested = CAUSAL_STATES.with(|slot| {
+            slot.borrow()
+                .iter()
+                .any(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
+        });
         if nested {
             return self.enqueue_causal(items, change, origin, mode);
         }
@@ -1465,8 +1477,9 @@ impl MykoServerContext {
         }
 
         self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
-        CAUSAL_STATE.with(|slot| {
-            *slot.borrow_mut() = Some(CausalState {
+        CAUSAL_STATES.with(|slot| {
+            slot.borrow_mut().push(CausalState {
+                owner: self.causal_counters.clone(),
                 root_tx: Uuid::new_v4(),
                 queue: VecDeque::new(),
                 seen: HashSet::new(),
@@ -1480,9 +1493,11 @@ impl MykoServerContext {
         let result = (|| {
             self.enqueue_causal(items, change, origin, mode)?;
             loop {
-                let pending = CAUSAL_STATE.with(|slot| {
+                let pending = CAUSAL_STATES.with(|slot| {
                     let mut slot = slot.borrow_mut();
-                    let state = slot.as_mut()?;
+                    let state = slot
+                        .iter_mut()
+                        .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))?;
                     let pending = state.queue.pop_front();
                     if let Some(pending) = &pending {
                         state.current_depth = Some(pending.depth);
@@ -1520,7 +1535,10 @@ impl MykoServerContext {
             }
             Ok(())
         })();
-        CAUSAL_STATE.with(|slot| drop(slot.borrow_mut().take()));
+        CAUSAL_STATES.with(|slot| {
+            slot.borrow_mut()
+                .retain(|state| !Arc::ptr_eq(&state.owner, &self.causal_counters));
+        });
         result
     }
 
@@ -1545,7 +1563,11 @@ impl MykoServerContext {
         if upserts.is_empty() && deletes.is_empty() {
             return Ok(true);
         }
-        if CAUSAL_STATE.with(|slot| slot.borrow().is_some()) {
+        if CAUSAL_STATES.with(|slot| {
+            slot.borrow()
+                .iter()
+                .any(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
+        }) {
             if expected_graph_generation.is_some() {
                 return Ok(false);
             }
@@ -1560,8 +1582,9 @@ impl MykoServerContext {
         }
 
         self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
-        CAUSAL_STATE.with(|slot| {
-            *slot.borrow_mut() = Some(CausalState {
+        CAUSAL_STATES.with(|slot| {
+            slot.borrow_mut().push(CausalState {
+                owner: self.causal_counters.clone(),
                 root_tx: Uuid::new_v4(),
                 queue: VecDeque::new(),
                 seen: HashSet::new(),
@@ -1581,9 +1604,11 @@ impl MykoServerContext {
                 expected_graph_generation,
             )?;
             loop {
-                let pending = CAUSAL_STATE.with(|slot| {
+                let pending = CAUSAL_STATES.with(|slot| {
                     let mut slot = slot.borrow_mut();
-                    let state = slot.as_mut()?;
+                    let state = slot
+                        .iter_mut()
+                        .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))?;
                     let pending = state.queue.pop_front();
                     if let Some(pending) = &pending {
                         state.current_depth = Some(pending.depth);
@@ -1623,7 +1648,10 @@ impl MykoServerContext {
             }
             Ok(true)
         })();
-        CAUSAL_STATE.with(|slot| drop(slot.borrow_mut().take()));
+        CAUSAL_STATES.with(|slot| {
+            slot.borrow_mut()
+                .retain(|state| !Arc::ptr_eq(&state.owner, &self.causal_counters));
+        });
         result
     }
 
@@ -2910,6 +2938,215 @@ mod tests {
                 history_replay: None,
             },
         )
+    }
+
+    #[derive(Clone, Copy)]
+    enum ForwardMutation {
+        Set,
+        Replace,
+    }
+
+    struct ForwardingPersister {
+        destination: MykoServerContext,
+        mutation: ForwardMutation,
+    }
+
+    impl Persister for ForwardingPersister {
+        fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
+            let item = ImmediateTestItem {
+                id: "forwarded".into(),
+                value: 2,
+            };
+            match self.mutation {
+                ForwardMutation::Set => self.destination.set(&item),
+                ForwardMutation::Replace => {
+                    let item: Arc<dyn AnyItem> = Arc::new(item);
+                    self.destination.replace_batch_any([item], [])
+                }
+            }
+        }
+    }
+
+    fn nested_server_mutation(mutation: ForwardMutation) {
+        let _serial = scheduler_test_serial();
+        let destination = make_ctx();
+        let registry = Arc::new(StoreRegistry::new());
+        let mut persister = PersisterRouter::default();
+        persister.set_default(Some(Arc::new(ForwardingPersister {
+            destination: destination.clone(),
+            mutation,
+        })));
+        let source = MykoServerContext::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(persister),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        );
+        assert!(
+            source
+                .replace_batch_any([immediate_item("source", 1)], [])
+                .is_ok()
+        );
+        let destination_items = destination.registry.get_or_create("ImmediateTestItem");
+        assert!(
+            destination_items
+                .get(&Arc::from("forwarded"))
+                .materialize()
+                .get()
+                .is_some(),
+            "nested mutation must reach its destination server"
+        );
+        let source_items = registry.get_or_create("ImmediateTestItem");
+        assert!(
+            source_items
+                .get(&Arc::from("source"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+        assert!(
+            source_items
+                .get(&Arc::from("forwarded"))
+                .materialize()
+                .get()
+                .is_none(),
+            "a foreign server's mutation must not enter the source queue"
+        );
+        assert_eq!(source.causal_diagnostics().roots, 1);
+    }
+
+    #[test]
+    fn nested_server_set_uses_destination_causal_queue() {
+        nested_server_mutation(ForwardMutation::Set);
+    }
+
+    #[test]
+    fn nested_server_replace_uses_destination_causal_queue() {
+        nested_server_mutation(ForwardMutation::Replace);
+    }
+
+    fn immediate_item(id: &str, value: i32) -> Arc<dyn AnyItem> {
+        Arc::new(ImmediateTestItem {
+            id: Arc::from(id),
+            value,
+        })
+    }
+
+    #[test]
+    fn reactive_writes_keep_their_server_context() {
+        let _serial = scheduler_test_serial();
+        for replace in [false, true] {
+            let source = make_ctx();
+            let receiver = Arc::new(make_ctx());
+            let store = source.registry.get_or_create("ImmediateTestItem");
+            let fired = Arc::new(AtomicBool::new(false));
+            let fired_callback = fired.clone();
+            let receiver_callback = receiver.clone();
+            let source_callback = store.clone();
+            let _subscription = store.subscribe_keys(move |_| {
+                if source_callback.snapshot().is_empty()
+                    || fired_callback.swap(true, Ordering::SeqCst)
+                {
+                    return;
+                }
+                let item = ImmediateTestItem {
+                    id: Arc::from("receiver"),
+                    value: 2,
+                };
+                if replace {
+                    let item_arc: Arc<dyn AnyItem> = Arc::new(item);
+                    assert!(
+                        receiver_callback.replace_batch_any([item_arc], []).is_ok(),
+                        "receiver replacement"
+                    );
+                } else {
+                    assert!(receiver_callback.set(&item).is_ok(), "receiver write");
+                }
+            });
+            assert!(
+                source
+                    .replace_batch_any([immediate_item("source", 1)], [],)
+                    .is_ok(),
+                "source replacement"
+            );
+            assert!(fired.load(Ordering::SeqCst));
+            assert_eq!(
+                store.snapshot().len(),
+                1,
+                "receiver data entered source store"
+            );
+            assert_eq!(
+                receiver
+                    .registry
+                    .get("ImmediateTestItem")
+                    .map_or(0, |store| store.snapshot().len()),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn cross_context_reentry_keeps_the_outer_causal_queue() {
+        let _serial = scheduler_test_serial();
+        let source = make_ctx();
+        let receiver = Arc::new(make_ctx());
+        let source_store = source.registry.get_or_create("ImmediateTestItem");
+        let receiver_store = receiver.registry.get_or_create("ImmediateTestItem");
+        let source_callback = source.clone();
+        let receiver_snapshot = receiver_store.clone();
+        let returned = Arc::new(AtomicBool::new(false));
+        let returned_callback = returned.clone();
+        let _receiver_subscription = receiver_store.subscribe_keys(move |_| {
+            if receiver_snapshot.snapshot().is_empty()
+                || returned_callback.swap(true, Ordering::SeqCst)
+            {
+                return;
+            }
+            assert!(
+                source_callback
+                    .set(&ImmediateTestItem {
+                        id: Arc::from("returned"),
+                        value: 3,
+                    })
+                    .is_ok(),
+                "return to source context"
+            );
+        });
+        let sent = Arc::new(AtomicBool::new(false));
+        let source_snapshot = source_store.clone();
+        let receiver_callback = receiver.clone();
+        let _source_subscription = source_store.subscribe_keys(move |_| {
+            if source_snapshot.snapshot().is_empty() || sent.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            assert!(
+                receiver_callback
+                    .replace_batch_any([immediate_item("receiver", 2)], [],)
+                    .is_ok(),
+                "nested receiver root"
+            );
+        });
+        assert!(
+            source
+                .replace_batch_any([immediate_item("source", 1)], [],)
+                .is_ok(),
+            "outer source root"
+        );
+        assert!(returned.load(Ordering::SeqCst));
+        assert_eq!(source_store.snapshot().len(), 2);
+        assert_eq!(receiver_store.snapshot().len(), 1);
+        assert_eq!(source.causal_diagnostics().roots, 1);
+        assert_eq!(source.causal_diagnostics().derived_mutations, 1);
+        assert_eq!(receiver.causal_diagnostics().roots, 1);
+        assert_eq!(receiver.causal_diagnostics().derived_mutations, 0);
+        assert!(super::CAUSAL_STATES.with(|states| states.borrow().is_empty()));
     }
 
     struct OrderingPersister {
