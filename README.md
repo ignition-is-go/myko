@@ -448,7 +448,7 @@ This installs console logging, bridges existing `log` macros into `tracing`, and
 OTEL_EXPORTER_OTLP_ENDPOINT=http://telemetry-01.lucid.host:4318
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_SERVICE_NAME=phosphor
-OTEL_RESOURCE_ATTRIBUTES=host.name=phosphor-01,deployment.environment.name=hrlv
+OTEL_RESOURCE_ATTRIBUTES=host.name=phosphor-01,deployment.environment.name=development
 RUST_LOG=info,phosphor=debug,rship_sdk=debug
 ```
 
