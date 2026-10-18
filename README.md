@@ -445,7 +445,7 @@ let _telemetry = myko_telemetry::init_from_env();
 This installs console logging, bridges existing `log` macros into `tracing`, and optionally exports logs, traces, and metrics over OTLP HTTP/protobuf. Remove an earlier `env_logger::init()` call. Hosts with custom subscribers can compose `myko_telemetry::otel_layer_from_env()` instead; the server module re-exports both entry points.
 
 ```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://telemetry-01.lucid.host:4318
+OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com
 OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
 OTEL_SERVICE_NAME=phosphor
 OTEL_RESOURCE_ATTRIBUTES=host.name=phosphor-01,deployment.environment.name=development
