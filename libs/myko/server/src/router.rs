@@ -150,10 +150,21 @@ fn find_header_terminator(buf: &[u8]) -> Option<usize> {
 ///
 /// Returns an error when the selected HTTP or WebSocket handler fails.
 pub async fn route_connection(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    route_connection_with_paths(stream, addr, ctx, server_info, "/myko", "/myko/mcp").await
+}
+
+pub(crate) async fn route_connection_with_paths(
     mut stream: TcpStream,
     addr: SocketAddr,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
+    websocket_path: &str,
+    mcp_path: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match read_request_head(&mut stream).await {
         Ok(Some(h)) => h,
@@ -171,7 +182,7 @@ pub async fn route_connection(
     let path = head.path.split('?').next().unwrap_or(&head.path);
 
     match (head.method.as_str(), path) {
-        ("GET", p) if p == "/myko" || p.starts_with("/myko?") => {
+        ("GET", p) if p == websocket_path => {
             if !head.is_websocket_upgrade() {
                 let _ = write_status(&mut stream, 426, "Upgrade Required").await;
                 shutdown_cleanly(stream).await;
@@ -183,23 +194,29 @@ pub async fn route_connection(
             // and pass the upgraded stream to the WS gateway.
             handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Myko).await
         }
-        ("GET", "/myko/mcp") if head.is_websocket_upgrade() => {
+        ("GET", p) if p == mcp_path && head.is_websocket_upgrade() => {
             handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Mcp).await
         }
-        ("GET", "/myko/mcp") if head.wants_event_stream() => {
+        ("GET", p) if p == mcp_path && head.wants_event_stream() => {
             mcp::http::handle_sse(stream, ctx, head).await
         }
-        ("POST", "/myko/mcp") => mcp::http::handle_post(stream, ctx, server_info, head).await,
-        ("GET", "/myko/mcp") => {
+        ("POST", p) if p == mcp_path => {
+            mcp::http::handle_post(stream, ctx, server_info, head).await
+        }
+        ("GET", p) if p == mcp_path => {
             // No SSE accept, no WS upgrade — caller probably wants a quick
             // status check or hit the URL in a browser.
-            let body = b"{\"status\":\"ok\",\"endpoint\":\"/myko/mcp\",\"transports\":[\"POST\",\"WebSocket\",\"SSE\"]}";
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "ok",
+                "endpoint": mcp_path,
+                "transports": ["POST", "WebSocket", "SSE"],
+            }))?;
             let result = write_full(
                 &mut stream,
                 200,
                 "OK",
                 &[("Content-Type", "application/json")],
-                body,
+                &body,
             )
             .await;
             shutdown_cleanly(stream).await;
