@@ -2956,7 +2956,7 @@ mod address_tests {
                 "wss://agents.example/control/myko?tenant=test",
             ),
         ] {
-            assert_eq!(normalize_myko_address(address).unwrap().as_str(), expected);
+            assert_eq!(normalize_myko_address(address).as_deref(), Ok(expected));
         }
     }
 
