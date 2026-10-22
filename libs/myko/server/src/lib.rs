@@ -483,7 +483,9 @@ impl MykoServer {
                     self.search_index.clone(),
                     myko::server::MykoServerRuntime {
                         peer_clients: self.peer_clients.clone(),
-                        event_sink: Some(self.saga_event_tx.clone()),
+                        event_sink: inventory::iter::<SagaRegistration>()
+                            .next()
+                            .map(|_| self.saga_event_tx.clone()),
                         history_replay,
                     },
                 )
@@ -918,6 +920,81 @@ impl MykoServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use myko::entities::demo::{DemoStatus, DemoStatusId};
+
+    #[test]
+    fn no_sagas_do_not_retain_same_entity_updates() -> Result<(), Box<dyn std::error::Error>> {
+        if inventory::iter::<SagaRegistration>().next().is_some() {
+            return Err("test binary unexpectedly registers a saga".into());
+        }
+        let server = MykoServer::builder()
+            .with_default_persister(Arc::new(NullPersister))
+            .build();
+        server.start_saga_runtime();
+        let ctx = server.ctx();
+        let id = DemoStatusId::from("stable-status");
+        for update in 0..1000 {
+            ctx.set(&DemoStatus {
+                id: id.clone(),
+                name: update.to_string(),
+                color: String::new(),
+                emoji: String::new(),
+            })?;
+        }
+        let latest = ctx
+            .entity_snapshot::<DemoStatus>(&id)
+            .ok_or("status missing")?;
+        if latest.name != "999" {
+            return Err(format!("expected latest status 999, got {}", latest.name).into());
+        }
+        let queued = server
+            .saga_event_rx
+            .lock()
+            .map_err(|_| "saga queue lock poisoned")?
+            .as_ref()
+            .map_or(0, flume::Receiver::len);
+        if queued != 0 {
+            return Err(format!("a server without sagas retained {queued} events").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn transient_updates_do_not_enter_saga_queue() -> Result<(), Box<dyn std::error::Error>> {
+        if inventory::iter::<SagaRegistration>().next().is_some() {
+            return Err("test binary unexpectedly registers a saga".into());
+        }
+        let server = MykoServer::builder()
+            .with_default_persister(Arc::new(NullPersister))
+            .build();
+        server.start_saga_runtime();
+        let ctx = server.ctx();
+        let id = DemoStatusId::from("transient-status");
+        for update in 0..1000 {
+            ctx.set_transient(&DemoStatus {
+                id: id.clone(),
+                name: update.to_string(),
+                color: String::new(),
+                emoji: String::new(),
+            })?;
+        }
+        let latest = ctx
+            .entity_snapshot::<DemoStatus>(&id)
+            .ok_or("status missing")?;
+        if latest.name != "999" {
+            return Err(format!("expected latest status 999, got {}", latest.name).into());
+        }
+        let queued = server
+            .saga_event_rx
+            .lock()
+            .map_err(|_| "saga queue lock poisoned")?
+            .as_ref()
+            .map_or(0, flume::Receiver::len);
+        if queued != 0 {
+            return Err(format!("transient updates retained {queued} saga events").into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_server_creation() {
