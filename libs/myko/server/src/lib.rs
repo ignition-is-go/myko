@@ -87,6 +87,8 @@ pub struct MykoServerConfig {
 #[derive(Default)]
 pub struct MykoServerBuilder {
     bind_addr: Option<SocketAddr>,
+    websocket_path: Option<String>,
+    mcp_path: Option<String>,
     tcp_nodelay: Option<bool>,
     host_id: Option<Uuid>,
     postgres: Option<PostgresConfig>,
@@ -117,6 +119,32 @@ impl MykoServerBuilder {
     #[must_use]
     pub const fn with_bind_addr(mut self, addr: SocketAddr) -> Self {
         self.bind_addr = Some(addr);
+        self
+    }
+
+    /// Set the Myko WebSocket URL path, overriding `MYKO_WS_PATH`.
+    /// Without either override, defaults to `/myko`.
+    /// Paths must start with a single `/` and contain no query, fragment, or whitespace.
+    /// Invalid or colliding paths return an error when starting the server.
+    ///
+    /// ```no_run
+    /// let server = myko_server::MykoServer::builder()
+    ///     .with_websocket_path("/control/ws")
+    ///     .with_mcp_path("/control/mcp")
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn with_websocket_path(mut self, path: impl Into<String>) -> Self {
+        self.websocket_path = Some(path.into());
+        self
+    }
+
+    /// Set the MCP URL path for POST, WebSocket, SSE, and status requests.
+    /// Overrides `MYKO_MCP_PATH`. Without either override, defaults to `/myko/mcp`.
+    /// Must differ from the Myko WebSocket path.
+    #[must_use]
+    pub fn with_mcp_path(mut self, path: impl Into<String>) -> Self {
+        self.mcp_path = Some(path.into());
         self
     }
 
@@ -223,6 +251,8 @@ impl MykoServerBuilder {
         });
         server.after_init = std::sync::Mutex::new(self.after_init);
         server.server_info = server_info;
+        server.websocket_path = self.websocket_path.unwrap_or(server.websocket_path);
+        server.mcp_path = self.mcp_path.unwrap_or(server.mcp_path);
         server
     }
 }
@@ -247,6 +277,8 @@ pub struct MykoServer {
     pub host_id: Uuid,
     /// Server configuration
     config: MykoServerConfig,
+    websocket_path: String,
+    mcp_path: String,
     /// Postgres producer (kept alive)
     _postgres_producer_owner: Option<PostgresProducer>,
     /// Postgres consumer (kept alive)
@@ -377,6 +409,8 @@ impl MykoServer {
             peer_clients,
             after_init: std::sync::Mutex::new(None),
             server_info: Arc::new(mcp::dispatch::ServerInfo::default()),
+            websocket_path: std::env::var("MYKO_WS_PATH").unwrap_or_else(|_| "/myko".into()),
+            mcp_path: std::env::var("MYKO_MCP_PATH").unwrap_or_else(|_| "/myko/mcp".into()),
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
@@ -638,6 +672,8 @@ impl MykoServer {
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
+        self.validate_endpoint_paths()?;
+
         // Persisters can veto startup via startup healthchecks.
         let entity_types: Vec<&str> = self
             .handler_registry
@@ -746,8 +782,10 @@ impl MykoServer {
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         tracing::info!("MykoServer listening on {}", self.config.bind_addr);
         tracing::info!(
-            "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
-            self.config.bind_addr
+            "Myko gateway: ws://{}{} | MCP: {} (POST + WS + SSE)",
+            self.config.bind_addr,
+            self.websocket_path,
+            self.mcp_path
         );
 
         // Start peer registry if configured
@@ -766,13 +804,39 @@ impl MykoServer {
     pub async fn run_ws_loop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
+        self.validate_endpoint_paths()?;
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         tracing::info!("MykoServer listening on {}", self.config.bind_addr);
         tracing::info!(
-            "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
-            self.config.bind_addr
+            "Myko gateway: ws://{}{} | MCP: {} (POST + WS + SSE)",
+            self.config.bind_addr,
+            self.websocket_path,
+            self.mcp_path
         );
         self.run_ws_accept_loop(listener).await
+    }
+
+    fn validate_endpoint_paths(&self) -> std::io::Result<()> {
+        for path in [&self.websocket_path, &self.mcp_path] {
+            if !path.starts_with('/')
+                || path.starts_with("//")
+                || path
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#'))
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid endpoint path: {path:?}"),
+                ));
+            }
+        }
+        if self.websocket_path == self.mcp_path {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "WebSocket and MCP paths must differ",
+            ));
+        }
+        Ok(())
     }
 
     async fn run_ws_accept_loop(
@@ -830,9 +894,20 @@ impl MykoServer {
 
             let ctx = Arc::new(self.ctx());
             let server_info = self.server_info.clone();
+            let websocket_path = self.websocket_path.clone();
+            let mcp_path = self.mcp_path.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = router::route_connection(stream, addr, ctx, server_info).await {
+                if let Err(e) = router::route_connection_with_paths(
+                    stream,
+                    addr,
+                    ctx,
+                    server_info,
+                    &websocket_path,
+                    &mcp_path,
+                )
+                .await
+                {
                     tracing::error!("Connection error from {}: {}", addr, e);
                 }
             });
