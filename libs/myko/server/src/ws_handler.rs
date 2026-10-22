@@ -1066,52 +1066,56 @@ impl WsHandler {
                     let window_factory = query_data.window_cell_factory;
                     let window = wrapped.window;
                     let sender = message_context.subscribe_tx.clone();
-                    WS_SUBSCRIPTION_BLOCKING.spawn("query-subscription", move || {
-                        if let (Some(window_factory), Some(initial_window)) =
-                            (window_factory, window.clone())
-                        {
-                            match window_factory(
-                                query.clone(),
-                                registry.clone(),
-                                request.clone(),
-                                ctx.clone(),
-                                initial_window,
-                            ) {
-                                Ok(Some(source)) => {
-                                    let _ = sender.send(SubscriptionReady::WindowedQuery {
+                    WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
+                        "query-subscription",
+                        sender,
+                        move |sender| {
+                            if let (Some(window_factory), Some(initial_window)) =
+                                (window_factory, window.clone())
+                            {
+                                match window_factory(
+                                    query.clone(),
+                                    registry.clone(),
+                                    request.clone(),
+                                    ctx.clone(),
+                                    initial_window,
+                                ) {
+                                    Ok(Some(source)) => {
+                                        let _ = sender.send(SubscriptionReady::WindowedQuery {
+                                            tx_id,
+                                            query_id,
+                                            source,
+                                        });
+                                        return;
+                                    }
+                                    Ok(None) => {}
+                                    Err(error) => {
+                                        tracing::error!(
+                                            "Failed to create pushed query window for {}: {}",
+                                            query_id,
+                                            error
+                                        );
+                                        return;
+                                    }
+                                }
+                            }
+                            match factory(query, registry, request, Some(ctx)) {
+                                Ok(cellmap) => {
+                                    let _ = sender.send(SubscriptionReady::Query {
                                         tx_id,
                                         query_id,
-                                        source,
+                                        cellmap,
+                                        window,
                                     });
-                                    return;
                                 }
-                                Ok(None) => {}
-                                Err(error) => {
-                                    tracing::error!(
-                                        "Failed to create pushed query window for {}: {}",
-                                        query_id,
-                                        error
-                                    );
-                                    return;
-                                }
-                            }
-                        }
-                        match factory(query, registry, request, Some(ctx)) {
-                            Ok(cellmap) => {
-                                let _ = sender.send(SubscriptionReady::Query {
-                                    tx_id,
+                                Err(error) => tracing::error!(
+                                    "Failed to create query cell for {}: {}",
                                     query_id,
-                                    cellmap,
-                                    window,
-                                });
+                                    error
+                                ),
                             }
-                            Err(error) => tracing::error!(
-                                "Failed to create query cell for {}: {}",
-                                query_id,
-                                error
-                            ),
-                        }
-                    });
+                        },
+                    );
                 }
                 Err(error) => tracing::error!(
                     "Failed to parse query {}: {} | payload: {}",
@@ -1181,8 +1185,10 @@ impl WsHandler {
                 let sender = message_context.subscribe_tx.clone();
                 let priority = message_context.priority_tx.clone();
                 let logger = message_context.drop_logger.clone();
-                WS_SUBSCRIPTION_BLOCKING.spawn("view-subscription", move || {
-                    match factory(view, registry, request, ctx) {
+                WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
+                    "view-subscription",
+                    sender,
+                    move |sender| match factory(view, registry, request, ctx) {
                         Ok(cellmap) => {
                             let _ = sender.send(SubscriptionReady::View {
                                 tx_id,
@@ -1201,8 +1207,8 @@ impl WsHandler {
                                 logger.on_drop("ViewError", &error);
                             }
                         }
-                    }
-                });
+                    },
+                );
             }
             Err(error) => Self::send_view_error(
                 message_context,
@@ -1381,9 +1387,10 @@ impl WsHandler {
                         ));
                         let factory = data.cell_factory;
                         let sender = message_context.subscribe_tx.clone();
-                        WS_SUBSCRIPTION_BLOCKING.spawn(
+                        WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
                             "report-subscription",
-                            move || match factory(report, request, ctx) {
+                            sender,
+                            move |sender| match factory(report, request, ctx) {
                                 Ok(cell) => {
                                     let _ = sender.send(SubscriptionReady::Report {
                                         tx_id: tx,

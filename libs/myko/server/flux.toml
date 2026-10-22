@@ -3,3 +3,6 @@ root = ["cargo", "test", "--jobs", "4", "--lib", "view_sampling::tests", "--", "
 
 [tasks.check-view-sampling]
 root = ["cargo", "clippy", "--jobs", "4", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-blocking-work]
+root = ["cargo", "test", "--jobs", "4", "--lib", "blocking_work::tests", "--", "--test-threads=1"]

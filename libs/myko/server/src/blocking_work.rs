@@ -3,7 +3,8 @@
 //! Tokio's blocking pool has a deliberately high global thread limit. WebSocket
 //! fan-out can otherwise turn a burst of independent jobs into thousands of OS
 //! threads. These lanes cap only concurrently executing blocking jobs; callers
-//! remain queued until a permit is available.
+//! remain queued until a permit is available. Subscription builds stop waiting
+//! when their connection closes.
 
 use std::{
     env,
@@ -16,7 +17,7 @@ use std::{
     },
 };
 
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 const COMMAND_CONCURRENCY_ENV: &str = "MYKO_WS_COMMAND_BLOCKING_CONCURRENCY";
 const SUBSCRIPTION_CONCURRENCY_ENV: &str = "MYKO_WS_SUBSCRIPTION_BLOCKING_CONCURRENCY";
@@ -131,11 +132,14 @@ impl BlockingLane {
             );
         }
 
-        let permit = self.semaphore.clone().acquire_owned().await.map_err(|_| {
-            self.queued.fetch_sub(1, Ordering::Relaxed);
-            BlockingWorkError::LaneClosed { lane: self.name }
-        })?;
-        self.queued.fetch_sub(1, Ordering::Relaxed);
+        let queued_guard = QueuedJobGuard(self.clone());
+        let permit = self
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| BlockingWorkError::LaneClosed { lane: self.name })?;
+        drop(queued_guard);
 
         self.active.fetch_add(1, Ordering::Relaxed);
         let guard = ActiveJobGuard {
@@ -150,6 +154,37 @@ impl BlockingLane {
         .map_err(BlockingWorkError::Join)
     }
 
+    pub fn spawn_for_receiver<T, F, R>(
+        self: &Arc<Self>,
+        job_kind: &'static str,
+        sender: mpsc::UnboundedSender<T>,
+        job: F,
+    ) where
+        T: Send + 'static,
+        F: FnOnce(mpsc::UnboundedSender<T>) -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        let lane = self.clone();
+        std::mem::drop(tokio::spawn(async move {
+            let completion_sender = sender.clone();
+            tokio::select! {
+                biased;
+                () = sender.closed() => {}
+                result = lane.run(job_kind, move || {
+                    // NOTE(ts): The blocking pool may queue this after lane admission.
+                    if completion_sender.is_closed() {
+                        return None;
+                    }
+                    Some(job(completion_sender))
+                }) => {
+                    if let Err(error) = result {
+                        tracing::error!(lane = lane.name, job_kind, %error, "blocking work failed");
+                    }
+                }
+            }
+        }));
+    }
+
     pub fn spawn<F, R>(self: &Arc<Self>, job_kind: &'static str, job: F)
     where
         F: FnOnce() -> R + Send + 'static,
@@ -161,6 +196,14 @@ impl BlockingLane {
                 tracing::error!(lane = lane.name, job_kind, %error, "blocking work failed");
             }
         }));
+    }
+}
+
+struct QueuedJobGuard(Arc<BlockingLane>);
+
+impl Drop for QueuedJobGuard {
+    fn drop(&mut self) {
+        self.0.queued.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -180,6 +223,10 @@ fn available_parallelism() -> usize {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "test synchronization failures must fail the test"
+)]
 mod tests {
     use std::{
         sync::{
@@ -190,6 +237,108 @@ mod tests {
     };
 
     use super::BlockingLane;
+
+    async fn wait_for_count(counter: &AtomicUsize, expected: usize) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while counter.load(Ordering::SeqCst) != expected {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("lane count did not settle");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn already_disconnected_receiver_never_runs_factory() {
+        let lane = Arc::new(BlockingLane::new("test", 1));
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<()>();
+        drop(receiver);
+        let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel::<()>();
+        let executed = Arc::new(AtomicUsize::new(0));
+        let job_executed = executed.clone();
+        lane.spawn_for_receiver("closed", sender, move |_| {
+            let _completion = dropped_tx;
+            job_executed.fetch_add(1, Ordering::SeqCst);
+        });
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), dropped_rx)
+                .await
+                .expect("test operation must succeed")
+                .is_err()
+        );
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+        assert_eq!(lane.queued.load(Ordering::SeqCst), 0);
+        assert_eq!(lane.active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnected_receiver_cancels_backlog_without_running_factories() {
+        let lane = Arc::new(BlockingLane::new("test", 1));
+        let permit = lane
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("test operation must succeed");
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let executed = Arc::new(AtomicUsize::new(0));
+        for _ in 0..128 {
+            let executed = executed.clone();
+            lane.spawn_for_receiver("abandoned", sender.clone(), move |_| {
+                executed.fetch_add(1, Ordering::SeqCst);
+            });
+        }
+        let (live_sender, mut live_receiver) = tokio::sync::mpsc::unbounded_channel();
+        lane.spawn_for_receiver("live", live_sender, |sender| {
+            sender.send(42).expect("test operation must succeed");
+        });
+        wait_for_count(&lane.queued, 129).await;
+        drop(receiver);
+        wait_for_count(&lane.queued, 1).await;
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+        assert_eq!(lane.active.load(Ordering::SeqCst), 0);
+        drop(permit);
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), live_receiver.recv())
+                .await
+                .expect("test operation must succeed"),
+            Some(42)
+        );
+        wait_for_count(&lane.active, 0).await;
+        assert_eq!(lane.queued.load(Ordering::SeqCst), 0);
+        assert_eq!(executed.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn disconnect_does_not_release_running_job_permit_early() {
+        let lane = Arc::new(BlockingLane::new("test", 1));
+        let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        lane.spawn_for_receiver("running", sender, move |_| {
+            started_tx.send(()).expect("test operation must succeed");
+            release_rx.recv().expect("test operation must succeed");
+        });
+        tokio::time::timeout(Duration::from_secs(5), started_rx)
+            .await
+            .expect("test operation must succeed")
+            .expect("test operation must succeed");
+        drop(receiver);
+        let (next_sender, mut next_receiver) = tokio::sync::mpsc::unbounded_channel();
+        lane.spawn_for_receiver("next", next_sender, |sender| {
+            sender.send(()).expect("test operation must succeed");
+        });
+        wait_for_count(&lane.queued, 1).await;
+        assert_eq!(lane.active.load(Ordering::SeqCst), 1);
+        assert_eq!(lane.semaphore.available_permits(), 0);
+        release_tx.send(()).expect("test operation must succeed");
+        tokio::time::timeout(Duration::from_secs(5), next_receiver.recv())
+            .await
+            .expect("test operation must succeed")
+            .expect("test operation must succeed");
+        wait_for_count(&lane.active, 0).await;
+        assert_eq!(lane.queued.load(Ordering::SeqCst), 0);
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn blocking_lane_caps_concurrency_without_dropping_work() {
