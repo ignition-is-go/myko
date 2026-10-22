@@ -2610,7 +2610,7 @@ fn normalize_myko_address(addr: &str) -> Result<String, url::ParseError> {
         _ => Url::parse(&format!("ws://{addr}"))?,
     };
 
-    if parsed.path() != "/myko" {
+    if parsed.path().is_empty() || parsed.path() == "/" {
         parsed.set_path("/myko");
     }
 
@@ -2917,6 +2917,26 @@ mod address_tests {
     use super::normalize_myko_address;
 
     #[test]
+    fn preserves_explicit_websocket_paths() {
+        for (address, expected) in [
+            (
+                "wss://agents.example:443/control/myko",
+                "wss://agents.example/control/myko",
+            ),
+            (
+                "ws://127.0.0.1:8080/control/myko",
+                "ws://127.0.0.1:8080/control/myko",
+            ),
+            (
+                "wss://agents.example:443/control/myko?tenant=test",
+                "wss://agents.example/control/myko?tenant=test",
+            ),
+        ] {
+            assert_eq!(normalize_myko_address(address).unwrap().as_str(), expected);
+        }
+    }
+
+    #[test]
     fn preserves_explicit_websocket_default_ports() {
         assert_eq!(
             normalize_myko_address("ws://agents.example:80/myko")
@@ -2955,12 +2975,12 @@ mod address_tests {
     }
 
     #[test]
-    fn preserves_explicit_non_default_ports_and_normalizes_path() {
+    fn preserves_explicit_non_default_ports_and_paths() {
         assert_eq!(
             normalize_myko_address("ws://127.0.0.1:5174/ignored")
                 .ok()
                 .as_deref(),
-            Some("ws://127.0.0.1:5174/myko")
+            Some("ws://127.0.0.1:5174/ignored")
         );
         assert_eq!(
             normalize_myko_address("agents.example:80").ok().as_deref(),
