@@ -7,10 +7,10 @@ fn query_derive_tokens(
     is_empty: bool,
     non_hash_cache_key: bool,
     export: bool,
+    serde_rename_attr: &TokenStream,
 ) -> TokenStream {
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
     let export_derive = if export {
         quote!(#[derive(#krate::TS)] #[ts(crate = "myko::ts_rs")])
     } else {
@@ -57,7 +57,6 @@ pub fn myko_query_impl(
     // mutation, since it's always the ground truth regardless of whether
     // ts-rs codegen has run. See `myko::reflection`.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
-    let input_contract = crate::input_contract_tokens(&input_struct, "query", krate);
 
     // Also gate any user-written `#[ts(...)]` attrs on the fields; see the
     // comment on `gate_ts_attrs` in the crate root.
@@ -70,7 +69,14 @@ pub fn myko_query_impl(
     let is_empty = matches!(&input_struct.fields, syn::Fields::Named(f) if f.named.is_empty())
         || matches!(&input_struct.fields, syn::Fields::Unit);
 
-    let derives = query_derive_tokens(&ctx, is_empty, non_hash_cache_key, include_in_typegen);
+    let serde_rename_attr = crate::operation_contract::serde_rename_attr(&ctx, &input_struct.attrs);
+    let derives = query_derive_tokens(
+        &ctx,
+        is_empty,
+        non_hash_cache_key,
+        include_in_typegen,
+        &serde_rename_attr,
+    );
 
     // Generate query registration using QueryFactory trait
     let query_registration = quote! {
@@ -116,7 +122,6 @@ pub fn myko_query_impl(
     quote! {
         #derives
         #input_struct
-        #input_contract
 
         // Registration is server-only (requires QueryFactory which depends on hyphae/store)
         #[cfg(not(target_arch = "wasm32"))]

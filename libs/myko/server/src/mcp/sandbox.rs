@@ -24,6 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use myko::operation_index::OperationSchema;
 use rquickjs::{
     AsyncContext, AsyncRuntime, CatchResultExt, Ctx, Function,
     function::{Async, Opt},
@@ -51,6 +52,11 @@ globalThis.myko = {
   view: async (id, args) => __mykoInvoke("view", id, args),
   report: async (id, args) => __mykoInvoke("report", id, args),
   command: async (id, args) => __mykoInvoke("command", id, args),
+  describe: (kind, id) => {
+    const response = JSON.parse(__myko_describe(kind, id));
+    if (response.error !== undefined) throw new Error(response.error);
+    return response.value;
+  },
 };
 "#;
 
@@ -64,6 +70,7 @@ pub async fn execute(
     code: &str,
     executor: Arc<Executor>,
     filter: ClientFilters,
+    index: Arc<Vec<OperationSchema>>,
 ) -> Result<Value, String> {
     let rt = AsyncRuntime::new().map_err(|e| format!("Failed to start sandbox: {e}"))?;
     rt.set_memory_limit(MEMORY_LIMIT_BYTES).await;
@@ -91,7 +98,7 @@ pub async fn execute(
     );
 
     let run = ctx.async_with(async move |ctx| {
-        install_myko_bindings(&ctx, executor, filter).map_err(|e| e.to_string())?;
+        install_myko_bindings(&ctx, executor, filter, index).map_err(|e| e.to_string())?;
         ctx.eval::<(), _>(wrapped.into_bytes())
             .map_err(|e| e.to_string())?;
         let promise: rquickjs::Promise =
@@ -104,8 +111,11 @@ pub async fn execute(
     });
 
     match tokio::time::timeout(EXECUTE_TIMEOUT, run).await {
-        Ok(Ok(json_text)) => serde_json::from_str(&json_text)
-            .map_err(|e| format!("Script returned invalid JSON: {e}")),
+        Ok(Ok(json_text)) => {
+            super::schema::check_result_size(&json_text)?;
+            serde_json::from_str(&json_text)
+                .map_err(|e| format!("Script returned invalid JSON: {e}"))
+        }
         Ok(Err(message)) => Err(format!("Script error: {message}")),
         Err(_) => Err(format!(
             "Script execution timed out after {}s",
@@ -118,20 +128,34 @@ fn install_myko_bindings(
     ctx: &Ctx<'_>,
     executor: Arc<Executor>,
     filter: ClientFilters,
+    index: Arc<Vec<OperationSchema>>,
 ) -> rquickjs::Result<()> {
-    let call = Function::new(
-        ctx.clone(),
-        Async(
-            move |kind: std::string::String,
-                  id: std::string::String,
-                  args_json: Opt<std::string::String>| {
-                let executor = executor.clone();
-                let filter = filter.clone();
-                async move { call_operation(&executor, &filter, &kind, &id, args_json.0).await }
-            },
-        ),
-    )?
-    .with_name("__myko_call")?;
+    let describe_filter = filter.clone();
+    let describe_index = index.clone();
+    let describe = Function::new(ctx.clone(), move |kind: String, id: String| {
+        super::contract::describe(&describe_index, &describe_filter, &kind, &id)
+            .map_or_else(json_error, |value| {
+                serde_json::json!({"value": value}).to_string()
+            })
+    })?;
+    ctx.globals().set("__myko_describe", describe)?;
+    let call =
+        Function::new(
+            ctx.clone(),
+            Async(
+                move |kind: std::string::String,
+                      id: std::string::String,
+                      args_json: Opt<std::string::String>| {
+                    let executor = executor.clone();
+                    let filter = filter.clone();
+                    let index = index.clone();
+                    async move {
+                        call_operation(&executor, &filter, &index, &kind, &id, args_json.0).await
+                    }
+                },
+            ),
+        )?
+        .with_name("__myko_call")?;
     ctx.globals().set("__myko_call", call)?;
     ctx.eval::<(), _>(MYKO_SHIM)?;
     Ok(())
@@ -140,6 +164,7 @@ fn install_myko_bindings(
 async fn call_operation(
     executor: &Executor,
     filter: &ClientFilters,
+    index: &[OperationSchema],
     kind: &str,
     id: &str,
     args_json: Option<std::string::String>,
@@ -160,8 +185,26 @@ async fn call_operation(
         return json_error(message);
     }
 
-    if let Err(message) = myko::reflection::validate_operation_input(kind, id, &args) {
-        return json_error(message);
+    if !args.is_object() {
+        return json_error(format!(
+            "Invalid arguments for {name}: arguments must be an object"
+        ));
+    }
+
+    if matches!(executor, Executor::InProcess(_))
+        && let Some(operation) = index
+            .iter()
+            .find(|operation| operation.kind == kind && operation.id == id)
+    {
+        let schema = match super::schema::compile(&operation.input_schema()) {
+            Ok(schema) => schema,
+            Err(error) => return json_error(format!("Invalid input schema for {name}: {error}")),
+        };
+        if let Err(error) = super::schema::validate(&schema, &args) {
+            return json_error(format!(
+                "Invalid arguments for {name}: {error}. Use myko.describe({kind:?}, {id:?}) for the contract."
+            ));
+        }
     }
 
     let result = match kind {
@@ -172,9 +215,14 @@ async fn call_operation(
         _ => Err(format!("Unknown operation kind: {kind}")),
     };
 
-    result.map_or_else(json_error, |value| {
-        serde_json::json!({ "value": value }).to_string()
-    })
+    result.map_or_else(
+        |message| {
+            json_error(format!(
+                "{message}. Use myko.describe({kind:?}, {id:?}) for the contract."
+            ))
+        },
+        |value| serde_json::json!({ "value": value }).to_string(),
+    )
 }
 
 fn json_error(message: impl Into<std::string::String>) -> std::string::String {
@@ -184,6 +232,20 @@ fn json_error(message: impl Into<std::string::String>) -> std::string::String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn execute(
+        code: &str,
+        executor: Arc<Executor>,
+        filter: ClientFilters,
+    ) -> Result<Value, String> {
+        super::execute(
+            code,
+            executor,
+            filter,
+            Arc::new(myko::operation_index::build_operation_index()),
+        )
+        .await
+    }
 
     fn dummy_executor() -> Arc<Executor> {
         Arc::new(Executor::Client(Arc::new(myko::client::MykoClient::new())))
@@ -235,7 +297,7 @@ mod tests {
         assert!(
             arr.first()
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|message| message.contains("Unknown operation"))
+                .is_some_and(|message| message.contains("Query not found"))
         );
         assert!(
             arr.get(1)
@@ -266,9 +328,41 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn malformed_arguments_are_rejected_before_remote_connection() {
+    async fn describe_obeys_operation_visibility() {
         let result = execute(
-            "return await myko.command('DeleteServer', {id: 17}).catch(e => e.message);",
+            "try { return myko.describe('query', 'GetAllServers'); } catch (e) { return e.message; }",
+            dummy_executor(),
+            ClientFilters::from_strings(None, Some("query_*"), None, None),
+        ).await;
+        assert_eq!(
+            result,
+            Ok(serde_json::json!("Unknown operation: query_GetAllServers"))
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_client_arguments_fail_before_connection() {
+        let result = execute(
+            "try { await myko.command('DeleteServer', []); return 'accepted'; } catch (e) { return e.message; }",
+            dummy_executor(),
+            ClientFilters::allow_all(),
+        ).await;
+        assert!(
+            result
+                .as_ref()
+                .ok()
+                .and_then(Value::as_str)
+                .is_some_and(
+                    |error| error.contains("Invalid arguments for command_DeleteServer")
+                        && error.contains("arguments must be an object")
+                )
+        );
+    }
+
+    #[tokio::test]
+    async fn client_defers_typed_argument_validation_to_remote_server() {
+        let result = execute(
+            "try { await myko.command('DeleteServer', {}); } catch(e) { return e.message; }",
             dummy_executor(),
             ClientFilters::allow_all(),
         )
@@ -276,10 +370,10 @@ mod tests {
         assert!(
             result
                 .as_ref()
-                .is_ok_and(|value| value.as_str().is_some_and(|message| message
-                    .contains("Invalid arguments for command_DeleteServer")
-                    && message.contains("id"))),
-            "{result:?}"
+                .ok()
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("Not connected to Myko server")
+                    && !message.contains("Invalid arguments"))
         );
     }
 
