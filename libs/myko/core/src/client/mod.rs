@@ -463,11 +463,8 @@ pub struct CommandResponder {
 impl CommandResponder {
     /// Send a successful response.
     pub fn respond_ok(&self, response: Value) {
-        let resp = crate::command::CommandResponse {
-            tx: self.tx.clone(),
-            response,
-        };
-        let msg = MykoMessage::CommandResponse(resp);
+        let msg =
+            command_result_message(self.tx.clone(), self.command_id.to_string(), Ok(response));
         if let Some(frame) = encode_protocol(&self.protocol, &msg) {
             let _ = self.socket.send(frame);
         }
@@ -475,14 +472,25 @@ impl CommandResponder {
 
     /// Send an error response.
     pub fn respond_err(&self, message: String) {
-        let err = crate::command::CommandError::new(
-            self.tx.clone(),
-            self.command_id.to_string(),
-            message,
-        );
-        let msg = MykoMessage::CommandError(err);
+        let msg =
+            command_result_message(self.tx.clone(), self.command_id.to_string(), Err(message));
         if let Some(frame) = encode_protocol(&self.protocol, &msg) {
             let _ = self.socket.send(frame);
+        }
+    }
+}
+
+fn command_result_message(
+    tx: String,
+    command_id: String,
+    result: Result<Value, String>,
+) -> MykoMessage {
+    match result {
+        Ok(response) => {
+            MykoMessage::CommandResponse(crate::command::CommandResponse { response, tx })
+        }
+        Err(message) => {
+            MykoMessage::CommandError(crate::command::CommandError::new(tx, command_id, message))
         }
     }
 }
@@ -1762,6 +1770,25 @@ impl MykoClient {
     pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
         let myko_msg = MykoMessage::Command(command);
         let frame = self.encode_message(&myko_msg)?;
+        self.send_or_queue(frame)
+    }
+
+    /// Publish a command result using this client's admission policy.
+    ///
+    /// Transport-owned clients report transport admission; other clients retain
+    /// legacy send-or-queue behavior. Neither confirms network delivery.
+    ///
+    /// # Errors
+    ///
+    /// Returns encoding errors and, in transport-owned mode, transport rejection.
+    pub fn send_command_result(
+        &self,
+        tx: String,
+        command_id: String,
+        result: Result<Value, String>,
+    ) -> Result<(), String> {
+        let message = command_result_message(tx, command_id, result);
+        let frame = self.encode_message(&message)?;
         self.send_or_queue(frame)
     }
 
