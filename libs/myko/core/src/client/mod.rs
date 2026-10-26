@@ -12,6 +12,8 @@ mod cbor_json;
 pub mod entity_sync;
 mod map_response;
 mod query_map;
+#[cfg(test)]
+mod transport_admission_tests;
 mod view_map;
 
 pub use autosocket::SocketConnectionStatus as ConnectionStatus;
@@ -199,10 +201,12 @@ impl<T: CellValue> WindowedQueryWatch<T> {
     }
 
     /// Move this live subscription to another window without resubscribing.
+    /// Desired cursor mode is updated before admission, even if a transport-owned
+    /// client rejects the control frame. Reconnect uses that desired mode.
     ///
     /// # Errors
     ///
-    /// Returns an error if the control message cannot be encoded.
+    /// Returns an error if the control message cannot be encoded or admitted.
     pub fn set_window(&self, window: Option<QueryWindow>) -> Result<(), String> {
         let message = MykoMessage::QueryWindow(QueryWindowUpdate {
             tx: self.tx.to_string(),
@@ -213,15 +217,16 @@ impl<T: CellValue> WindowedQueryWatch<T> {
             .cursor_window
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
-        self.client.send_or_queue(frame);
-        Ok(())
+        self.client.send_or_queue(frame)
     }
 
     /// Move this live subscription to an exclusive ID-keyset page.
+    /// The desired cursor is retained for reconnect even when transport-owned
+    /// admission rejects the control frame.
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid cursor or when encoding fails.
+    /// Returns an error for an invalid cursor or when encoding or admission fails.
     pub fn set_cursor_window(&self, window: QueryCursorWindow) -> Result<(), String> {
         window.validate()?;
         let message = MykoMessage::QueryCursorWindow(QueryCursorWindowUpdate {
@@ -233,8 +238,7 @@ impl<T: CellValue> WindowedQueryWatch<T> {
             .cursor_window
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(window);
-        self.client.send_or_queue(frame);
-        Ok(())
+        self.client.send_or_queue(frame)
     }
 
     /// Request the first keyset page.
@@ -799,8 +803,15 @@ impl Default for MykoClientOptions {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SendAdmission {
+    MykoQueue,
+    Transport,
+}
+
 struct MykoClientInner {
     socket: Arc<dyn SocketTransport>,
+    admission: SendAdmission,
     protocol: Arc<AtomicU8>,
     last_message: Cell<Option<Value>, CellMutable>,
     capture_last_message: AtomicBool,
@@ -970,12 +981,32 @@ impl MykoClient {
             autosocket::WasmSocket::with_auto_reconnect(options.auto_reconnect),
         );
 
-        Self::with_transport_and_options(&socket, options)
+        Self::with_transport_and_options(&socket, options, SendAdmission::MykoQueue)
     }
 
     /// Create a `MykoClient` with a custom transport implementation.
     pub fn with_transport(transport: Arc<dyn SocketTransport>) -> Self {
-        let client = Self::with_transport_and_options(&transport, MykoClientOptions::default());
+        let client = Self::with_transport_and_options(
+            &transport,
+            MykoClientOptions::default(),
+            SendAdmission::MykoQueue,
+        );
+        drop(transport);
+        client
+    }
+
+    /// Create a client whose transport owns outgoing admission and retention.
+    ///
+    /// Unlike [`Self::with_transport`], this client never queues disconnected
+    /// sends in Myko. Send methods return the transport's admission errors.
+    /// The transport must bound retained frames; callers own retry and replay
+    /// of rejected work. Successful admission is not a delivery receipt.
+    pub fn with_transport_owned_admission(transport: Arc<dyn SocketTransport>) -> Self {
+        let client = Self::with_transport_and_options(
+            &transport,
+            MykoClientOptions::default(),
+            SendAdmission::Transport,
+        );
         drop(transport);
         client
     }
@@ -1109,6 +1140,7 @@ impl MykoClient {
     fn with_transport_and_options(
         transport: &Arc<dyn SocketTransport>,
         options: MykoClientOptions,
+        admission: SendAdmission,
     ) -> Self {
         let protocol = Arc::new(AtomicU8::new(MykoProtocol::JSON.into()));
         let last_message = Cell::new(None).with_name("last_message");
@@ -1157,7 +1189,9 @@ impl MykoClient {
                     }
 
                     // Flush pending sends on connect
-                    if let ConnectionStatus::Connected(_) = conn_status {
+                    if matches!(conn_status, ConnectionStatus::Connected(_))
+                        && inner.admission == SendAdmission::MykoQueue
+                    {
                         let mut pending = inner
                             .pending_sends
                             .lock()
@@ -1170,6 +1204,7 @@ impl MykoClient {
 
             MykoClientInner {
                 socket: transport.clone(),
+                admission,
                 protocol: protocol.clone(),
                 last_message,
                 capture_last_message: AtomicBool::new(true),
@@ -1662,7 +1697,10 @@ impl MykoClient {
     // ─────────────────────────────────────────────────────────────────────────
 
     /// Send a frame, or queue it if disconnected.
-    fn send_or_queue(&self, frame: WsFrame) {
+    fn send_or_queue(&self, frame: WsFrame) -> Result<(), String> {
+        if self.inner.admission == SendAdmission::Transport {
+            return self.inner.socket.send(frame);
+        }
         match admit_send(&self.inner.pending_sends, frame, || {
             matches!(
                 self.inner.socket.actual_connection_state().get(),
@@ -1680,6 +1718,7 @@ impl MykoClient {
             }
             Err(_) => {}
         }
+        Ok(())
     }
 
     ///
@@ -1689,8 +1728,7 @@ impl MykoClient {
     pub fn send_event(&self, event: MEvent) -> Result<(), String> {
         let myko_msg = MykoMessage::Event(event);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     ///
@@ -1703,8 +1741,7 @@ impl MykoClient {
         }
         let myko_msg = MykoMessage::EventBatch(events);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     ///
@@ -1714,8 +1751,7 @@ impl MykoClient {
     pub fn send_query(&self, query: WrappedQuery) -> Result<(), String> {
         let myko_msg = MykoMessage::Query(query);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     /// Send a raw wrapped command (for federation forwarding)
@@ -1726,8 +1762,7 @@ impl MykoClient {
     pub fn send_command_raw(&self, command: crate::command::WrappedCommand) -> Result<(), String> {
         let myko_msg = MykoMessage::Command(command);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     /// Send a raw wrapped report (for federation forwarding)
@@ -1738,8 +1773,7 @@ impl MykoClient {
     pub fn send_report_raw(&self, report: crate::report::WrappedReport) -> Result<(), String> {
         let myko_msg = MykoMessage::Report(report);
         let frame = self.encode_message(&myko_msg)?;
-        self.send_or_queue(frame);
-        Ok(())
+        self.send_or_queue(frame)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -2322,7 +2356,7 @@ impl MykoClient {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             handlers.insert(
-                tx,
+                tx.clone(),
                 Box::new(move |result: Result<Value, String>| {
                     let mapped = result.and_then(|value| {
                         serde_json::from_value::<R>(value).map_err(|e| e.to_string())
@@ -2332,7 +2366,9 @@ impl MykoClient {
             );
         }
 
-        self.send_or_queue(frame);
+        if let Err(error) = self.send_or_queue(frame) {
+            self.reject_command(&tx, error);
+        }
 
         cell.lock()
     }
@@ -2609,7 +2645,7 @@ impl MykoClient {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             handlers.insert(
-                tx,
+                tx.clone(),
                 Box::new(move |result: Result<Value, String>| {
                     cell_writer.set(Some(result));
                 }),
@@ -2617,12 +2653,26 @@ impl MykoClient {
         }
 
         if let Ok(frame) = self.encode_message(&MykoMessage::Command(command)) {
-            self.send_or_queue(frame);
+            if let Err(error) = self.send_or_queue(frame) {
+                self.reject_command(&tx, error);
+            }
         } else {
-            cell.set(Some(Err("Could not serialize command".to_string())));
+            self.reject_command(&tx, "Could not serialize command".to_string());
         }
 
         cell.lock()
+    }
+
+    fn reject_command(&self, tx: &str, error: String) {
+        let handler = self
+            .inner
+            .command_response_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(tx);
+        if let Some(handler) = handler {
+            handler(Err(error));
+        }
     }
 }
 
