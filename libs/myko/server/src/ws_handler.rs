@@ -57,6 +57,9 @@ use uuid::Uuid;
 
 use crate::blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING};
 
+mod subscription_builds;
+use subscription_builds::{SubscriptionBuilds, SubscriptionBuilt};
+
 struct WsBenchmarkStats {
     message_count: AtomicU64,
     total_bytes: AtomicU64,
@@ -313,7 +316,8 @@ struct MessageContext<'a> {
     outbound_commands_by_tx: &'a SharedOutboundCommands,
     command_tx: &'a mpsc::UnboundedSender<CommandJob>,
     query_window_tx: &'a mpsc::UnboundedSender<QueryWindowJob>,
-    subscribe_tx: &'a mpsc::UnboundedSender<SubscriptionReady>,
+    subscribe_tx: &'a mpsc::UnboundedSender<SubscriptionBuilt>,
+    subscription_builds: &'a SubscriptionBuilds,
     view_delivery_tx: &'a mpsc::UnboundedSender<ViewDeliveryControl>,
 }
 
@@ -333,7 +337,8 @@ struct ReadLoopState {
     outbound_commands_by_tx: SharedOutboundCommands,
     command_tx: mpsc::UnboundedSender<CommandJob>,
     query_window_tx: mpsc::UnboundedSender<QueryWindowJob>,
-    subscribe_tx: mpsc::UnboundedSender<SubscriptionReady>,
+    subscribe_tx: mpsc::UnboundedSender<SubscriptionBuilt>,
+    subscription_builds: SubscriptionBuilds,
     view_delivery_tx: mpsc::UnboundedSender<ViewDeliveryControl>,
     overload_rx: watch::Receiver<bool>,
 }
@@ -582,6 +587,7 @@ impl WsHandler {
                 command_tx: &state.command_tx,
                 query_window_tx: &state.query_window_tx,
                 subscribe_tx: &state.subscribe_tx,
+                subscription_builds: &state.subscription_builds,
                 view_delivery_tx: &state.view_delivery_tx,
             },
             message,
@@ -755,7 +761,7 @@ impl WsHandler {
     async fn run_read_loop<W: WsWriter>(
         mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
         session: &mut ClientSession<W>,
-        mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionReady>,
+        mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionBuilt>,
         mut denied_rx: mpsc::UnboundedReceiver<Arc<str>>,
         state: ReadLoopState,
     ) {
@@ -791,6 +797,7 @@ impl WsHandler {
             tokio::select! {
                 _ = auth_interval.tick(), if state.auth.is_some() => {}
                 Some(tx) = denied_rx.recv() => {
+                    state.subscription_builds.cancel(&tx);
                     session.cancel(&tx);
                     let _ = state.view_delivery_tx.send(ViewDeliveryControl::Cancel(tx.clone()));
                     if let Ok(mut map) = state.query_ids_by_tx.lock() { map.remove(&tx); }
@@ -810,8 +817,16 @@ impl WsHandler {
                     }
                 }
                 // Completed subscription builds — register with session
-                Some(ready) = subscribe_rx.recv() => {
-                    if !Self::register_ready_subscription(session, ready, &state) { break; }
+                Some(built) = subscribe_rx.recv() => {
+                    if let Some((tx, ready)) = Self::complete_subscription(
+                        &state.subscription_builds, built, &state.priority_tx, &state.drop_logger,
+                    ) {
+                        if let Some(ready) = ready {
+                            if !Self::register_ready_subscription(session, ready, &state) { break; }
+                        } else if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
+                            map.remove(&tx);
+                        }
+                    }
                 }
                 // NOTE(ts): Sweep outbound command entries older than 10s.
                 // Responses normally arrive quickly; stale entries are from
@@ -1336,7 +1351,7 @@ impl WsHandler {
         let (priority_tx, priority_rx) = mpsc::channel::<MykoMessage>(1_000);
         let (command_tx, command_rx) = mpsc::unbounded_channel::<CommandJob>();
         let (query_window_tx, query_window_task) = Self::spawn_query_window_worker();
-        let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel::<SubscriptionReady>();
+        let (subscribe_tx, subscribe_rx) = mpsc::unbounded_channel::<SubscriptionBuilt>();
         let (view_delivery_tx, view_delivery_rx) = mpsc::unbounded_channel();
         let (overload_tx, overload_rx) = watch::channel(false);
         // Outgoing format for this session: defaults to JSON, sticky-promotes
@@ -1438,6 +1453,7 @@ impl WsHandler {
                 command_tx: command_tx.clone(),
                 query_window_tx: query_window_tx.clone(),
                 subscribe_tx: subscribe_tx.clone(),
+                subscription_builds: SubscriptionBuilds::default(),
                 view_delivery_tx,
                 overload_rx,
             },
@@ -1489,10 +1505,11 @@ impl WsHandler {
                     let window_factory = query_data.window_cell_factory;
                     let window = wrapped.window;
                     let sender = message_context.subscribe_tx.clone();
-                    WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
+                    message_context.subscription_builds.spawn(
                         "query-subscription",
+                        tx_id.clone(),
                         sender,
-                        move |sender| {
+                        move || {
                             if let (Some(window_factory), Some(initial_window)) =
                                 (window_factory, window.clone())
                             {
@@ -1504,12 +1521,11 @@ impl WsHandler {
                                     initial_window,
                                 ) {
                                     Ok(Some(source)) => {
-                                        let _ = sender.send(SubscriptionReady::WindowedQuery {
+                                        return Some(Ok(SubscriptionReady::WindowedQuery {
                                             tx_id,
                                             query_id,
                                             source,
-                                        });
-                                        return;
+                                        }));
                                     }
                                     Ok(None) => {}
                                     Err(error) => {
@@ -1518,24 +1534,25 @@ impl WsHandler {
                                             query_id,
                                             error
                                         );
-                                        return;
+                                        return None;
                                     }
                                 }
                             }
                             match factory(query, registry, request, Some(ctx)) {
-                                Ok(cellmap) => {
-                                    let _ = sender.send(SubscriptionReady::Query {
-                                        tx_id,
-                                        query_id,
-                                        cellmap,
-                                        window,
-                                    });
-                                }
-                                Err(error) => tracing::error!(
-                                    "Failed to create query cell for {}: {}",
+                                Ok(cellmap) => Some(Ok(SubscriptionReady::Query {
+                                    tx_id,
                                     query_id,
-                                    error
-                                ),
+                                    cellmap,
+                                    window,
+                                })),
+                                Err(error) => {
+                                    tracing::error!(
+                                        "Failed to create query cell for {}: {}",
+                                        query_id,
+                                        error
+                                    );
+                                    None
+                                }
                             }
                         },
                     );
@@ -1551,8 +1568,8 @@ impl WsHandler {
             let store = (*ctx.registry.get_or_create(&wrapped.query_item_type)).clone();
             let cellmap = hyphae::MapQuery::materialize(store.select(|_| true));
             message_context.drop_logger.subscription_ready(&tx_id);
+            message_context.subscription_builds.cancel(&tx_id);
             session.subscribe_query(tx_id, query_id, cellmap, wrapped.window);
-            drop(ctx);
         }
     }
 
@@ -1606,30 +1623,22 @@ impl WsHandler {
                 let registry = ctx.registry.clone();
                 let window = wrapped.window;
                 let sender = message_context.subscribe_tx.clone();
-                let priority = message_context.priority_tx.clone();
-                let logger = message_context.drop_logger.clone();
-                WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
+                message_context.subscription_builds.spawn(
                     "view-subscription",
+                    tx_id.clone(),
                     sender,
-                    move |sender| match factory(view, registry, request, ctx) {
-                        Ok(cellmap) => {
-                            let _ = sender.send(SubscriptionReady::View {
-                                tx_id,
-                                view_id,
-                                cellmap,
-                                window,
-                            });
-                        }
-                        Err(error) => {
-                            let message = MykoMessage::ViewError(ViewError::new(
-                                tx_id.to_string(),
-                                view_id.to_string(),
-                                error,
-                            ));
-                            if let Err(error) = priority.try_send(message) {
-                                logger.on_drop("ViewError", &error);
-                            }
-                        }
+                    move || match factory(view, registry, request, ctx) {
+                        Ok(cellmap) => Some(Ok(SubscriptionReady::View {
+                            tx_id,
+                            view_id,
+                            cellmap,
+                            window,
+                        })),
+                        Err(error) => Some(Err(ViewError::new(
+                            tx_id.to_string(),
+                            view_id.to_string(),
+                            error,
+                        ))),
                     },
                 );
             }
@@ -1719,6 +1728,28 @@ impl WsHandler {
         }
     }
 
+    fn complete_subscription(
+        builds: &SubscriptionBuilds,
+        built: SubscriptionBuilt,
+        priority: &mpsc::Sender<MykoMessage>,
+        logger: &DropLogger,
+    ) -> Option<(Arc<str>, Option<SubscriptionReady>)> {
+        if !builds.finish(&built) {
+            return None;
+        }
+        let ready = match built.result {
+            Some(Ok(ready)) => Some(ready),
+            Some(Err(error)) => {
+                if let Err(error) = priority.try_send(MykoMessage::ViewError(error)) {
+                    logger.on_drop("ViewError", &error);
+                }
+                None
+            }
+            None => None,
+        };
+        Some((built.tx, ready))
+    }
+
     fn handle_subscription_control<W: WsWriter>(
         session: &mut ClientSession<W>,
         message_context: &MessageContext<'_>,
@@ -1726,6 +1757,7 @@ impl WsHandler {
     ) {
         match message {
             MykoMessage::QueryCancel(CancelSubscription { tx }) => {
+                message_context.subscription_builds.cancel(&tx);
                 let tx: Arc<str> = tx.into();
                 if let Ok(mut map) = message_context.query_ids_by_tx.lock() {
                     map.remove(&tx);
@@ -1751,6 +1783,7 @@ impl WsHandler {
                 session.update_query_cursor_window(&Arc::from(tx), window);
             }
             MykoMessage::ViewCancel(CancelSubscription { tx }) => {
+                message_context.subscription_builds.cancel(&tx);
                 let tx: Arc<str> = tx.into();
                 let _ = message_context
                     .view_delivery_tx
@@ -1775,6 +1808,7 @@ impl WsHandler {
                 session.update_view_window(&Arc::from(tx), window);
             }
             MykoMessage::ReportCancel(CancelSubscription { tx }) => {
+                message_context.subscription_builds.cancel(&tx);
                 session.cancel(&Arc::from(tx));
             }
             _ => {}
@@ -1812,22 +1846,24 @@ impl WsHandler {
                         );
                         let factory = data.cell_factory;
                         let sender = message_context.subscribe_tx.clone();
-                        WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
+                        message_context.subscription_builds.spawn(
                             "report-subscription",
+                            tx.clone(),
                             sender,
-                            move |sender| match factory(report, request, ctx) {
-                                Ok(cell) => {
-                                    let _ = sender.send(SubscriptionReady::Report {
-                                        tx_id: tx,
-                                        report_id: report_id.into(),
-                                        cell,
-                                    });
+                            move || match factory(report, request, ctx) {
+                                Ok(cell) => Some(Ok(SubscriptionReady::Report {
+                                    tx_id: tx,
+                                    report_id: report_id.into(),
+                                    cell,
+                                })),
+                                Err(error) => {
+                                    tracing::error!(
+                                        "Failed to create report cell for {}: {}",
+                                        report_id,
+                                        error
+                                    );
+                                    None
                                 }
-                                Err(error) => tracing::error!(
-                                    "Failed to create report cell for {}: {}",
-                                    report_id,
-                                    error
-                                ),
                             },
                         );
                     }
@@ -2207,6 +2243,370 @@ mod tests {
     use tungstenite::{Error as WebSocketError, error::ProtocolError};
 
     use super::*;
+
+    struct SubscriptionWriter;
+    impl WsWriter for SubscriptionWriter {
+        fn send(&self, _message: MykoMessage) {}
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: EncodedCommandMessage,
+        ) {
+        }
+    }
+
+    fn with_subscription_context<R>(
+        builds: &SubscriptionBuilds,
+        action: impl FnOnce(&MessageContext<'_>) -> R,
+    ) -> R {
+        let context = MessageContext {
+            priority_tx: &mpsc::channel(1).0,
+            drop_logger: &Arc::new(DropLogger::new("test".into(), watch::channel(false).0)),
+            query_ids_by_tx: &Arc::default(),
+            view_ids_by_tx: &Arc::default(),
+            subscribe_started_by_tx: &Arc::default(),
+            command_started_by_tx: &Arc::default(),
+            outbound_commands_by_tx: &Arc::default(),
+            command_tx: &mpsc::unbounded_channel().0,
+            query_window_tx: &mpsc::unbounded_channel().0,
+            subscribe_tx: &mpsc::unbounded_channel().0,
+            subscription_builds: builds,
+            view_delivery_tx: &mpsc::unbounded_channel().0,
+        };
+        action(&context)
+    }
+
+    fn cancel_subscription(
+        session: &mut ClientSession<SubscriptionWriter>,
+        builds: &SubscriptionBuilds,
+        message: MykoMessage,
+    ) {
+        with_subscription_context(builds, |context| {
+            WsHandler::handle_subscription_control(session, context, message);
+        });
+    }
+
+    fn install_test_subscription<W: WsWriter>(session: &mut ClientSession<W>, ready: SubscriptionReady) {
+        match ready {
+            SubscriptionReady::Report {
+                tx_id,
+                report_id,
+                cell,
+            } => session.subscribe_report(tx_id, report_id, cell),
+            SubscriptionReady::WindowedQuery {
+                tx_id,
+                query_id,
+                source,
+            } => session.subscribe_windowed_query(tx_id, query_id, source),
+            SubscriptionReady::Query {
+                tx_id,
+                query_id,
+                cellmap,
+                window,
+            } => session.subscribe_query(tx_id, query_id, cellmap, window),
+            SubscriptionReady::View {
+                tx_id,
+                view_id,
+                cellmap,
+                window,
+            } => session.subscribe_view_with_id(tx_id, view_id, cellmap, window),
+        }
+    }
+
+    fn complete_test_subscription<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        builds: &SubscriptionBuilds,
+        built: SubscriptionBuilt,
+        priority: &mpsc::Sender<MykoMessage>,
+        logger: &DropLogger,
+    ) -> Option<Arc<str>> {
+        let (tx, ready) = WsHandler::complete_subscription(builds, built, priority, logger)?;
+        if let Some(ready) = ready { install_test_subscription(session, ready); }
+        Some(tx)
+    }
+
+    #[derive(Clone, Default)]
+    struct RecordingSubscriptionWriter(Arc<Mutex<Vec<MykoMessage>>>);
+
+    impl WsWriter for RecordingSubscriptionWriter {
+        fn send(&self, message: MykoMessage) {
+            self.0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(message);
+        }
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: EncodedCommandMessage,
+        ) {
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn synchronous_query_fallback_retires_pending_factory() {
+        use myko::{
+            entities::server::{GetAllServers, Server},
+            wire::wrap_query,
+        };
+
+        let tx: Arc<str> = "fallback-replacement".into();
+        let builds = SubscriptionBuilds::default();
+        let (sender, mut completed) = mpsc::unbounded_channel();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let captured = Arc::new(());
+        let released = Arc::downgrade(&captured);
+        let old_tx = tx.clone();
+        builds.spawn("test-fallback", tx.clone(), sender, move || {
+            let _ = started_tx.send(());
+            let _ = release_rx.recv();
+            drop(captured);
+            Some(Ok(SubscriptionReady::Query {
+                tx_id: old_tx,
+                query_id: "old-query".into(),
+                cellmap: hyphae::CellMap::new().lock(),
+                window: None,
+            }))
+        });
+        assert!(started_rx.await.is_ok());
+        let server = crate::MykoServer::builder().build();
+        let context = Arc::new(server.ctx());
+        let writer = RecordingSubscriptionWriter::default();
+        let mut session = ClientSession::new("test".into(), writer.clone());
+        let query = wrap_query(tx.clone(), &GetAllServers {});
+        assert!(query.is_ok());
+        if let Ok(mut query) = query {
+            query.query_id = "unregistered-fallback-query".into();
+            assert!(context.handler_registry.query(&query.query_id).is_none());
+            with_subscription_context(&builds, |messages| {
+                WsHandler::handle_query_request(&mut session, context.clone(), messages, query);
+            });
+        }
+        assert!(session.has_subscription(&tx));
+        assert_eq!(
+            writer
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            1
+        );
+        assert!(release_tx.send(()).is_ok());
+        let result = tokio::time::timeout(Duration::from_secs(5), completed.recv()).await;
+        assert!(matches!(result, Ok(None)));
+        assert!(released.upgrade().is_none());
+        assert!(
+            context
+                .set(&Server {
+                    id: "fallback-server".into(),
+                    version: "test".into(),
+                    address: "127.0.0.1".into(),
+                    port: 1,
+                    started_at: String::new(),
+                })
+                .is_ok()
+        );
+        let messages = writer
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(messages.len(), 2);
+        assert!(
+            messages
+                .iter()
+                .all(|message| matches!(message, MykoMessage::QueryResponse(_)))
+        );
+        drop(messages);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_factory_cannot_install_late_subscription() {
+        let tx: Arc<str> = "cancelled-build".into();
+        let output: Arc<dyn AnyOutput> = Arc::new(1_u64);
+        let cases = [
+            SubscriptionReady::Query {
+                tx_id: tx.clone(),
+                query_id: "test-query".into(),
+                cellmap: hyphae::CellMap::new().lock(),
+                window: None,
+            },
+            SubscriptionReady::View {
+                tx_id: tx.clone(),
+                view_id: "test-view".into(),
+                cellmap: hyphae::CellMap::new().lock(),
+                window: None,
+            },
+            SubscriptionReady::Report {
+                tx_id: tx.clone(),
+                report_id: "test-report".into(),
+                cell: Cell::new(output).lock(),
+            },
+        ];
+        for ready in cases {
+            let cancel = match &ready {
+                SubscriptionReady::Query { .. } => {
+                    MykoMessage::QueryCancel(CancelSubscription { tx: tx.to_string() })
+                }
+                SubscriptionReady::View { .. } => {
+                    MykoMessage::ViewCancel(CancelSubscription { tx: tx.to_string() })
+                }
+                _ => MykoMessage::ReportCancel(CancelSubscription { tx: tx.to_string() }),
+            };
+            let builds = SubscriptionBuilds::default();
+            let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let (sender, mut completed) = mpsc::unbounded_channel();
+            builds.spawn("test-cancel", tx.clone(), sender, move || {
+                let _ = started_tx.send(());
+                let _ = release_rx.recv();
+                Some(Ok(ready))
+            });
+            assert!(started_rx.await.is_ok());
+            let mut session = ClientSession::new("test".into(), SubscriptionWriter);
+            cancel_subscription(&mut session, &builds, cancel);
+            assert!(release_tx.send(()).is_ok());
+            let result = tokio::time::timeout(Duration::from_secs(5), completed.recv()).await;
+            assert!(matches!(result, Ok(None)));
+            assert!(!session.has_subscription(&tx));
+        }
+    }
+
+    #[test]
+    fn stale_failed_build_cannot_remove_or_error_new_owner() {
+        let tx: Arc<str> = "replaced-build".into();
+        let builds = SubscriptionBuilds::default();
+        let old = builds.begin(tx.clone());
+        let owner = builds.begin(tx.clone());
+        let mut session = ClientSession::new("test".into(), SubscriptionWriter);
+        let (priority, mut errors) = mpsc::channel(1);
+        let logger = DropLogger::new("test".into(), watch::channel(false).0);
+        let stale = SubscriptionBuilt {
+            tx: tx.clone(),
+            owner: old,
+            result: Some(Err(ViewError::new(
+                tx.to_string(),
+                "test-view",
+                "old failure",
+            ))),
+        };
+        assert!(
+            complete_test_subscription(&mut session, &builds, stale, &priority, &logger)
+                .is_none()
+        );
+        assert!(errors.try_recv().is_err());
+        let current = SubscriptionBuilt {
+            tx: tx.clone(),
+            owner,
+            result: Some(Ok(SubscriptionReady::Query {
+                tx_id: tx.clone(),
+                query_id: "test-query".into(),
+                cellmap: hyphae::CellMap::new().lock(),
+                window: None,
+            })),
+        };
+        assert!(
+            complete_test_subscription(&mut session, &builds, current, &priority, &logger)
+                .is_some()
+        );
+        assert!(session.has_subscription(&tx));
+    }
+
+    #[tokio::test]
+    async fn cancellation_fences_completion_already_queued_for_installation() {
+        let tx: Arc<str> = "queued-completion".into();
+        let builds = SubscriptionBuilds::default();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        let completed_tx = tx.clone();
+        builds.spawn("test-queued", tx.clone(), sender, move || {
+            Some(Ok(SubscriptionReady::Query {
+                tx_id: completed_tx,
+                query_id: "test-query".into(),
+                cellmap: hyphae::CellMap::new().lock(),
+                window: None,
+            }))
+        });
+        let completed = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
+        assert!(matches!(completed, Ok(Some(_))));
+        if let Ok(Some(built)) = completed {
+            let mut session = ClientSession::new("test".into(), SubscriptionWriter);
+            cancel_subscription(
+                &mut session,
+                &builds,
+                MykoMessage::QueryCancel(CancelSubscription { tx: tx.to_string() }),
+            );
+            let logger = DropLogger::new("test".into(), watch::channel(false).0);
+            assert!(
+                complete_test_subscription(
+                    &mut session,
+                    &builds,
+                    built,
+                    &mpsc::channel(1).0,
+                    &logger
+                )
+                .is_none()
+            );
+            assert!(!session.has_subscription(&tx));
+        }
+    }
+
+    #[tokio::test]
+    async fn panicking_factory_releases_pending_owner() {
+        let tx: Arc<str> = "panicking-build".into();
+        let builds = SubscriptionBuilds::default();
+        let (sender, mut receiver) = mpsc::unbounded_channel();
+        builds.spawn("test-panic", tx.clone(), sender, || {
+            std::panic::resume_unwind(Box::new("factory panic"));
+        });
+        let completed = tokio::time::timeout(Duration::from_secs(5), receiver.recv()).await;
+        assert!(matches!(completed, Ok(Some(_))));
+        if let Ok(Some(built)) = completed {
+            let owner = Arc::downgrade(&built.owner);
+            let mut session = ClientSession::new("test".into(), SubscriptionWriter);
+            let logger = DropLogger::new("test".into(), watch::channel(false).0);
+            assert!(
+                complete_test_subscription(
+                    &mut session,
+                    &builds,
+                    built,
+                    &mpsc::channel(1).0,
+                    &logger
+                )
+                .is_some()
+            );
+            assert!(owner.upgrade().is_none());
+            assert!(!session.has_subscription(&tx));
+        }
+    }
+
+    #[test]
+    fn failed_build_releases_pending_owner_and_delivers_current_view_error() {
+        let tx: Arc<str> = "failed-build".into();
+        let builds = SubscriptionBuilds::default();
+        let owner = builds.begin(tx.clone());
+        let retained = Arc::downgrade(&owner);
+        let mut session = ClientSession::new("test".into(), SubscriptionWriter);
+        let (priority, mut errors) = mpsc::channel(1);
+        let logger = DropLogger::new("test".into(), watch::channel(false).0);
+        let failed = SubscriptionBuilt {
+            tx: tx.clone(),
+            owner,
+            result: Some(Err(ViewError::new(
+                tx.to_string(),
+                "test-view",
+                "current failure",
+            ))),
+        };
+        assert!(
+            complete_test_subscription(&mut session, &builds, failed, &priority, &logger)
+                .is_some()
+        );
+        assert!(matches!(errors.try_recv(), Ok(MykoMessage::ViewError(_))));
+        assert!(retained.upgrade().is_none());
+        assert!(!session.has_subscription(&tx));
+    }
 
     #[test]
     fn classifies_routine_websocket_disconnects() {
