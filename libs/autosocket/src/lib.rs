@@ -5,7 +5,7 @@ use hyphae::{Cell, CellImmutable};
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::AutoReconnectSocket;
+pub use native::{AutoReconnectSocket, ConnectionRequest, RequestFactoryError};
 
 #[cfg(target_arch = "wasm32")]
 mod wasm;
