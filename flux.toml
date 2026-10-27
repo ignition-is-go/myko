@@ -103,3 +103,6 @@ root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--", "--test-threa
 
 [tasks.check-client-mutation-policy-wasm]
 root = ["cargo", "check", "--jobs", "4", "-p", "myko", "--target", "wasm32-unknown-unknown"]
+
+[tasks.check-client-mutation-policy-core]
+root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--lib", "--no-deps", "--", "-D", "warnings"]

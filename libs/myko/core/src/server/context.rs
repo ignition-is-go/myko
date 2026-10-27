@@ -368,7 +368,7 @@ impl MykoServerContext {
     }
 
     #[must_use]
-    pub fn client_mutation_policy(&self) -> &super::ClientMutationPolicy {
+    pub const fn client_mutation_policy(&self) -> &super::ClientMutationPolicy {
         &self.client_mutation_policy
     }
 
