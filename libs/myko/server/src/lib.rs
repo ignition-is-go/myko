@@ -116,20 +116,19 @@ impl MykoServerBuilder {
         Self::default()
     }
 
-    /// Restrict commands and raw events accepted by native WS and MCP clients.
+    /// Restrict native WS and MCP clients to commands marked
+    /// `#[myko_command(..., client)]`, rejecting raw client events.
     /// Defaults to the existing trusted-peer behavior. Internal command execution
     /// and server-owned events are unaffected; this does not authenticate clients.
     ///
     /// ```no_run
     /// use myko_server::{ClientMutationPolicy, MykoServer};
     /// let server = MykoServer::builder()
-    ///     .with_client_mutation_policy(ClientMutationPolicy::commands_only([
-    ///         "CreateDocument", "EditDocument",
-    ///     ]))
+    ///     .with_client_mutation_policy(ClientMutationPolicy::DeclaredCommands)
     ///     .build();
     /// ```
     #[must_use]
-    pub fn with_client_mutation_policy(mut self, policy: ClientMutationPolicy) -> Self {
+    pub const fn with_client_mutation_policy(mut self, policy: ClientMutationPolicy) -> Self {
         self.client_mutation_policy = policy;
         self
     }
@@ -509,7 +508,7 @@ impl MykoServer {
                         history_replay,
                     },
                 )
-                .with_client_mutation_policy(self.client_mutation_policy.clone())
+                .with_client_mutation_policy(self.client_mutation_policy)
             })
             .clone()
     }

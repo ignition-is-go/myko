@@ -1,31 +1,27 @@
-use std::{collections::HashSet, sync::Arc};
+use crate::command::ClientCommandRegistration;
 
 /// Mutation surface exposed by a server's client transports.
 ///
 /// This is not authentication or per-user authorization. Commands permitted here
 /// still need to validate their arguments and application permissions.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub enum ClientMutationPolicy {
     /// Preserve the trusted-peer protocol: all commands and raw events are accepted.
     #[default]
     Trusted,
-    /// Only explicitly named commands may mutate state; raw events are rejected.
-    CommandsOnly(Arc<HashSet<String>>),
+    /// Accept only `#[myko_command(..., client)]` commands and reject raw events.
+    /// With no client-marked commands, client transports are read-only.
+    DeclaredCommands,
 }
 
 impl ClientMutationPolicy {
-    /// Expose only these command IDs, rejecting client-origin events and batches.
-    /// An empty list makes client transports read-only.
-    #[must_use]
-    pub fn commands_only(commands: impl IntoIterator<Item = impl Into<String>>) -> Self {
-        Self::CommandsOnly(Arc::new(commands.into_iter().map(Into::into).collect()))
-    }
-
     #[must_use]
     pub fn allows_command(&self, command_id: &str) -> bool {
         match self {
             Self::Trusted => true,
-            Self::CommandsOnly(commands) => commands.contains(command_id),
+            Self::DeclaredCommands => inventory::iter::<ClientCommandRegistration>
+                .into_iter()
+                .any(|registration| registration.command_id == command_id),
         }
     }
 

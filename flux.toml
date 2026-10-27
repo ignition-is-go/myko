@@ -106,3 +106,9 @@ root = ["cargo", "check", "--jobs", "4", "-p", "myko", "--target", "wasm32-unkno
 
 [tasks.check-client-mutation-policy-core]
 root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--lib", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-client-command-macro]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-macros", "--lib", "--", "--test-threads=1"]
+
+[tasks.check-client-command-macro]
+root = ["cargo", "clippy", "--jobs", "4", "-p", "myko-macros", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]

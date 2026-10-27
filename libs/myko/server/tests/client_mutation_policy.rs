@@ -18,7 +18,7 @@ pub struct IngressRecord {
     pub value: String,
 }
 
-#[myko_command(bool)]
+#[myko_command(bool, client)]
 pub struct AllowedIngressWrite {
     pub value: String,
 }
@@ -30,6 +30,17 @@ impl CommandHandler for AllowedIngressWrite {
             value: self.value,
         })?;
         Ok(true)
+    }
+}
+
+#[myko_command(bool)]
+pub struct InternalIngressWrite {
+    pub value: String,
+}
+
+impl CommandHandler for InternalIngressWrite {
+    fn execute(self, ctx: CommandContext) -> Result<bool, CommandError> {
+        AllowedIngressWrite { value: self.value }.execute(ctx)
     }
 }
 
@@ -115,9 +126,7 @@ async fn restricted_clients_cannot_bypass_commands_with_events_or_mcp() -> TestR
     let server = Arc::new(
         MykoServer::builder()
             .with_bind_addr(address)
-            .with_client_mutation_policy(ClientMutationPolicy::commands_only([
-                "AllowedIngressWrite",
-            ]))
+            .with_client_mutation_policy(ClientMutationPolicy::DeclaredCommands)
             .build(),
     );
     internal(&server)
@@ -148,6 +157,12 @@ async fn restricted_clients_cannot_bypass_commands_with_events_or_mcp() -> TestR
     ensure(
         value(&server)?.as_deref() == Some("original"),
         "Expected original state",
+    )?;
+
+    check_internal_command_denied(&mut socket).await?;
+    ensure(
+        value(&server)?.as_deref() == Some("original"),
+        "Unmarked handler ran",
     )?;
 
     let event = MEvent::from_item(
@@ -248,9 +263,9 @@ async fn trusted_default_preserves_peer_writes_and_internal_execution() -> TestR
         .await?;
     ensure(value(&server)?.is_none(), "Trusted delete did not run")?;
     let restricted = MykoServer::builder()
-        .with_client_mutation_policy(ClientMutationPolicy::commands_only(Vec::<String>::new()))
+        .with_client_mutation_policy(ClientMutationPolicy::DeclaredCommands)
         .build();
-    AllowedIngressWrite {
+    InternalIngressWrite {
         value: "internal".into(),
     }
     .execute(internal(&restricted))
@@ -317,5 +332,27 @@ async fn check_mcp(server: &MykoServer, address: std::net::SocketAddr) -> TestRe
         value(server)?.as_deref() == Some("mcp"),
         "Expected mcp state",
     )?;
+    Ok(())
+}
+
+async fn check_internal_command_denied(socket: &mut Socket) -> TestResult {
+    send(
+        socket,
+        command(
+            "InternalIngressWrite",
+            "internal-denied",
+            json!({"value":"bypass"}),
+        )?,
+    )
+    .await?;
+    loop {
+        if let MykoMessage::CommandError(error) = receive(socket).await? {
+            ensure(
+                error.tx == "internal-denied",
+                "Unmarked command was not denied",
+            )?;
+            break;
+        }
+    }
     Ok(())
 }

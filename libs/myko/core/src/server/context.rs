@@ -362,7 +362,10 @@ pub struct MykoServerRuntime {
 impl MykoServerContext {
     /// Configure the policy enforced by client transports, not internal execution.
     #[must_use]
-    pub fn with_client_mutation_policy(mut self, policy: super::ClientMutationPolicy) -> Self {
+    pub const fn with_client_mutation_policy(
+        mut self,
+        policy: super::ClientMutationPolicy,
+    ) -> Self {
         self.client_mutation_policy = policy;
         self
     }
