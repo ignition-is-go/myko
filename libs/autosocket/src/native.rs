@@ -1,4 +1,6 @@
 use std::{
+    future::Future,
+    pin::Pin,
     sync::{Arc, Mutex},
     thread,
     time::Duration,
@@ -9,13 +11,33 @@ use hyphae::{Cell, CellImmutable, CellMutable, Gettable, Mutable};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use tungstenite::{Message, protocol::WebSocketConfig};
+use tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig};
 use url::Url;
 
 use crate::{SocketConnectionStatus, SocketTransport, WsFrame};
 
 const OUTGOING_QUEUE_CAPACITY: usize = 1024;
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
+
+/// A native WebSocket handshake request, including the standard upgrade headers.
+pub type ConnectionRequest = tungstenite::handshake::client::Request;
+
+/// A request could not be prepared. No caller error text is retained or logged,
+/// because credential loading errors may contain secrets.
+#[derive(Clone, Copy, Debug)]
+pub struct RequestFactoryError;
+
+impl std::fmt::Display for RequestFactoryError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WebSocket request preparation failed")
+    }
+}
+
+impl std::error::Error for RequestFactoryError {}
+
+type RequestFuture =
+    Pin<Box<dyn Future<Output = Result<ConnectionRequest, RequestFactoryError>> + Send>>;
+type RequestFactory = Arc<dyn Fn(ConnectionRequest) -> RequestFuture + Send + Sync>;
 
 struct OutgoingQueue {
     tx: flume::Sender<WsFrame>,
@@ -120,6 +142,53 @@ impl AutoReconnectSocket {
         max_message_size_bytes: usize,
         max_frame_size_bytes: usize,
     ) -> Self {
+        Self::build(
+            auto_reconnect,
+            max_message_size_bytes,
+            max_frame_size_bytes,
+            None,
+        )
+    }
+
+    /// Customize each native handshake, including reconnect attempts.
+    ///
+    /// The factory receives a fresh request with standard upgrade headers. It can
+    /// read rotating credentials and add sensitive headers without putting them
+    /// in the address. Do not block in the factory: its future is cancelled when
+    /// the address changes, the socket closes, or the socket is dropped.
+    /// A factory failure never falls back to an unauthenticated request. Retries
+    /// follow `auto_reconnect`. Autosocket factory and handshake errors omit details that
+    /// might contain credentials or reflected response bodies.
+    ///
+    /// Addresses remain visible in connection status and logs; keep secrets in
+    /// headers and mark those header values sensitive. The factory must retain
+    /// the request URI and standard upgrade headers. Disable tungstenite TRACE
+    /// logging when using credentials: that dependency logs serialized requests.
+    #[must_use]
+    pub fn with_request_factory<F, Fut>(
+        auto_reconnect: bool,
+        max_message_size_bytes: usize,
+        max_frame_size_bytes: usize,
+        factory: F,
+    ) -> Self
+    where
+        F: Fn(ConnectionRequest) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<ConnectionRequest, RequestFactoryError>> + Send + 'static,
+    {
+        Self::build(
+            auto_reconnect,
+            max_message_size_bytes,
+            max_frame_size_bytes,
+            Some(Arc::new(move |request| Box::pin(factory(request)))),
+        )
+    }
+
+    fn build(
+        auto_reconnect: bool,
+        max_message_size_bytes: usize,
+        max_frame_size_bytes: usize,
+        request_factory: Option<RequestFactory>,
+    ) -> Self {
         let outgoing = OutgoingQueue::new();
         let initial = DesiredConnection {
             generation: 0,
@@ -146,6 +215,7 @@ impl AutoReconnectSocket {
             auto_reconnect,
             max_message_size_bytes,
             max_frame_size_bytes,
+            request_factory,
         );
 
         Self {
@@ -217,7 +287,7 @@ impl AutoReconnectSocket {
         self.set_addr(None);
     }
 
-    #[allow(clippy::expect_used)]
+    #[allow(clippy::expect_used, clippy::too_many_arguments)]
     fn start_driver(
         desired_rx: watch::Receiver<DesiredConnection>,
         actual_status: Cell<SocketConnectionStatus, CellMutable>,
@@ -226,6 +296,7 @@ impl AutoReconnectSocket {
         auto_reconnect: bool,
         max_message_size_bytes: usize,
         max_frame_size_bytes: usize,
+        request_factory: Option<RequestFactory>,
     ) {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
@@ -244,11 +315,13 @@ impl AutoReconnectSocket {
                     auto_reconnect,
                     max_message_size_bytes,
                     max_frame_size_bytes,
+                    request_factory,
                 ));
             })
             .expect("spawn autosocket driver");
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_driver(
         mut desired_rx: watch::Receiver<DesiredConnection>,
         actual_status: Cell<SocketConnectionStatus, CellMutable>,
@@ -257,6 +330,7 @@ impl AutoReconnectSocket {
         auto_reconnect: bool,
         max_message_size_bytes: usize,
         max_frame_size_bytes: usize,
+        request_factory: Option<RequestFactory>,
     ) {
         loop {
             let desired = desired_rx.borrow_and_update().clone();
@@ -278,6 +352,7 @@ impl AutoReconnectSocket {
                 auto_reconnect,
                 max_message_size_bytes,
                 max_frame_size_bytes,
+                request_factory.as_ref(),
             )
             .await
             {
@@ -297,6 +372,7 @@ impl AutoReconnectSocket {
         auto_reconnect: bool,
         max_message_size_bytes: usize,
         max_frame_size_bytes: usize,
+        request_factory: Option<&RequestFactory>,
     ) -> bool {
         let mut attempt = 0_u64;
         loop {
@@ -325,8 +401,18 @@ impl AutoReconnectSocket {
             let mut config = WebSocketConfig::default();
             config.max_message_size = Some(max_message_size_bytes);
             config.max_frame_size = Some(max_frame_size_bytes);
-            let connect =
-                tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), true);
+            let connect = async {
+                if let Some(factory) = request_factory {
+                    let request = url.as_str().into_client_request()?;
+                    let request = factory(request).await.map_err(|_| {
+                        tungstenite::Error::Io(std::io::Error::other(RequestFactoryError))
+                    })?;
+                    tokio_tungstenite::connect_async_with_config(request, Some(config), true).await
+                } else {
+                    tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), true)
+                        .await
+                }
+            };
             let websocket = tokio::select! {
                 biased;
                 changed = desired_rx.changed() => {
@@ -335,7 +421,11 @@ impl AutoReconnectSocket {
                 result = connect => match result {
                     Ok((websocket, _)) => websocket,
                     Err(error) => {
-                        error!("Failed to connect to {url} (attempt {attempt}): {error}");
+                        if request_factory.is_some() {
+                            error!("WebSocket request preparation or connection failed (attempt {attempt})");
+                        } else {
+                            error!("Failed to connect to {url} (attempt {attempt}): {error}");
+                        }
                         actual_status.set(SocketConnectionStatus::Disconnected);
                         if !auto_reconnect {
                             return Self::wait_for_change(desired_rx).await;
