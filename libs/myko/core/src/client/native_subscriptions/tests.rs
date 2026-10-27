@@ -9,6 +9,9 @@ use crate::{
     entities::{client::ConnectedClients, server::GetPeerServers},
 };
 
+#[path = "initial_tests.rs"]
+mod initial_result;
+
 type SendHook = Box<dyn FnOnce() + Send + Sync>;
 
 struct Transport {
@@ -637,8 +640,9 @@ fn concurrent_connection_change_waits_for_validated_publication() {
                 .is_ok()
         );
         callback_delivered.store(true, Ordering::SeqCst);
+        None
     });
-    let lease = native.lease(request, delivery, Arc::new(|| {}));
+    let lease = native.lease(request, delivery, Arc::new(|| None));
     assert!(lease.is_ok());
     let Ok(lease) = lease else {
         return;
