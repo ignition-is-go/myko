@@ -28,6 +28,16 @@ pub struct ViewMapWatch<T: hyphae::CellValue> {
 }
 
 impl<T: hyphae::CellValue> ViewMapWatch<T> {
+    pub(super) const fn native(
+        map: CellMap<Arc<str>, Arc<T>, CellImmutable>,
+        ready: Cell<bool, CellImmutable>,
+    ) -> Self {
+        Self {
+            map,
+            ready,
+            sampling: None,
+        }
+    }
     /// Update delivery cadence for every handle sharing this view subscription.
     /// The latest rate is retained across reconnects. None restores immediate delivery.
     ///
