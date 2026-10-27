@@ -18,6 +18,7 @@ use std::{
 };
 
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio_util::sync::CancellationToken;
 
 const COMMAND_CONCURRENCY_ENV: &str = "MYKO_WS_COMMAND_BLOCKING_CONCURRENCY";
 const SUBSCRIPTION_CONCURRENCY_ENV: &str = "MYKO_WS_SUBSCRIPTION_BLOCKING_CONCURRENCY";
@@ -154,10 +155,11 @@ impl BlockingLane {
         .map_err(BlockingWorkError::Join)
     }
 
-    pub fn spawn_for_receiver<T, F, R>(
+    pub fn spawn_for_receiver_until<T, F, R>(
         self: &Arc<Self>,
         job_kind: &'static str,
         sender: mpsc::UnboundedSender<T>,
+        cancel: CancellationToken,
         job: F,
     ) where
         T: Send + 'static,
@@ -167,12 +169,14 @@ impl BlockingLane {
         let lane = self.clone();
         std::mem::drop(tokio::spawn(async move {
             let completion_sender = sender.clone();
+            let cancel_for_job = cancel.clone();
             tokio::select! {
                 biased;
+                () = cancel.cancelled() => {}
                 () = sender.closed() => {}
                 result = lane.run(job_kind, move || {
                     // NOTE(ts): The blocking pool may queue this after lane admission.
-                    if completion_sender.is_closed() {
+                    if completion_sender.is_closed() || cancel_for_job.is_cancelled() {
                         return None;
                     }
                     Some(job(completion_sender))
@@ -249,6 +253,31 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_build_releases_queued_capture_without_disconnect() {
+        let lane = Arc::new(BlockingLane::new("test", 1));
+        let _permit = lane
+            .semaphore
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("test permit");
+        let (sender, _receiver) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let (capture, released) = tokio::sync::oneshot::channel::<()>();
+        let cancel = tokio_util::sync::CancellationToken::new();
+        lane.spawn_for_receiver_until("cancelled", sender, cancel.clone(), move |_| {
+            let _capture = capture;
+        });
+        wait_for_count(&lane.queued, 1).await;
+        cancel.cancel();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), released)
+                .await
+                .is_ok()
+        );
+        wait_for_count(&lane.queued, 0).await;
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn already_disconnected_receiver_never_runs_factory() {
         let lane = Arc::new(BlockingLane::new("test", 1));
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<()>();
@@ -256,10 +285,15 @@ mod tests {
         let (dropped_tx, dropped_rx) = tokio::sync::oneshot::channel::<()>();
         let executed = Arc::new(AtomicUsize::new(0));
         let job_executed = executed.clone();
-        lane.spawn_for_receiver("closed", sender, move |_| {
-            let _completion = dropped_tx;
-            job_executed.fetch_add(1, Ordering::SeqCst);
-        });
+        lane.spawn_for_receiver_until(
+            "closed",
+            sender,
+            tokio_util::sync::CancellationToken::new(),
+            move |_| {
+                let _completion = dropped_tx;
+                job_executed.fetch_add(1, Ordering::SeqCst);
+            },
+        );
         assert!(
             tokio::time::timeout(Duration::from_secs(5), dropped_rx)
                 .await
@@ -284,14 +318,24 @@ mod tests {
         let executed = Arc::new(AtomicUsize::new(0));
         for _ in 0..128 {
             let executed = executed.clone();
-            lane.spawn_for_receiver("abandoned", sender.clone(), move |_| {
-                executed.fetch_add(1, Ordering::SeqCst);
-            });
+            lane.spawn_for_receiver_until(
+                "abandoned",
+                sender.clone(),
+                tokio_util::sync::CancellationToken::new(),
+                move |_| {
+                    executed.fetch_add(1, Ordering::SeqCst);
+                },
+            );
         }
         let (live_sender, mut live_receiver) = tokio::sync::mpsc::unbounded_channel();
-        lane.spawn_for_receiver("live", live_sender, |sender| {
-            sender.send(42).expect("test operation must succeed");
-        });
+        lane.spawn_for_receiver_until(
+            "live",
+            live_sender,
+            tokio_util::sync::CancellationToken::new(),
+            |sender| {
+                sender.send(42).expect("test operation must succeed");
+            },
+        );
         wait_for_count(&lane.queued, 129).await;
         drop(receiver);
         wait_for_count(&lane.queued, 1).await;
@@ -315,19 +359,29 @@ mod tests {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<()>();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
-        lane.spawn_for_receiver("running", sender, move |_| {
-            started_tx.send(()).expect("test operation must succeed");
-            release_rx.recv().expect("test operation must succeed");
-        });
+        lane.spawn_for_receiver_until(
+            "running",
+            sender,
+            tokio_util::sync::CancellationToken::new(),
+            move |_| {
+                started_tx.send(()).expect("test operation must succeed");
+                release_rx.recv().expect("test operation must succeed");
+            },
+        );
         tokio::time::timeout(Duration::from_secs(5), started_rx)
             .await
             .expect("test operation must succeed")
             .expect("test operation must succeed");
         drop(receiver);
         let (next_sender, mut next_receiver) = tokio::sync::mpsc::unbounded_channel();
-        lane.spawn_for_receiver("next", next_sender, |sender| {
-            sender.send(()).expect("test operation must succeed");
-        });
+        lane.spawn_for_receiver_until(
+            "next",
+            next_sender,
+            tokio_util::sync::CancellationToken::new(),
+            |sender| {
+                sender.send(()).expect("test operation must succeed");
+            },
+        );
         wait_for_count(&lane.queued, 1).await;
         assert_eq!(lane.active.load(Ordering::SeqCst), 1);
         assert_eq!(lane.semaphore.available_permits(), 0);
