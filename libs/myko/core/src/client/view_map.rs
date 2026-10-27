@@ -35,6 +35,18 @@ impl<T: hyphae::CellValue> ViewMapWatch<T> {
         &self.error
     }
 
+    pub(super) const fn native(
+        map: CellMap<Arc<str>, Arc<T>, CellImmutable>,
+        ready: Cell<bool, CellImmutable>,
+        error: Cell<Option<String>, CellImmutable>,
+    ) -> Self {
+        Self {
+            map,
+            ready,
+            error,
+            sampling: None,
+        }
+    }
     /// Update delivery cadence for every handle sharing this view subscription.
     /// The latest rate is retained across reconnects. None restores immediate delivery.
     ///

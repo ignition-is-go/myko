@@ -11,6 +11,7 @@ mod cbor_json;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
 mod map_response;
+mod native_subscriptions;
 mod query_map;
 #[cfg(test)]
 mod transport_admission_tests;
@@ -22,6 +23,9 @@ use dashmap::DashMap;
 use hyphae::{
     Cell, CellImmutable, CellMap, CellMutable, CellValue, Gettable, JoinExt, MapExt, Materialize,
     Mutable, SubscriptionGuard, Watchable, WeakCellMap, flat,
+};
+pub use native_subscriptions::{
+    NativeSubscriptionLimits, NativeSubscriptions, SubscriptionAdmissionError,
 };
 pub use query_map::QueryMapWatch;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -847,6 +851,7 @@ enum SendAdmission {
 struct MykoClientInner {
     socket: Arc<dyn SocketTransport>,
     admission: SendAdmission,
+    native_subscriptions: Mutex<Option<Arc<native_subscriptions::Scheduler>>>,
     protocol: Arc<AtomicU8>,
     last_message: Cell<Option<Value>, CellMutable>,
     capture_last_message: AtomicBool,
@@ -1274,6 +1279,7 @@ impl MykoClient {
             MykoClientInner {
                 socket: transport.clone(),
                 admission,
+                native_subscriptions: Mutex::new(None),
                 protocol: protocol.clone(),
                 last_message,
                 capture_last_message: AtomicBool::new(true),
