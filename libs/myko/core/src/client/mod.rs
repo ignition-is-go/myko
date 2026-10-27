@@ -25,7 +25,7 @@ use hyphae::{
     Mutable, SubscriptionGuard, Watchable, WeakCellMap, flat,
 };
 pub use native_subscriptions::{
-    NativeSubscriptionLimits, NativeSubscriptions, SubscriptionAdmissionError,
+    NativeQueryInitial, NativeSubscriptionLimits, NativeSubscriptions, SubscriptionAdmissionError,
 };
 pub use query_map::QueryMapWatch;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

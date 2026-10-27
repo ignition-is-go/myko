@@ -5,7 +5,7 @@ use crate::{
     core::item::Eventable,
     query::{QueryParams, QueryRequest},
     view::{ViewParams, ViewRequest},
-    wire::{ClientQueryResponse, WrappedQuery, wrap_view},
+    wire::{WrappedQuery, wrap_view},
 };
 use hyphae::{Cell, CellMap, CellMutable, Mutable as _, SubscriptionGuard};
 use serde::de::DeserializeOwned;
@@ -100,23 +100,18 @@ impl NativeSubscriptions {
         let sequences = Arc::new(client::map_response::MapSequence::new());
         let handler_sequences = sequences.clone();
         let state = Mutex::new(HashMap::<Arc<str>, Arc<T>>::new());
-        let delivery: Delivery = Arc::new(move |epoch, value| {
+        let delivery: Delivery = Arc::new(move |epoch, response| {
             if !epoch.is_current() {
-                return;
+                return None;
             }
-            let Some(items) = weak_items.upgrade() else {
-                return;
-            };
-            let Ok(response) = serde_json::from_value::<ClientQueryResponse>(value) else {
-                return;
-            };
+            let items = weak_items.upgrade()?;
             let Ok(upserts) =
                 client::map_response::decode_map_upserts::<T, _>(response.upserts, WithId::id)
             else {
-                return;
+                return None;
             };
             if !handler_sequences.accept(response.sequence) {
-                return;
+                return None;
             }
             let initial = response.sequence == 0;
             let mut state = state
@@ -138,6 +133,7 @@ impl NativeSubscriptions {
             {
                 ready.set(true);
             }
+            None
         });
         let ready_reset = ready.downgrade();
         let reset = Arc::new(move || {
@@ -145,6 +141,7 @@ impl NativeSubscriptions {
             if let Some(ready) = ready_reset.upgrade() {
                 ready.set(false);
             }
+            None
         });
         let lease = self.lease(request, delivery, reset)?;
         let owner = lease.clone();
@@ -204,24 +201,19 @@ impl NativeSubscriptions {
         let weak_ready = ready.downgrade();
         let sequences = Arc::new(client::map_response::MapSequence::new());
         let handler_sequences = sequences.clone();
-        let delivery: Delivery = Arc::new(move |epoch, value| {
+        let delivery: Delivery = Arc::new(move |epoch, response| {
             if !epoch.is_current() {
-                return;
+                return None;
             }
-            let Some(map) = weak_map.upgrade() else {
-                return;
-            };
-            let Ok(response) = serde_json::from_value::<ClientQueryResponse>(value) else {
-                return;
-            };
+            let map = weak_map.upgrade()?;
             let Ok(upserts) = client::map_response::decode_map_upserts::<V::Item, _>(
                 response.upserts,
                 WithId::id,
             ) else {
-                return;
+                return None;
             };
             if !handler_sequences.accept(response.sequence) {
-                return;
+                return None;
             }
             let initial = response.sequence == 0;
             if initial {
@@ -235,6 +227,7 @@ impl NativeSubscriptions {
             {
                 ready.set(true);
             }
+            None
         });
         let weak_ready = ready.downgrade();
         let reset = Arc::new(move || {
@@ -242,6 +235,7 @@ impl NativeSubscriptions {
             if let Some(ready) = weak_ready.upgrade() {
                 ready.set(false);
             }
+            None
         });
         let lease = self.lease(Request::View(wrapped), delivery, reset)?;
         let owner = lease.clone();
