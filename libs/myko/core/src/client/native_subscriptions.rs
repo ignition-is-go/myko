@@ -13,7 +13,9 @@ use serde_json::Value;
 use super::{ConnectionStatus, MykoClient, MykoClientInner};
 use crate::wire::{ClientQueryResponse, MykoMessage, WrappedQuery, WrappedView};
 
+mod initial;
 mod watch;
+pub use initial::NativeQueryInitial;
 
 /// Bounds subscription requests, including dropped watches awaiting server installation or cancellation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -119,7 +121,15 @@ impl DeliveryEpoch {
     }
 }
 
-type Delivery = Arc<dyn Fn(&DeliveryEpoch, Value) + Send + Sync>;
+type Completion = Box<dyn FnOnce() + Send>;
+type Delivery =
+    Arc<dyn Fn(Arc<DeliveryEpoch>, ClientQueryResponse) -> Option<Completion> + Send + Sync>;
+type Reset = Arc<dyn Fn() -> Option<Completion> + Send + Sync>;
+
+struct PreparedResponse {
+    completion: Option<Completion>,
+    cancel: bool,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Owner {
@@ -136,7 +146,7 @@ struct LeaseState {
     in_flight: bool,
     attempt: Option<Attempt>,
     delivery: Option<Delivery>,
-    reset: Option<Arc<dyn Fn() + Send + Sync>>,
+    reset: Option<Reset>,
     reservation: Option<Reservation>,
 }
 
@@ -255,7 +265,7 @@ impl NativeSubscriptions {
         &self,
         request: Request,
         delivery: Delivery,
-        reset: Arc<dyn Fn() + Send + Sync>,
+        reset: Reset,
     ) -> Result<Arc<Lease>, SubscriptionAdmissionError> {
         let tx = super::next_subscription_tx();
         let cancel = request.cancel(&tx);
@@ -428,10 +438,11 @@ impl Lease {
             if let Some(old) = old {
                 self.remove_handler(&old.tx);
             }
-            if let Some(reset) = reset {
-                reset();
-            }
+            let completion = reset.and_then(|reset| reset());
             drop(dispatch);
+            if let Some(completion) = completion {
+                completion();
+            }
             if closing {
                 self.retire();
             } else if connected && active {
@@ -441,17 +452,17 @@ impl Lease {
     }
 
     fn close(self: &Arc<Self>) {
+        if self
+            .scheduler
+            .upgrade()
+            .and_then(|scheduler| scheduler.client.upgrade())
+            .is_none()
+        {
+            self.retire();
+            return;
+        }
         hyphae::batch(|| {
             let dispatch = self.dispatch.lock();
-            if self
-                .scheduler
-                .upgrade()
-                .and_then(|scheduler| scheduler.client.upgrade())
-                .is_none()
-            {
-                self.retire();
-                return;
-            }
             let mut state = self
                 .state
                 .lock()
@@ -475,11 +486,12 @@ impl Lease {
                 .as_ref()
                 .is_some_and(|attempt| attempt.initial);
             drop(state);
-            drop(delivery);
-            if let Some(reset) = reset {
-                reset();
-            }
+            let completion = reset.and_then(|reset| reset());
             drop(dispatch);
+            drop(delivery);
+            if let Some(completion) = completion {
+                completion();
+            }
             if retire {
                 self.retire();
             } else if cancel {
@@ -508,10 +520,7 @@ impl Lease {
             let delivery = state.delivery.take();
             let reset = state.reset.take();
             drop(state);
-            drop(delivery);
-            if let Some(reset) = reset {
-                reset();
-            }
+            let completion = reset.and_then(|reset| reset());
             if let Some(attempt) = attempt {
                 self.remove_handler(&attempt.tx);
             }
@@ -524,43 +533,53 @@ impl Lease {
             }
             drop(reservation);
             drop(dispatch);
+            drop(delivery);
+            if let Some(completion) = completion {
+                completion();
+            }
         });
     }
 
     fn response(self: &Arc<Self>, tx: &str, value: Value) {
         hyphae::batch(|| {
-            let Ok(response) = serde_json::from_value::<ClientQueryResponse>(value.clone()) else {
+            let Some(prepared) = self.prepare_response(tx, value) else {
                 return;
             };
-            let dispatch = self.dispatch.lock();
-            let mut state = self
-                .state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if state.owner == Owner::Retired {
-                return;
+            if let Some(completion) = prepared.completion {
+                completion();
             }
-            let Some(attempt) = state.attempt.as_mut() else {
-                return;
-            };
-            if attempt.tx.as_ref() != tx || response.tx.as_ref() != tx {
-                return;
-            }
-            if response.sequence == 0 {
-                attempt.initial = true;
-            }
-            let epoch = attempt.epoch.clone();
-            let delivery = state.delivery.clone();
-            let cancel = state.owner == Owner::Closing && response.sequence == 0;
-            drop(state);
-            if let Some(delivery) = delivery {
-                delivery(&epoch, value);
-            }
-            drop(dispatch);
-            if cancel {
+            if prepared.cancel {
                 self.drive();
             }
         });
+    }
+
+    fn prepare_response(&self, tx: &str, value: Value) -> Option<PreparedResponse> {
+        let Ok(response) = serde_json::from_value::<ClientQueryResponse>(value) else {
+            return None;
+        };
+        let dispatch = self.dispatch.lock();
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.owner == Owner::Retired {
+            return None;
+        }
+        let attempt = state.attempt.as_mut()?;
+        if attempt.tx.as_ref() != tx || response.tx.as_ref() != tx {
+            return None;
+        }
+        if response.sequence == 0 {
+            attempt.initial = true;
+        }
+        let epoch = attempt.epoch.clone();
+        let delivery = state.delivery.clone();
+        let cancel = state.owner == Owner::Closing && response.sequence == 0;
+        drop(state);
+        let completion = delivery.and_then(|delivery| delivery(epoch, response));
+        drop(dispatch);
+        Some(PreparedResponse { completion, cancel })
     }
 
     fn drive(self: &Arc<Self>) {

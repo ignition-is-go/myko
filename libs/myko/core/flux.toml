@@ -18,3 +18,9 @@ root = ["cargo", "test", "--jobs", "4", "--lib", "--features", "codegen-ts", "co
 
 [tasks.test-core-ci]
 root = ["cargo", "test", "--jobs", "4", "--features", "ci", "--", "--test-threads=1"]
+
+[tasks.check-native-subscriptions]
+root = ["cargo", "clippy", "--jobs", "2", "--all-targets", "--features", "ci", "--", "-D", "warnings"]
+
+[tasks.test-native-subscriptions]
+root = ["cargo", "test", "--jobs", "2", "--features", "ci", "--lib", "--", "--test-threads=1"]
