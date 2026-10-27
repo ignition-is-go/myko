@@ -517,6 +517,9 @@ fn in_process_execute_command(
     command_id: &str,
     arguments: Value,
 ) -> Result<Value, String> {
+    if !ctx.client_mutation_policy().allows_command(command_id) {
+        return Err("Command denied by client mutation policy".into());
+    }
     let mut command_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
     if let Some(obj) = command_json.as_object_mut() {

@@ -1247,6 +1247,32 @@ impl WsHandler {
             &session.client_id,
             crate::ws_timing::message_tag(&msg),
         );
+        if let MykoMessage::Command(wrapped) = &msg
+            && !ctx
+                .client_mutation_policy()
+                .allows_command(&wrapped.command_id)
+        {
+            let tx = wrapped
+                .command
+                .get("tx")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("unknown");
+            let error = MykoMessage::CommandError(CommandError::new(
+                tx,
+                wrapped.command_id.clone(),
+                "Command denied by client mutation policy",
+            ));
+            if let Err(error) = message_context.priority_tx.try_send(error) {
+                message_context.drop_logger.on_drop("CommandError", &error);
+            }
+            return;
+        }
+        if matches!(&msg, MykoMessage::Event(_) | MykoMessage::EventBatch(_))
+            && !ctx.client_mutation_policy().allows_events()
+        {
+            tracing::warn!(client = %session.client_id, "Client event rejected by mutation policy");
+            return;
+        }
         match msg {
             MykoMessage::Query(wrapped) => {
                 Self::handle_query_request(session, ctx, message_context, wrapped);

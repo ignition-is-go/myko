@@ -94,3 +94,12 @@ root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--lib", "operation_index"
 
 [tasks.lint-mcp-contract]
 root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-client-mutation-policy]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--test", "client_mutation_policy", "--", "--test-threads=1"]
+
+[tasks.test-server]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--", "--test-threads=1"]
+
+[tasks.check-client-mutation-policy-wasm]
+root = ["cargo", "check", "--jobs", "4", "-p", "myko", "--target", "wasm32-unknown-unknown"]

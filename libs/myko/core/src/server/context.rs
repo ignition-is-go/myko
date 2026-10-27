@@ -309,6 +309,7 @@ impl MapCacheEntry {
 /// - Server identity
 #[derive(Clone)]
 pub struct MykoServerContext {
+    client_mutation_policy: super::ClientMutationPolicy,
     /// Unique identifier for this server instance
     pub host_id: Uuid,
     /// `host_id` pre-rendered once — the durable-backend producers stamp it
@@ -359,6 +360,18 @@ pub struct MykoServerRuntime {
 }
 
 impl MykoServerContext {
+    /// Configure the policy enforced by client transports, not internal execution.
+    #[must_use]
+    pub fn with_client_mutation_policy(mut self, policy: super::ClientMutationPolicy) -> Self {
+        self.client_mutation_policy = policy;
+        self
+    }
+
+    #[must_use]
+    pub fn client_mutation_policy(&self) -> &super::ClientMutationPolicy {
+        &self.client_mutation_policy
+    }
+
     /// Create a new server context.
     #[must_use]
     pub fn new(
@@ -384,6 +397,7 @@ impl MykoServerContext {
         Self {
             host_id,
             host_id_str: Arc::from(host_id.to_string()),
+            client_mutation_policy: super::ClientMutationPolicy::default(),
             registry,
             handler_registry,
             relationship_manager,

@@ -100,6 +100,7 @@ pub struct MykoServerBuilder {
     /// Defaults to a fresh empty map if not provided.
     peer_clients: Option<Arc<dashmap::DashMap<Arc<str>, Arc<MykoClient>>>>,
     after_init: Option<AfterInitCallback>,
+    client_mutation_policy: ClientMutationPolicy,
     /// Optional MCP `ServerInfo`. Defaults to `ServerInfo::default()` if not
     /// set; binaries override this to advertise their own name / version /
     /// instructions on the `/myko/mcp` endpoint.
@@ -113,6 +114,24 @@ impl MykoServerBuilder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Restrict commands and raw events accepted by native WS and MCP clients.
+    /// Defaults to the existing trusted-peer behavior. Internal command execution
+    /// and server-owned events are unaffected; this does not authenticate clients.
+    ///
+    /// ```no_run
+    /// use myko_server::{ClientMutationPolicy, MykoServer};
+    /// let server = MykoServer::builder()
+    ///     .with_client_mutation_policy(ClientMutationPolicy::commands_only([
+    ///         "CreateDocument", "EditDocument",
+    ///     ]))
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn with_client_mutation_policy(mut self, policy: ClientMutationPolicy) -> Self {
+        self.client_mutation_policy = policy;
+        self
     }
 
     /// Set the WebSocket bind address.
@@ -251,6 +270,7 @@ impl MykoServerBuilder {
         });
         server.after_init = std::sync::Mutex::new(self.after_init);
         server.server_info = server_info;
+        server.client_mutation_policy = self.client_mutation_policy;
         server.websocket_path = self.websocket_path.unwrap_or(server.websocket_path);
         server.mcp_path = self.mcp_path.unwrap_or(server.mcp_path);
         server
@@ -313,6 +333,7 @@ pub struct MykoServer {
     /// same tick. Every `MykoServerContext` field is an `Arc`/`Cell`/`Uuid`, so a
     /// clone is a handful of refcount bumps that share the underlying state.
     ctx_cache: std::sync::OnceLock<MykoServerContext>,
+    client_mutation_policy: ClientMutationPolicy,
 }
 
 impl MykoServer {
@@ -416,6 +437,7 @@ impl MykoServer {
             saga_tasks: std::sync::Mutex::new(Vec::new()),
             server_ownership_guard: std::sync::Mutex::new(None),
             ctx_cache: std::sync::OnceLock::new(),
+            client_mutation_policy: ClientMutationPolicy::default(),
         }
     }
 
@@ -487,6 +509,7 @@ impl MykoServer {
                         history_replay,
                     },
                 )
+                .with_client_mutation_policy(self.client_mutation_policy.clone())
             })
             .clone()
     }
