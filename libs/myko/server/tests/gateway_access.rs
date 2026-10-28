@@ -370,3 +370,93 @@ async fn typed_client_receives_readonly_initial_and_live_query_data() -> Result 
     task_handle.abort();
     Ok(())
 }
+
+static LIFETIME_REQUESTS: Mutex<Vec<std::sync::Weak<myko::request::RequestContext>>> =
+    Mutex::new(Vec::new());
+
+#[myko::myko_query(DemoTask)]
+struct GatewayLifetimeQuery {}
+
+impl myko::query::QueryHandler for GatewayLifetimeQuery {
+    fn test_entity(ctx: myko::query::QueryTestContext<Self>) -> bool {
+        LIFETIME_REQUESTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Arc::downgrade(&ctx.query_context.req));
+        true
+    }
+}
+
+#[tokio::test]
+async fn policy_router_owns_connection_lifetime_and_cancellation_cleanup() -> Result {
+    use myko::wire::query::WrappedQuery;
+    let server = Arc::new(MykoServer::builder().build());
+    let ctx = Arc::new(server.ctx());
+    ctx.set(&task("lifetime"))?;
+    for cancel in [false, true, false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let connection_ctx = ctx.clone();
+        let info = server.server_info();
+        let connection = tokio::spawn(async move {
+            let (stream, peer) = listener.accept().await?;
+            route_connection_with_access(
+                stream,
+                peer,
+                connection_ctx,
+                info,
+                GatewayAccess::ReadOnly,
+            )
+            .await
+        });
+        let (mut socket, _) = tokio_tungstenite::connect_async(format!("ws://{addr}/myko")).await?;
+        send(
+            &mut socket,
+            &MykoMessage::Query(WrappedQuery {
+                query: serde_json::json!({"tx":"lifetime"}),
+                query_id: "GatewayLifetimeQuery".into(),
+                query_item_type: "DemoTask".into(),
+                window: None,
+            }),
+            false,
+        )
+        .await?;
+        assert!(matches!(
+            next(&mut socket).await?,
+            MykoMessage::QueryResponse(_)
+        ));
+        assert!(
+            !connection.is_finished(),
+            "route future must own the live connection"
+        );
+        assert_eq!(ctx.registry.get_or_create("Client").snapshot().len(), 1);
+        assert!(
+            LIFETIME_REQUESTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|request| request.upgrade().is_some())
+        );
+        if cancel {
+            connection.abort();
+            assert!(connection.await.is_err());
+            closed(&mut socket).await?;
+        } else {
+            socket.close(None).await?;
+            timeout(Duration::from_secs(3), connection).await???;
+        }
+        timeout(Duration::from_secs(3), async {
+            while LIFETIME_REQUESTS
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(|request| request.upgrade().is_some())
+                || !ctx.registry.get_or_create("Client").snapshot().is_empty()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+    }
+    Ok(())
+}
