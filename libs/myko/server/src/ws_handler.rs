@@ -353,44 +353,33 @@ enum DeferredOutbound {
     CommandResult(MykoMessage),
 }
 
+struct ConnectionGuard {
+    ctx: Arc<MykoServerContext>,
+    client_entity: Client,
+    client_id: Arc<str>,
+    addr: SocketAddr,
+    tasks: [tokio::task::JoinHandle<()>; 3],
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+        if let Some(registry) = try_client_registry() {
+            registry.unregister(&self.client_id);
+        }
+        if let Err(error) = self.ctx.del(&self.client_entity) {
+            tracing::error!("Failed to delete client entity: {error}");
+        }
+        tracing::info!("Client disconnected: {} from {}", self.client_id, self.addr);
+    }
+}
+
 /// WebSocket handler for a single client connection.
 pub struct WsHandler;
 
 impl WsHandler {
-    fn cleanup_connection<W: WsWriter>(
-        session: ClientSession<W>,
-        ctx: &MykoServerContext,
-        client_entity: &Client,
-        client_id: Arc<str>,
-        addr: SocketAddr,
-        tasks: (
-            tokio::task::JoinHandle<()>,
-            tokio::task::JoinHandle<()>,
-            tokio::task::JoinHandle<()>,
-        ),
-    ) {
-        let (write_task, command_task, query_window_task) = tasks;
-        write_task.abort();
-        command_task.abort();
-        query_window_task.abort();
-        if let Some(registry) = try_client_registry() {
-            registry.unregister(&client_id);
-        }
-        let drop_client_id = client_id.clone();
-        WS_CLEANUP_BLOCKING.spawn("session-teardown", move || {
-            drop(session);
-            tracing::trace!(
-                "Client session subscriptions torn down for {}",
-                drop_client_id
-            );
-        });
-        if let Err(error) = ctx.del(client_entity) {
-            tracing::error!("Failed to delete client entity: {error}");
-        }
-        tracing::info!("Client disconnected: {} from {}", client_id, addr);
-        drop(client_id);
-    }
-
     fn publish_client(ctx: &MykoServerContext, client_id: Arc<str>, addr: SocketAddr) -> Client {
         let client = Client {
             id: ClientId(client_id.clone()),
@@ -1011,6 +1000,13 @@ impl WsHandler {
             command_client_id,
             command_started_by_tx.clone(),
         ));
+        let _connection = ConnectionGuard {
+            ctx: ctx.clone(),
+            client_entity,
+            client_id: client_id.clone(),
+            addr,
+            tasks: [write_task, command_task, query_window_task],
+        };
         Self::run_read_loop(
             read,
             &mut session,
@@ -1036,14 +1032,7 @@ impl WsHandler {
         )
         .await;
 
-        Self::cleanup_connection(
-            session,
-            &ctx,
-            &client_entity,
-            client_id,
-            addr,
-            (write_task, command_task, query_window_task),
-        );
+        WS_CLEANUP_BLOCKING.spawn("session-teardown", move || drop(session));
 
         Ok(())
     }
