@@ -10,6 +10,7 @@
 //! Tokio-free server types (`MykoServerContext`, `HandlerRegistry`, etc.) live in `myko::server`.
 
 mod blocking_work;
+mod gateway_access;
 mod view_sampling;
 
 pub mod mcp;
@@ -34,6 +35,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
+pub use gateway_access::GatewayAccess;
 pub use myko::server::*;
 use myko::{
     client::MykoClient, command::CommandContext, request::RequestContext, saga::SagaRegistration,

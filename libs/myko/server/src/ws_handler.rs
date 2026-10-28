@@ -2,6 +2,7 @@
 //!
 //! Handles WebSocket connections using `ClientSession` for subscription management.
 
+use crate::GatewayAccess;
 use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
 use std::{
     collections::HashMap,
@@ -298,6 +299,7 @@ struct MessageContext<'a> {
 }
 
 struct ReadLoopState {
+    access: GatewayAccess,
     ctx: Arc<MykoServerContext>,
     client_id: Arc<str>,
     outgoing_format: Arc<AtomicU8>,
@@ -408,7 +410,11 @@ impl WsHandler {
         session: &mut ClientSession<W>,
         state: &ReadLoopState,
         message: MykoMessage,
-    ) {
+    ) -> bool {
+        if !state.access.allows(&message) {
+            tracing::warn!("Forbidden gateway input from {}", state.client_id);
+            return false;
+        }
         Self::handle_message(
             session,
             state.ctx.clone(),
@@ -427,6 +433,7 @@ impl WsHandler {
             },
             message,
         );
+        true
     }
 
     async fn handle_ws_frame<W: WsWriter>(
@@ -447,7 +454,9 @@ impl WsHandler {
                 }
                 match ciborium::de::from_reader::<MykoMessage, _>(data.as_ref()) {
                     Ok(message) => {
-                        Self::dispatch_incoming(session, state, message);
+                        if !Self::dispatch_incoming(session, state, message) {
+                            return false;
+                        }
                         tokio::task::yield_now().await;
                     }
                     Err(error) => tracing::warn!(
@@ -459,7 +468,9 @@ impl WsHandler {
             }
             Message::Text(text) => match serde_json::from_str::<MykoMessage>(&text) {
                 Ok(message) => {
-                    Self::dispatch_incoming(session, state, message);
+                    if !Self::dispatch_incoming(session, state, message) {
+                        return false;
+                    }
                     tokio::task::yield_now().await;
                 }
                 Err(error) => tracing::warn!(
@@ -910,6 +921,18 @@ impl WsHandler {
         addr: SocketAddr,
         ctx: Arc<MykoServerContext>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Self::handle_upgraded_with_access(ws_stream, addr, ctx, GatewayAccess::Full).await
+    }
+
+    /// Handle an upgraded gateway with immutable inbound capabilities.
+    /// # Errors
+    /// Returns an error when the WebSocket session fails.
+    pub async fn handle_upgraded_with_access(
+        ws_stream: tokio_tungstenite::WebSocketStream<TcpStream>,
+        addr: SocketAddr,
+        ctx: Arc<MykoServerContext>,
+        access: GatewayAccess,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (write, read) = ws_stream.split();
 
         // Create a bounded channel for sending messages to the client
@@ -959,7 +982,6 @@ impl WsHandler {
 
         let write_ctx = ctx.clone();
         let write_client_id = client_id.clone();
-        let write_addr = addr;
         let command_ctx = ctx.clone();
         let command_deferred_tx = deferred_tx.clone();
         let command_priority_tx = priority_tx.clone();
@@ -974,7 +996,7 @@ impl WsHandler {
             priority_rx,
             ctx: write_ctx,
             client_id: write_client_id,
-            addr: write_addr,
+            addr,
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
             outbound_failure_tx: drop_logger.overload_tx.clone(),
@@ -994,6 +1016,7 @@ impl WsHandler {
             &mut session,
             subscribe_rx,
             ReadLoopState {
+                access,
                 ctx: ctx.clone(),
                 client_id: client_id.clone(),
                 outgoing_format: outgoing_format.clone(),

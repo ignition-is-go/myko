@@ -23,7 +23,10 @@ use super::{
     },
     types::{McpError, McpRequest, McpResponse},
 };
-use crate::router::{HttpRequestHead, write_status};
+use crate::{
+    GatewayAccess,
+    router::{HttpRequestHead, write_status},
+};
 
 const MCP_SUBPROTOCOL: &str = "mcp";
 
@@ -70,6 +73,19 @@ pub async fn handle_myko_ws_upgrade(
     ctx: Arc<MykoServerContext>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_myko_ws_upgrade_with_access(stream, addr, ctx, head, GatewayAccess::Full).await
+}
+
+/// Upgrade Myko with explicit per-connection capabilities.
+/// # Errors
+/// Returns an error when the handshake or gateway fails.
+pub async fn handle_myko_ws_upgrade_with_access(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    head: HttpRequestHead,
+    access: GatewayAccess,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let ws_stream = match perform_handshake(stream, &head, false).await {
         Ok(s) => s,
         Err(e) => {
@@ -77,7 +93,7 @@ pub async fn handle_myko_ws_upgrade(
             return Ok(());
         }
     };
-    crate::ws_handler::WsHandler::handle_upgraded(ws_stream, addr, ctx).await
+    crate::ws_handler::WsHandler::handle_upgraded_with_access(ws_stream, addr, ctx, access).await
 }
 
 async fn perform_handshake(
