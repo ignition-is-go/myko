@@ -1,4 +1,5 @@
-//! Opt-in, bounded per-connection delivery attribution. Never logs payload values.
+//! Opt-in per-connection delivery attribution with bounded payload inspection.
+//! Never logs payload values.
 
 use std::{
     collections::{HashMap, HashSet},
@@ -15,8 +16,7 @@ use opentelemetry::{
 };
 use serde_json::Value;
 
-const MAX_ID_BYTES: usize = 1024;
-const MAX_STREAMS: usize = 256;
+const MAX_INSPECTED_ID_BYTES: usize = 1024;
 const MAX_PROPERTIES: usize = 4096;
 const MAX_CLIENT_PROPERTIES: usize = 65_536;
 const WINDOW: Duration = Duration::from_secs(5);
@@ -278,15 +278,7 @@ impl DeliveryDiagnostics {
             let Some(tx) = payload.get("tx").and_then(Value::as_str) else {
                 return;
             };
-            if tx.len() > MAX_ID_BYTES || id.len() > MAX_ID_BYTES {
-                state.untracked = state.untracked.saturating_add(1);
-                return;
-            }
             if kind != "report" && state.subscriptions.contains_key(tx) {
-                return;
-            }
-            if state.subscriptions.len() >= MAX_STREAMS && !state.subscriptions.contains_key(tx) {
-                state.untracked = state.untracked.saturating_add(1);
                 return;
             }
             // Ignore transaction identity when detecting equivalent subscriptions.
@@ -418,10 +410,6 @@ impl DeliveryDiagnostics {
             state.untracked = state.untracked.saturating_add(1);
             return;
         };
-        if state.counts.len() >= MAX_STREAMS && !state.counts.contains_key(&operation) {
-            state.untracked = state.untracked.saturating_add(1);
-            return;
-        }
         if let Some(gap) = gap {
             let mut attrs = self.attributes().to_vec();
             attrs.push(KeyValue::new("kind", operation.kind));
@@ -443,18 +431,10 @@ impl DeliveryDiagnostics {
         let Ok(mut state) = state.lock() else {
             return;
         };
-        if command_id.len() > MAX_ID_BYTES {
-            state.untracked = state.untracked.saturating_add(1);
-            return;
-        }
         let operation = Operation {
             kind: "Command",
             id: command_id.into(),
         };
-        if state.counts.len() >= MAX_STREAMS && !state.counts.contains_key(&operation) {
-            state.untracked = state.untracked.saturating_add(1);
-            return;
-        }
         let counts = state.counts.entry(operation).or_default();
         counts.messages = counts.messages.saturating_add(1);
         counts.bytes = counts.bytes.saturating_add(count(bytes));
@@ -512,10 +492,6 @@ impl DeliveryDiagnostics {
                     id: "unattributed".into(),
                 }
             };
-        if state.counts.len() >= MAX_STREAMS && !state.counts.contains_key(&operation) {
-            state.untracked = state.untracked.saturating_add(1);
-            return;
-        }
         let unique_remaining = MAX_CLIENT_PROPERTIES
             .saturating_sub(state.counts.values().map(|c| c.unique.len()).sum());
         let counts = state.counts.entry(operation.clone()).or_default();
@@ -813,7 +789,7 @@ impl Inspection {
     ) {
         self.upserts = self.upserts.saturating_add(1);
         let id = item.item.id().to_string();
-        if id.len() > MAX_ID_BYTES {
+        if id.len() > MAX_INSPECTED_ID_BYTES {
             self.complete = false;
             return;
         }
@@ -1139,6 +1115,54 @@ mod tests {
         );
     }
     #[test]
+    fn attribution_covers_all_live_subscriptions_and_operations() {
+        let diagnostics = diagnostics();
+        for index in 0..1024 {
+            let tx = format!("stream-{index}");
+            diagnostics.inbound(&MykoMessage::Report(WrappedReport {
+                report_id: format!("Report{index}"),
+                report: json!({"tx": tx}),
+            }));
+            diagnostics.ready(&tx);
+            diagnostics.produced(&tx, 1, true);
+            diagnostics.sent(&report(&tx, json!({"value": index})), 32);
+        }
+        {
+            let state = diagnostics
+                .state
+                .as_ref()
+                .expect("enabled")
+                .lock()
+                .expect("unpoisoned");
+            assert_eq!(state.subscriptions.len(), 1024);
+            assert_eq!(state.counts.len(), 1024);
+            assert_eq!(state.untracked, 0);
+            assert!(
+                state
+                    .counts
+                    .iter()
+                    .all(|(operation, counts)| operation.kind == "report"
+                        && counts.messages == 1
+                        && counts.produced == 1)
+            );
+        }
+        for index in 0..1024 {
+            diagnostics.inbound(&MykoMessage::ReportCancel(CancelSubscription {
+                tx: format!("stream-{index}"),
+            }));
+        }
+        diagnostics.flush(true);
+        let state = diagnostics
+            .state
+            .as_ref()
+            .expect("enabled")
+            .lock()
+            .expect("unpoisoned");
+        assert!(state.subscriptions.is_empty());
+        assert!(state.counts.is_empty());
+    }
+
+    #[test]
     fn client_memory_limits_remain_bounded_across_many_subscriptions() {
         let diagnostics = diagnostics();
         for index in 0..17 {
@@ -1146,7 +1170,7 @@ mod tests {
             subscribe(&diagnostics, &tx);
             diagnostics.sent(&report(&tx, json!(vec![1; MAX_PROPERTIES])), 20_000);
         }
-        for index in 17..MAX_STREAMS.saturating_add(1) {
+        for index in 17..1024 {
             subscribe(&diagnostics, &format!("stream-{index}"));
         }
         let state = diagnostics
@@ -1155,7 +1179,7 @@ mod tests {
             .expect("enabled")
             .lock()
             .expect("unpoisoned");
-        assert_eq!(state.subscriptions.len(), MAX_STREAMS);
+        assert_eq!(state.subscriptions.len(), 1024);
         assert!(
             state
                 .subscriptions
@@ -1167,7 +1191,7 @@ mod tests {
         assert!(
             state.counts.values().map(|c| c.unique.len()).sum::<usize>() <= MAX_CLIENT_PROPERTIES
         );
-        assert!(state.untracked > 0);
+        assert_eq!(state.untracked, 0);
         assert!(state.counts.values().any(|c| c.incomplete > 0));
     }
 }
