@@ -10,6 +10,7 @@
 //! Tokio-free server types (`MykoServerContext`, `HandlerRegistry`, etc.) live in `myko::server`.
 
 mod blocking_work;
+mod delivery_diagnostics;
 mod gateway_access;
 mod view_sampling;
 
