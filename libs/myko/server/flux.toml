@@ -8,7 +8,10 @@ root = ["cargo", "clippy", "--jobs", "4", "--lib", "--tests", "--no-deps", "--",
 root = ["cargo", "test", "--jobs", "4", "--lib", "blocking_work::tests", "--", "--test-threads=1"]
 
 [tasks.test-delivery-diagnostics]
-root = ["cargo", "test", "--jobs", "4", "--lib", "delivery_diagnostics::tests", "--", "--test-threads=1"]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "--lib", "delivery_diagnostics::tests", "--", "--test-threads=1"]
 
 [tasks.test-ws-delivery]
 root = ["cargo", "test", "--jobs", "4", "--lib", "ws_handler::tests", "--", "--test-threads=1"]
+
+[tasks.check-delivery-diagnostics]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]
