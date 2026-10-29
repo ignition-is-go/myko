@@ -1,6 +1,6 @@
 [package]
 name = "myko-server"
-version = "6.10.0"
+version = "6.11.0"
 edition = "2024"
 description = "Myko server runtime — WebSocket, peer federation"
 license = "AGPL-3.0-or-later"
@@ -51,7 +51,7 @@ httparse = "1.9"
 # Sandboxed JS execution for MCP "Code Mode" (execute() tool)
 rquickjs = { version = "0.12", features = ["full-async", "parallel", "macro"] }
 opentelemetry = "0.32.0"
-myko-telemetry = { version = "6.10.0", path = "../telemetry" }
+myko-telemetry = { version = "6.11.0", path = "../telemetry" }
 
 [dev-dependencies]
 # Demo entities belong to examples, not the published server runtime.
