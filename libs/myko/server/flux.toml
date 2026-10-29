@@ -6,3 +6,9 @@ root = ["cargo", "clippy", "--jobs", "4", "--lib", "--tests", "--no-deps", "--",
 
 [tasks.test-blocking-work]
 root = ["cargo", "test", "--jobs", "4", "--lib", "blocking_work::tests", "--", "--test-threads=1"]
+
+[tasks.test-delivery-diagnostics]
+root = ["cargo", "test", "--jobs", "4", "--lib", "delivery_diagnostics::tests", "--", "--test-threads=1"]
+
+[tasks.test-ws-delivery]
+root = ["cargo", "test", "--jobs", "4", "--lib", "ws_handler::tests", "--", "--test-threads=1"]
