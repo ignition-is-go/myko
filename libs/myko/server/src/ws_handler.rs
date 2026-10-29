@@ -2,6 +2,7 @@
 //!
 //! Handles WebSocket connections using `ClientSession` for subscription management.
 
+use crate::GatewayAccess;
 use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
 use std::{
     collections::HashMap,
@@ -298,6 +299,7 @@ struct MessageContext<'a> {
 }
 
 struct ReadLoopState {
+    access: GatewayAccess,
     ctx: Arc<MykoServerContext>,
     client_id: Arc<str>,
     outgoing_format: Arc<AtomicU8>,
@@ -351,44 +353,33 @@ enum DeferredOutbound {
     CommandResult(MykoMessage),
 }
 
+struct ConnectionGuard {
+    ctx: Arc<MykoServerContext>,
+    client_entity: Client,
+    client_id: Arc<str>,
+    addr: SocketAddr,
+    tasks: [tokio::task::JoinHandle<()>; 3],
+}
+
+impl Drop for ConnectionGuard {
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+        if let Some(registry) = try_client_registry() {
+            registry.unregister(&self.client_id);
+        }
+        if let Err(error) = self.ctx.del(&self.client_entity) {
+            tracing::error!("Failed to delete client entity: {error}");
+        }
+        tracing::info!("Client disconnected: {} from {}", self.client_id, self.addr);
+    }
+}
+
 /// WebSocket handler for a single client connection.
 pub struct WsHandler;
 
 impl WsHandler {
-    fn cleanup_connection<W: WsWriter>(
-        session: ClientSession<W>,
-        ctx: &MykoServerContext,
-        client_entity: &Client,
-        client_id: Arc<str>,
-        addr: SocketAddr,
-        tasks: (
-            tokio::task::JoinHandle<()>,
-            tokio::task::JoinHandle<()>,
-            tokio::task::JoinHandle<()>,
-        ),
-    ) {
-        let (write_task, command_task, query_window_task) = tasks;
-        write_task.abort();
-        command_task.abort();
-        query_window_task.abort();
-        if let Some(registry) = try_client_registry() {
-            registry.unregister(&client_id);
-        }
-        let drop_client_id = client_id.clone();
-        WS_CLEANUP_BLOCKING.spawn("session-teardown", move || {
-            drop(session);
-            tracing::trace!(
-                "Client session subscriptions torn down for {}",
-                drop_client_id
-            );
-        });
-        if let Err(error) = ctx.del(client_entity) {
-            tracing::error!("Failed to delete client entity: {error}");
-        }
-        tracing::info!("Client disconnected: {} from {}", client_id, addr);
-        drop(client_id);
-    }
-
     fn publish_client(ctx: &MykoServerContext, client_id: Arc<str>, addr: SocketAddr) -> Client {
         let client = Client {
             id: ClientId(client_id.clone()),
@@ -408,7 +399,11 @@ impl WsHandler {
         session: &mut ClientSession<W>,
         state: &ReadLoopState,
         message: MykoMessage,
-    ) {
+    ) -> bool {
+        if !state.access.allows(&message) {
+            tracing::warn!("Forbidden gateway input from {}", state.client_id);
+            return false;
+        }
         Self::handle_message(
             session,
             state.ctx.clone(),
@@ -427,6 +422,7 @@ impl WsHandler {
             },
             message,
         );
+        true
     }
 
     async fn handle_ws_frame<W: WsWriter>(
@@ -447,7 +443,9 @@ impl WsHandler {
                 }
                 match ciborium::de::from_reader::<MykoMessage, _>(data.as_ref()) {
                     Ok(message) => {
-                        Self::dispatch_incoming(session, state, message);
+                        if !Self::dispatch_incoming(session, state, message) {
+                            return false;
+                        }
                         tokio::task::yield_now().await;
                     }
                     Err(error) => tracing::warn!(
@@ -459,7 +457,9 @@ impl WsHandler {
             }
             Message::Text(text) => match serde_json::from_str::<MykoMessage>(&text) {
                 Ok(message) => {
-                    Self::dispatch_incoming(session, state, message);
+                    if !Self::dispatch_incoming(session, state, message) {
+                        return false;
+                    }
                     tokio::task::yield_now().await;
                 }
                 Err(error) => tracing::warn!(
@@ -910,6 +910,18 @@ impl WsHandler {
         addr: SocketAddr,
         ctx: Arc<MykoServerContext>,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Self::handle_upgraded_with_access(ws_stream, addr, ctx, GatewayAccess::Full).await
+    }
+
+    /// Handle an upgraded gateway with immutable inbound capabilities.
+    /// # Errors
+    /// Returns an error when the WebSocket session fails.
+    pub async fn handle_upgraded_with_access(
+        ws_stream: tokio_tungstenite::WebSocketStream<TcpStream>,
+        addr: SocketAddr,
+        ctx: Arc<MykoServerContext>,
+        access: GatewayAccess,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let (write, read) = ws_stream.split();
 
         // Create a bounded channel for sending messages to the client
@@ -959,7 +971,6 @@ impl WsHandler {
 
         let write_ctx = ctx.clone();
         let write_client_id = client_id.clone();
-        let write_addr = addr;
         let command_ctx = ctx.clone();
         let command_deferred_tx = deferred_tx.clone();
         let command_priority_tx = priority_tx.clone();
@@ -974,7 +985,7 @@ impl WsHandler {
             priority_rx,
             ctx: write_ctx,
             client_id: write_client_id,
-            addr: write_addr,
+            addr,
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
             outbound_failure_tx: drop_logger.overload_tx.clone(),
@@ -989,11 +1000,19 @@ impl WsHandler {
             command_client_id,
             command_started_by_tx.clone(),
         ));
+        let _connection = ConnectionGuard {
+            ctx: ctx.clone(),
+            client_entity,
+            client_id: client_id.clone(),
+            addr,
+            tasks: [write_task, command_task, query_window_task],
+        };
         Self::run_read_loop(
             read,
             &mut session,
             subscribe_rx,
             ReadLoopState {
+                access,
                 ctx: ctx.clone(),
                 client_id: client_id.clone(),
                 outgoing_format: outgoing_format.clone(),
@@ -1013,14 +1032,7 @@ impl WsHandler {
         )
         .await;
 
-        Self::cleanup_connection(
-            session,
-            &ctx,
-            &client_entity,
-            client_id,
-            addr,
-            (write_task, command_task, query_window_task),
-        );
+        WS_CLEANUP_BLOCKING.spawn("session-teardown", move || drop(session));
 
         Ok(())
     }

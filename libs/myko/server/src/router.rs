@@ -16,7 +16,7 @@ use std::{fmt::Write as _, net::SocketAddr, sync::Arc};
 use myko::server::MykoServerContext;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-use crate::{mcp, mcp::dispatch::ServerInfo};
+use crate::{GatewayAccess, mcp, mcp::dispatch::ServerInfo};
 
 /// Cap on the header section (request line + headers).
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -158,13 +158,58 @@ pub async fn route_connection(
     route_connection_with_paths(stream, addr, ctx, server_info, "/myko", "/myko/mcp").await
 }
 
+/// Route a connection with an immutable inbound capability policy.
+///
+/// Read-only connections reject all MCP transports with HTTP 403.
+/// # Errors
+/// Returns an error when the selected HTTP or WebSocket handler fails.
+pub async fn route_connection_with_access(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    access: GatewayAccess,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    route_connection_with_paths_and_access(
+        stream,
+        addr,
+        ctx,
+        server_info,
+        "/myko",
+        "/myko/mcp",
+        access,
+    )
+    .await
+}
+
 pub(crate) async fn route_connection_with_paths(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    websocket_path: &str,
+    mcp_path: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    route_connection_with_paths_and_access(
+        stream,
+        addr,
+        ctx,
+        server_info,
+        websocket_path,
+        mcp_path,
+        GatewayAccess::Full,
+    )
+    .await
+}
+
+async fn route_connection_with_paths_and_access(
     mut stream: TcpStream,
     addr: SocketAddr,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
     websocket_path: &str,
     mcp_path: &str,
+    access: GatewayAccess,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let head = match read_request_head(&mut stream).await {
         Ok(Some(h)) => h,
@@ -181,6 +226,12 @@ pub(crate) async fn route_connection_with_paths(
 
     let path = head.path.split('?').next().unwrap_or(&head.path);
 
+    if access == GatewayAccess::ReadOnly && path == mcp_path {
+        write_status(&mut stream, 403, "Forbidden").await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    }
+
     match (head.method.as_str(), path) {
         ("GET", p) if p == websocket_path => {
             if !head.is_websocket_upgrade() {
@@ -192,10 +243,10 @@ pub(crate) async fn route_connection_with_paths(
             // tungstenite, which requires the unmodified raw bytes. We've
             // already consumed the request, so finish the handshake here
             // and pass the upgraded stream to the WS gateway.
-            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Myko).await
+            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Myko, access).await
         }
         ("GET", p) if p == mcp_path && head.is_websocket_upgrade() => {
-            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Mcp).await
+            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Mcp, access).await
         }
         ("GET", p) if p == mcp_path && head.wants_event_stream() => {
             mcp::http::handle_sse(stream, ctx, head).await
@@ -242,6 +293,7 @@ async fn handle_ws_upgrade(
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
     target: WsTarget,
+    access: GatewayAccess,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Reject if the client sent body bytes alongside the handshake — a
     // compliant client waits for our 101 before sending WS frames.
@@ -258,7 +310,9 @@ async fn handle_ws_upgrade(
     }
 
     match target {
-        WsTarget::Myko => mcp::ws::handle_myko_ws_upgrade(stream, addr, ctx, head).await,
+        WsTarget::Myko => {
+            mcp::ws::handle_myko_ws_upgrade_with_access(stream, addr, ctx, head, access).await
+        }
         WsTarget::Mcp => mcp::ws::handle_mcp_ws_upgrade(stream, ctx, server_info, head).await,
     }
 }
