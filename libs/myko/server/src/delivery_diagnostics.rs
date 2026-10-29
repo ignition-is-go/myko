@@ -59,6 +59,7 @@ struct Counts {
 struct State {
     subscriptions: HashMap<String, Subscription>,
     counts: HashMap<Operation, Counts>,
+    retained_properties: usize,
     window: Instant,
     queue_peak: usize,
     queue_wait_ms: f64,
@@ -230,6 +231,7 @@ impl DeliveryDiagnostics {
                 Mutex::new(State {
                     subscriptions: HashMap::new(),
                     counts: HashMap::new(),
+                    retained_properties: 0,
                     window: Instant::now(),
                     queue_peak: 0,
                     queue_wait_ms: 0.0,
@@ -269,7 +271,11 @@ impl DeliveryDiagnostics {
             MykoMessage::ReportCancel(w)
             | MykoMessage::QueryCancel(w)
             | MykoMessage::ViewCancel(w) => {
-                state.subscriptions.remove(&w.tx);
+                if let Some(subscription) = state.subscriptions.remove(&w.tx) {
+                    state.retained_properties = state
+                        .retained_properties
+                        .saturating_sub(subscription.retained());
+                }
                 None
             }
             _ => None,
@@ -309,7 +315,7 @@ impl DeliveryDiagnostics {
                 }
                 _ => {}
             }
-            state.subscriptions.insert(
+            if let Some(previous) = state.subscriptions.insert(
                 tx.into(),
                 Subscription {
                     operation: Operation {
@@ -324,7 +330,11 @@ impl DeliveryDiagnostics {
                     last_produced: None,
                     items: HashMap::new(),
                 },
-            );
+            ) {
+                state.retained_properties = state
+                    .retained_properties
+                    .saturating_sub(previous.retained());
+            }
         }
     }
 
@@ -455,15 +465,12 @@ impl DeliveryDiagnostics {
             }
             _ => None,
         };
-        let retained: usize = state
-            .subscriptions
-            .values()
-            .map(Subscription::retained)
-            .sum();
+        let mut retained = state.retained_properties;
         let mut inspection = Inspection::default();
         let mut gap = None;
         let operation =
             if let Some(subscription) = tx.and_then(|tx| state.subscriptions.get_mut(tx)) {
+                let previous_retained = subscription.retained();
                 let now = Instant::now();
                 gap = subscription
                     .last_sent
@@ -474,7 +481,7 @@ impl DeliveryDiagnostics {
                 if bytes <= 262_144 {
                     inspection = subscription.inspect(message);
                     if retained
-                        .saturating_sub(inspection.previous_retained)
+                        .saturating_sub(previous_retained)
                         .saturating_add(subscription.retained())
                         > MAX_CLIENT_PROPERTIES
                     {
@@ -485,6 +492,9 @@ impl DeliveryDiagnostics {
                     subscription.previous = None;
                     subscription.items.clear();
                 }
+                retained = retained
+                    .saturating_sub(previous_retained)
+                    .saturating_add(subscription.retained());
                 subscription.operation.clone()
             } else {
                 Operation {
@@ -492,6 +502,7 @@ impl DeliveryDiagnostics {
                     id: "unattributed".into(),
                 }
             };
+        state.retained_properties = retained;
         let unique_remaining = MAX_CLIENT_PROPERTIES
             .saturating_sub(state.counts.values().map(|c| c.unique.len()).sum());
         let counts = state.counts.entry(operation.clone()).or_default();
@@ -692,7 +703,6 @@ struct Inspection {
     upserts: u64,
     deletes: u64,
     keys: Vec<u64>,
-    previous_retained: usize,
 }
 
 impl Subscription {
@@ -707,7 +717,6 @@ impl Subscription {
         let mut inspection = Inspection {
             complete: true,
             unchanged: true,
-            previous_retained: self.retained(),
             ..Inspection::default()
         };
         match message {
@@ -1159,6 +1168,7 @@ mod tests {
             .lock()
             .expect("unpoisoned");
         assert!(state.subscriptions.is_empty());
+        assert_eq!(state.retained_properties, 0);
         assert!(state.counts.is_empty());
     }
 
@@ -1192,6 +1202,14 @@ mod tests {
             state.counts.values().map(|c| c.unique.len()).sum::<usize>() <= MAX_CLIENT_PROPERTIES
         );
         assert_eq!(state.untracked, 0);
+        assert_eq!(
+            state.retained_properties,
+            state
+                .subscriptions
+                .values()
+                .map(Subscription::retained)
+                .sum::<usize>()
+        );
         assert!(state.counts.values().any(|c| c.incomplete > 0));
     }
 }
