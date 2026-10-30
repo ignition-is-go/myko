@@ -920,6 +920,68 @@ impl MykoServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use myko::entities::demo::{DemoStatus, DemoStatusId, GetDemoStatuses};
+
+    #[test]
+    fn no_default_persister_and_no_sagas_do_not_retain_same_id_updates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if inventory::iter::<SagaRegistration>().next().is_some() {
+            return Err("test binary unexpectedly registers a saga".into());
+        }
+        let server = MykoServer::builder().build();
+        if server.persisters.resolve("DemoStatus").is_some() {
+            return Err("default-none fixture unexpectedly has a persister".into());
+        }
+        server.start_saga_runtime();
+        let ctx = server.ctx();
+        let id = DemoStatusId::from("stable-live-status");
+        let payload = "x".repeat(4096);
+        for update in 0..1000 {
+            ctx.set(&DemoStatus {
+                id: id.clone(),
+                name: update.to_string(),
+                color: payload.clone(),
+                emoji: String::new(),
+            })?;
+        }
+        let latest = ctx.query_snapshot(
+            GetDemoStatuses {},
+            Arc::new(RequestContext::internal(
+                "no-saga-retention-test".into(),
+                server.host_id,
+                "test",
+            )),
+        );
+        if latest.len() != 1 || latest[0].id != id || latest[0].name != "999" {
+            return Err(format!("expected one latest status 999, got {latest:?}").into());
+        }
+        let receiver = server
+            .saga_event_rx
+            .lock()
+            .map_err(|_| "saga queue lock poisoned")?;
+        let (queued, retained_payload_bytes) = receiver.as_ref().map_or((0, 0), |receiver| {
+            let queued = receiver.len();
+            let retained_payload_bytes: usize = receiver
+                .try_iter()
+                .map(|event| {
+                    event
+                        .item
+                        .get("color")
+                        .and_then(serde_json::Value::as_str)
+                        .map_or(0, str::len)
+                })
+                .sum();
+            (queued, retained_payload_bytes)
+        });
+        eprintln!(
+            "latest_items={} queued_events={queued} retained_payload_bytes={retained_payload_bytes}",
+            latest.len()
+        );
+        if queued != 0 {
+            return Err(format!("default-none server with no sagas retained {queued} historical events containing {retained_payload_bytes} payload bytes").into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_server_creation() {
