@@ -746,23 +746,30 @@ pub fn myko_report(attr: TokenStream, input: TokenStream) -> TokenStream {
 ///     }
 /// }
 /// ```
+/// Add `client` to declare a command callable by servers using
+/// `ClientMutationPolicy::DeclaredCommands`, e.g. `#[myko_command(bool, client)]`.
+/// Without a result type, `#[myko_command(client)]` returns `()`.
+/// The flag only registers exposure metadata; trusted servers retain their existing
+/// behavior, and handlers still enforce argument and application permission rules.
 #[proc_macro_attribute]
 pub fn myko_command(attr: TokenStream, input: TokenStream) -> TokenStream {
     let options = if attr.is_empty() {
         command::CommandOptions {
             result_type: None,
             custom_serialize: false,
+            client: false,
         }
     } else {
         parse_macro_input!(attr as CommandArgs).into()
     };
     let input = parse_macro_input!(input as syn::ItemStruct);
-    command::myko_command_impl(options, input).into()
+    command::myko_command_impl(&options, input).into()
 }
 
 struct CommandArgs {
     result_type: Option<syn::Path>,
     custom_serialize: bool,
+    client: bool,
 }
 
 impl From<CommandArgs> for command::CommandOptions {
@@ -770,6 +777,7 @@ impl From<CommandArgs> for command::CommandOptions {
         Self {
             result_type: value.result_type,
             custom_serialize: value.custom_serialize,
+            client: value.client,
         }
     }
 }
@@ -779,8 +787,16 @@ impl Parse for CommandArgs {
         let args = Punctuated::<syn::Path, Token![,]>::parse_terminated(input)?;
         let mut result_type = None;
         let mut custom_serialize = false;
+        let mut client = false;
 
         for path in args {
+            if path.is_ident("client") {
+                if client {
+                    return Err(syn::Error::new(path.span(), "duplicate client flag"));
+                }
+                client = true;
+                continue;
+            }
             if path.is_ident("custom_serialize") {
                 if custom_serialize {
                     return Err(syn::Error::new(
@@ -805,6 +821,7 @@ impl Parse for CommandArgs {
         Ok(Self {
             result_type,
             custom_serialize,
+            client,
         })
     }
 }
@@ -1299,5 +1316,39 @@ mod tests {
         .to_string();
         assert!(opaque.contains("myko :: impl_ts_as ! (Opaque , \"unknown\")"));
         assert!(!opaque.contains(", myko :: TS"));
+    }
+}
+
+#[cfg(test)]
+mod command_args_tests {
+    use super::CommandArgs;
+
+    #[test]
+    fn client_flag_combines_with_result_and_custom_serialization() {
+        let args: CommandArgs = syn::parse_quote!(bool, client, custom_serialize);
+        assert!(args.client);
+        assert!(args.custom_serialize);
+        assert!(args.result_type.is_some_and(|path| path.is_ident("bool")));
+    }
+
+    #[test]
+    fn client_flag_alone_keeps_unit_result() {
+        let args: CommandArgs = syn::parse_quote!(client);
+        assert!(args.client);
+        assert!(args.result_type.is_none());
+        assert!(!args.custom_serialize);
+    }
+
+    #[test]
+    fn duplicate_client_flag_is_rejected() {
+        let error = syn::parse_str::<CommandArgs>("client, bool, client").err();
+        assert!(error.is_some_and(|error| error.to_string() == "duplicate client flag"));
+    }
+
+    #[test]
+    fn legacy_result_type_does_not_expose_a_command() {
+        let args: CommandArgs = syn::parse_quote!(bool);
+        assert!(!args.client);
+        assert!(args.result_type.is_some_and(|path| path.is_ident("bool")));
     }
 }

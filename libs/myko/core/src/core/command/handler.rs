@@ -499,6 +499,16 @@ pub struct CommandHandlerRegistration {
 
 inventory::collect!(CommandHandlerRegistration);
 
+/// A command explicitly exposed by `#[myko_command(..., client)]`.
+///
+/// Separate metadata keeps generated and manually registered handlers internal
+/// under the declared-command policy unless the macro opts them in.
+pub struct ClientCommandRegistration {
+    pub command_id: &'static str,
+}
+
+inventory::collect!(ClientCommandRegistration);
+
 /// Macro to register a command handler with the inventory.
 ///
 /// # Example

@@ -7,8 +7,8 @@ mod traits;
 
 // Re-export handler types (available on all platforms for entity impls)
 pub use handler::{
-    CommandContext, CommandExecutorAdapter, CommandExecutorFactory, CommandHandler,
-    CommandHandlerRegistration, DynCommandExecutor,
+    ClientCommandRegistration, CommandContext, CommandExecutorAdapter, CommandExecutorFactory,
+    CommandHandler, CommandHandlerRegistration, DynCommandExecutor,
 };
 // Re-export registration types (server-only)
 pub use registration::CommandRegistration;

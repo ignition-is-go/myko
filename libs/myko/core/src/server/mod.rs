@@ -33,6 +33,7 @@
 //! sites to fix first: the timers want a `spawn_after` shim and the clocks
 //! want `web_time::Instant`.
 
+mod client_mutation_policy;
 pub mod client_registry;
 mod client_session;
 mod context;
@@ -45,6 +46,7 @@ mod protocol;
 mod relationship_manager;
 pub mod report_cache_stats;
 
+pub use client_mutation_policy::ClientMutationPolicy;
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
 pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
 pub(crate) use context::Origin;

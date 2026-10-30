@@ -5,6 +5,7 @@ use syn::{ItemStruct, Path};
 pub struct CommandOptions {
     pub result_type: Option<Path>,
     pub custom_serialize: bool,
+    pub client: bool,
 }
 
 fn make_args_struct(
@@ -26,11 +27,8 @@ fn make_args_struct(
 }
 
 /// Generates command trait implementations and registers the command handler.
-pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) -> TokenStream {
-    let CommandOptions {
-        result_type,
-        custom_serialize,
-    } = options;
+pub fn myko_command_impl(options: &CommandOptions, mut input_struct: ItemStruct) -> TokenStream {
+    let result_type = &options.result_type;
     let struct_name = &input_struct.ident;
     let args_struct_name = format_ident!("{}Args", struct_name);
     let ctx = crate::DeriveCtx::new();
@@ -70,7 +68,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
         .as_ref()
         .map_or_else(|| "()".to_string(), |path| quote!(#path).to_string());
 
-    let derives = if custom_serialize {
+    let derives = if options.custom_serialize {
         quote! {
             #[derive(Clone, Debug, #serde_path::Deserialize)]
             #ts_cfg_derive
@@ -93,10 +91,13 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
         })
         .collect::<Vec<_>>();
 
-    let expanded = quote! {
+    let client_registration = client_registration_tokens(options.client, struct_name, krate);
+
+    quote! {
         #derives
         #input_struct
         #input_contract
+        #client_registration
 
         #args_struct
 
@@ -154,7 +155,19 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
 
         // Register for ts-rs export
         #krate::register_typegen_type!(#struct_name, #args_struct_name);
-    };
+    }
+}
 
-    expanded
+fn client_registration_tokens(client: bool, name: &syn::Ident, krate: &syn::Path) -> TokenStream {
+    if !client {
+        return TokenStream::new();
+    }
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        #krate::submit! {
+            #krate::command::ClientCommandRegistration {
+                command_id: <#name as #krate::command::CommandIdStatic>::COMMAND_ID,
+            }
+        }
+    }
 }
