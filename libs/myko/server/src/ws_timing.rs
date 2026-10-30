@@ -89,7 +89,7 @@ pub fn record_outbound_for_client(
 /// Responses carry a transaction ID; recover the original operation ID instead
 /// of losing query/report/view attribution on the most useful measurements.
 #[must_use]
-pub fn resolved_message_tag(message: &MykoMessage, client_id: &str) -> Option<String> {
+pub fn resolved_message_tag(message: &MykoMessage, client_id: &str) -> Option<std::sync::Arc<str>> {
     if let Some(tag) = message_tag(message) {
         return Some(tag.into());
     }

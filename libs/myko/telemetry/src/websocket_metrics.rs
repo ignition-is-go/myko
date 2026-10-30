@@ -61,18 +61,21 @@ pub fn bind_operation(client_id: &str, family: &'static str, tx: &str, operation
     {
         client
             .bindings
-            .insert((family, tx.into()), operation.into());
+            .entry(family)
+            .or_default()
+            .insert(tx.into(), Arc::from(operation));
     }
 }
 
 /// Resolve an outgoing response's transaction to the original operation ID.
 #[must_use]
-pub fn operation(client_id: &str, family: &'static str, tx: &str) -> Option<String> {
+pub fn operation(client_id: &str, family: &'static str, tx: &str) -> Option<Arc<str>> {
     global()?
         .clients()
         .get(client_id)?
         .bindings
-        .get(&(family, tx.into()))
+        .get(family)?
+        .get(tx)
         .cloned()
 }
 
@@ -103,12 +106,45 @@ struct Counts {
     bytes: Option<u64>,
 }
 
+/// Borrowed lookups avoid constructing owned label strings for every frame.
+#[derive(Debug, Default)]
+struct OperationCounts {
+    untagged: Option<Counts>,
+    tagged: BTreeMap<String, Counts>,
+}
+
+impl Counts {
+    fn record(&mut self, bytes: Option<u64>) {
+        self.messages = self.messages.saturating_add(1);
+        if let Some(bytes) = bytes {
+            self.bytes = Some(self.bytes.unwrap_or_default().saturating_add(bytes));
+        }
+    }
+}
+
+impl OperationCounts {
+    fn record(&mut self, operation: Option<&str>, bytes: Option<u64>) {
+        let Some(operation) = operation else {
+            self.untagged.get_or_insert_default().record(bytes);
+            return;
+        };
+        if let Some(counts) = self.tagged.get_mut(operation) {
+            counts.record(bytes);
+        } else {
+            let mut counts = Counts::default();
+            counts.record(bytes);
+            self.tagged.insert(operation.into(), counts);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct Client {
     started: u64,
     closed: bool,
-    counters: BTreeMap<Key, Counts>,
-    bindings: BTreeMap<(&'static str, String), String>,
+    revision: u64,
+    counters: BTreeMap<(&'static str, &'static str), OperationCounts>,
+    bindings: BTreeMap<&'static str, BTreeMap<String, Arc<str>>>,
 }
 
 #[derive(Debug, Default)]
@@ -125,6 +161,7 @@ impl Registry {
         self.clients().entry(id.into()).or_insert_with(|| Client {
             started: now(),
             closed: false,
+            revision: 0,
             counters: BTreeMap::new(),
             bindings: BTreeMap::new(),
         });
@@ -151,18 +188,12 @@ impl Registry {
         bytes: Option<u64>,
     ) {
         if let Some(client) = self.clients().get_mut(id) {
-            let counts = client
+            client.revision = client.revision.saturating_add(1);
+            client
                 .counters
-                .entry(Key {
-                    direction,
-                    kind,
-                    operation: operation.map(str::to_owned),
-                })
-                .or_default();
-            counts.messages = counts.messages.saturating_add(1);
-            if let Some(bytes) = bytes {
-                counts.bytes = Some(counts.bytes.unwrap_or_default().saturating_add(bytes));
-            }
+                .entry((direction, kind))
+                .or_default()
+                .record(operation, bytes);
         }
     }
 
@@ -183,7 +214,36 @@ impl Registry {
                 id: id.clone(),
                 started: client.started,
                 closed: client.closed,
-                counters: client.counters.clone(),
+                revision: client.revision,
+                counters: client
+                    .counters
+                    .iter()
+                    .flat_map(|(&(direction, kind), counts)| {
+                        counts
+                            .untagged
+                            .iter()
+                            .map(move |counts| {
+                                (
+                                    Key {
+                                        direction,
+                                        kind,
+                                        operation: None,
+                                    },
+                                    counts.clone(),
+                                )
+                            })
+                            .chain(counts.tagged.iter().map(move |(operation, counts)| {
+                                (
+                                    Key {
+                                        direction,
+                                        kind,
+                                        operation: Some(operation.clone()),
+                                    },
+                                    counts.clone(),
+                                )
+                            }))
+                    })
+                    .collect(),
             })
             .collect();
         Snapshot {
@@ -201,7 +261,7 @@ impl Registry {
             if clients.get(&exported.id).is_some_and(|current| {
                 current.closed
                     && current.started == exported.started
-                    && current.counters == exported.counters
+                    && current.revision == exported.revision
             }) {
                 clients.remove(&exported.id);
             }
@@ -223,6 +283,7 @@ pub(crate) struct ClientSnapshot {
     pub(crate) id: String,
     started: u64,
     pub(crate) closed: bool,
+    revision: u64,
     counters: BTreeMap<Key, Counts>,
 }
 

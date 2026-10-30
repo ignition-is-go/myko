@@ -35,6 +35,12 @@ Use the operation count metric for messages/second, and filter either metric
 by `client_id` or `tag` in Grafana. Existing dashboards that filtered the old
 message count by `kind`/`tag` must use the new operation count metric.
 
+The message path updates counters and uses the already encoded frame length;
+it does not inspect payload contents or serialize frames again. Operation strings
+are retained once per label set; response lookups share the operation ID.
+Snapshots and OTLP formatting run on the existing periodic exporter.
+The more expensive payload inspection below remains opt-in.
+
 ### Disconnected clients
 
 Disconnected clients remain pending until their final counters have been accepted
