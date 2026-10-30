@@ -954,27 +954,29 @@ mod tests {
                 "test",
             )),
         );
-        if latest.len() != 1 || latest[0].id != id || latest[0].name != "999" {
+        if !matches!(latest.as_slice(), [status] if status.id == id && status.name == "999") {
             return Err(format!("expected one latest status 999, got {latest:?}").into());
         }
-        let receiver = server
-            .saga_event_rx
-            .lock()
-            .map_err(|_| "saga queue lock poisoned")?;
-        let (queued, retained_payload_bytes) = receiver.as_ref().map_or((0, 0), |receiver| {
-            let queued = receiver.len();
-            let retained_payload_bytes: usize = receiver
-                .try_iter()
-                .map(|event| {
-                    event
-                        .item
-                        .get("color")
-                        .and_then(serde_json::Value::as_str)
-                        .map_or(0, str::len)
-                })
-                .sum();
-            (queued, retained_payload_bytes)
-        });
+        let (queued, retained_payload_bytes) = {
+            let receiver = server
+                .saga_event_rx
+                .lock()
+                .map_err(|_| "saga queue lock poisoned")?;
+            receiver.as_ref().map_or((0, 0), |receiver| {
+                let queued = receiver.len();
+                let retained_payload_bytes: usize = receiver
+                    .try_iter()
+                    .map(|event| {
+                        event
+                            .item
+                            .get("color")
+                            .and_then(serde_json::Value::as_str)
+                            .map_or(0, str::len)
+                    })
+                    .sum();
+                (queued, retained_payload_bytes)
+            })
+        };
         eprintln!(
             "latest_items={} queued_events={queued} retained_payload_bytes={retained_payload_bytes}",
             latest.len()
