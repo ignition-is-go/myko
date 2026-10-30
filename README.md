@@ -171,6 +171,8 @@ All endpoints share a single TCP listener; the front-door router peeks at the HT
 | `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` | `300`             | Maximum startup snapshot/catch-up wait before the server exits; `0` disables the limit |
 | `MYKO_PORT`                      | `5155`                | Server bind port (when wired through env)  |
 | `MYKO_TRACING_ENDPOINT`          | —                     | Fallback OTLP/HTTP base endpoint for logs, traces, and metrics (see `myko_server::telemetry::init_from_env`); unset = local console logging only |
+| `MYKO_WS_DIAGNOSTICS`            | `0`                   | Set `1` for bounded per-client delivery OTel metrics; see [delivery diagnostics](docs/observability/client-delivery.md) |
+| `MYKO_WS_DIAGNOSTICS_LOGS`       | `0`                   | Additionally enable optional top-five debug summaries (`myko_server::delivery=debug`); metrics do not require these logs |
 | `MYKO_CCMD_MONITOR`              | `0`                   | Set `1` to log command timing              |
 | `MYKO_CCMD_TIMEOUT_MS`           | —                     | Slow-command threshold for warn logs       |
 | `MYKO_MEM_PROFILE_INTERVAL_SECS` | `60`                  | Metrics export interval (seconds); applies when OTLP export is configured |

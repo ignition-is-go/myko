@@ -3,6 +3,7 @@
 //! Handles WebSocket connections using `ClientSession` for subscription management.
 
 use crate::GatewayAccess;
+use crate::delivery_diagnostics::DeliveryDiagnostics;
 use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
 use std::{
     collections::HashMap,
@@ -185,6 +186,7 @@ struct DropLogger {
     dropped: std::sync::atomic::AtomicU64,
     last_log_ms: std::sync::atomic::AtomicU64,
     overload_tx: watch::Sender<bool>,
+    diagnostics: Option<Arc<DeliveryDiagnostics>>,
 }
 
 impl DropLogger {
@@ -194,6 +196,13 @@ impl DropLogger {
             dropped: std::sync::atomic::AtomicU64::new(0),
             last_log_ms: std::sync::atomic::AtomicU64::new(0),
             overload_tx,
+            diagnostics: None,
+        }
+    }
+
+    fn subscription_ready(&self, tx: &str) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.ready(tx);
         }
     }
 
@@ -329,6 +338,7 @@ struct WriterState {
     outgoing_format: Arc<AtomicU8>,
     outbound_commands: SharedOutboundCommands,
     outbound_failure_tx: watch::Sender<bool>,
+    diagnostics: Arc<DeliveryDiagnostics>,
 }
 
 enum OutboundMessage {
@@ -341,10 +351,11 @@ enum OutboundMessage {
 }
 
 enum DeferredOutbound {
-    Report(Arc<str>, Arc<dyn AnyOutput>),
+    Report(Arc<str>, Arc<dyn AnyOutput>, Instant),
     Query {
         response: PendingQueryResponse,
         is_view: bool,
+        queued_at: Instant,
     },
     /// Successful command completion is deliberately serialized behind the
     /// query/report updates emitted by that command. Reactive publication is
@@ -486,11 +497,15 @@ impl WsHandler {
         mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionReady>,
         state: ReadLoopState,
     ) {
+        let mut diagnostics_interval = interval(Duration::from_secs(5));
         let mut outbound_ttl_interval = interval(Duration::from_secs(10));
         outbound_ttl_interval.tick().await; // NOTE(ts): consume the immediate first tick
         let mut overload_rx = state.overload_rx.clone();
         loop {
             tokio::select! {
+                _ = diagnostics_interval.tick() => {
+                    if let Some(diagnostics) = &state.drop_logger.diagnostics { diagnostics.flush(false); }
+                }
                 changed = overload_rx.changed() => {
                     if changed.is_err() || *overload_rx.borrow() {
                         tracing::warn!(
@@ -511,6 +526,7 @@ impl WsHandler {
                     if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
                         map.remove(&tx_id);
                     }
+                    if let Some(diagnostics) = &state.drop_logger.diagnostics { diagnostics.ready(&tx_id); }
                     match ready {
                         SubscriptionReady::Report { tx_id, report_id, cell } => {
                             session.subscribe_report(tx_id, report_id, cell);
@@ -746,20 +762,38 @@ impl WsHandler {
         addr: SocketAddr,
         outgoing_format: &AtomicU8,
         commands: &SharedOutboundCommands,
+        diagnostics: &DeliveryDiagnostics,
     ) -> bool {
         let (kind, tx, sequence) = Self::outbound_metadata(&message, client_id);
         Self::track_outbound_command(&message, commands);
-        let Some(message) = Self::serialize_outbound(&message, outgoing_format) else {
+        let serialize_started = Instant::now();
+        let Some(frame) = Self::serialize_outbound(&message, outgoing_format) else {
             // A serialization failure is just as lossy as a full queue. Stop
             // this session rather than allowing later sequenced diffs through.
             return false;
         };
-        let payload_bytes = match &message {
+        let serialize_elapsed = serialize_started.elapsed();
+        let payload_bytes = match &frame {
             Message::Binary(bytes) => bytes.len(),
             Message::Text(text) => text.len(),
             _ => 0,
         };
-        if let Err(error) = write.send(message).await {
+        let send_started = Instant::now();
+        let result = write.send(frame).await;
+        let (diagnostic_message, command_id) = match &message {
+            OutboundMessage::Message(message) => (Some(message), None),
+            OutboundMessage::SerializedCommand { command_id, .. } => {
+                (None, Some(command_id.as_str()))
+            }
+        };
+        diagnostics.timing(
+            diagnostic_message,
+            command_id,
+            serialize_elapsed,
+            send_started.elapsed(),
+            result.is_ok(),
+        );
+        if let Err(error) = result {
             tracing::error!(
                 "WebSocket write failed for client {} from {} kind={} tx={:?} seq={:?} payload_bytes={} binary={}: {}",
                 client_id,
@@ -773,7 +807,29 @@ impl WsHandler {
             );
             return false;
         }
+        match &message {
+            OutboundMessage::Message(message) => diagnostics.sent(message, payload_bytes),
+            OutboundMessage::SerializedCommand { command_id, .. } => {
+                diagnostics.serialized_command(command_id, payload_bytes);
+            }
+        }
         true
+    }
+
+    fn materialize_report(
+        tx: &str,
+        output: &dyn AnyOutput,
+        queued_at: Instant,
+        diagnostics: &DeliveryDiagnostics,
+    ) -> OutboundMessage {
+        diagnostics.queue(1, Some((tx, queued_at.elapsed())));
+        let started = Instant::now();
+        let response = output.to_value();
+        diagnostics.materialized(tx, started.elapsed());
+        OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
+            response,
+            tx: tx.to_string(),
+        }))
     }
 
     async fn run_writer(state: WriterState) {
@@ -789,12 +845,19 @@ impl WsHandler {
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
             outbound_failure_tx,
+            diagnostics,
         } = state;
         let mut normal_open = true;
         let mut priority_open = true;
         let mut deferred_open = true;
         let mut delivery = ViewDelivery::default();
         while normal_open || priority_open || deferred_open {
+            diagnostics.queue(
+                rx.len()
+                    .saturating_add(deferred_rx.len())
+                    .saturating_add(priority_rx.len()),
+                None,
+            );
             let deadline = delivery.next_deadline();
             let msg = tokio::select! {
                 biased;
@@ -814,13 +877,11 @@ impl WsHandler {
                 }
                 maybe = deferred_rx.recv(), if deferred_open => {
                     match maybe {
-                        Some(DeferredOutbound::Report(tx, output)) => {
-                            OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
-                                response: output.to_value(),
-                                tx: tx.to_string(),
-                            }))
+                        Some(DeferredOutbound::Report(tx, output, queued_at)) => {
+                            Self::materialize_report(&tx, output.as_ref(), queued_at, &diagnostics)
                         }
-                        Some(DeferredOutbound::Query { response, is_view }) => {
+                        Some(DeferredOutbound::Query { response, is_view, queued_at }) => {
+                            diagnostics.queue(deferred_rx.len().saturating_add(1), Some((&response.tx, queued_at.elapsed())));
                             if is_view {
                                 let Some(response) = delivery.push(response, Instant::now()) else { continue; };
                                 OutboundMessage::Message(MykoMessage::ViewResponse(response.into_wire()))
@@ -851,6 +912,7 @@ impl WsHandler {
                 write_addr,
                 &outgoing_format_writer,
                 &outbound_commands_by_tx_writer,
+                &diagnostics,
             )
             .await
             {
@@ -860,10 +922,26 @@ impl WsHandler {
                 break;
             }
         }
+        Self::writer_exited(
+            &write_client_id,
+            write_addr,
+            normal_open,
+            priority_open,
+            deferred_open,
+        );
+    }
+
+    fn writer_exited(
+        write_client_id: &str,
+        write_addr: SocketAddr,
+        normal_open: bool,
+        priority_open: bool,
+        deferred_open: bool,
+    ) {
         // NOTE(ts): Unregister from client registry immediately so the node
         // executor stops serializing commands into a dead channel.
         if let Some(registry) = try_client_registry() {
-            registry.unregister(&write_client_id);
+            registry.unregister(write_client_id);
             tracing::info!(
                 "WebSocket writer unregistered client {} from {} (write task exiting)",
                 write_client_id,
@@ -940,7 +1018,10 @@ impl WsHandler {
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
-        let drop_logger = Arc::new(DropLogger::new(client_id.clone(), overload_tx));
+        let diagnostics = Arc::new(DeliveryDiagnostics::new(&client_id, addr));
+        let mut logger = DropLogger::new(client_id.clone(), overload_tx);
+        logger.diagnostics = Some(diagnostics.clone());
+        let drop_logger = Arc::new(logger);
         let writer = ChannelWriter {
             tx: tx.clone(),
             deferred_tx: deferred_tx.clone(),
@@ -949,12 +1030,7 @@ impl WsHandler {
         };
 
         // Register writer in the global client registry (if initialized)
-        let writer_arc: Arc<dyn WsWriter> = Arc::new(ChannelWriter {
-            tx: tx.clone(),
-            deferred_tx: deferred_tx.clone(),
-            drop_logger: drop_logger.clone(),
-            outgoing_format: outgoing_format.clone(),
-        });
+        let writer_arc: Arc<dyn WsWriter> = Arc::new(writer.clone());
         if let Some(registry) = try_client_registry() {
             registry.register(client_id.clone(), writer_arc);
         }
@@ -989,6 +1065,7 @@ impl WsHandler {
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
             outbound_failure_tx: drop_logger.overload_tx.clone(),
+            diagnostics,
         }));
 
         let command_task = tokio::spawn(Self::run_command_worker(
@@ -1139,6 +1216,7 @@ impl WsHandler {
         } else {
             let store = (*ctx.registry.get_or_create(&wrapped.query_item_type)).clone();
             let cellmap = hyphae::MapQuery::materialize(store.select(|_| true));
+            message_context.drop_logger.subscription_ready(&tx_id);
             session.subscribe_query(tx_id, query_id, cellmap, wrapped.window);
             drop(ctx);
         }
@@ -1254,6 +1332,9 @@ impl WsHandler {
         message_context: &MessageContext<'_>,
         msg: MykoMessage,
     ) {
+        if let Some(diagnostics) = &message_context.drop_logger.diagnostics {
+            diagnostics.inbound(&msg);
+        }
         crate::ws_timing::record_inbound_for_client(
             crate::ws_timing::message_kind(&msg),
             &session.client_id,
@@ -1655,6 +1736,7 @@ impl WsHandler {
 ///
 /// Sends messages through an mpsc channel which are then
 /// forwarded to the actual WebSocket.
+#[derive(Clone)]
 struct ChannelWriter {
     tx: mpsc::Sender<OutboundMessage>,
     deferred_tx: mpsc::Sender<DeferredOutbound>,
@@ -1728,9 +1810,19 @@ impl WsWriter for ChannelWriter {
         if self.deferred_dead() {
             return;
         }
-        if let Err(e) = self
-            .deferred_tx
-            .try_send(DeferredOutbound::Report(tx, output))
+        let result =
+            self.deferred_tx
+                .try_send(DeferredOutbound::Report(tx.clone(), output, Instant::now()));
+        if let Some(diagnostics) = &self.drop_logger.diagnostics {
+            diagnostics.produced(
+                &tx,
+                self.deferred_tx
+                    .max_capacity()
+                    .saturating_sub(self.deferred_tx.capacity()),
+                result.is_ok(),
+            );
+        }
+        if let Err(e) = result
             && !matches!(e, mpsc::error::TrySendError::Closed(_))
         {
             self.drop_logger.on_drop("ReportResponseDeferred", &e);
@@ -1741,9 +1833,22 @@ impl WsWriter for ChannelWriter {
         if self.deferred_dead() {
             return;
         }
-        if let Err(e) = self
-            .deferred_tx
-            .try_send(DeferredOutbound::Query { response, is_view })
+        let tx = response.tx.clone();
+        let result = self.deferred_tx.try_send(DeferredOutbound::Query {
+            response,
+            is_view,
+            queued_at: Instant::now(),
+        });
+        if let Some(diagnostics) = &self.drop_logger.diagnostics {
+            diagnostics.produced(
+                &tx,
+                self.deferred_tx
+                    .max_capacity()
+                    .saturating_sub(self.deferred_tx.capacity()),
+                result.is_ok(),
+            );
+        }
+        if let Err(e) = result
             && !matches!(e, mpsc::error::TrySendError::Closed(_))
         {
             self.drop_logger.on_drop("QueryResponseDeferred", &e);
@@ -1898,6 +2003,7 @@ mod tests {
             Ok(DeferredOutbound::Query {
                 response: PendingQueryResponse { sequence: 0, .. },
                 is_view: false,
+                ..
             })
         ));
     }
@@ -1924,6 +2030,7 @@ mod tests {
                 .try_send(DeferredOutbound::Query {
                     response: query,
                     is_view: false,
+                    queued_at: Instant::now(),
                 })
                 .is_ok(),
             "query response must enqueue"
