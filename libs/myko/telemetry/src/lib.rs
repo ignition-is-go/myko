@@ -12,7 +12,7 @@ use tracing_subscriber::{
     EnvFilter, Layer, layer::SubscriberExt, registry::LookupSpan, util::SubscriberInitExt,
 };
 
-/// Connection-scoped WebSocket metrics with confirmed backend retirement.
+/// Connection-scoped WebSocket metrics with retirement after export.
 pub mod websocket_metrics;
 
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 60;
@@ -250,9 +250,7 @@ fn build_meter_provider(endpoint: Option<&str>, resource: Resource) -> Option<Sd
     provider
         .meter("myko-server")
         .u64_observable_gauge("myko.ws.metrics.clients")
-        .with_description(
-            "Connection counters retained for active clients or pending Prometheus confirmation",
-        )
+        .with_description("Connection counters retained for active clients or pending export")
         .with_callback(move |observer| {
             let (active, closed) = retained.retained();
             observer.observe(active, &[opentelemetry::KeyValue::new("state", "active")]);

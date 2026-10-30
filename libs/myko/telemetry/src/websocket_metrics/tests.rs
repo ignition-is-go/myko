@@ -34,22 +34,20 @@ fn all_operation_series_survive_beyond_sdk_limit() {
 }
 
 #[test]
-fn only_confirmed_final_closed_snapshot_can_retire() {
+fn only_exported_final_closed_snapshot_can_retire() {
     let registry = Registry::default();
     registry.open("client");
     registry.record("client", "out", "ViewResponse", Some("view"), Some(10));
     let active = registry.snapshot();
-    let confirmed = BTreeSet::from(["client".into()]);
-    registry.acknowledge(&active, &confirmed);
+    registry.acknowledge(&active);
     assert_eq!(registry.retained(), (1, 0));
     registry.close("client");
     let closed = registry.snapshot();
-    registry.acknowledge(&closed, &BTreeSet::new());
     assert_eq!(registry.retained(), (0, 1));
     registry.record("client", "out", "ViewResponse", Some("view"), Some(10));
-    registry.acknowledge(&closed, &confirmed); // Export raced with a final writer.
+    registry.acknowledge(&closed); // Export raced with a final writer.
     assert_eq!(registry.retained(), (0, 1));
-    registry.acknowledge(&registry.snapshot(), &confirmed);
+    registry.acknowledge(&registry.snapshot());
     assert_eq!(registry.retained(), (0, 0));
 }
 
@@ -68,6 +66,6 @@ fn response_bindings_are_connection_and_family_scoped() {
     client_disconnected("one");
     assert_eq!(operation("one", "query", "tx"), None);
     assert_eq!(registry.retained(), (1, 1));
-    client_disconnected("two"); // Idle connections need no confirmation.
+    client_disconnected("two"); // Idle connections need no export.
     assert_eq!(registry.retained(), (0, 1));
 }

@@ -37,28 +37,18 @@ message count by `kind`/`tag` must use the new operation count metric.
 
 ### Disconnected clients
 
-Set `MYKO_PROMETHEUS_QUERY_URL` to the full Prometheus instant-query API URL
-reachable by the server, for example `http://prometheus:9090/api/v1/query`.
-The endpoint must expose the same data receiving the server's OTLP pipeline,
-with the metric names above and conventional `job`/`instance` resource labels.
-The server sends read-only PromQL queries using HTTP POST.
+Disconnected clients remain pending until their final counters have been accepted
+by the OTLP collector. A successful export without rejected points releases those
+counters from server memory. Failed or partially rejected exports retain them for
+the next collection interval. Active clients remain cumulative.
 
-Disconnect does **not** discard counters. After a successful OTLP export without
-rejected points, the server checks Prometheus for every final count and byte
-series. Only a complete final snapshot confirmed there is retired. Active clients
-remain cumulative. Failed exports, partial rejection, missing backend data,
-an unreachable query API, or an unset query URL leave closed clients pending;
-future exports resend their cumulative values. Collector HTTP success alone is
-not confirmation that Prometheus received them. Backend retention thereafter
-belongs to Prometheus.
+There is no Prometheus query dependency or additional configuration. Collector
+acceptance is sufficient: a downstream failure or process restart can lose the
+last part of a client's metrics, which is acceptable for this diagnostic data.
 
 `myko_ws_metrics_clients{state="active"}` and
 `myko_ws_metrics_clients{state="pending"}` show retained client counts. The
-pending gauge can lag retirement by one collection interval. During a backend
-outage, pending memory grows rather than silently dropping client detail.
-Counters pending confirmation are held **in memory**, not in a durable spool:
-a process crash/restart can still lose data that never reached Prometheus.
-This cleanup guarantee applies during a running server, not across a crash.
+pending gauge can lag retirement by one collection interval.
 
 ## Enable
 

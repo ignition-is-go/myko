@@ -1,9 +1,9 @@
 //! Connection-scoped WebSocket counters.
 //!
 //! Full operation detail bypasses SDK cardinality aggregation; closed clients
-//! stay pending until backend confirmation.
+//! stay pending until a successful collector export.
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, RwLock, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -46,7 +46,7 @@ pub fn client_connected(client_id: &str) {
 
 /// Close a connection after its writers have stopped.
 ///
-/// Unconfirmed counts remain exportable; this does not discard measurements.
+/// Pending counts remain exportable until the collector accepts them.
 pub fn client_disconnected(client_id: &str) {
     if let Some(registry) = global() {
         registry.close(client_id);
@@ -192,10 +192,10 @@ impl Registry {
         }
     }
 
-    pub(crate) fn acknowledge(&self, snapshot: &Snapshot, confirmed: &BTreeSet<String>) {
+    pub(crate) fn acknowledge(&self, snapshot: &Snapshot) {
         let mut clients = self.clients();
         for exported in &snapshot.clients {
-            if !exported.closed || !confirmed.contains(&exported.id) {
+            if !exported.closed {
                 continue;
             }
             if clients.get(&exported.id).is_some_and(|current| {
@@ -276,12 +276,6 @@ impl ClientSnapshot {
             });
         }
         points
-    }
-}
-
-impl Point {
-    pub(crate) fn prometheus_name(&self) -> String {
-        format!("{}_total", self.name.replace('.', "_"))
     }
 }
 
