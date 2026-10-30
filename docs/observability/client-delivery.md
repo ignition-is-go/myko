@@ -4,6 +4,62 @@ Use this when clients remain connected but reactive control values arrive uneven
 The hooks run in `myko-server`, so Rship picks them up when it consumes a release
 containing this change. No wire protocol or Unreal plugin change is required.
 
+## Full message and response accounting
+
+When OTLP telemetry is configured, message counters run independently of optional
+payload inspection. They have no SDK cardinality cap, sampling, or top-K filter:
+
+| Prometheus metric | Labels | Meaning |
+| --- | --- | --- |
+| `myko_ws_message_count_total` | `client_id`, `direction` | Separate client totals; `kind` and `tag` move to the detail metric |
+| `myko_ws_operation_message_count_total` | `client_id`, `direction`, `kind`, optional `tag` | Every parsed inbound message and successfully written outbound frame |
+| `myko_ws_operation_message_bytes_total` | Same as operation count | Encoded bytes successfully written, excluding WebSocket/TCP overhead |
+
+`tag` is the query/report/view/command ID when known. Query/report/view responses
+resolve their transaction to the original operation ID, so response traffic can
+be grouped by client and operation. Request payloads and argument values are
+never retained by these counters. Transaction-to-operation bindings last for the
+connection, including cancellation, so queued final responses retain their IDs.
+
+For response rates sorted by encoded bytes, with all groups available:
+
+```promql
+sort_desc(sum by (client_id, kind, tag) (
+  rate(myko_ws_operation_message_bytes_total{
+    direction="out", kind=~"QueryResponse|ReportResponse|ViewResponse"
+  }[5m])
+))
+```
+
+Use the operation count metric for messages/second, and filter either metric
+by `client_id` or `tag` in Grafana. Existing dashboards that filtered the old
+message count by `kind`/`tag` must use the new operation count metric.
+
+### Disconnected clients
+
+Set `MYKO_PROMETHEUS_QUERY_URL` to the full Prometheus instant-query API URL
+reachable by the server, for example `http://prometheus:9090/api/v1/query`.
+The endpoint must expose the same data receiving the server's OTLP pipeline,
+with the metric names above and conventional `job`/`instance` resource labels.
+The server sends read-only PromQL queries using HTTP POST.
+
+Disconnect does **not** discard counters. After a successful OTLP export without
+rejected points, the server checks Prometheus for every final count and byte
+series. Only a complete final snapshot confirmed there is retired. Active clients
+remain cumulative. Failed exports, partial rejection, missing backend data,
+an unreachable query API, or an unset query URL leave closed clients pending;
+future exports resend their cumulative values. Collector HTTP success alone is
+not confirmation that Prometheus received them. Backend retention thereafter
+belongs to Prometheus.
+
+`myko_ws_metrics_clients{state="active"}` and
+`myko_ws_metrics_clients{state="pending"}` show retained client counts. The
+pending gauge can lag retirement by one collection interval. During a backend
+outage, pending memory grows rather than silently dropping client detail.
+Counters pending confirmation are held **in memory**, not in a durable spool:
+a process crash/restart can still lose data that never reached Prometheus.
+This cleanup guarantee applies during a running server, not across a crash.
+
 ## Enable
 
 Set `MYKO_WS_DIAGNOSTICS=1` in the **server process environment** before starting
