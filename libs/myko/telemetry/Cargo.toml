@@ -1,6 +1,6 @@
 [package]
 name = "myko-telemetry"
-version = "6.11.2"
+version = "6.11.3"
 edition = "2024"
 description = "Shared Myko application telemetry over OTLP"
 license = "MIT OR Apache-2.0"
