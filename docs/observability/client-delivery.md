@@ -4,6 +4,58 @@ Use this when clients remain connected but reactive control values arrive uneven
 The hooks run in `myko-server`, so Rship picks them up when it consumes a release
 containing this change. No wire protocol or Unreal plugin change is required.
 
+## Full message and response accounting
+
+When OTLP telemetry is configured, message counters run independently of optional
+payload inspection. They have no SDK cardinality cap, sampling, or top-K filter:
+
+| Prometheus metric | Labels | Meaning |
+| --- | --- | --- |
+| `myko_ws_message_count_total` | `client_id`, `direction` | Separate client totals; `kind` and `tag` move to the detail metric |
+| `myko_ws_operation_message_count_total` | `client_id`, `direction`, `kind`, optional `tag` | Every parsed inbound message and successfully written outbound frame |
+| `myko_ws_operation_message_bytes_total` | Same as operation count | Encoded bytes successfully written, excluding WebSocket/TCP overhead |
+
+`tag` is the query/report/view/command ID when known. Query/report/view responses
+resolve their transaction to the original operation ID, so response traffic can
+be grouped by client and operation. Request payloads and argument values are
+never retained by these counters. Transaction-to-operation bindings last for the
+connection, including cancellation, so queued final responses retain their IDs.
+
+For response rates sorted by encoded bytes, with all groups available:
+
+```promql
+sort_desc(sum by (client_id, kind, tag) (
+  rate(myko_ws_operation_message_bytes_total{
+    direction="out", kind=~"QueryResponse|ReportResponse|ViewResponse"
+  }[5m])
+))
+```
+
+Use the operation count metric for messages/second, and filter either metric
+by `client_id` or `tag` in Grafana. Existing dashboards that filtered the old
+message count by `kind`/`tag` must use the new operation count metric.
+
+The message path updates counters and uses the already encoded frame length;
+it does not inspect payload contents or serialize frames again. Operation strings
+are retained once per label set; response lookups share the operation ID.
+Snapshots and OTLP formatting run on the existing periodic exporter.
+The more expensive payload inspection below remains opt-in.
+
+### Disconnected clients
+
+Disconnected clients remain pending until their final counters have been accepted
+by the OTLP collector. A successful export without rejected points releases those
+counters from server memory. Failed or partially rejected exports retain them for
+the next collection interval. Active clients remain cumulative.
+
+There is no Prometheus query dependency or additional configuration. Collector
+acceptance is sufficient: a downstream failure or process restart can lose the
+last part of a client's metrics, which is acceptable for this diagnostic data.
+
+`myko_ws_metrics_clients{state="active"}` and
+`myko_ws_metrics_clients{state="pending"}` show retained client counts. The
+pending gauge can lag retirement by one collection interval.
+
 ## Enable
 
 Set `MYKO_WS_DIAGNOSTICS=1` in the **server process environment** before starting

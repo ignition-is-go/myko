@@ -2,8 +2,8 @@
 //!
 //! Counts inbound (client → server) and outbound (server → client) WS messages
 //! per kind into atomic counters, and a single dedicated thread emits a
-//! summary log line every `WINDOW_MS`. No per-message log I/O, no allocations
-//! on the hot path, no work when no messages flowed.
+//! summary log line every `WINDOW_MS`, without per-message log I/O. Separate
+//! connection-owned counters export client totals and full operation detail.
 //!
 //! Used to diagnose "server CPU is idle but loads are slow" — comparing the
 //! inbound and outbound rates against the client-side equivalents tells us
@@ -20,19 +20,8 @@ use std::{
 
 use dashmap::DashMap;
 use myko::wire::MykoMessage;
-use opentelemetry::{KeyValue, metrics::Counter};
 
 const WINDOW_MS: u64 = 250;
-
-fn per_client_counter() -> &'static Counter<u64> {
-    static COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
-    COUNTER.get_or_init(|| {
-        opentelemetry::global::meter("myko-server")
-            .u64_counter("myko.ws.message.count")
-            .with_description("WS messages by direction, kind, and client")
-            .build()
-    })
-}
 
 fn in_counts() -> &'static DashMap<&'static str, AtomicU64> {
     static C: OnceLock<DashMap<&'static str, AtomicU64>> = OnceLock::new();
@@ -61,43 +50,56 @@ pub fn record_outbound(kind: &'static str) {
         .fetch_add(1, Ordering::Relaxed);
 }
 
-/// Record inbound timing plus an OTLP counter.
-///
-/// This is the same as [`record_inbound`], tagged by `client_id` and
-/// `tag` (the specific command/query/report/view id, from [`message_tag`],
-/// when the message carries one) — the aggregate `DashMap` counters above
-/// are cheap enough for an unbounded number of message kinds, but tagging
-/// *those* by `client_id/tag` too would put an `OTel` series per (kind × client
-/// × tag) into the periodic in-process log line, which is the wrong place
-/// for this breakdown. This is that breakdown, exported as a proper metric
-/// instead (cardinality bounded by concurrent connections × distinct
-/// command/query/report/view ids, which is the norm for these tags).
-pub fn record_inbound_for_client(kind: &'static str, client_id: &str, tag: Option<&str>) {
-    record_inbound(kind);
-    let mut attrs = vec![
-        KeyValue::new("direction", "in"),
-        KeyValue::new("kind", kind),
-        KeyValue::new("client_id", client_id.to_string()),
-    ];
-    if let Some(tag) = tag {
-        attrs.push(KeyValue::new("tag", tag.to_string()));
+/// Record a parsed inbound message and retain only transaction-to-operation IDs.
+pub fn record_inbound_message(message: &MykoMessage, client_id: &str) {
+    let request = match message {
+        MykoMessage::Query(w) => Some(("query", w.query_id.as_ref(), &w.query)),
+        MykoMessage::View(w) => Some(("view", w.view_id.as_ref(), &w.view)),
+        MykoMessage::Report(w) => Some(("report", w.report_id.as_str(), &w.report)),
+        _ => None,
+    };
+    if let Some((family, id, payload)) = request
+        && let Some(tx) = payload.get("tx").and_then(serde_json::Value::as_str)
+    {
+        myko_telemetry::websocket_metrics::bind_operation(client_id, family, tx, id);
     }
-    per_client_counter().add(1, &attrs);
+    let kind = message_kind(message);
+    record_inbound(kind);
+    let tag = resolved_message_tag(message, client_id);
+    myko_telemetry::websocket_metrics::record(client_id, "in", kind, tag.as_deref(), None);
 }
 
-/// Same as [`record_outbound`], plus a per-client/per-tag OTLP counter — see
-/// [`record_inbound_for_client`].
-pub fn record_outbound_for_client(kind: &'static str, client_id: &str, tag: Option<&str>) {
+/// Record a successfully written frame, with its encoded payload size.
+pub fn record_outbound_for_client(
+    kind: &'static str,
+    client_id: &str,
+    tag: Option<&str>,
+    bytes: usize,
+) {
     record_outbound(kind);
-    let mut attrs = vec![
-        KeyValue::new("direction", "out"),
-        KeyValue::new("kind", kind),
-        KeyValue::new("client_id", client_id.to_string()),
-    ];
-    if let Some(tag) = tag {
-        attrs.push(KeyValue::new("tag", tag.to_string()));
+    myko_telemetry::websocket_metrics::record(
+        client_id,
+        "out",
+        kind,
+        tag,
+        Some(u64::try_from(bytes).unwrap_or(u64::MAX)),
+    );
+}
+
+/// Responses carry a transaction ID; recover the original operation ID instead
+/// of losing query/report/view attribution on the most useful measurements.
+#[must_use]
+pub fn resolved_message_tag(message: &MykoMessage, client_id: &str) -> Option<std::sync::Arc<str>> {
+    if let Some(tag) = message_tag(message) {
+        return Some(tag.into());
     }
-    per_client_counter().add(1, &attrs);
+    let (family, tx) = match message {
+        MykoMessage::QueryResponse(w) => ("query", w.tx.as_ref()),
+        MykoMessage::ViewResponse(w) => ("view", w.tx.as_ref()),
+        MykoMessage::ReportResponse(w) => ("report", w.tx.as_str()),
+        _ => return None,
+    };
+    myko_telemetry::websocket_metrics::operation(client_id, family, tx)
 }
 
 /// Return the operation id carried by a message.

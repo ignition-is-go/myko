@@ -250,6 +250,12 @@ impl DropLogger {
     }
 }
 
+impl Drop for DropLogger {
+    fn drop(&mut self) {
+        myko_telemetry::websocket_metrics::client_disconnected(&self.client_id);
+    }
+}
+
 struct CommandJob {
     tx_id: Arc<str>,
     command_id: String,
@@ -337,7 +343,7 @@ struct WriterState {
     addr: SocketAddr,
     outgoing_format: Arc<AtomicU8>,
     outbound_commands: SharedOutboundCommands,
-    outbound_failure_tx: watch::Sender<bool>,
+    drop_logger: Arc<DropLogger>,
     diagnostics: Arc<DeliveryDiagnostics>,
 }
 
@@ -657,45 +663,30 @@ impl WsHandler {
 
     fn outbound_metadata(
         message: &OutboundMessage,
-        client_id: &str,
     ) -> (&'static str, Option<Arc<str>>, Option<u64>) {
         match message {
-            OutboundMessage::SerializedCommand { tx, command_id, .. } => {
-                crate::ws_timing::record_outbound_for_client(
-                    "Command",
-                    client_id,
-                    Some(command_id),
-                );
-                ("command", Some(tx.clone()), None)
-            }
-            OutboundMessage::Message(message) => {
-                crate::ws_timing::record_outbound_for_client(
-                    crate::ws_timing::message_kind(message),
-                    client_id,
-                    crate::ws_timing::message_tag(message),
-                );
-                match message {
-                    MykoMessage::ViewResponse(response) => (
-                        "view_response",
-                        Some(response.tx.clone()),
-                        Some(response.sequence),
-                    ),
-                    MykoMessage::QueryResponse(response) => (
-                        "query_response",
-                        Some(response.tx.clone()),
-                        Some(response.sequence),
-                    ),
-                    MykoMessage::CommandResponse(response) => (
-                        "command_response",
-                        Some(Arc::from(response.tx.clone())),
-                        None,
-                    ),
-                    MykoMessage::CommandError(error) => {
-                        ("command_error", Some(Arc::from(error.tx.clone())), None)
-                    }
-                    _ => ("other", None, None),
+            OutboundMessage::SerializedCommand { tx, .. } => ("command", Some(tx.clone()), None),
+            OutboundMessage::Message(message) => match message {
+                MykoMessage::ViewResponse(response) => (
+                    "view_response",
+                    Some(response.tx.clone()),
+                    Some(response.sequence),
+                ),
+                MykoMessage::QueryResponse(response) => (
+                    "query_response",
+                    Some(response.tx.clone()),
+                    Some(response.sequence),
+                ),
+                MykoMessage::CommandResponse(response) => (
+                    "command_response",
+                    Some(Arc::from(response.tx.clone())),
+                    None,
+                ),
+                MykoMessage::CommandError(error) => {
+                    ("command_error", Some(Arc::from(error.tx.clone())), None)
                 }
-            }
+                _ => ("other", None, None),
+            },
         }
     }
 
@@ -764,7 +755,7 @@ impl WsHandler {
         commands: &SharedOutboundCommands,
         diagnostics: &DeliveryDiagnostics,
     ) -> bool {
-        let (kind, tx, sequence) = Self::outbound_metadata(&message, client_id);
+        let (kind, tx, sequence) = Self::outbound_metadata(&message);
         Self::track_outbound_command(&message, commands);
         let serialize_started = Instant::now();
         let Some(frame) = Self::serialize_outbound(&message, outgoing_format) else {
@@ -808,8 +799,23 @@ impl WsHandler {
             return false;
         }
         match &message {
-            OutboundMessage::Message(message) => diagnostics.sent(message, payload_bytes),
+            OutboundMessage::Message(message) => {
+                let tag = crate::ws_timing::resolved_message_tag(message, client_id);
+                crate::ws_timing::record_outbound_for_client(
+                    crate::ws_timing::message_kind(message),
+                    client_id,
+                    tag.as_deref(),
+                    payload_bytes,
+                );
+                diagnostics.sent(message, payload_bytes);
+            }
             OutboundMessage::SerializedCommand { command_id, .. } => {
+                crate::ws_timing::record_outbound_for_client(
+                    "Command",
+                    client_id,
+                    Some(command_id),
+                    payload_bytes,
+                );
                 diagnostics.serialized_command(command_id, payload_bytes);
             }
         }
@@ -844,7 +850,7 @@ impl WsHandler {
             addr: write_addr,
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
-            outbound_failure_tx,
+            drop_logger,
             diagnostics,
         } = state;
         let mut normal_open = true;
@@ -918,7 +924,7 @@ impl WsHandler {
             {
                 // Wake the read half so connection cleanup drops both halves.
                 // Reconnecting clients will resubscribe from a fresh snapshot.
-                outbound_failure_tx.send_replace(true);
+                drop_logger.overload_tx.send_replace(true);
                 break;
             }
         }
@@ -1018,6 +1024,7 @@ impl WsHandler {
 
         // Create client session with channel-based writer
         let client_id: Arc<str> = Uuid::new_v4().to_string().into();
+        myko_telemetry::websocket_metrics::client_connected(&client_id);
         let diagnostics = Arc::new(DeliveryDiagnostics::new(&client_id, addr));
         let mut logger = DropLogger::new(client_id.clone(), overload_tx);
         logger.diagnostics = Some(diagnostics.clone());
@@ -1064,7 +1071,7 @@ impl WsHandler {
             addr,
             outgoing_format: outgoing_format_writer,
             outbound_commands: outbound_commands_by_tx_writer,
-            outbound_failure_tx: drop_logger.overload_tx.clone(),
+            drop_logger: drop_logger.clone(),
             diagnostics,
         }));
 
@@ -1335,11 +1342,7 @@ impl WsHandler {
         if let Some(diagnostics) = &message_context.drop_logger.diagnostics {
             diagnostics.inbound(&msg);
         }
-        crate::ws_timing::record_inbound_for_client(
-            crate::ws_timing::message_kind(&msg),
-            &session.client_id,
-            crate::ws_timing::message_tag(&msg),
-        );
+        crate::ws_timing::record_inbound_message(&msg, &session.client_id);
         match msg {
             MykoMessage::Query(wrapped) => {
                 Self::handle_query_request(session, ctx, message_context, wrapped);
