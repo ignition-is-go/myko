@@ -58,6 +58,8 @@ struct Counts {
 
 struct State {
     subscriptions: HashMap<String, Subscription>,
+    commands: HashMap<String, String>,
+    cancelled_operations: HashMap<String, Operation>,
     counts: HashMap<Operation, Counts>,
     retained_properties: usize,
     window: Instant,
@@ -68,6 +70,29 @@ struct State {
     send_ms: f64,
     failures: u64,
     untracked: u64,
+}
+
+fn subscription_response_tx(message: &MykoMessage) -> Option<&str> {
+    match message {
+        MykoMessage::ReportResponse(response) => Some(response.tx.as_str()),
+        MykoMessage::QueryResponse(response) | MykoMessage::ViewResponse(response) => {
+            Some(response.tx.as_ref())
+        }
+        _ => None,
+    }
+}
+
+impl State {
+    fn complete_command(&mut self, message: &MykoMessage) -> Option<String> {
+        match message {
+            MykoMessage::CommandResponse(response) => self.commands.remove(&response.tx),
+            MykoMessage::CommandError(error) => {
+                self.commands.remove(&error.tx);
+                Some(error.command_id.clone())
+            }
+            _ => None,
+        }
+    }
 }
 
 /// Kept per connection, so cancellation/disconnect releases all retained fingerprints.
@@ -230,6 +255,8 @@ impl DeliveryDiagnostics {
             state: enabled.then(|| {
                 Mutex::new(State {
                     subscriptions: HashMap::new(),
+                    commands: HashMap::new(),
+                    cancelled_operations: HashMap::new(),
                     counts: HashMap::new(),
                     retained_properties: 0,
                     window: Instant::now(),
@@ -265,6 +292,12 @@ impl DeliveryDiagnostics {
             return;
         };
         let request = match message {
+            MykoMessage::Command(command) => {
+                if let Some(tx) = command.command.get("tx").and_then(Value::as_str) {
+                    state.commands.insert(tx.into(), command.command_id.clone());
+                }
+                None
+            }
             MykoMessage::Report(w) => Some(("report", w.report_id.as_str(), &w.report)),
             MykoMessage::Query(w) => Some(("query", w.query_id.as_ref(), &w.query)),
             MykoMessage::View(w) => Some(("view", w.view_id.as_ref(), &w.view)),
@@ -272,6 +305,10 @@ impl DeliveryDiagnostics {
             | MykoMessage::QueryCancel(w)
             | MykoMessage::ViewCancel(w) => {
                 if let Some(subscription) = state.subscriptions.remove(&w.tx) {
+                    // Queued frames may be written after cancellation; retain identity only.
+                    state
+                        .cancelled_operations
+                        .insert(w.tx.clone(), subscription.operation.clone());
                     state.retained_properties = state
                         .retained_properties
                         .saturating_sub(subscription.retained());
@@ -315,6 +352,7 @@ impl DeliveryDiagnostics {
                 }
                 _ => {}
             }
+            state.cancelled_operations.remove(tx);
             if let Some(previous) = state.subscriptions.insert(
                 tx.into(),
                 Subscription {
@@ -458,13 +496,8 @@ impl DeliveryDiagnostics {
         let Ok(mut state) = state.lock() else {
             return;
         };
-        let tx = match message {
-            MykoMessage::ReportResponse(response) => Some(response.tx.as_str()),
-            MykoMessage::QueryResponse(response) | MykoMessage::ViewResponse(response) => {
-                Some(response.tx.as_ref())
-            }
-            _ => None,
-        };
+        let tx = subscription_response_tx(message);
+        let command = state.complete_command(message);
         let mut retained = state.retained_properties;
         let mut inspection = Inspection::default();
         let mut gap = None;
@@ -496,10 +529,19 @@ impl DeliveryDiagnostics {
                     .saturating_sub(previous_retained)
                     .saturating_add(subscription.retained());
                 subscription.operation.clone()
+            } else if let Some(operation) = tx.and_then(|tx| state.cancelled_operations.get(tx)) {
+                operation.clone()
+            } else if let Some(command_id) = command {
+                Operation {
+                    kind: crate::ws_timing::message_kind(message),
+                    id: command_id,
+                }
             } else {
                 Operation {
                     kind: crate::ws_timing::message_kind(message),
-                    id: "unattributed".into(),
+                    id: crate::ws_timing::message_tag(message)
+                        .unwrap_or("unattributed")
+                        .into(),
                 }
             };
         state.retained_properties = retained;
@@ -566,19 +608,33 @@ impl DeliveryDiagnostics {
         state.failures = state.failures.saturating_add(u64::from(!success));
         let mut attrs = self.attributes().to_vec();
         if let Some(message) = message {
-            let tx = match message {
-                MykoMessage::ReportResponse(response) => Some(response.tx.as_str()),
-                MykoMessage::QueryResponse(response) | MykoMessage::ViewResponse(response) => {
-                    Some(response.tx.as_ref())
-                }
+            let tx = subscription_response_tx(message);
+            let command = match message {
+                MykoMessage::CommandResponse(response) => state.commands.get(&response.tx),
+                MykoMessage::CommandError(error) => Some(&error.command_id),
                 _ => None,
             };
-            if let Some(subscription) = tx.and_then(|tx| state.subscriptions.get(tx)) {
+            if let Some(command_id) = command {
+                attrs.push(KeyValue::new("operation", command_id.clone()));
+                attrs.push(KeyValue::new(
+                    "kind",
+                    crate::ws_timing::message_kind(message),
+                ));
+            } else if let Some(subscription) = tx.and_then(|tx| state.subscriptions.get(tx)) {
                 attrs.push(KeyValue::new(
                     "operation",
                     subscription.operation.id.clone(),
                 ));
                 attrs.push(KeyValue::new("kind", subscription.operation.kind));
+            } else if let Some(operation) = tx.and_then(|tx| state.cancelled_operations.get(tx)) {
+                attrs.push(KeyValue::new("operation", operation.id.clone()));
+                attrs.push(KeyValue::new("kind", operation.kind));
+            } else if let Some(id) = crate::ws_timing::message_tag(message) {
+                attrs.push(KeyValue::new("operation", id.to_string()));
+                attrs.push(KeyValue::new(
+                    "kind",
+                    crate::ws_timing::message_kind(message),
+                ));
             }
         } else if let Some(command_id) = command_id {
             attrs.push(KeyValue::new("operation", command_id.to_string()));
@@ -913,6 +969,67 @@ mod tests {
             tx: tx.into(),
             response: value,
         })
+    }
+
+    #[test]
+    fn queued_report_after_cancel_keeps_identity_without_payload_state() {
+        let diagnostics = diagnostics();
+        subscribe(&diagnostics, "cancelled");
+        diagnostics.inbound(&MykoMessage::ReportCancel(CancelSubscription {
+            tx: "cancelled".into(),
+        }));
+        diagnostics.sent(&report("cancelled", json!({"value": 1})), 32);
+        let state = diagnostics
+            .state
+            .as_ref()
+            .expect("enabled")
+            .lock()
+            .expect("lock");
+        assert!(state.subscriptions.is_empty());
+        assert_eq!(state.retained_properties, 0);
+        assert_eq!(state.counts.keys().next().expect("count").id, "LiveValues");
+    }
+
+    #[test]
+    fn command_replies_retain_identity_and_release_completed_transactions() {
+        use myko::wire::{CommandError, CommandResponse, WrappedCommand};
+
+        let diagnostics = diagnostics();
+        for index in 0..1024 {
+            diagnostics.inbound(&MykoMessage::Command(WrappedCommand {
+                command_id: format!("Command{index}"),
+                command: json!({"tx": format!("tx-{index}")}),
+            }));
+        }
+        diagnostics.flush(true);
+        for index in (0..1024).rev() {
+            let tx = format!("tx-{index}");
+            let reply = if index % 2 == 0 {
+                MykoMessage::CommandResponse(CommandResponse {
+                    tx,
+                    response: json!(null),
+                })
+            } else {
+                MykoMessage::CommandError(CommandError::new(
+                    tx,
+                    format!("Command{index}"),
+                    "failed",
+                ))
+            };
+            diagnostics.sent(&reply, 32);
+        }
+        let state = diagnostics
+            .state
+            .as_ref()
+            .expect("enabled")
+            .lock()
+            .expect("lock");
+        assert!(state.commands.is_empty());
+        assert_eq!(state.counts.len(), 1024);
+        for (operation, counts) in &state.counts {
+            assert!(operation.id.starts_with("Command"));
+            assert_eq!((counts.messages, counts.bytes), (1, 32));
+        }
     }
 
     #[test]

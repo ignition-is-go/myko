@@ -53,6 +53,7 @@ pub fn record_outbound(kind: &'static str) {
 /// Record a parsed inbound message and retain only transaction-to-operation IDs.
 pub fn record_inbound_message(message: &MykoMessage, client_id: &str) {
     let request = match message {
+        MykoMessage::Command(w) => Some(("command", w.command_id.as_str(), &w.command)),
         MykoMessage::Query(w) => Some(("query", w.query_id.as_ref(), &w.query)),
         MykoMessage::View(w) => Some(("view", w.view_id.as_ref(), &w.view)),
         MykoMessage::Report(w) => Some(("report", w.report_id.as_str(), &w.report)),
@@ -65,7 +66,24 @@ pub fn record_inbound_message(message: &MykoMessage, client_id: &str) {
     }
     let kind = message_kind(message);
     record_inbound(kind);
-    let tag = resolved_message_tag(message, client_id);
+    let tag = match message {
+        MykoMessage::CommandResponse(response) => {
+            myko_telemetry::websocket_metrics::take_operation(
+                client_id,
+                "server-command",
+                &response.tx,
+            )
+        }
+        MykoMessage::CommandError(error) => {
+            let _ = myko_telemetry::websocket_metrics::take_operation(
+                client_id,
+                "server-command",
+                &error.tx,
+            );
+            Some(error.command_id.as_str().into())
+        }
+        _ => resolved_message_tag(message, client_id),
+    };
     myko_telemetry::websocket_metrics::record(client_id, "in", kind, tag.as_deref(), None);
 }
 
@@ -87,9 +105,23 @@ pub fn record_outbound_for_client(
 }
 
 /// Responses carry a transaction ID; recover the original operation ID instead
-/// of losing query/report/view attribution on the most useful measurements.
+/// of losing command/query/report/view attribution on the most useful measurements.
 #[must_use]
 pub fn resolved_message_tag(message: &MykoMessage, client_id: &str) -> Option<std::sync::Arc<str>> {
+    match message {
+        MykoMessage::CommandResponse(response) => {
+            return myko_telemetry::websocket_metrics::take_operation(
+                client_id,
+                "command",
+                &response.tx,
+            );
+        }
+        MykoMessage::CommandError(error) => {
+            let _ =
+                myko_telemetry::websocket_metrics::take_operation(client_id, "command", &error.tx);
+        }
+        _ => {}
+    }
     if let Some(tag) = message_tag(message) {
         return Some(tag.into());
     }
@@ -97,6 +129,13 @@ pub fn resolved_message_tag(message: &MykoMessage, client_id: &str) -> Option<st
         MykoMessage::QueryResponse(w) => ("query", w.tx.as_ref()),
         MykoMessage::ViewResponse(w) => ("view", w.tx.as_ref()),
         MykoMessage::ReportResponse(w) => ("report", w.tx.as_str()),
+        MykoMessage::QueryCancel(w) => ("query", w.tx.as_str()),
+        MykoMessage::QueryWindow(w) => ("query", w.tx.as_str()),
+        MykoMessage::QueryCursorWindow(w) => ("query", w.tx.as_str()),
+        MykoMessage::ViewCancel(w) => ("view", w.tx.as_str()),
+        MykoMessage::ViewWindow(w) => ("view", w.tx.as_str()),
+        MykoMessage::ViewSampleRate(w) => ("view", w.tx.as_str()),
+        MykoMessage::ReportCancel(w) => ("report", w.tx.as_str()),
         _ => return None,
     };
     myko_telemetry::websocket_metrics::operation(client_id, family, tx)
@@ -121,7 +160,31 @@ pub fn message_tag(msg: &MykoMessage) -> Option<&str> {
         MykoMessage::ReportError(e) => Some(&e.report_id),
         MykoMessage::Command(w) => Some(&w.command_id),
         MykoMessage::CommandError(e) => Some(&e.command_id),
-        _ => None,
+        MykoMessage::Event(event) => Some(event.item_type.as_ref()),
+        MykoMessage::EventBatch(events) => Some(match events.first() {
+            Some(first)
+                if events
+                    .iter()
+                    .all(|event| event.item_type == first.item_type) =>
+            {
+                first.item_type.as_ref()
+            }
+            Some(_) => "mixed-event-batch",
+            None => "empty-event-batch",
+        }),
+        MykoMessage::Ping(_) => Some("ping"),
+        MykoMessage::Benchmark(_) => Some("benchmark"),
+        MykoMessage::QueryResponse(_)
+        | MykoMessage::ViewResponse(_)
+        | MykoMessage::ReportResponse(_)
+        | MykoMessage::CommandResponse(_)
+        | MykoMessage::QueryCancel(_)
+        | MykoMessage::QueryWindow(_)
+        | MykoMessage::QueryCursorWindow(_)
+        | MykoMessage::ViewCancel(_)
+        | MykoMessage::ViewWindow(_)
+        | MykoMessage::ViewSampleRate(_)
+        | MykoMessage::ReportCancel(_) => None,
     }
 }
 
@@ -218,4 +281,50 @@ fn format_kinds(snap: &[(&'static str, u64)]) -> String {
         .map(|(k, n)| format!("{k}={n}"))
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn messages_with_inline_identity_and_protocol_traffic_have_tags() {
+        for (event, data, expected) in [
+            (
+                "ws:m:command",
+                json!({"commandId": "Execute", "command": {"tx": "one"}}),
+                "Execute",
+            ),
+            (
+                "ws:m:command-error",
+                json!({"commandId": "Execute", "tx": "one", "message": "failed"}),
+                "Execute",
+            ),
+            (
+                "ws:m:query-error",
+                json!({"queryId": "List", "tx": "one", "message": "failed"}),
+                "List",
+            ),
+            (
+                "ws:m:view-error",
+                json!({"viewId": "Live", "tx": "one", "message": "failed"}),
+                "Live",
+            ),
+            (
+                "ws:m:report-error",
+                json!({"reportId": "Status", "tx": "one", "message": "failed"}),
+                "Status",
+            ),
+            ("ws:m:ping", json!({"id": "one", "timestamp": 0}), "ping"),
+            ("ws:m:benchmark", json!({}), "benchmark"),
+            ("ws:m:event-batch", json!([]), "empty-event-batch"),
+        ] {
+            let message: MykoMessage =
+                serde_json::from_value(json!({"event": event, "data": data}))
+                    .expect("valid fixture");
+            assert_eq!(message_tag(&message), Some(expected), "{event}");
+        }
+    }
 }
