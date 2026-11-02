@@ -2381,79 +2381,117 @@ impl MykoClient {
 
     /// Dynamic/raw query watch for runtimes that only know wrapped query data.
     #[must_use]
-    pub fn watch_query_raw(&self, mut query: WrappedQuery) -> Cell<Vec<Value>, CellImmutable> {
+    pub fn watch_query_raw(&self, query: WrappedQuery) -> Cell<Vec<Value>, CellImmutable> {
+        self.watch_query_raw_state(query).into_items()
+    }
+
+    /// Watch an independent raw query with authoritative response readiness.
+    ///
+    /// Readiness stays false until a valid sequence-zero response, including an
+    /// empty snapshot, and resets when the connection changes. Identical requests
+    /// receive separate transactions rather than sharing the typed query cache.
+    #[must_use]
+    pub fn watch_query_raw_state(&self, mut query: WrappedQuery) -> ListWatch<Value> {
+        let cell = Cell::new(Vec::<Value>::new()).with_name(query.query_id.as_ref());
+        let ready = Cell::<bool, CellMutable>::new(false)
+            .with_name(format!("raw_query_ready:{}", query.query_id));
+        let ready_read = ready.clone().lock();
+        cell.own(retain_cell_guard(ready_read.clone()));
+        let watch = ListWatch {
+            items: cell.clone().lock(),
+            ready: ready_read,
+        };
         let tx = next_subscription_tx();
         let Some(request) = query.query.as_object_mut() else {
             error!("Could not assign transaction ID to raw query request");
-            return Cell::new(Vec::<Value>::new()).lock();
+            return watch;
         };
         request.insert("tx".to_owned(), Value::String(tx.to_string()));
 
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
-        let cell = Cell::new(Vec::<Value>::new()).with_name(query.query_id.as_ref());
         let cell_weak = cell.downgrade();
-        let state_clone = state;
-        let tx_clone = tx.clone();
+        let ready_weak = ready.downgrade();
+        let sequences = Arc::new(map_response::MapSequence::new());
+        let sequences_for_handler = Arc::clone(&sequences);
+        let tx_for_handler = tx.clone();
 
         let msg = MykoMessage::Query(query);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode raw query request");
-            return cell.lock();
+            return watch;
         };
 
-        self.inner.query_handlers.insert(
-            tx.clone(),
-            Arc::new(move |response_value: Value| {
-                let Some(cell_writer) = cell_weak.upgrade() else {
-                    return;
-                };
-
-                let Ok(response) =
-                    serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
-                else {
-                    return;
-                };
-
-                if response.tx != tx_clone {
-                    return;
+        let handler: QueryHandler = Arc::new(move |response_value: Value| {
+            let Some(cell_writer) = cell_weak.upgrade() else {
+                return;
+            };
+            let Ok(response) =
+                serde_json::from_value::<crate::wire::ClientQueryResponse>(response_value)
+            else {
+                return;
+            };
+            if response.tx != tx_for_handler {
+                return;
+            }
+            let upserts = response
+                .upserts
+                .into_iter()
+                .map(|wrapped| {
+                    let id: Arc<str> = wrapped.item.get("id")?.as_str()?.into();
+                    Some((id, wrapped.item))
+                })
+                .collect::<Option<Vec<_>>>();
+            let Some(upserts) = upserts else {
+                error!("Rejected raw query response with an invalid item ID");
+                return;
+            };
+            if !sequences_for_handler.accept(response.sequence) {
+                return;
+            }
+            let is_initial = response.sequence == 0;
+            let items = {
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if is_initial {
+                    state.clear();
                 }
-
-                let items = {
-                    let mut state = state_clone
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if response.sequence == 0 {
-                        state.clear();
-                    }
-                    for wrapped_item in response.upserts {
-                        if let Some(id) = wrapped_item.item.get("id").and_then(|v| v.as_str()) {
-                            state.insert(id.into(), wrapped_item.item);
-                        }
-                    }
-                    for id in response.deletes {
-                        state.remove(&id);
-                    }
-                    state.values().cloned().collect::<Vec<Value>>()
-                };
-                cell_writer.set(items);
-            }),
-        );
+                for (id, item) in upserts {
+                    state.insert(id, item);
+                }
+                for id in response.deletes {
+                    state.remove(&id);
+                }
+                state.values().cloned().collect::<Vec<Value>>()
+            };
+            cell_writer.set(items);
+            if is_initial && let Some(ready_writer) = ready_weak.upgrade() {
+                ready_writer.set(true);
+            }
+        });
+        if !self.try_register_query_handler(tx.clone(), handler) {
+            error!("Refusing duplicate raw query transaction {tx}");
+            return watch;
+        }
 
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
-        let frame_to_send = frame;
+        let ready_for_status = ready.downgrade();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal
-                && let ConnectionStatus::Connected(_) = &**status
-            {
-                let _ = socket.send(frame_to_send.clone());
+            if let hyphae::Signal::Value(status) = signal {
+                sequences.reset_epoch();
+                if let Some(ready_writer) = ready_for_status.upgrade() {
+                    ready_writer.set(false);
+                }
+                if let ConnectionStatus::Connected(_) = &**status {
+                    let _ = socket.send(frame.clone());
+                }
             }
         });
 
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx, self.inner.clone()));
-
-        cell.lock()
+        watch
     }
 
     /// Dynamic/raw view watch for runtimes that only know wrapped view data.

@@ -1202,6 +1202,226 @@ mod tests {
         }
     }
 
+    mod raw_query_state {
+        use hyphae::Gettable;
+        use serde_json::{Value, json};
+
+        use super::{Arc, MockTransport, MykoClient, SocketConnectionStatus, WsFrame};
+        use crate::wire::WrappedQuery;
+
+        fn query() -> WrappedQuery {
+            WrappedQuery {
+                query: json!({"tx": "caller-supplied"}),
+                query_id: "RawReadinessQuery".into(),
+                query_item_type: "RawReadinessItem".into(),
+                window: None,
+            }
+        }
+
+        fn transactions(transport: &MockTransport) -> Vec<String> {
+            transport
+                .sent_frames()
+                .into_iter()
+                .filter_map(|frame| {
+                    let WsFrame::Text(text) = frame else {
+                        return None;
+                    };
+                    let value: Value = serde_json::from_str(&text).ok()?;
+                    (value.get("event").and_then(Value::as_str) == Some("ws:m:query"))
+                        .then(|| value.pointer("/data/query/tx")?.as_str().map(str::to_owned))
+                        .flatten()
+                })
+                .collect()
+        }
+
+        fn first_transaction(transport: &MockTransport) -> String {
+            let txs = transactions(transport);
+            assert_eq!(txs.len(), 1);
+            txs.into_iter().next().unwrap_or_default()
+        }
+
+        fn respond(
+            client: &MykoClient,
+            tx: &str,
+            sequence: u64,
+            items: Vec<Value>,
+            deletes: &[&str],
+        ) {
+            let response = json!({
+                "event": "ws:m:query-response",
+                "data": {
+                    "tx": tx, "sequence": sequence, "deletes": deletes,
+                    "upserts": items.into_iter().map(|item| json!({
+                        "item": item, "itemType": "RawReadinessItem"
+                    })).collect::<Vec<_>>()
+                }
+            });
+            MykoClient::handle_frame(&client.inner, &WsFrame::Text(response.to_string()));
+        }
+
+        #[test]
+        fn empty_snapshot_is_authoritative_and_later_deltas_update_items() {
+            let transport = Arc::new(MockTransport::new());
+            let client = MykoClient::with_transport(transport.clone());
+            let watch = client.watch_query_raw_state(query());
+            assert!(!watch.ready().get());
+            assert_eq!(watch.items().get(), Vec::<Value>::new());
+            transport.set_status(SocketConnectionStatus::Connected("ws://test".into()));
+            let tx = first_transaction(&transport);
+            respond(&client, &tx, 0, vec![], &[]);
+            assert!(watch.ready().get());
+            assert_eq!(watch.items().get(), Vec::<Value>::new());
+            respond(
+                &client,
+                &tx,
+                1,
+                vec![json!({"id": "one", "value": 42})],
+                &[],
+            );
+            assert_eq!(watch.items().get(), vec![json!({"id": "one", "value": 42})]);
+            respond(&client, &tx, 2, vec![], &["one"]);
+            assert_eq!(watch.items().get(), Vec::<Value>::new());
+            assert!(watch.ready().get());
+        }
+
+        #[test]
+        fn invalid_snapshots_and_out_of_order_responses_do_not_initialize_or_partially_apply() {
+            let transport = Arc::new(MockTransport::new());
+            let client = MykoClient::with_transport(transport.clone());
+            let watch = client.watch_query_raw_state(query());
+            transport.set_status(SocketConnectionStatus::Connected("ws://test".into()));
+            let tx = first_transaction(&transport);
+            respond(&client, "other-transaction", 0, vec![], &[]);
+            respond(&client, &tx, 1, vec![json!({"id": "too-early"})], &[]);
+            MykoClient::handle_frame(
+                &client.inner,
+                &WsFrame::Text(
+                    json!({
+                        "event": "ws:m:query-response", "data": {"tx": &tx, "sequence": 0}
+                    })
+                    .to_string(),
+                ),
+            );
+            respond(
+                &client,
+                &tx,
+                0,
+                vec![json!({"id": "valid"}), json!({"value": 7})],
+                &[],
+            );
+            assert!(!watch.ready().get());
+            assert_eq!(watch.items().get(), Vec::<Value>::new());
+            respond(
+                &client,
+                &tx,
+                0,
+                vec![json!({"id": "valid", "value": 42})],
+                &[],
+            );
+            assert!(watch.ready().get());
+            assert_eq!(
+                watch.items().get(),
+                vec![json!({"id": "valid", "value": 42})]
+            );
+            respond(
+                &client,
+                &tx,
+                2,
+                vec![json!({"id": "valid", "value": 99})],
+                &[],
+            );
+            assert_eq!(
+                watch.items().get(),
+                vec![json!({"id": "valid", "value": 42})]
+            );
+            respond(
+                &client,
+                &tx,
+                1,
+                vec![json!({"id": "valid", "value": 43})],
+                &[],
+            );
+            assert_eq!(
+                watch.items().get(),
+                vec![json!({"id": "valid", "value": 43})]
+            );
+        }
+
+        #[test]
+        fn reconnect_requires_a_new_snapshot_and_can_restore_an_empty_result() {
+            let transport = Arc::new(MockTransport::new());
+            let client = MykoClient::with_transport(transport.clone());
+            let watch = client.watch_query_raw_state(query());
+            transport.set_status(SocketConnectionStatus::Connected("ws://test".into()));
+            let tx = first_transaction(&transport);
+            respond(&client, &tx, 0, vec![json!({"id": "old"})], &[]);
+            assert!(watch.ready().get());
+            transport.set_status(SocketConnectionStatus::Disconnected);
+            assert!(!watch.ready().get());
+            respond(&client, &tx, 1, vec![json!({"id": "stale"})], &[]);
+            assert!(!watch.ready().get());
+            assert_eq!(watch.items().get(), vec![json!({"id": "old"})]);
+            transport.set_status(SocketConnectionStatus::Connected("ws://second".into()));
+            assert_eq!(transactions(&transport), vec![tx.clone(), tx.clone()]);
+            respond(&client, &tx, 0, vec![], &[]);
+            assert!(watch.ready().get());
+            assert_eq!(watch.items().get(), Vec::<Value>::new());
+        }
+
+        #[test]
+        fn identical_raw_watches_are_independent_and_list_only_handles_keep_their_subscription() {
+            let transport = Arc::new(MockTransport::new());
+            let client = MykoClient::with_transport(transport.clone());
+            transport.set_status(SocketConnectionStatus::Connected("ws://test".into()));
+            let first = client.watch_query_raw_state(query());
+            let second = client.watch_query_raw_state(query());
+            let txs = transactions(&transport);
+            assert_eq!(txs.len(), 2);
+            let mut txs = txs.into_iter();
+            let first_tx = txs.next().unwrap_or_default();
+            let second_tx = txs.next().unwrap_or_default();
+            assert_ne!(first_tx, second_tx);
+            assert_ne!(first_tx, "caller-supplied");
+            respond(&client, &first_tx, 0, vec![json!({"id": "first"})], &[]);
+            assert!(first.ready().get());
+            assert!(!second.ready().get());
+            assert_eq!(second.items().get(), Vec::<Value>::new());
+            let readiness = first.ready().clone();
+            let items = first.into_items();
+            assert!(client.inner.query_handlers.contains_key(first_tx.as_str()));
+            assert!(readiness.get());
+            drop(items);
+            assert!(!client.inner.query_handlers.contains_key(first_tx.as_str()));
+            assert!(client.inner.query_handlers.contains_key(second_tx.as_str()));
+            let legacy = client.watch_query_raw(query());
+            let txs = transactions(&transport);
+            assert_eq!(txs.len(), 3);
+            let third_tx = txs.into_iter().last().unwrap_or_default();
+            respond(&client, &third_tx, 0, vec![json!({"id": "legacy"})], &[]);
+            assert_eq!(legacy.get(), vec![json!({"id": "legacy"})]);
+            drop(legacy);
+            drop(second);
+            assert!(client.inner.query_handlers.is_empty());
+            let mut cancellations = transport
+                .sent_frames()
+                .into_iter()
+                .filter_map(|frame| {
+                    let WsFrame::Text(text) = frame else {
+                        return None;
+                    };
+                    let value: Value = serde_json::from_str(&text).ok()?;
+                    (value.get("event").and_then(Value::as_str) == Some("ws:m:query-cancel"))
+                        .then(|| value.pointer("/data/tx")?.as_str().map(str::to_owned))
+                        .flatten()
+                })
+                .collect::<Vec<_>>();
+            let mut expected = vec![first_tx, second_tx, third_tx];
+            cancellations.sort();
+            expected.sort();
+            assert_eq!(cancellations, expected);
+        }
+    }
+
     #[test]
     fn overlapping_delete_and_upsert_keeps_upserted_value() {
         let map = CellMap::<Arc<str>, Arc<String>>::new();
