@@ -79,6 +79,17 @@ pub fn operation(client_id: &str, family: &'static str, tx: &str) -> Option<Arc<
         .cloned()
 }
 
+/// Resolve and release a completed command transaction.
+#[must_use]
+pub fn take_operation(client_id: &str, family: &'static str, tx: &str) -> Option<Arc<str>> {
+    global()?
+        .clients()
+        .get_mut(client_id)?
+        .bindings
+        .get_mut(family)?
+        .remove(tx)
+}
+
 /// Record a message, optionally including successfully sent encoded bytes.
 /// There is no cardinality cap, sampling, or overflow bucket in this registry.
 pub fn record(

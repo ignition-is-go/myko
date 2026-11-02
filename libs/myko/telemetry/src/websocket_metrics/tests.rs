@@ -62,6 +62,18 @@ fn response_bindings_are_connection_and_family_scoped() {
     assert_eq!(operation("one", "query", "tx").as_deref(), Some("query-id"));
     assert_eq!(operation("one", "view", "tx").as_deref(), Some("view-id"));
     assert_eq!(operation("two", "query", "tx"), None);
+    bind_operation("one", "command", "tx", "client-command");
+    bind_operation("one", "server-command", "tx", "server-command");
+    assert_eq!(
+        take_operation("one", "command", "tx").as_deref(),
+        Some("client-command")
+    );
+    assert_eq!(take_operation("one", "command", "tx"), None);
+    assert_eq!(
+        operation("one", "server-command", "tx").as_deref(),
+        Some("server-command")
+    );
+    assert_eq!(operation("one", "query", "tx").as_deref(), Some("query-id"));
     record("one", "in", "Query", Some("query-id"), None);
     client_disconnected("one");
     assert_eq!(operation("one", "query", "tx"), None);

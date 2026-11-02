@@ -690,7 +690,11 @@ impl WsHandler {
         }
     }
 
-    fn track_outbound_command(message: &OutboundMessage, commands: &SharedOutboundCommands) {
+    fn track_outbound_command(
+        message: &OutboundMessage,
+        commands: &SharedOutboundCommands,
+        client_id: &str,
+    ) {
         let command = match message {
             OutboundMessage::SerializedCommand { tx, command_id, .. } if !tx.trim().is_empty() => {
                 Some((tx.as_ref(), command_id.as_str()))
@@ -706,6 +710,12 @@ impl WsHandler {
         if let Some((tx, command_id)) = command
             && let Ok(mut commands) = commands.lock()
         {
+            myko_telemetry::websocket_metrics::bind_operation(
+                client_id,
+                "server-command",
+                tx,
+                command_id,
+            );
             commands.insert(tx.to_string(), (command_id.to_string(), Instant::now()));
         }
     }
@@ -756,7 +766,7 @@ impl WsHandler {
         diagnostics: &DeliveryDiagnostics,
     ) -> bool {
         let (kind, tx, sequence) = Self::outbound_metadata(&message);
-        Self::track_outbound_command(&message, commands);
+        Self::track_outbound_command(&message, commands, client_id);
         let serialize_started = Instant::now();
         let Some(frame) = Self::serialize_outbound(&message, outgoing_format) else {
             // A serialization failure is just as lossy as a full queue. Stop

@@ -15,3 +15,6 @@ root = ["cargo", "test", "--jobs", "4", "--lib", "ws_handler::tests", "--", "--t
 
 [tasks.check-delivery-diagnostics]
 root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-ws-attribution]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "--lib", "ws_timing::tests", "--", "--test-threads=1"]
