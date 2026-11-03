@@ -1,8 +1,9 @@
 //! Shared console logging and OTLP/HTTP logs, traces, and metrics.
 //! Install once in the host application, before initializing SDK clients.
-use opentelemetry::{global, trace::TracerProvider};
+use opentelemetry::{global, metrics::MeterProvider, trace::TracerProvider};
 use opentelemetry_appender_tracing::layer::OpenTelemetryTracingBridge;
-use opentelemetry_otlp::WithExportConfig;
+use opentelemetry_otlp::{WithExportConfig, WithHttpConfig};
+
 use opentelemetry_sdk::{
     Resource, logs::SdkLoggerProvider, metrics::SdkMeterProvider, trace::SdkTracerProvider,
 };
@@ -10,6 +11,9 @@ use std::time::Duration;
 use tracing_subscriber::{
     EnvFilter, Layer, layer::SubscriberExt, registry::LookupSpan, util::SubscriberInitExt,
 };
+
+/// Connection-scoped WebSocket metrics with retirement after export.
+pub mod websocket_metrics;
 
 const DEFAULT_METRICS_INTERVAL_SECS: u64 = 60;
 
@@ -207,8 +211,17 @@ fn build_meter_provider(endpoint: Option<&str>, resource: Resource) -> Option<Sd
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(DEFAULT_METRICS_INTERVAL_SECS);
 
+    let registry = std::sync::Arc::new(websocket_metrics::Registry::default());
+    let client = match websocket_metrics::export::Client::new(registry.clone()) {
+        Ok(client) => client,
+        Err(error) => {
+            eprintln!("myko telemetry: failed to build client metrics transport: {error}");
+            return None;
+        }
+    };
     let builder = opentelemetry_otlp::MetricExporter::builder()
         .with_http()
+        .with_http_client(client)
         // See build_tracer: append the `/v1/metrics` signal path to the base
         // gateway endpoint, else the exporter POSTs to `/` and gets 404.
         .with_protocol(opentelemetry_otlp::Protocol::HttpBinary);
@@ -229,12 +242,23 @@ fn build_meter_provider(endpoint: Option<&str>, resource: Resource) -> Option<Sd
         .with_interval(Duration::from_secs(interval_secs))
         .build();
 
-    Some(
-        SdkMeterProvider::builder()
-            .with_reader(reader)
-            .with_resource(resource)
-            .build(),
-    )
+    let provider = SdkMeterProvider::builder()
+        .with_reader(reader)
+        .with_resource(resource)
+        .build();
+    let retained = registry.clone();
+    provider
+        .meter("myko-server")
+        .u64_observable_gauge("myko.ws.metrics.clients")
+        .with_description("Connection counters retained for active clients or pending export")
+        .with_callback(move |observer| {
+            let (active, closed) = retained.retained();
+            observer.observe(active, &[opentelemetry::KeyValue::new("state", "active")]);
+            observer.observe(closed, &[opentelemetry::KeyValue::new("state", "pending")]);
+        })
+        .build();
+    websocket_metrics::install(&registry);
+    Some(provider)
 }
 
 fn signal_endpoint(legacy: Option<&str>, signal: &str) -> Option<String> {
