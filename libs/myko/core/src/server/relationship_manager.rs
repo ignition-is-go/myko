@@ -451,8 +451,12 @@ impl RelationshipManager {
         let item_type = first.entity_type();
 
         if let Some(lookups) = self.belongs_to_by_local.get(item_type) {
-            for item in items {
-                for lookup in lookups {
+            for lookup in lookups {
+                // NOTE(ts): Hydration bypasses relationship effects. Bootstrap
+                // from the full store before a live write can create a partial
+                // index that a later parent delete mistakes for a complete one.
+                self.ensure_belongs_to_index_loaded(ctx, lookup);
+                for item in items {
                     self.index_belongs_to_child(lookup, item);
                 }
             }
@@ -1578,6 +1582,37 @@ mod cascade_tests {
         }
     }
 
+    mod multi_parent {
+        mod session {
+            use crate::prelude::*;
+            #[myko_item]
+            pub struct CascadeSession {
+                pub name: String,
+            }
+        }
+        pub use session::*;
+        mod engine {
+            use crate::prelude::*;
+            #[myko_item]
+            pub struct CascadeEngine {
+                pub name: String,
+            }
+        }
+        pub use engine::*;
+        mod state {
+            use super::{CascadeEngine, CascadeEngineId, CascadeSession, CascadeSessionId};
+            use crate::prelude::*;
+            #[myko_item]
+            pub struct CascadeState {
+                #[belongs_to(CascadeEngine)]
+                pub engine_id: CascadeEngineId,
+                #[belongs_to(CascadeSession)]
+                pub session_id: CascadeSessionId,
+            }
+        }
+        pub use state::*;
+    }
+
     fn make_ctx() -> (MykoServerContext, Arc<StoreRegistry>) {
         let registry = Arc::new(StoreRegistry::new());
         let ctx = MykoServerContext::new(
@@ -1634,6 +1669,80 @@ mod cascade_tests {
         assert!(
             !exists(&registry, "leaf"),
             "grandchild deleted at runtime (Fix #1)"
+        );
+    }
+
+    #[test]
+    fn del_cascade_deletes_hydrated_children_after_first_live_write() {
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+        let root = make_node("hydrated-root", "hydrated-root");
+        let child = make_node("hydrated-child", "hydrated-root");
+        // NOTE(ts): Snapshot hydration fills stores without replaying live
+        // relationship effects. The first live write must not mark a partial
+        // reverse index as complete and hide the hydrated children.
+        let store = registry.get_or_create("CascadeNode");
+        store.insert(root.id.0.clone(), Arc::new(root.clone()));
+        store.insert(child.id.0.clone(), Arc::new(child));
+        assert!(ctx.set(&make_node("unrelated", "unrelated")).is_ok());
+        assert!(ctx.del(&root).is_ok());
+        assert!(!exists(&registry, "hydrated-root"));
+        assert!(
+            !exists(&registry, "hydrated-child"),
+            "hydrated child must cascade after an unrelated live write"
+        );
+        assert!(exists(&registry, "unrelated"));
+    }
+
+    #[test]
+    fn hydrated_multi_parent_state_cascades_when_session_is_deleted() {
+        use self::multi_parent::{CascadeEngine, CascadeSession, CascadeState};
+        use crate::item::Eventable;
+
+        let _serial = scheduler_test_serial();
+        let (ctx, registry) = make_ctx();
+        let session = CascadeSession {
+            id: "session".into(),
+            name: "Session".into(),
+        };
+        let engine = CascadeEngine {
+            id: "engine".into(),
+            name: "Engine".into(),
+        };
+        let state = CascadeState {
+            id: "state".into(),
+            engine_id: engine.id.clone(),
+            session_id: session.id.clone(),
+        };
+        registry
+            .get_or_create(CascadeSession::ENTITY_NAME_STATIC)
+            .insert(session.id.0.clone(), Arc::new(session.clone()));
+        registry
+            .get_or_create(CascadeEngine::ENTITY_NAME_STATIC)
+            .insert(engine.id.0.clone(), Arc::new(engine.clone()));
+        registry
+            .get_or_create(CascadeState::ENTITY_NAME_STATIC)
+            .insert(state.id.0.clone(), Arc::new(state.clone()));
+        let other_session = CascadeSession {
+            id: "other-session".into(),
+            name: "Other".into(),
+        };
+        assert!(ctx.set(&other_session).is_ok());
+        let other_state = CascadeState {
+            id: "other-state".into(),
+            engine_id: engine.id.clone(),
+            session_id: other_session.id,
+        };
+        assert!(ctx.set(&other_state).is_ok());
+        assert!(ctx.del(&session).is_ok());
+        let states = registry.get_or_create(CascadeState::ENTITY_NAME_STATIC);
+        assert!(states.get_value(&state.id.0).is_none());
+        assert!(states.get_value(&other_state.id.0).is_some());
+        assert!(
+            registry
+                .get_or_create(CascadeEngine::ENTITY_NAME_STATIC)
+                .get_value(&engine.id.0)
+                .is_some()
         );
     }
 
