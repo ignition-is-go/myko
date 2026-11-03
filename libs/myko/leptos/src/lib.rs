@@ -97,7 +97,6 @@ where
 pub type LiveQuerySignals<T> = (ReadSignal<Vec<Arc<T>>>, ReadSignal<bool>);
 /// A fine-grained keyed store and authoritative readiness signal.
 pub type LiveStoreSignals<T> = (CellMapStore<Arc<str>, Arc<T>>, ReadSignal<bool>);
-type QueryResultWatch<T> = myko::client::QueryWatch<T>;
 
 /// A Leptos-readable server-side query window with pagination controls.
 #[derive(Clone)]
@@ -173,39 +172,26 @@ where
         + Sync
         + 'static,
 {
-    use myko::{
-        client::MykoClient,
-        hyphae::{Signal, Watchable},
-    };
+    use myko::client::MykoClient;
 
     let (read, write) = signal(vec![]);
     let (loaded, set_loaded) = signal(false);
 
     let client = expect_context::<MykoClient>();
 
-    // `prev_watch` holds the previous watch so it drops (and unsubscribes) on
-    // each re-run of the effect, before the new subscription is created.
-    let prev_watch: StoredValue<Option<QueryResultWatch<Q::Item>>> = StoredValue::new(None);
+    // Keep callbacks on the view owner; storing them on their source cells
+    // would retain the cells and disposed Leptos writers in a cycle.
+    let prev_watch = StoredValue::new(None);
 
     Effect::new(move || {
         let q = query(); // tracks signals read inside the closure
         set_loaded.set(false);
         let watch = client.watch_query_state(q);
-        let items_guard = watch.items().subscribe(move |signal| {
-            if let Signal::Value(items) = signal {
-                write.set((**items).clone());
-            }
-        });
-        let ready_guard = watch.ready().subscribe(move |signal| {
-            if let Signal::Value(ready) = signal {
-                set_loaded.set(**ready);
-            }
-        });
-        watch.items().own(items_guard);
-        watch.items().own(ready_guard);
+        let items_guard = cell_subscription(watch.items(), write);
+        let ready_guard = cell_subscription(watch.ready(), set_loaded);
 
         // Drop the previous watch (unsubscribes) and hold the new one.
-        prev_watch.set_value(Some(watch));
+        prev_watch.set_value(Some((watch, items_guard, ready_guard)));
     });
 
     (read, loaded)
@@ -253,10 +239,7 @@ where
         + Sync
         + 'static,
 {
-    use myko::{
-        client::MykoClient,
-        hyphae::{Signal, Watchable},
-    };
+    use myko::client::MykoClient;
 
     let (read, write) = signal(vec![]);
     let (loaded, set_loaded) = signal(false);
@@ -264,25 +247,15 @@ where
     let client = expect_context::<MykoClient>();
 
     // Holds the previous watch so it drops (and unsubscribes) on each re-run.
-    let prev_watch: StoredValue<Option<myko::client::ViewWatch<V::Item>>> = StoredValue::new(None);
+    let prev_watch = StoredValue::new(None);
 
     Effect::new(move || {
         let v = view(); // tracks signals read inside the closure
         set_loaded.set(false);
         let watch = client.watch_view_state(v);
-        let items_guard = watch.items().subscribe(move |signal| {
-            if let Signal::Value(items) = signal {
-                write.set((**items).clone());
-            }
-        });
-        let ready_guard = watch.ready().subscribe(move |signal| {
-            if let Signal::Value(ready) = signal {
-                set_loaded.set(**ready);
-            }
-        });
-        watch.items().own(items_guard);
-        watch.items().own(ready_guard);
-        prev_watch.set_value(Some(watch));
+        let items_guard = cell_subscription(watch.items(), write);
+        let ready_guard = cell_subscription(watch.ready(), set_loaded);
+        prev_watch.set_value(Some((watch, items_guard, ready_guard)));
     });
 
     (read, loaded)
@@ -306,32 +279,163 @@ where
     R: myko::report::ReportParams + myko::report::ReportIdStatic + Clone + Send + Sync + 'static,
     O: serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
 {
-    use myko::{
-        client::MykoClient,
-        hyphae::{Signal, Watchable},
-    };
+    use myko::client::MykoClient;
 
     let (read, write) = signal::<Option<O>>(None);
 
     let client = expect_context::<MykoClient>();
 
-    // Holds the previous Cell so it drops (and unsubscribes) on each re-run.
-    let prev_cell: StoredValue<Option<myko::hyphae::Cell<Option<O>, myko::hyphae::CellImmutable>>> =
-        StoredValue::new(None);
+    // The subscriber keeps its source alive. Owning it on that same cell
+    // would form a cycle and prevent the report from ever being cancelled.
+    let subscription = StoredValue::new(None::<myko::hyphae::SubscriptionGuard>);
 
     Effect::new(move || {
         let r = report(); // tracks signals read inside the closure
         let cell = client.watch_report::<R, O>(r);
-        let guard = cell.subscribe(move |signal| {
-            if let Signal::Value(value) = signal {
-                write.set((**value).clone());
-            }
-        });
-        cell.own(guard);
-        prev_cell.set_value(Some(cell));
+        subscription.set_value(Some(cell_subscription(&cell, write)));
     });
 
     read
+}
+
+fn cell_subscription<O>(
+    cell: &myko::hyphae::Cell<O, myko::hyphae::CellImmutable>,
+    write: WriteSignal<O>,
+) -> myko::hyphae::SubscriptionGuard
+where
+    O: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
+{
+    use myko::hyphae::{Signal, Watchable};
+    cell.subscribe(move |signal| {
+        if let Signal::Value(value) = signal {
+            write.set((**value).clone());
+        }
+    })
+}
+
+#[cfg(test)]
+#[allow(clippy::panic_in_result_fn)]
+mod subscription_lifetime_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use myko::hyphae::{Cell, CellImmutable, Mutable, SubscriptionGuard};
+
+    #[test]
+    fn collection_and_readiness_updates_stop_at_view_disposal() {
+        let items = Cell::new(vec![1_u32]);
+        let ready = Cell::new(false);
+        let owner = Owner::new_root(None);
+        let (values, loaded) = owner.with(|| {
+            let (values, write) = signal(Vec::new());
+            let (loaded, set_loaded) = signal(false);
+            StoredValue::new((
+                cell_subscription(&items.clone().lock(), write),
+                cell_subscription(&ready.clone().lock(), set_loaded),
+            ));
+            (values, loaded)
+        });
+        assert_eq!(values.get_untracked(), vec![1]);
+        assert!(!loaded.get_untracked());
+        items.set(vec![2]);
+        ready.set(true);
+        assert_eq!(values.get_untracked(), vec![2]);
+        assert!(loaded.get_untracked());
+        owner.cleanup();
+        items.set(vec![3]);
+        ready.set(false);
+    }
+
+    type ReportView = (
+        Owner,
+        StoredValue<Option<SubscriptionGuard>>,
+        ReadSignal<Option<u32>>,
+        WriteSignal<Option<u32>>,
+    );
+
+    fn view_subscription(cell: &Cell<Option<u32>, CellImmutable>) -> ReportView {
+        let owner = Owner::new_root(None);
+        let (subscription, value, write) = owner.with(|| {
+            let (value, write) = signal(None);
+            let subscription = StoredValue::new(Some(cell_subscription(cell, write)));
+            (subscription, value, write)
+        });
+        (owner, subscription, value, write)
+    }
+
+    #[test]
+    fn last_view_releases_report_but_shared_views_keep_it_alive() -> Result<(), &'static str> {
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let cell = Cell::new(Some(1));
+        cell.own(SubscriptionGuard::from_callback({
+            let cancelled = cancelled.clone();
+            move || {
+                cancelled.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+        let weak = cell.downgrade();
+        let (first, _, first_value, _) = view_subscription(&cell.clone().lock());
+        let (second, _, second_value, _) = view_subscription(&cell.clone().lock());
+        assert_eq!(first_value.get_untracked(), Some(1));
+        assert_eq!(second_value.get_untracked(), Some(1));
+        drop(cell);
+        first.cleanup();
+        assert_eq!(cancelled.load(Ordering::SeqCst), 0);
+        {
+            let retained = weak.upgrade().ok_or("second view must retain report")?;
+            retained.set(Some(2));
+        }
+        assert_eq!(second_value.get_untracked(), Some(2));
+        second.cleanup();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn replacement_releases_old_report_and_disposal_removes_writer() {
+        let old = Cell::new(Some(1));
+        let old_weak = old.downgrade();
+        let (owner, subscription, value, write) = view_subscription(&old.clone().lock());
+        drop(old);
+        let next = Cell::new(Some(2));
+        subscription.set_value(Some(cell_subscription(&next.clone().lock(), write)));
+        assert!(old_weak.upgrade().is_none());
+        assert_eq!(value.get_untracked(), Some(2));
+        owner.cleanup();
+        // A retained source must not call the disposed Leptos writer.
+        next.set(Some(3));
+    }
+
+    #[test]
+    fn replacing_a_subscription_to_the_same_cached_report_keeps_it_alive()
+    -> Result<(), &'static str> {
+        let cancelled = Arc::new(AtomicUsize::new(0));
+        let cell = Cell::new(Some(1));
+        cell.own(SubscriptionGuard::from_callback({
+            let cancelled = cancelled.clone();
+            move || {
+                cancelled.fetch_add(1, Ordering::SeqCst);
+            }
+        }));
+        let weak = cell.downgrade();
+        let (owner, subscription, _, _) = view_subscription(&cell.clone().lock());
+        drop(cell);
+        owner.with(|| {
+            let (_, write) = signal(None);
+            let cached = weak
+                .upgrade()
+                .ok_or("active view must retain cached report")?
+                .lock();
+            subscription.set_value(Some(cell_subscription(&cached, write)));
+            Ok::<(), &'static str>(())
+        })?;
+        assert_eq!(cancelled.load(Ordering::SeqCst), 0);
+        owner.cleanup();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+        Ok(())
+    }
 }
 
 /// Fine-grained reactive query — per-entity Leptos signals.
