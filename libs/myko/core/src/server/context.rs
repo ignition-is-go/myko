@@ -164,6 +164,7 @@ enum PendingMutationKind {
 }
 
 struct PendingMutation {
+    provenance: Option<super::OperationProvenance>,
     kind: PendingMutationKind,
     origin: Origin,
     mode: EdgeApplyMode,
@@ -1303,6 +1304,7 @@ impl MykoServerContext {
                     .max_observed_depth
                     .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
                 state.queue.push_back(PendingMutation {
+                    provenance: self.current_provenance(),
                     kind: PendingMutationKind::Uniform {
                         items: accepted,
                         change,
@@ -1414,6 +1416,7 @@ impl MykoServerContext {
                     .max_observed_depth
                     .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
                 state.queue.push_back(PendingMutation {
+                    provenance: self.current_provenance(),
                     kind: PendingMutationKind::Replace {
                         upserts,
                         deletes,
@@ -1507,6 +1510,7 @@ impl MykoServerContext {
                     pending
                 });
                 let Some(pending) = pending else { break };
+                let _operation = self.restore_operation(pending.provenance);
                 match pending.kind {
                     PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
                         let Some(item) = items.into_iter().next() else {
@@ -1618,6 +1622,7 @@ impl MykoServerContext {
                     pending
                 });
                 let Some(pending) = pending else { break };
+                let _operation = self.restore_operation(pending.provenance);
                 match pending.kind {
                     PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
                         let Some(item) = items.into_iter().next() else {
@@ -2284,18 +2289,22 @@ impl MykoServerContext {
             &self.event_sink,
         ) {
             (None, None) => {}
-            (Some(persister), None) => persister.persist(build())?,
+            (Some(persister), None) => persister.persist_record(self.event_record(build()))?,
             (None, Some(sink)) => {
-                let _ = sink.send(build());
+                let _ = sink.send(self.event_record(build()).event);
             }
             (Some(persister), Some(sink)) => {
-                let event = build();
-                let for_sink = event.clone();
-                persister.persist(event)?;
+                let record = self.event_record(build());
+                let for_sink = record.event.clone();
+                persister.persist_record(record)?;
                 let _ = sink.send(for_sink);
             }
         }
         Ok(())
+    }
+
+    pub(crate) fn operation_owner(&self) -> *const () {
+        Arc::as_ptr(&self.causal_counters).cast()
     }
 
     fn persist_dyn(
@@ -2304,14 +2313,14 @@ impl MykoServerContext {
         build: impl FnOnce() -> MEvent,
     ) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            persister.persist(build())?;
+            persister.persist_record(self.event_record(build()))?;
         }
         Ok(())
     }
 
     fn send_dyn_to_sink(&self, build: impl FnOnce() -> MEvent) {
         if let Some(sink) = &self.event_sink {
-            let _ = sink.send(build());
+            let _ = sink.send(self.event_record(build()).event);
         }
     }
 
@@ -3792,5 +3801,40 @@ mod tests {
 
         let _ = ctx.report(report, request);
         assert!(ctx.compute_gates.is_empty());
+    }
+
+    #[test]
+    fn operation_scopes_isolate_servers_threads_and_restore_on_unwind() {
+        let ctx = make_ctx();
+        let clone = ctx.clone();
+        let other = make_ctx();
+        let provenance = super::super::OperationProvenance {
+            operation_id: "operation".into(),
+            request_tx: "request".into(),
+            unverified_client_id: None,
+            command_id: "test".into(),
+            lineage: Vec::new(),
+        };
+        {
+            let _scope = ctx.operation_scope(provenance.clone());
+            assert_eq!(clone.current_provenance(), Some(provenance.clone()));
+            assert_eq!(other.current_provenance(), None);
+            std::thread::scope(|scope| {
+                let result = scope.spawn(|| ctx.current_provenance()).join();
+                assert!(matches!(result, Ok(None)));
+            });
+            {
+                let _unknown = ctx.restore_operation(None);
+                assert_eq!(ctx.current_provenance(), None);
+            }
+            assert_eq!(ctx.current_provenance(), Some(provenance.clone()));
+        }
+        assert_eq!(ctx.current_provenance(), None);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _scope = ctx.operation_scope(provenance);
+            std::panic::resume_unwind(Box::new(()));
+        }));
+        assert!(result.is_err());
+        assert_eq!(ctx.current_provenance(), None);
     }
 }

@@ -172,6 +172,22 @@ pub trait Persister: Send + Sync + 'static {
     /// Returns an error when the requested operation cannot be completed.
     fn persist(&self, event: MEvent) -> Result<(), PersistError>;
 
+    /// Persist an event with optional operation metadata. Legacy implementations
+    /// keep receiving `MEvent` (including correlated tx), but discard the sidecar.
+    /// Override this and `supports_provenance` together to retain provenance.
+    ///
+    /// # Errors
+    /// Returns an error when persistence cannot be queued.
+    fn persist_record(&self, record: super::EventRecord) -> Result<(), PersistError> {
+        self.persist(record.event)
+    }
+
+    /// Whether `persist_record` retains its metadata. False means history through
+    /// this backend cannot support provenance-based selection.
+    fn supports_provenance(&self) -> bool {
+        false
+    }
+
     /// Startup healthcheck hook.
     ///
     /// Persisters can override this to fail server startup when dependencies

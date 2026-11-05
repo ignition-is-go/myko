@@ -94,3 +94,24 @@ root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--lib", "operation_index"
 
 [tasks.lint-mcp-contract]
 root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-operation-provenance]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--test", "operation_provenance", "--", "--test-threads=1"]
+
+[tasks.check-operation-provenance]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-server", "--lib", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-postgres-provenance]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "postgres::provenance_tests", "--", "--ignored", "--test-threads=1"]
+
+[tasks.lint-operation-provenance-tests]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--test", "operation_provenance", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.lint-postgres-provenance-tests]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-operation-libraries]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-server", "--lib", "--", "--test-threads=1"]
+
+[tasks.check-operation-wasm]
+root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "--target", "wasm32-unknown-unknown"]

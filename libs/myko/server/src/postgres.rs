@@ -22,8 +22,8 @@ use myko::{
     hyphae::{Cell, CellImmutable, CellMutable, Mutable},
     item::AnyItem,
     server::{
-        CommittedHistoryEvent, HandlerRegistry, HistoryEntityKey, HistoryEvent, HistoryPage,
-        PersistError, PersistHealth, Persister,
+        CommittedHistoryEvent, EventRecord, HandlerRegistry, HistoryEntityKey, HistoryEvent,
+        HistoryPage, PersistError, PersistHealth, Persister,
     },
     store::StoreRegistry,
     wire::QueryWindow,
@@ -148,6 +148,35 @@ impl PostgresHistoryStore {
         validate_ident(&config.table)?;
         validate_ident(&config.channel)?;
         Ok(Self { config })
+    }
+
+    /// Read durable envelopes without discarding provenance. Legacy rows return
+    /// None; metadata is correlation evidence, never verified user identity.
+    ///
+    /// # Errors
+    /// Returns an error when `PostgreSQL` cannot be queried or a row is invalid.
+    pub fn load_records_after_id(
+        &self,
+        after_id: i64,
+        limit: i64,
+    ) -> Result<Vec<(i64, EventRecord)>, String> {
+        let mut client = connect_pg_client(&self.config, "history(load_records_after_id)")?;
+        let sql = format!(
+            "SELECT id, event::text FROM {} WHERE id > $1 ORDER BY id ASC LIMIT $2",
+            qi(&self.config.table)
+        );
+        client
+            .query(&sql, &[&after_id, &limit])
+            .map_err(|e| format!("history query failed: {e}"))?
+            .into_iter()
+            .map(|row| {
+                let id: i64 = row.get(0);
+                let json: String = row.get(1);
+                serde_json::from_str(&json)
+                    .map(|record| (id, record))
+                    .map_err(|e| format!("invalid history record id={id}: {e}"))
+            })
+            .collect()
     }
 
     /// Read events with `id > after_id`, ascending.
@@ -397,7 +426,7 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
     }
 }
 
-type ProducerRequest = MEvent;
+type ProducerRequest = EventRecord;
 
 /// Handle to the `PostgreSQL` producer.
 #[derive(Clone)]
@@ -415,12 +444,20 @@ impl PostgresProducerHandle {
     /// # Errors
     ///
     /// Returns an error when the producer thread is unavailable.
-    pub fn produce(&self, mut event: MEvent) -> Result<(), PersistError> {
+    pub fn produce(&self, event: MEvent) -> Result<(), PersistError> {
+        self.produce_record(EventRecord {
+            event,
+            provenance: None,
+        })
+    }
+
+    fn produce_record(&self, mut record: EventRecord) -> Result<(), PersistError> {
+        let event = &mut record.event;
         if event.source_id.is_none() {
             event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
         }
         let entity_type = event.item_type.clone();
-        if self.sender.send(event) == Ok(()) {
+        if self.sender.send(record) == Ok(()) {
             self.health.record_enqueue();
             Ok(())
         } else {
@@ -435,6 +472,14 @@ impl PostgresProducerHandle {
 }
 
 impl Persister for PostgresProducerHandle {
+    fn persist_record(&self, record: EventRecord) -> Result<(), PersistError> {
+        self.produce_record(record)
+    }
+
+    fn supports_provenance(&self) -> bool {
+        true
+    }
+
     fn persist(&self, event: MEvent) -> Result<(), PersistError> {
         self.produce(event)
     }
@@ -494,11 +539,11 @@ fn run_producer_loop(
     health: &Arc<PersistHealth>,
 ) {
     let mut client: Option<Client> = None;
-    let mut retry_batch: Vec<MEvent> = Vec::new();
+    let mut retry_batch: Vec<EventRecord> = Vec::new();
 
     loop {
         // NOTE(ts): Collect a batch — start with any retry events, then drain the channel.
-        let mut batch: Vec<MEvent> = Vec::new();
+        let mut batch: Vec<EventRecord> = Vec::new();
         if retry_batch.is_empty() {
             match rx.recv() {
                 Ok(ev) => batch.push(ev),
@@ -530,7 +575,8 @@ fn run_producer_loop(
         if tracing::enabled!(tracing::Level::DEBUG) {
             let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
                 std::collections::BTreeMap::new();
-            for event in &batch {
+            for record in &batch {
+                let event = &record.event;
                 let kind = match event.change_type {
                     MEventType::SET => "SET",
                     MEventType::DEL => "DEL",
@@ -600,7 +646,7 @@ fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
 fn insert_event_batch(
     client: &mut Client,
     config: &PostgresConfig,
-    events: &[MEvent],
+    events: &[EventRecord],
 ) -> Result<(), ::postgres::Error> {
     if events.is_empty() {
         return Ok(());
@@ -610,9 +656,10 @@ fn insert_event_batch(
 
     // NOTE(ts): Single event — skip transaction overhead.
     if events.len() == 1 {
-        let Some(event) = events.first() else {
+        let Some(record) = events.first() else {
             return Ok(());
         };
+        let event = &record.event;
         let sql = format!(
             "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb)"
         );
@@ -622,7 +669,7 @@ fn insert_event_batch(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let event_json = serde_json::to_string(record).unwrap_or_else(|_| "{}".to_string());
         let change_type = match event.change_type {
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
@@ -652,7 +699,8 @@ fn insert_event_batch(
     );
     let mut params: Vec<Box<dyn postgres::types::ToSql + Sync>> =
         Vec::with_capacity(events.len().saturating_mul(7));
-    for (i, event) in events.iter().enumerate() {
+    for (i, record) in events.iter().enumerate() {
+        let event = &record.event;
         if i > 0 {
             sql.push_str(", ");
         }
@@ -674,7 +722,7 @@ fn insert_event_batch(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let event_json = serde_json::to_string(record).unwrap_or_else(|_| "{}".to_string());
         let change_type = match event.change_type {
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
@@ -1376,5 +1424,103 @@ mod tests {
     fn postgres_catch_up_timeout_rejects_negative_and_invalid_values() {
         assert!(parse_postgres_catch_up_timeout(Some("-1")).is_err());
         assert!(parse_postgres_catch_up_timeout(Some("forever")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    use myko::server::OperationProvenance;
+
+    #[test]
+    #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]
+    fn durable_envelopes_survive_single_batch_and_background_producer() -> anyhow::Result<()> {
+        let url = std::env::var("MYKO_PROVENANCE_TEST_POSTGRES")?;
+        let config = PostgresConfig {
+            url: url.clone(),
+            table: "provenance_test_events".into(),
+            channel: "provenance_test_events".into(),
+        };
+        let mut client = Client::connect(&url, NoTls)?;
+        ensure_schema(&mut client, &config)?;
+        client.batch_execute("TRUNCATE provenance_test_events RESTART IDENTITY")?;
+        let make = |id: &str| -> anyhow::Result<EventRecord> {
+            Ok(EventRecord {
+                event: serde_json::from_value(serde_json::json!({
+                    "item": {"id": id}, "itemType": "TestEntity", "changeType": "SET",
+                    "createdAt": "2026-11-05T00:00:00Z", "tx": "untrusted-label", "sourceId": null
+                }))?,
+                provenance: Some(OperationProvenance {
+                    operation_id: "server-operation".into(),
+                    request_tx: "untrusted-label".into(),
+                    unverified_client_id: Some("connection-only".into()),
+                    command_id: "EditTree".into(),
+                    lineage: vec!["client".into()],
+                }),
+            })
+        };
+        let single = make("single")?;
+        insert_event_batch(&mut client, &config, std::slice::from_ref(&single))?;
+        let batch = vec![
+            make("batch-one")?,
+            EventRecord {
+                event: make("legacy")?.event,
+                provenance: None,
+            },
+        ];
+        insert_event_batch(&mut client, &config, &batch)?;
+        let producer =
+            PostgresProducer::new(&config, Uuid::new_v4()).map_err(anyhow::Error::msg)?;
+        let handle = producer.handle();
+        anyhow::ensure!(handle.supports_provenance());
+        handle.persist_record(make("worker")?)?;
+        let history = PostgresHistoryStore::new(config.clone()).map_err(anyhow::Error::msg)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let rows = loop {
+            let rows = history
+                .load_records_after_id(0, 10)
+                .map_err(anyhow::Error::msg)?;
+            if rows.len() == 4 {
+                break rows;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "producer did not persist the record"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        anyhow::ensure!(rows.first().map(|(_, record)| record) == Some(&single));
+        anyhow::ensure!(rows.iter().any(|(_, record)| {
+            record
+                .event
+                .item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                == Some("legacy")
+                && record.provenance.is_none()
+        }));
+        anyhow::ensure!(rows.iter().any(|(_, record)| {
+            record
+                .event
+                .item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                == Some("worker")
+                && record.provenance == single.provenance
+                && record.event.source_id.is_some()
+        }));
+        let old_rows = history.load_after_id(0, 10).map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            old_rows.len() == rows.len(),
+            "legacy history reader still accepts envelopes"
+        );
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM provenance_test_events WHERE tx = 'untrusted-label'",
+                &[],
+            )?
+            .get(0);
+        anyhow::ensure!(count == 4, "indexed tx column agrees with envelope");
+        Ok(())
     }
 }
