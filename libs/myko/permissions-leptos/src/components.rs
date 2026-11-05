@@ -1,56 +1,32 @@
 use leptos::prelude::*;
 use myko_permissions::{
-    PERMISSION_STRUCTURE_VERSION, PermissionEffect, PermissionGroupId, PermissionInspectionStatus,
-    PermissionMembership, PermissionMembershipId, PermissionPrincipalInspection, PermissionRole,
-    PermissionRuleSource, PermissionStructure,
+    PERMISSION_STRUCTURE_VERSION, PermissionGroupId, PermissionInspectionStatus,
+    PermissionPrincipalInspection, PermissionRole, PermissionRuleSource, PermissionStructure,
 };
 
-use crate::{MembershipEdit, RoleEdit, RoleRuleChoice, set_role_rule};
-
-fn status(structure: &PermissionStructure) -> Option<String> {
-    if structure.version != PERMISSION_STRUCTURE_VERSION {
-        return Some(format!(
-            "Unsupported permission contract version {}",
-            structure.version
-        ));
-    }
-    match structure.status {
-        PermissionInspectionStatus::Ready => None,
-        PermissionInspectionStatus::Denied => Some("Permission inspection denied".into()),
-        PermissionInspectionStatus::Unsupported => {
-            Some("This server does not support permission inspection".into())
-        }
-        PermissionInspectionStatus::Unavailable => Some(format!(
-            "Permission information unavailable. {}",
-            structure.message
-        )),
-    }
-}
-fn command_allowed(structure: &PermissionStructure, operation: &str) -> bool {
-    status(structure).is_none()
-        && structure
-            .commands
-            .iter()
-            .any(|command| command.operation == operation && command.allowed)
-}
+use crate::controllers::structure_status;
+use crate::{
+    MembershipEdit, PermissionEditorStatus, RoleEdit, RoleEditorController, RoleRuleChoice,
+    inspection_matrix, permission_matrix, use_group_membership_editor, use_role_editor,
+};
 
 #[component]
 pub fn PermissionExplorer(structure: Signal<Option<PermissionStructure>>) -> impl IntoView {
     move || {
         match structure.get() {
         None => view! { <p role="status">"Loading permissions…"</p> }.into_any(),
-        Some(value) => match status(&value) {
-            Some(message) => view! { <p role="alert">{message}</p> }.into_any(),
-            None => view! {
+        Some(value) => match structure_status(&value) {
+            PermissionEditorStatus::Ready => view! {
                 <section class="myko-permission-explorer">
                     <h2>"Entity permissions"</h2>
                     <p>"Read, write, and delete apply to entity types. Individual rows are not isolated by these grants."</p>
                     <table><caption>"Generated scopes and inheritance"</caption>
-                        <thead><tr><th>"Entity"</th><th>"Inherits from"</th><th>"Scopes"</th></tr></thead>
-                        <tbody>{value.entities.iter().map(|entity| view! {
-                            <tr><th scope="row">{entity.entity_type.clone()}</th>
-                                <td>{if entity.parents.is_empty() { "None".into() } else { entity.parents.join(", ") }}</td>
-                                <td>{entity.scopes.join(", ")}</td></tr>
+                        <thead><tr><th>"Entity"</th><th>"Read"</th><th>"Write"</th><th>"Delete"</th></tr></thead>
+                        <tbody>{permission_matrix(&value.entities).into_iter().map(|entity| view! {
+                            <tr><th scope="row">{entity.entity_type}<small>{format!("Inherits from: {}", if entity.parents.is_empty() { "None".into() } else { entity.parents.join(", ") })}</small></th>
+                                <td>{entity.read.unwrap_or_else(|| "Not advertised".into())}</td>
+                                <td>{entity.write.unwrap_or_else(|| "Not advertised".into())}</td>
+                                <td>{entity.delete.unwrap_or_else(|| "Not advertised".into())}</td></tr>
                         }).collect_view()}</tbody>
                     </table>
                     <details><summary>"Associated operations"</summary>
@@ -72,6 +48,7 @@ pub fn PermissionExplorer(structure: Signal<Option<PermissionStructure>>) -> imp
                     </details>
                 </section>
             }.into_any(),
+            state => view! { <p role="alert">{state.message()}</p> }.into_any(),
         },
     }
     }
@@ -83,18 +60,52 @@ pub fn RoleEditor(
     role: PermissionRole,
     #[prop(optional)] on_save: Option<Callback<RoleEdit>>,
 ) -> impl IntoView {
+    let editor = use_role_editor(structure, Signal::stored(role.id), on_save);
     move || {
-        match structure.get() {
-        Some(value) if status(&value).is_none() => {
-            value.document.as_ref().and_then(|document| document.roles.iter().find(|entry| entry.id == role.id)).cloned().map_or_else(
-                || view! { <p role="alert">"This role no longer exists. Reload the current role selection."</p> }.into_any(),
-                |current| view! { <RoleEditorForm structure role=current on_save/> }.into_any(),
-            )
+        let status = editor.status();
+        if !status.is_visible() {
+            return view! { <p role="status">{status.message()}</p> }.into_any();
         }
-        _ => view! { <p role="status">"Load current permissions before editing a role."</p> }
-            .into_any(),
+        view! {
+            <section class="myko-role-editor">
+                <h2>{move || editor.role().map_or_else(String::new, |role| format!("Role: {}", role.name))}</h2>
+                <p>"Inherit removes this role's rule. Other roles, overrides, and parent scopes still affect effective access."</p>
+                <table><caption>"Role scope rules"</caption><thead><tr><th>"Entity"</th><th>"Read"</th><th>"Write"</th><th>"Delete"</th></tr></thead><tbody>
+                    {editor.rows().into_iter().map(|row| view! {
+                        <tr><th scope="row">{row.entity_type}<small>{format!("Inherits from: {}", if row.parents.is_empty() { "None".into() } else { row.parents.join(", ") })}</small></th>
+                            <td><RoleRuleCell editor scope=row.read/></td>
+                            <td><RoleRuleCell editor scope=row.write/></td>
+                            <td><RoleRuleCell editor scope=row.delete/></td>
+                        </tr>
+                    }).collect_view()}
+                </tbody></table>
+                <details><summary>"Obsolete rules"</summary><p>"These scopes are no longer advertised. Remove them before saving this role."</p>
+                    {move || editor.obsolete_rules().into_iter().map(|rule| {
+                        let scope = rule.scope.clone();
+                        view! { <p><code>{rule.scope}</code>" "{format!("{:?}", rule.effect)}<button type="button" disabled=move || !editor.status().is_editable() on:click=move |_| { let _ = editor.remove_obsolete(&scope); }>"Remove obsolete rule"</button></p> }
+                    }).collect_view()}
+                </details>
+                <label>"Reason for role change"<input aria-label="Reason for role change" prop:value=move || editor.reason.get() on:input=move |event| editor.reason.set(event_target_value(&event)) disabled=move || !editor.status().is_editable()/></label>
+                <button type="button" disabled=move || !editor.can_submit() on:click=move |_| { let _ = editor.submit(); }>"Save role"</button>
+                <button type="button" on:click=move |_| editor.reload()>"Reload role draft"</button>
+                <p role="status">{move || editor.status().message()}</p>
+            </section>
+        }.into_any()
     }
-    }
+}
+
+#[component]
+fn RoleRuleCell(editor: RoleEditorController, scope: Option<String>) -> impl IntoView {
+    scope.map_or_else(|| view! { <span>"Not advertised"</span> }.into_any(), |scope| {
+        let value_scope = scope.clone();
+        view! {
+            <select aria-label=format!("Rule for {scope}") disabled=move || !editor.status().is_editable()
+                prop:value=move || match editor.rule(&value_scope) { Some(RoleRuleChoice::Allow) => "allow", Some(RoleRuleChoice::Deny) => "deny", _ => "inherit" }
+                on:change=move |event| { let _ = editor.set_rule(&scope, RoleRuleChoice::from_value(&event_target_value(&event))); }>
+                <option value="inherit">"Inherit"</option><option value="allow">"Allow"</option><option value="deny">"Deny"</option>
+            </select>
+        }.into_any()
+    })
 }
 
 #[component]
@@ -103,123 +114,26 @@ pub fn GroupMembershipEditor(
     group_id: PermissionGroupId,
     #[prop(optional)] on_save: Option<Callback<MembershipEdit>>,
 ) -> impl IntoView {
+    let editor = use_group_membership_editor(structure, Signal::stored(group_id), on_save);
     move || {
-        match structure.get() {
-        Some(value) if status(&value).is_none() => {
-            if value.document.as_ref().is_some_and(|document| document.groups.iter().any(|group| group.id == group_id)) {
-                view! { <GroupMembershipEditorForm structure group_id=group_id.clone() on_save/> }.into_any()
-            } else {
-                view! { <p role="alert">"This group no longer exists. Reload the current group selection."</p> }.into_any()
-            }
-        },
-        _ => view! { <p role="status">"Load current permissions before editing group membership."</p> }.into_any(),
-    }
-    }
-}
-
-#[component]
-fn RoleEditorForm(
-    structure: Signal<Option<PermissionStructure>>,
-    role: PermissionRole,
-    #[prop(optional_no_strip)] on_save: Option<Callback<RoleEdit>>,
-) -> impl IntoView {
-    let draft = RwSignal::new(role);
-    let reason = RwSignal::new(String::new());
-    let initial_revision = structure.get_untracked().and_then(|value| value.revision);
-    let writable = move || {
-        on_save.is_some()
-            && structure.get().is_some_and(|value| {
-                command_allowed(&value, "UpsertPermissionRole")
-                    && value.revision == initial_revision
-            })
-    };
-    let mut scopes = structure.get_untracked().map_or_else(Vec::new, |value| {
-        value
-            .entities
-            .into_iter()
-            .flat_map(|entity| entity.scopes)
-            .collect::<Vec<_>>()
-    });
-    let known_scopes = scopes.clone();
-    scopes.extend(
-        draft
-            .get_untracked()
-            .rules
-            .into_iter()
-            .map(|rule| rule.scope),
-    );
-    scopes.sort();
-    scopes.dedup();
-    view! {
-        <section class="myko-role-editor">
-            <h2>{format!("Role: {}", draft.get_untracked().name)}</h2>
-            <p>"Inherit removes this role's rule. Other roles, overrides, and parent scopes still affect effective access."</p>
-            <table><caption>"Role scope rules"</caption><thead><tr><th>"Scope"</th><th>"Rule"</th></tr></thead><tbody>
-                {scopes.into_iter().map(|scope| {
-                    let label = if known_scopes.contains(&scope) { scope.clone() } else { format!("{scope} (obsolete; remove with Inherit)") };
-                    let scope_for_value = scope.clone();
-                    let scope_for_change = scope.clone();
-                    view! { <tr><th scope="row">{label}</th><td>
-                        <select aria-label=format!("Rule for {scope}") disabled=move || !writable()
-                            prop:value=move || draft.with(|role| role.rules.iter().find(|rule| rule.scope == scope_for_value).map_or("inherit", |rule| match rule.effect { PermissionEffect::Allow => "allow", PermissionEffect::Deny => "deny" }))
-                            on:change=move |event| draft.update(|role| set_role_rule(role, &scope_for_change, RoleRuleChoice::from_value(&event_target_value(&event))))>
-                            <option value="inherit">"Inherit"</option><option value="allow">"Allow"</option><option value="deny">"Deny"</option>
-                        </select>
-                    </td></tr> }
-                }).collect_view()}
-            </tbody></table>
-            <label>"Reason for role change"<input aria-label="Reason for role change" prop:value=move || reason.get() on:input=move |event| reason.set(event_target_value(&event)) disabled=move || !writable()/></label>
-            <button type="button" disabled=move || !writable() || reason.get().trim().is_empty()
-                on:click=move |_| {
-                    if writable() && !reason.get_untracked().trim().is_empty()
-                        && let (Some(callback), Some(expected_revision)) = (on_save, initial_revision) {
-                        callback.run(RoleEdit { expected_revision, role: draft.get_untracked(), reason: reason.get_untracked() });
-                    }
-                }>"Save role"</button>
-            <p role="status">{move || if writable() { "Changes are checked by the server before saving. A new server revision reloads this draft." } else { "Read-only. Editing requires permission and a current revision." }}</p>
-        </section>
-    }
-}
-
-#[component]
-fn GroupMembershipEditorForm(
-    structure: Signal<Option<PermissionStructure>>,
-    group_id: PermissionGroupId,
-    #[prop(optional_no_strip)] on_save: Option<Callback<MembershipEdit>>,
-) -> impl IntoView {
-    let snapshot = structure.get_untracked();
-    let revision = snapshot.as_ref().and_then(|value| value.revision);
-    let document = snapshot
-        .and_then(|value| value.document)
-        .unwrap_or_default();
-    let group_name = document
-        .groups
-        .iter()
-        .find(|group| group.id == group_id)
-        .map_or_else(|| group_id.to_string(), |group| group.name.clone());
-    let reason = RwSignal::new(String::new());
-    view! {
-        <section class="myko-membership-editor"><h2>{format!("Group: {group_name}")}</h2>
-            <label>"Reason for membership change"<input aria-label="Reason for membership change" prop:value=move || reason.get() on:input=move |event| reason.set(event_target_value(&event))/></label>
-            <ul>{document.principals.into_iter().map(|principal| {
-                let membership = document.memberships.iter().find(|entry| entry.principal_id == principal.id && entry.group_id == group_id).cloned();
-                let is_member = membership.is_some();
-                let membership = membership.unwrap_or_else(|| PermissionMembership {
-                    id: PermissionMembershipId::from(uuid::Uuid::new_v4().to_string()),
-                    authority_id: principal.authority_id.clone(), principal_id: principal.id.clone(), group_id: group_id.clone(),
-                });
-                let operation = if is_member { "RemovePermissionMembership" } else { "UpsertPermissionMembership" };
-                view! { <li>{principal.name}<button type="button" aria-label=format!("{} {}", if is_member { "Remove" } else { "Add" }, principal.subject)
-                    disabled=move || on_save.is_none() || reason.get().trim().is_empty() || !structure.get().is_some_and(|value| value.revision == revision && command_allowed(&value, operation))
-                    on:click=move |_| {
-                        if let (Some(callback), Some(expected_revision)) = (on_save, revision)
-                            && !reason.get_untracked().trim().is_empty()
-                            && structure.get_untracked().is_some_and(|value| value.revision == revision && command_allowed(&value, operation)) {
-                            callback.run(MembershipEdit { expected_revision, membership: membership.clone(), member: !is_member, reason: reason.get_untracked() });
-                        }
-                    }>{if is_member { "Remove member" } else { "Add member" }}</button></li> }
-            }).collect_view()}</ul>
-        </section>
+        let status = editor.status();
+        if !status.is_visible() {
+            return view! { <p role="status">{status.message()}</p> }.into_any();
+        }
+        view! {
+            <section class="myko-membership-editor"><h2>{editor.group_name().map_or_else(String::new, |name| format!("Group: {name}"))}</h2>
+                <label>"Reason for membership change"<input aria-label="Reason for membership change" prop:value=move || editor.reason.get() on:input=move |event| editor.reason.set(event_target_value(&event))/></label>
+                <ul>{editor.rows().into_iter().map(|row| {
+                    let is_member = row.membership.is_some();
+                    let principal_id = row.principal.id.clone();
+                    view! { <li>{row.principal.name}<button type="button" aria-label=format!("{} {}", if is_member { "Remove" } else { "Add" }, row.principal.subject)
+                        disabled=move || !row.editable || !editor.status().is_editable() || editor.reason.get().trim().is_empty()
+                        on:click=move |_| { let _ = editor.set_member(&principal_id, !is_member); }>{if is_member { "Remove member" } else { "Add member" }}</button></li> }
+                }).collect_view()}</ul>
+                <button type="button" on:click=move |_| editor.reload()>"Reload membership draft"</button>
+                <p role="status">{move || editor.status().message()}</p>
+            </section>
+        }.into_any()
     }
 }
 
@@ -235,17 +149,28 @@ pub fn PrincipalAccessInspector(
         Some(value) => view! {
             <section class="myko-access-inspector"><h2>"Principal local access"</h2>
                 <p>"Local grant evaluation only. Token scope ceilings, delegation, external identity availability, and row policies are not evaluated here."</p>
-                <table><thead><tr><th>"Scope"</th><th>"Effective local access"</th><th>"Explanation"</th></tr></thead><tbody>
-                    {value.scopes.into_iter().map(|scope| view! { <tr><th scope="row">{scope.scope}</th><td>{if scope.allowed { "Allow" } else { "Deny" }}</td><td><ul>
-                        {scope.steps.into_iter().map(|step| view! { <li>{format!("{}: {} (distance {})", step.scope, step.decision, step.distance)}
-                            <ul>{step.sources.into_iter().map(|source| view! { <li>{match source { PermissionRuleSource::PrincipalOverride(id) => format!("Principal override {id}"), PermissionRuleSource::GroupOverride(id) => format!("Group override {id}"), PermissionRuleSource::Role(id) => format!("Role {id}") }}</li> }).collect_view()}</ul>
-                        </li> }).collect_view()}
-                    </ul></td></tr> }).collect_view()}
+                <table><thead><tr><th>"Entity"</th><th>"Read"</th><th>"Write"</th><th>"Delete"</th></tr></thead><tbody>
+                    {inspection_matrix(&value.scopes).into_iter().map(|row| view! {
+                        <tr><th scope="row">{row.entity_type}</th><td><InspectionCell explanation=row.read/></td><td><InspectionCell explanation=row.write/></td><td><InspectionCell explanation=row.delete/></td></tr>
+                    }).collect_view()}
                 </tbody></table>
             </section>
         }.into_any(),
     }
     }
+}
+
+#[component]
+fn InspectionCell(
+    explanation: Option<myko_permissions::PermissionScopeExplanation>,
+) -> impl IntoView {
+    explanation.map_or_else(|| view! { <span>"Not reported"</span> }.into_any(), |scope| view! {
+        <span>{if scope.allowed { "Allow" } else { "Deny" }}</span><details><summary>{format!("Why {}?", scope.scope)}</summary><ul>
+            {scope.steps.into_iter().map(|step| view! { <li>{format!("{}: {} (distance {})", step.scope, step.decision, step.distance)}
+                <ul>{step.sources.into_iter().map(|source| view! { <li>{match source { PermissionRuleSource::PrincipalOverride(id) => format!("Principal override {id}"), PermissionRuleSource::GroupOverride(id) => format!("Group override {id}"), PermissionRuleSource::Role(id) => format!("Role {id}") }}</li> }).collect_view()}</ul>
+            </li> }).collect_view()}
+        </ul></details>
+    }.into_any())
 }
 
 #[component]

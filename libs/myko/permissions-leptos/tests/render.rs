@@ -89,11 +89,66 @@ fn role_editor_exposes_three_choices_and_is_readonly_without_capability() {
 fn membership_loading_and_local_inspection_limits_are_explicit() {
     Owner::new().with(|| {
         let html = view! { <GroupMembershipEditor structure=Signal::stored(None) group_id=PermissionGroupId::from("operators")/> }.to_html();
-        assert!(html.contains("Load current permissions"));
+        assert!(html.contains("Loading permissions"));
         let inspection = PermissionPrincipalInspection { version: PERMISSION_STRUCTURE_VERSION, status: PermissionInspectionStatus::Ready, message: String::new(), revision: Some(1), principal_id: PermissionPrincipalId::from("alice"), scopes: vec![PermissionScopeExplanation { scope: "ForeignCamera:write".into(), allowed: true, steps: vec![PermissionDecisionStep { scope: "ForeignProject:write".into(), decision: "Allow".into(), distance: 1, sources: vec![PermissionRuleSource::Role("operator".into())] }] }] };
         let html = view! { <PrincipalAccessInspector inspection=Signal::stored(Some(inspection))/> }.to_html();
         assert!(html.contains("Local grant evaluation only"));
         assert!(html.contains("ForeignProject:write"));
         assert!(html.contains("Role operator"));
+    });
+}
+
+#[test]
+fn defaults_render_one_entity_row_with_three_distinct_action_cells() {
+    Owner::new().with(|| {
+        let mut value = fixture();
+        if let Some(entity) = value.entities.first_mut() {
+            entity.scopes.retain(|scope| !scope.ends_with(":delete"));
+        }
+        let role = PermissionRole {
+            id: PermissionRoleId::from("operator"),
+            authority_id: PermissionAuthorityId::from("permissions"),
+            name: "Operators".into(),
+            enabled: true,
+            rules: vec![],
+        };
+        if let Some(document) = &mut value.document {
+            document.roles.push(role.clone());
+        }
+        let html =
+            view! { <PermissionExplorer structure=Signal::stored(Some(value.clone()))/> }.to_html();
+        assert_eq!(html.matches("<th>").count(), 4);
+        assert_eq!(html.matches("<td>").count(), 3);
+        assert!(html.contains("Not advertised"));
+        let html = view! { <RoleEditor structure=Signal::stored(Some(value)) role/> }.to_html();
+        assert_eq!(html.matches("<td>").count(), 3);
+        assert_eq!(html.matches("<select").count(), 2);
+        let inspection = PermissionPrincipalInspection {
+            version: PERMISSION_STRUCTURE_VERSION,
+            status: PermissionInspectionStatus::Ready,
+            message: String::new(),
+            revision: Some(7),
+            principal_id: PermissionPrincipalId::from("alice"),
+            scopes: vec![
+                PermissionScopeExplanation {
+                    scope: "ForeignCamera:read".into(),
+                    allowed: false,
+                    steps: vec![],
+                },
+                PermissionScopeExplanation {
+                    scope: "ForeignCamera:write".into(),
+                    allowed: true,
+                    steps: vec![],
+                },
+            ],
+        };
+        let html =
+            view! { <PrincipalAccessInspector inspection=Signal::stored(Some(inspection))/> }
+                .to_html();
+        assert_eq!(html.matches("<td>").count(), 3);
+        assert_eq!(html.matches("<tr>").count(), 2);
+        assert!(html.contains("Not reported"));
+        assert!(html.contains("Why ForeignCamera:read?"));
+        assert!(html.contains("Why ForeignCamera:write?"));
     });
 }

@@ -55,10 +55,63 @@ The native server links `myko-permissions` with its `server` feature and attache
 Myko connection. The Leptos crate depends on the browser-safe contract with server
 features disabled.
 
+## Supply your own markup and styles
+
+`use_permissions()` owns the connection and mutation callbacks without rendering
+DOM. The matrix helpers and editor controllers are headless too. They do not
+insert elements, require CSS classes, or choose your app's controls.
+
+`permission_matrix(&structure.entities)` returns one row per entity with optional
+`read`, `write`, and `delete` scope cells. `inspection_matrix(&inspection.scopes)`
+groups the server's access explanations into the same layout. A missing cell means
+the server did not describe that action. It does not mean Deny or Inherit.
+
+Use `use_role_editor` and `use_group_membership_editor` to keep the default editing
+behavior while rendering your own forms. For example, connect a headless role
+editor to the existing mutation callback.
+
+```rust,ignore
+let editor = use_role_editor(
+    permissions.structure,
+    Signal::stored(role_id),
+    Some(permissions.save_role),
+);
+```
+
+The controller's `rows()`, `role()`, and `rule(scope)` methods expose the draft.
+Bind your own controls to `set_rule`, `remove_obsolete`, and `reason`. Your app
+chooses every element and class, including the save button.
+
+```rust,ignore
+let error = RwSignal::new(None::<String>);
+view! {
+    <input class="app-audit-reason" aria-label="Reason for permission change"
+        prop:value=move || editor.reason.get()
+        on:input=move |event| editor.reason.set(event_target_value(&event))/>
+    <button class="app-primary-button"
+        disabled=move || !editor.can_submit()
+        on:click=move |_| error.set(editor.submit().err().map(|value| value.to_string()))>
+        "Save role"
+    </button>
+    <p role="alert">{move || error.get()}</p>
+}
+```
+
+The controller checks the current revision, command capability, target, and audit
+reason before calling `on_save`. If the policy revision changes, reload the editor
+before submitting again. Denied, disconnected, unsupported, and deleted-target
+states block edits.
+
+The default `PermissionExplorer`, `RoleEditor`, and `PrincipalAccessInspector`
+render entity rows with Read, Write, and Delete columns. They use these same
+headless APIs and ship no stylesheet. Apply app CSS to their semantic HTML, or
+replace their markup entirely. Obsolete role scopes remain available for cleanup
+without inventing additional action columns.
+
 ## Inspect access
 
-The entity explorer shows read, write, and delete scopes with their associated
-operations and parent relationships. Relationships form a graph. An entity can
+The entity explorer shows one row per entity and separate Read, Write, and Delete
+columns, with associated operations and parent relationships. Relationships form a graph. An entity can
 have several parents, and a cycle must not cause recursive rendering to hang.
 
 The principal inspector shows server-computed local grant decisions. Explanations
