@@ -81,6 +81,9 @@ pub struct OperationSchema {
     pub description: Option<String>,
     pub args: Vec<OperationArg>,
     pub output_type: String,
+    /// Generated entity permissions. Missing metadata grants no authority.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub required_scopes: Option<Vec<String>>,
 }
 
 /// Fields shared by result serialization and on-demand MCP descriptions.
@@ -262,6 +265,7 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
 
     for reg in inventory::iter::<QueryRegistration> {
         index.push(OperationSchema {
+            required_scopes: None,
             id: reg.query_id.to_string(),
             kind: "query".to_string(),
             description: reg.description.map(str::to_string),
@@ -271,6 +275,7 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
     }
     for reg in inventory::iter::<ViewRegistration> {
         index.push(OperationSchema {
+            required_scopes: None,
             id: reg.view_id.to_string(),
             kind: "view".to_string(),
             description: reg.description.map(str::to_string),
@@ -280,6 +285,7 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
     }
     for reg in inventory::iter::<ReportRegistration> {
         index.push(OperationSchema {
+            required_scopes: None,
             id: reg.report_id.to_string(),
             kind: "report".to_string(),
             description: reg.description.map(str::to_string),
@@ -289,6 +295,7 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
     }
     for reg in inventory::iter::<CommandRegistration> {
         index.push(OperationSchema {
+            required_scopes: None,
             id: reg.command_id.to_string(),
             kind: "command".to_string(),
             description: reg.description.map(str::to_string),
@@ -297,6 +304,17 @@ pub fn build_operation_index() -> Vec<OperationSchema> {
         });
     }
 
+    for operation in &mut index {
+        let kind = match operation.kind.as_str() {
+            "query" => myko_auth::OperationKind::Query,
+            "view" => myko_auth::OperationKind::View,
+            "report" => myko_auth::OperationKind::Report,
+            _ => myko_auth::OperationKind::Command,
+        };
+        operation.required_scopes = myko_auth::PermissionCatalog::registered()
+            .requirements(kind, &operation.id)
+            .map(|scopes| scopes.iter().map(ToString::to_string).collect());
+    }
     index.sort_by(|a, b| a.kind.cmp(&b.kind).then_with(|| a.id.cmp(&b.id)));
     index
 }

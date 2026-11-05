@@ -421,6 +421,13 @@ impl MykoServerContext {
         scope: RequestCacheScope,
     ) -> String {
         let payload_hash = params.cache_key_hash();
+        if let Some(auth) = &request.auth {
+            return format!(
+                "{}:{kind}:{id}:{payload_hash:016x}:auth:{}",
+                request.host_id,
+                auth.id()
+            );
+        }
         match scope {
             RequestCacheScope::Shared => {
                 format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
@@ -2777,6 +2784,7 @@ impl MykoServerContext {
     #[must_use]
     pub fn new_server_transaction(&self) -> Arc<RequestContext> {
         Arc::new(RequestContext {
+            auth: None,
             tx: Arc::<str>::from(Uuid::new_v4().to_string()),
             client_id: None,
             lineage: vec![],

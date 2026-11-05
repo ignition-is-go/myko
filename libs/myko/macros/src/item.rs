@@ -498,6 +498,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
     let delete_many_ident = format_ident!("Delete{}s", input.name_str);
     let delete_many_result = format_ident!("Delete{}sResult", input.name_str);
     let name_str = input.name_str;
+    let entity = format_ident!("{}", name_str);
     let id = input.id_type_ident;
     let get_one = input.get_by_id_ident;
     let get_many = input.get_by_ids_ident;
@@ -509,6 +510,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
         #krate::register_typegen_type!(#delete_result);
 
         #[#krate::myko_command(#delete_result)]
+        #[myko_scope(#entity, delete)]
         pub struct #delete_ident { pub id: #id }
         impl #krate::command::CommandHandler for #delete_ident {
             fn execute(self, ctx: #krate::prelude::CommandContext) -> Result<#delete_result, #krate::prelude::CommandError> {
@@ -528,6 +530,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
         #krate::register_typegen_type!(#delete_many_result);
 
         #[#krate::myko_command(#delete_many_result)]
+        #[myko_scope(#entity, delete)]
         pub struct #delete_many_ident { pub ids: Vec<#id> }
         impl #krate::command::CommandHandler for #delete_many_ident {
             fn execute(self, ctx: #krate::prelude::CommandContext) -> Result<#delete_many_result, #krate::prelude::CommandError> {
@@ -784,6 +787,8 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
         #post_deserialize
         #krate::register_typegen_type!(#id_type_ident, #name);
         #krate::submit! { #item_registration }
+        #[cfg(not(target_arch = "wasm32"))]
+        #krate::submit! { #krate::auth::EntityScopeRegistration { entity_type: #name_str } }
         #ingest_registration
 
         impl #krate::item::Eventable for #name {
@@ -862,6 +867,7 @@ pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream 
     prepare_item(args, input_struct).map_or_else(|err| err.to_compile_error(), expand_prepared_item)
 }
 
+#[allow(clippy::too_many_lines)]
 fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
     let PreparedItem {
         input_struct,
@@ -997,6 +1003,16 @@ fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
         ctx: &ctx,
     });
 
+    let permission_registrations = crate::permission::entity_metadata(
+        name,
+        &rel_info,
+        &[
+            count_all_report_ident,
+            count_report_ident,
+            get_by_id_report_ident,
+        ],
+        krate,
+    );
     let item_registration = generate_item_registration(name, &name_str, krate);
 
     // Generate relationship registrations
@@ -1022,6 +1038,7 @@ fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
         server_owned_impls,
         foreign_key_impls: has_foreign_key_impls,
         generated_items: vec![
+            permission_registrations,
             get_all_query,
             get_by_ids_query,
             filter_struct,

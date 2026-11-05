@@ -298,6 +298,74 @@ where
     read
 }
 
+type TaggedReportResult<O> = Option<(Arc<()>, Option<Result<O, String>>)>;
+
+/// Watch a report with transport, authorization, and decoding errors.
+/// `None` means loading or disconnected; changing parameters clears the old value.
+pub fn live_report_result<R, O>(
+    report: impl Fn() -> R + Send + Sync + 'static,
+) -> Signal<Option<Result<O, String>>>
+where
+    R: myko::report::ReportParams + myko::report::ReportIdStatic + Clone + Send + Sync + 'static,
+    O: serde::de::DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
+{
+    let (responses, write) = signal(None);
+    let current = RwSignal::new(Arc::new(()));
+    let client = expect_context::<myko::client::MykoClient>();
+    let subscription = StoredValue::new(None::<myko::hyphae::SubscriptionGuard>);
+    Effect::new(move || {
+        let params = report();
+        let token = Arc::new(());
+        current.set(token.clone());
+        subscription.set_value(None);
+        write.set(None);
+        let cell = client.watch_report_result::<R, O>(params);
+        subscription.set_value(Some(result_cell_subscription(
+            &cell,
+            write,
+            current.read_only(),
+            token,
+        )));
+    });
+    result_signal(responses, current.read_only())
+}
+
+fn result_signal<O>(
+    responses: ReadSignal<TaggedReportResult<O>>,
+    current: ReadSignal<Arc<()>>,
+) -> Signal<Option<Result<O, String>>>
+where
+    O: Clone + Send + Sync + 'static,
+{
+    Signal::derive(move || {
+        let active = current.get();
+        responses
+            .get()
+            .and_then(|(token, result)| Arc::ptr_eq(&token, &active).then_some(result).flatten())
+    })
+}
+
+fn result_cell_subscription<O>(
+    cell: &myko::hyphae::Cell<Option<Result<O, String>>, myko::hyphae::CellImmutable>,
+    write: WriteSignal<TaggedReportResult<O>>,
+    current: ReadSignal<Arc<()>>,
+    token: Arc<()>,
+) -> myko::hyphae::SubscriptionGuard
+where
+    O: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
+{
+    use myko::hyphae::{Signal, Watchable};
+    cell.subscribe(move |signal| {
+        if let Signal::Value(value) = signal
+            && current
+                .try_get()
+                .is_some_and(|active| Arc::ptr_eq(&active, &token))
+        {
+            let _ = write.try_set(Some((token.clone(), (**value).clone())));
+        }
+    })
+}
+
 fn cell_subscription<O>(
     cell: &myko::hyphae::Cell<O, myko::hyphae::CellImmutable>,
     write: WriteSignal<O>,
@@ -308,7 +376,7 @@ where
     use myko::hyphae::{Signal, Watchable};
     cell.subscribe(move |signal| {
         if let Signal::Value(value) = signal {
-            write.set((**value).clone());
+            let _ = write.try_set((**value).clone());
         }
     })
 }
@@ -320,6 +388,39 @@ mod subscription_lifetime_tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use myko::hyphae::{Cell, CellImmutable, Mutable, SubscriptionGuard};
+
+    #[test]
+    fn retired_parameter_callbacks_cannot_restore_values_or_errors() {
+        let owner = Owner::new();
+        owner.with(|| {
+            let first_token = Arc::new(());
+            let current = RwSignal::new(first_token.clone());
+            let (responses, write) = signal(None);
+            let result = result_signal(responses, current.read_only());
+            let first = Cell::new(Some(Ok("old principal".to_string())));
+            let _first_guard = result_cell_subscription(
+                &first.clone().lock(),
+                write,
+                current.read_only(),
+                first_token,
+            );
+            assert_eq!(result.get_untracked(), Some(Ok("old principal".into())));
+            let next_token = Arc::new(());
+            current.set(next_token.clone());
+            assert_eq!(result.get_untracked(), None);
+            let next = Cell::new(Some(Ok("new principal".to_string())));
+            let _next_guard = result_cell_subscription(
+                &next.clone().lock(),
+                write,
+                current.read_only(),
+                next_token,
+            );
+            first.set(Some(Err("old denial".into())));
+            assert_eq!(result.get_untracked(), Some(Ok("new principal".into())));
+            first.set(Some(Ok("old principal".into())));
+            assert_eq!(result.get_untracked(), Some(Ok("new principal".into())));
+        });
+    }
 
     #[test]
     fn collection_and_readiness_updates_stop_at_view_disposal() {

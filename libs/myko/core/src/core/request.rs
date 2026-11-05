@@ -54,6 +54,8 @@ pub enum RequestCacheScope {
 /// command execution, query subscriptions, and report generation.
 #[derive(Clone, Debug)]
 pub struct RequestContext {
+    /// Verified external authority. Internal requests have no external session.
+    pub auth: Option<myko_auth::AuthSession>,
     /// Transaction ID - same across all operations in one request.
     /// Used to correlate logs, events, and responses.
     pub tx: Arc<str>,
@@ -80,6 +82,12 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
+    #[must_use]
+    pub fn with_auth(mut self, auth: Option<myko_auth::AuthSession>) -> Self {
+        self.auth = auth;
+        self
+    }
+
     /// Create a new `RequestContext` with explicit values.
     pub fn new(
         tx: Arc<str>,
@@ -89,6 +97,7 @@ impl RequestContext {
         created_at: String,
     ) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: client_id.map(Into::into),
             lineage,
@@ -105,6 +114,7 @@ impl RequestContext {
     #[must_use]
     pub fn from_client(tx: Arc<str>, client_id: Arc<str>, host_id: Uuid) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: Some(client_id.into()),
             lineage: vec![Arc::from("client")],
@@ -125,6 +135,7 @@ impl RequestContext {
         windback: Option<Arc<str>>,
     ) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: Some(client_id.into()),
             lineage: vec![Arc::from("client")],
@@ -140,6 +151,7 @@ impl RequestContext {
     #[must_use]
     pub fn internal(tx: Arc<str>, host_id: Uuid, origin: &str) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: None,
             lineage: vec![Arc::from(origin)],
@@ -175,6 +187,7 @@ impl RequestContext {
         let mut lineage = self.lineage.clone();
         lineage.push(Arc::from(operation));
         Self {
+            auth: self.auth.clone(),
             tx: self.tx.clone(),
             client_id: self.client_id.clone(),
             lineage,

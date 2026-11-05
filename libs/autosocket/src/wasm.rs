@@ -1,4 +1,7 @@
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, rc::Rc, sync::Arc};
+
+use base64::Engine as _;
+use futures::future::{AbortHandle, Abortable};
 
 use hyphae::{Cell, CellImmutable, CellMutable, Mutable};
 use send_wrapper::SendWrapper;
@@ -23,6 +26,8 @@ struct WasmSocketInner {
     retired_reconnects: Vec<Closure<dyn FnMut()>>,
     generation: u64,
     intended_addr: Option<String>,
+    credentials: Option<Arc<dyn myko_auth::CredentialProvider>>,
+    pending_auth: Option<AbortHandle>,
 }
 
 impl WasmSocketInner {
@@ -45,6 +50,9 @@ impl WasmSocketInner {
     }
 
     fn cancel_reconnect(&mut self) {
+        if let Some(auth) = self.pending_auth.take() {
+            auth.abort();
+        }
         if let Some((timeout_id, _closure)) = self.reconnect_timeout.take()
             && let Some(window) = web_sys::window()
         {
@@ -123,6 +131,8 @@ impl WasmSocket {
                 retired_reconnects: Vec::new(),
                 generation: 0,
                 intended_addr: None,
+                credentials: None,
+                pending_auth: None,
             }))),
             callbacks: SendWrapper::new(WasmCallbacks {
                 intended_status: Cell::new(SocketConnectionStatus::Idle)
@@ -170,6 +180,19 @@ impl Default for WasmSocket {
 }
 
 impl SocketTransport for WasmSocket {
+    fn set_credential_provider(
+        &self,
+        provider: Option<Arc<dyn myko_auth::CredentialProvider>>,
+    ) -> Result<(), String> {
+        let addr = {
+            let mut inner = self.inner.borrow_mut();
+            inner.credentials = provider;
+            inner.intended_addr.clone()
+        };
+        self.set_addr(addr);
+        Ok(())
+    }
+
     fn set_addr(&self, addr: Option<String>) {
         self.callbacks.intended_status.set(addr.clone().map_or(
             SocketConnectionStatus::Idle,
@@ -276,7 +299,7 @@ fn schedule_reconnect(
     }
 }
 
-#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn connect(
     addr: String,
     generation: u64,
@@ -295,12 +318,97 @@ fn connect(
     } else {
         SocketConnectionStatus::Connecting(addr.clone())
     });
+    let provider = inner.borrow().credentials.clone();
+    let (abort, registration) = AbortHandle::new_pair();
+    if let Some(previous) = inner.borrow_mut().pending_auth.replace(abort) {
+        previous.abort();
+    }
+    wasm_bindgen_futures::spawn_local(async move {
+        let attempt = async {
+            let bearer = if let Some(provider) = provider {
+                match provider
+                    .credentials()
+                    .await
+                    .map_err(|_| ())
+                    .and_then(|credentials| crate::connection_bearer(credentials).map_err(|_| ()))
+                {
+                    Ok(bearer) => Some(bearer),
+                    Err(()) => {
+                        if inner.borrow().is_current(generation, &addr) {
+                            status.set(SocketConnectionStatus::Disconnected);
+                            schedule_reconnect(
+                                addr,
+                                generation,
+                                inner,
+                                status,
+                                incoming_tx,
+                                frame_callback,
+                                auto_reconnect,
+                            );
+                        }
+                        return;
+                    }
+                }
+            } else {
+                None
+            };
+            if !inner.borrow().is_current(generation, &addr) {
+                return;
+            }
+            connect_authenticated(
+                addr,
+                generation,
+                inner,
+                status,
+                incoming_tx,
+                frame_callback,
+                auto_reconnect,
+                reconnecting,
+                bearer,
+            );
+        };
+        let _ = Abortable::new(attempt, registration).await;
+    });
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn connect_authenticated(
+    addr: String,
+    generation: u64,
+    inner: SharedInner,
+    status: Cell<SocketConnectionStatus, CellMutable>,
+    incoming_tx: flume::Sender<WsFrame>,
+    frame_callback: SharedCallback,
+    auto_reconnect: bool,
+    reconnecting: bool,
+    bearer: Option<String>,
+) {
+    if !inner.borrow().is_current(generation, &addr) {
+        return;
+    }
+    status.set(if reconnecting {
+        SocketConnectionStatus::Reconnecting(addr.clone())
+    } else {
+        SocketConnectionStatus::Connecting(addr.clone())
+    });
     info!("WasmSocket: connecting to {addr}");
 
-    let ws = match WebSocket::new(&addr) {
+    let socket = bearer.map_or_else(
+        || WebSocket::new(&addr),
+        |bearer| {
+            let protocols = js_sys::Array::new();
+            protocols.push(&wasm_bindgen::JsValue::from_str("myko"));
+            protocols.push(&wasm_bindgen::JsValue::from_str(&format!(
+                "myko.bearer.{}",
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bearer)
+            )));
+            WebSocket::new_with_str_sequence(&addr, protocols.as_ref())
+        },
+    );
+    let ws = match socket {
         Ok(ws) => ws,
-        Err(e) => {
-            error!("WasmSocket: failed to create WebSocket: {e:?}");
+        Err(_) => {
+            error!("WasmSocket: failed to create WebSocket");
             if inner.borrow().is_current(generation, &addr) {
                 status.set(SocketConnectionStatus::Disconnected);
                 schedule_reconnect(
@@ -453,6 +561,8 @@ mod tests {
             retired_reconnects: Vec::new(),
             generation: 4,
             intended_addr: Some("ws://new".into()),
+            credentials: None,
+            pending_auth: None,
         };
         assert!(inner.is_current(4, "ws://new"));
         assert!(!inner.is_current(3, "ws://new"));

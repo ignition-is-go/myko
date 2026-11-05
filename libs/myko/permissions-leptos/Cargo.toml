@@ -1,0 +1,31 @@
+[package]
+name = "myko-permissions-leptos"
+version = "6.11.6"
+edition = "2024"
+description = "Server-discovered permission components for Leptos"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
+
+[dependencies]
+leptos = { version = "0.8" }
+myko.workspace = true
+myko-leptos.workspace = true
+myko-permissions = { path = "../permissions", version = "6.11.6", default-features = false }
+serde.workspace = true
+uuid.workspace = true
+
+[features]
+default = []
+ci = []
+ssr = ["leptos/ssr"]
+demo = ["leptos/csr"]
+
+[[example]]
+name = "permissions-demo"
+path = "examples/demo/main.rs"
+required-features = ["demo"]

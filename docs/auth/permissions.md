@@ -1,0 +1,146 @@
+# Persisted permissions
+
+`myko-permissions` supplies permission entities, protected administration commands,
+and a local `ScopePolicy`. Apps can use it with any `Authenticator`, including
+`myko-auth0`, or keep their own policy implementation.
+
+## Connect an app
+
+Create the policy before the server, then attach it after server initialization.
+The fallible hook aborts startup if permission storage cannot be loaded.
+
+```rust,ignore
+use std::sync::Arc;
+use myko_auth::{MykoAuthProvider, ScopedAuthorizer};
+use myko_permissions::{CredentialScopeMode, FilePermissionStorage, Permissions};
+use myko_server::MykoServer;
+
+let permissions = Arc::new(Permissions::new(
+    Arc::new(FilePermissionStorage::new("/var/lib/app/permissions/policy.jsonl")),
+    CredentialScopeMode::LocalGrants,
+));
+let provider = Arc::new(MykoAuthProvider::new(
+    authenticator,
+    Arc::new(ScopedAuthorizer::new(permissions.clone())),
+));
+let initialize = permissions.clone();
+let server = MykoServer::builder()
+    .with_auth_provider(provider)
+    .try_after_init(move |server| {
+        initialize.attach(Arc::new(server.ctx()))?;
+        Ok(())
+    })
+    .build();
+server.run().await?;
+```
+
+`authenticator` verifies credentials and supplies an issuer, subject, principal
+kind, and expiry. Users, services, and agents share the permission model. The
+standard policy rejects delegated identity chains; apps needing delegation must
+supply a policy that interprets its verified constraints.
+
+Choose the credential mode explicitly. `LocalGrants` uses the verified token for
+identity and uses local permissions for grants. `TokenScopes` additionally requires
+the verified token to contain each candidate scope used to grant access. A token
+cannot supply a local grant by itself.
+
+Authentication does not call Auth0 for every command. Authorization reads an
+in-memory snapshot. A background observer refreshes storage every 100 milliseconds;
+permission administration also loads the latest accepted revision before editing.
+A policy change invalidates existing sessions, so clients must reconnect.
+
+## Bootstrap and recover
+
+An empty store denies access. It never makes the first client an administrator.
+Run the host-only operator CLI before first startup, using the exact verified
+issuer, subject, and principal kind.
+
+```sh
+cargo run -p myko-permissions --bin myko-permissions -- bootstrap \
+  --store /var/lib/app/permissions/policy.jsonl \
+  --issuer https://tenant.auth0.com/ --subject 'auth0|operator-id' \
+  --kind user --operator deployment-admin --reason 'Initial administrator'
+```
+
+Use `recover` with the same options to restore a selected administrator in an
+initialized store. Recovery works without application credentials. It enables the
+selected principal, removes its memberships, direct role bindings, and direct
+overrides, then installs a full permission administration role. Repeated recovery
+reuses that recovery role and binding.
+
+Host access to the private journal is the recovery authority. The operator label
+is an audit label supplied by that operator, not a separately authenticated user.
+Keep this path available outside the app's normal authorization configuration.
+
+`show --store PATH` prints the accepted snapshot. `replace` accepts a
+`PermissionDocument` JSON file with `--document PATH --expected-revision N`, plus
+`--operator` and `--reason`. Replacement normally preserves an administrator.
+Only host-only replacement accepts `--allow-lockout` for deliberate lockout.
+Bootstrap, recovery, and replacement are library functions too. They are never
+registered as WebSocket or MCP commands.
+
+## Administer permissions
+
+The canonical model contains principals, groups, memberships, roles, role bindings,
+and overrides. Principals match verified issuer, subject, and user/service/agent
+kind. Bind roles to a principal or group. Rules hold a generated scope such as
+`Project:write` and an `Allow` or `Deny` effect.
+
+For one entity scope, principal overrides take precedence over group overrides,
+which take precedence over role rules. Deny wins ties within a tier. If the scope
+is unset, normal entity relationship inheritance applies. Thus `Project:write`
+can grant `Camera:write`, while an explicit camera rule overrides inheritance.
+These are operation permissions. They do not isolate Project A's rows from
+Project B's rows. A future row policy can use the authorization request context.
+
+Use `UpsertPermissionPrincipal`, `UpsertPermissionGroup`,
+`UpsertPermissionMembership`, `UpsertPermissionRole`,
+`UpsertPermissionRoleBinding`, and `UpsertPermissionOverride`. Each has a matching
+`RemovePermission…` command. Every command takes `expected_revision` and `reason`,
+plus its row or ID. `ApplyPermissionChanges` accepts a `changes` vector for an
+atomic edit involving several rows. Deletes do not cascade; remove references
+in the same batch.
+
+Each command requires its generated entity write or delete grant. Batch edits
+require authority write and delete, plus every affected entity grant. All edits
+are checked again against the latest policy, even for in-process command calls.
+The app does not maintain a second command-to-scope list.
+
+Ordinary edits must leave at least one enabled principal with effective read,
+write, and delete grants for every permission entity. This includes grants through
+groups, roles, inheritance, and overrides. The guard proves local permission
+reachability. It cannot prove that the corresponding external account still
+exists or can authenticate; host recovery handles that failure.
+
+Direct client SET/DEL events and generated deletion commands cannot mutate
+permission entities, even for administrators. Use the protected commands.
+A successful edit can invalidate the caller's session before its response is
+sent. Reconnect and inspect the revision and change ID before retrying an edit.
+
+## Persistence and reactive stores
+
+One `PermissionAuthority` snapshot is authoritative. The ordinary Myko entity
+stores are reactive read projections of its typed rows. A whole snapshot makes
+an administration edit and its last-administrator check one conditional commit.
+The snapshot records revision, change ID, actor, reason, mode, and full document.
+
+`PermissionStorage` requires an atomic, durable compare-and-swap. The supplied
+`FilePermissionStorage` uses a private append-only journal and operating-system
+file locks. Accepted writes synchronize the file and, on Unix, its directory.
+Use a local filesystem with working locks. Existing files must be private;
+symlinks, shared permissions, and hardlinks are rejected. Interrupted trailing
+records are discarded; corruption in committed records fails closed.
+
+The journal retains complete historical snapshots, so protect old permission
+information too. Loading scans its history. `history()` rejects more than 4096
+records; this limit does not cap journal growth. Each record is limited to 16 MiB.
+Plan a storage adapter or an operational retention strategy for large deployments.
+`MemoryPermissionStorage` is explicitly ephemeral and suits tests.
+
+This storage does not automatically use Myko's ordinary event persister or
+PostgreSQL configuration. A database adapter must implement a real atomic durable
+conditional commit. Merely enqueueing Myko events does not satisfy the contract.
+Storage failures deny authorization until a valid snapshot can be loaded again.
+
+See [Render a server's permissions in Leptos](leptos-permissions.md) for reusable
+components that discover entity scopes and permission records from the server.

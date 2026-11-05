@@ -1,0 +1,231 @@
+# Authentication and local authorization
+
+Myko accepts app-owned authentication and authorization through `MykoAuthProvider`.
+Authentication establishes an identity once per WebSocket connection or HTTP request.
+Authorization reads current app policy locally for each operation.
+
+## Provider composition
+
+`myko-auth` defines `Authenticator`, `Authorizer`, `AuthSession`, and the operation model.
+`myko-auth0` implements authentication and optional machine credential acquisition.
+Apps can use `myko-permissions` for persisted principals, groups, roles, and grants,
+or implement `ScopePolicy` using their own permission store.
+`ScopedAuthorizer` resolves generated operation scopes and inheritance before calling that policy.
+`Authorizer` remains available for apps that need a custom operation policy.
+See [Persisted permissions](permissions.md) for protected administration, startup,
+bootstrap, and host-only recovery. Custom policies retain ownership of their store.
+
+Compose the provider before starting a server.
+
+```rust,ignore
+let authentication = Arc::new(myko_auth0::Auth0Authenticator::new(
+    "https://tenant.auth0.com/",
+    "https://api.example.com/",
+)?);
+let authorization = Arc::new(myko_auth::ScopedAuthorizer::new(app_scope_policy));
+let provider = Arc::new(myko_auth::MykoAuthProvider::new(authentication, authorization));
+let server = myko_server::MykoServer::builder()
+    .with_auth_provider(provider)
+    .build();
+```
+
+An app that owns its listener uses `router::route_connection_with_auth`.
+Its `GatewayAccess::ReadOnly` ceiling applies even when the provider permits a mutation.
+Without a configured provider, existing trusted entry points retain their prior behavior.
+Expose only the authenticated entry points to untrusted clients.
+
+## Generated operation scopes
+
+Use `ScopedAuthorizer` when the app grants permissions by entity instead of matching command names.
+Myko generates `Entity:read`, `Entity:write`, and `Entity:delete` for each registered entity.
+Scope names preserve the reflected entity name, such as `Camera:write`.
+
+Generated queries, count reports, and get-by-ID reports require read permission.
+Generated setter and rename commands require write permission.
+Generated delete commands require delete permission.
+Graph connect and ensure commands require write permission for the edge entity.
+Graph synchronization requires both write and delete because it can remove omitted edges.
+Graph read operations require edge read permission and any returned concrete endpoint type's read permission.
+Traversal with concrete endpoint types requires read permission for both endpoint types.
+Polymorphic traversal without statically known endpoint types remains unmapped and is denied by `ScopedAuthorizer`.
+Direct client `SET` events require write permission and `DEL` events require delete permission.
+A policy can further restrict direct events through the original `AuthorizationRequest`.
+
+Wrap the app's scope policy before constructing the provider.
+
+```rust,ignore
+let authorization = Arc::new(myko_auth::ScopedAuthorizer::new(app_scope_policy));
+let provider = Arc::new(myko_auth::MykoAuthProvider::new(authentication, authorization));
+```
+
+The app implements `ScopePolicy::decision` using its local user, group, and role grants.
+The method receives the identity, an `EntityScope`, and the original request.
+Return `Allow` for an explicit grant, `Deny` for an explicit override, and `Unset` when no setting exists.
+Returning `Deny` for every missing entry prevents inheritance.
+The app must honor any credential and delegation limits as part of its policy.
+The adapter does not infer the meaning of OAuth scope strings.
+
+`belongs_to` and `owns_many` declarations generate the entity-type inheritance graph.
+A `Project:write` grant therefore applies to a child `Camera:write` requirement unless a more specific setting overrides it.
+Inheritance follows the same action only. Write never implies read or delete.
+An explicit camera setting wins over project defaults.
+The closest ancestor with a setting wins when the child is unset.
+If equally close parents conflict, denial wins.
+Unknown requirements and cycles without a grant deny access.
+`ensure_for` dependencies and arbitrary graph references do not establish permission inheritance.
+Optional and multiple ownership relationships participate by entity type.
+
+For example, an app's explicit grant table can contain these entries.
+
+| Scope | Setting | Effect |
+| --- | --- | --- |
+| `Project:write` | Allow | Supplies write permission to descendant entity types |
+| `Camera:write` | Unset | Inherits the project setting |
+| `Camera:delete` | Deny | Rejects camera delete operations |
+
+Changing `Camera:write` to `Deny` overrides the inherited write permission.
+Changing it to `Allow` grants the operation even when the parent has no operation grant.
+These are type-level operation settings. They do not grant access to a specific project instance.
+
+Custom commands and reports declare their requirements beside their definitions.
+Put the helper attribute below the enclosing Myko macro.
+
+```rust,ignore
+#[myko::myko_command]
+#[myko_scope(Camera, write)]
+pub struct CalibrateCamera {
+    pub id: CameraId,
+}
+```
+
+Multiple helper attributes require every declared scope.
+Queries and views always require read permission for their output entity type and can declare additional requirements.
+Unannotated custom commands and reports are denied by `ScopedAuthorizer`.
+Trusted handler code must declare all the authority its operation requires.
+The operation layer does not reauthorize every internal handler read or emitted mutation.
+
+Use `PermissionCatalog::registered().scopes()` to enumerate permissions for role configuration.
+Use `requirements(kind, operation)` and `parents(entity_type)` to inspect operation requirements and inheritance.
+The catalog comes from compiled macro registrations.
+Conflicting bindings fail closed rather than selecting one registration.
+MCP operation search includes `requiredScopes` for mapped operations.
+Discovery and execution resolve the same requirements.
+
+## Future row-level policy
+
+Operation permission is one check. Future row-level policy will add a separate mandatory resource check.
+The existing request retains verified identity and operation arguments for that layer.
+The entity relationship metadata remains available for resolving specific resource ancestry.
+
+This release does not distinguish cameras in Project A from cameras in Project B.
+A `Camera:read` operation grant permits the operation on that entity type.
+It does not filter query rows, apply project-instance boundaries, or enforce old and proposed ownership on writes.
+An operation-level child override must never bypass a future mandatory row-level boundary.
+Do not use type inheritance as a substitute for project-instance isolation.
+
+## Identity and authority
+
+A stable principal consists of issuer, subject, and kind.
+Kinds include users, services, and agents.
+The socket ID remains a separate, temporary routing identity.
+`RequestContext::auth` carries the verified session into commands, queries, views, reports, and child requests.
+External in-process MCP execution uses that same authority.
+
+The authenticator supplies verified credential scopes and delegation information.
+The local authorizer must enforce those limits together with current app grants.
+Myko cannot infer an app's resource scope rules from OAuth scope strings.
+Auth0 does not invent a delegation chain from an ordinary user token.
+An app that supports delegation must verify the chain and restrict every delegated grant.
+
+Groups can contain user and service principals.
+Roles can bundle permissions.
+The standard permission store binds a principal or group to an operation role.
+Custom policies can additionally interpret project or resource scope.
+These relationships can change without an Auth0 request.
+The synchronous `Authorizer::authorize` interface makes local evaluation explicit.
+
+## Enforcement
+
+Myko checks native operations before dispatch and commands again immediately before handler execution.
+MCP checks operations beneath the sandbox executor.
+MCP search and schema resources apply separate discovery decisions.
+Knowing an operation name never grants execution permission.
+`connection_status` includes the authenticated principal, session expiry, and credential scopes.
+It does not claim that credential scopes enumerate current app permissions.
+
+Native JSON and CBOR client events have a distinct `ClientEvent` authorization request.
+Myko sanitizes and normalizes the event before asking policy.
+A batch must pass every decision before any event in that batch reaches the store or journal.
+`Set` means upsert. It does not mean update-only.
+The event's source and ownership fields are untrusted input.
+Use type and resource constraints that remain valid through application.
+Use a command with application-level concurrency control when permission depends on mutable existing state or a create-versus-update distinction.
+Batch preflight is an authorization guarantee, not a new transactional store guarantee.
+Command results from executors require an explicit `CommandResult` decision.
+
+Operation admission does not filter rows.
+A caller-sensitive query must use its verified request identity to restrict results, or policy must reject the query.
+Authenticated query, view, and report caches are automatically partitioned by a server-generated session ID.
+This prevents a shared default cache from capturing another caller's authority.
+
+## Session lifetime
+
+Myko checks credential expiry, explicit revocation, and the authorizer's revision.
+Increment `ScopePolicy::revision`, or a custom `Authorizer::revision`, when a policy update can invalidate existing subscriptions.
+The revision must be monotonic and published with the changed policy.
+A changed revision invalidates the session permanently.
+Myko closes the connection and drops its subscriptions.
+The client reconnects to establish a new session against current policy.
+
+Idle connections notice invalidation within a 100 ms polling interval.
+Active delivery checks session validity after serialization and before sending.
+Queued commands recheck immediately before execution.
+Already executing handlers and bytes already sent cannot be undone.
+An Auth0-side revocation needs an app notification or credential expiry to reach an established local session.
+
+## Client credentials
+
+Native `MykoClient::set_credential_provider` obtains credentials before each connection attempt.
+A provider failure prevents the connection from opening without credentials.
+`set_bearer_token` accepts a token managed by the app.
+Changing the provider reconnects the transport. Configure it before setting the server address.
+Unsupported injected transports reject credential configuration.
+
+Native clients send a bearer authorization header.
+Browser clients offer public `myko` and an encoded credential subprotocol.
+The server selects only public `myko` and never echoes the credential.
+Use TLS and redact authorization and WebSocket protocol headers in proxy logs.
+Tokens never belong in a connection URL.
+
+With the `client-credentials` feature, `Auth0ClientCredentials` implements `CredentialProvider`.
+It exchanges the service's client credentials for an API access token, caches the token, and renews it before expiry.
+The secret goes only to the configured HTTPS issuer.
+Auth0 token verification uses cached signing keys and validates RS256, issuer, audience, subject, expiry, and optional not-before.
+JWT validation never runs as a network request for each command.
+
+The legacy stdio MCP adapter accepts `McpServer::with_credential_provider` for its remote Myko connection.
+Its local discovery uses compiled registrations and client filters.
+The protected remote gateway enforces execution permissions.
+Per-principal remote discovery uses the server-hosted MCP endpoint.
+Full OAuth authorization-server discovery and browser login UI are outside this provider integration.
+
+## Provider boundaries
+
+Authentication and local authorization are separate interfaces. An Auth0 verifier
+can therefore be shared without owning application policy. The session helper
+centralizes expiry, revocation, and cache identity. The optional
+`myko-permissions` crate supplies a standard local policy with app-selected storage.
+
+## Verification
+
+Run the complete focused suite.
+
+```sh
+cargo flux run verify-auth
+```
+
+The script uses serial Rust tests and runs scope, macro, graph, client, server, WASM, lint, and formatting checks through Flux.
+
+Auth0 tests use signed fixtures and local HTTP servers.
+They do not require tenant credentials.
+The WASM check compiles browser transport code. It does not prove browser runtime behavior.

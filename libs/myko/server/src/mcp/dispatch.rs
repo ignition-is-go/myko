@@ -117,6 +117,12 @@ pub async fn handle_request(
     executor: &Executor,
     info: &ServerInfo,
 ) -> Option<McpResponse> {
+    if let Err(message) = executor.check() {
+        return Some(McpResponse::error(
+            request.id,
+            McpError::invalid_params(message),
+        ));
+    }
     match request.method.as_str() {
         "initialize" => Some(handle_initialize(request.id, info)),
         "notifications/initialized" | "notifications/cancelled" => None,
@@ -124,8 +130,13 @@ pub async fn handle_request(
         "tools/call" => {
             Some(handle_tools_call(request.id, request.params, filter, executor, info).await)
         }
-        "resources/list" => Some(handle_resources_list(request.id, filter)),
-        "resources/read" => Some(handle_resources_read(request.id, request.params, filter)),
+        "resources/list" => Some(handle_resources_list(request.id, filter, executor)),
+        "resources/read" => Some(handle_resources_read(
+            request.id,
+            request.params,
+            filter,
+            executor,
+        )),
         _ => Some(McpResponse::error(
             request.id,
             McpError::method_not_found(&request.method),
@@ -321,7 +332,12 @@ async fn execute_tool(
 ) -> Result<Value, String> {
     match tool_name {
         CONNECTION_STATUS_TOOL => Ok(executor.connection_status(info)),
-        SEARCH_TOOL => Ok(handle_search(&args, filter, &info.operation_index)),
+        SEARCH_TOOL => Ok(handle_search(
+            &args,
+            filter,
+            &info.operation_index,
+            executor,
+        )),
         EXECUTE_TOOL => handle_execute(&args, executor, filter).await,
         // Most commonly hit by a client with a cached pre-Code-Mode tool
         // name (e.g. `report_ServerStats`) from before this server
@@ -334,7 +350,12 @@ async fn execute_tool(
     }
 }
 
-fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]) -> Value {
+fn handle_search(
+    args: &Value,
+    filter: &ClientFilters,
+    index: &[OperationSchema],
+    executor: &Executor,
+) -> Value {
     let query = args
         .get("query")
         .and_then(|v| v.as_str())
@@ -344,6 +365,7 @@ fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]
     let operations: Vec<&OperationSchema> = index
         .iter()
         .filter(|op| filter.tool_visible(&format!("{}_{}", op.kind, op.id)))
+        .filter(|op| executor.can_discover(&op.kind, &op.id))
         .filter(|op| kind.is_none_or(|k| op.kind == k))
         .filter(|op| {
             query.as_deref().is_none_or(|q| {
@@ -378,12 +400,12 @@ async fn handle_execute(
     sandbox::execute(code, Arc::new(executor.clone()), filter.clone()).await
 }
 
-fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_list(id: Value, filter: &ClientFilters, executor: &Executor) -> McpResponse {
     let mut resources: Vec<McpResource> = Vec::new();
 
     for reg in inventory::iter::<QueryRegistration> {
         let tool_name = format!("query_{}", reg.query_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("query", reg.query_id) {
             continue;
         }
         resources.push(McpResource {
@@ -396,7 +418,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ViewRegistration> {
         let tool_name = format!("view_{}", reg.view_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("view", reg.view_id) {
             continue;
         }
         resources.push(McpResource {
@@ -409,7 +431,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ReportRegistration> {
         let tool_name = format!("report_{}", reg.report_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("report", reg.report_id) {
             continue;
         }
         resources.push(McpResource {
@@ -422,7 +444,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<CommandRegistration> {
         let tool_name = format!("command_{}", reg.command_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("command", reg.command_id) {
             continue;
         }
         resources.push(McpResource {
@@ -436,7 +458,12 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     McpResponse::success(id, json!({ "resources": resources }))
 }
 
-fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_read(
+    id: Value,
+    params: Option<Value>,
+    filter: &ClientFilters,
+    executor: &Executor,
+) -> McpResponse {
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
     };
@@ -448,7 +475,7 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
         && let Some((schema_type, schema_id)) = path.split_once('/')
     {
         let tool_name = format!("{schema_type}:{schema_id}");
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover(schema_type, schema_id) {
             return McpResponse::error(
                 id,
                 McpError {
@@ -715,6 +742,7 @@ mod tests {
         ServerInfo {
             operation_index: Arc::new(vec![
                 OperationSchema {
+                    required_scopes: None,
                     id: "GetAllServers".to_string(),
                     kind: "query".to_string(),
                     description: Some("All servers".to_string()),
@@ -722,6 +750,7 @@ mod tests {
                     output_type: "Server[]".to_string(),
                 },
                 OperationSchema {
+                    required_scopes: None,
                     id: "DeleteServer".to_string(),
                     kind: "command".to_string(),
                     description: Some("Delete a server".to_string()),
