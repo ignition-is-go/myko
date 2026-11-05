@@ -80,7 +80,6 @@ fn command_allowed(value: &PermissionStructure, name: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PermissionEditError {
     NotEditable(PermissionEditorStatus),
-    ReasonRequired,
     UnknownScope,
     MissingPrincipal,
 }
@@ -88,7 +87,6 @@ impl std::fmt::Display for PermissionEditError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&match self {
             Self::NotEditable(status) => status.message(),
-            Self::ReasonRequired => "A reason is required.".into(),
             Self::UnknownScope => {
                 "This scope is not advertised. Obsolete rules can only be removed.".into()
             }
@@ -97,6 +95,14 @@ impl std::fmt::Display for PermissionEditError {
     }
 }
 impl std::error::Error for PermissionEditError {}
+
+fn audit_reason(context: String, fallback: &str) -> String {
+    if context.trim().is_empty() {
+        fallback.into()
+    } else {
+        context
+    }
+}
 
 #[derive(Clone, Debug)]
 struct RoleDraft {
@@ -111,6 +117,7 @@ pub struct RoleEditorController {
     structure: Signal<Option<PermissionStructure>>,
     role_id: Signal<PermissionRoleId>,
     draft: RwSignal<Option<RoleDraft>>,
+    /// Optional app-supplied audit context. Blank values use an action description.
     pub reason: RwSignal<String>,
     reload_epoch: RwSignal<u64>,
     on_save: Option<Callback<RoleEdit>>,
@@ -289,16 +296,13 @@ impl RoleEditorController {
     }
     #[must_use]
     pub fn can_submit(self) -> bool {
-        self.status().is_editable() && !self.reason.get().trim().is_empty()
+        self.status().is_editable()
     }
     /// # Errors
-    /// Rechecks revision, current role, capability, and reason before invoking the callback.
+    /// Rechecks revision, current role, and capability before invoking the callback.
     pub fn submit(self) -> Result<(), PermissionEditError> {
         self.require_editable()?;
-        let reason = self.reason.get_untracked();
-        if reason.trim().is_empty() {
-            return Err(PermissionEditError::ReasonRequired);
-        }
+        let reason = audit_reason(self.reason.get_untracked(), "Update role permissions");
         if let (Some(draft), Some(callback)) = (self.draft.get_untracked(), self.on_save) {
             callback.run(RoleEdit {
                 expected_revision: draft.revision,
@@ -327,6 +331,7 @@ pub struct GroupMembershipController {
     structure: Signal<Option<PermissionStructure>>,
     group_id: Signal<PermissionGroupId>,
     baseline: RwSignal<Option<GroupBaseline>>,
+    /// Optional app-supplied audit context. Blank values use an action description.
     pub reason: RwSignal<String>,
     reload_epoch: RwSignal<u64>,
     on_save: Option<Callback<MembershipEdit>>,
@@ -460,7 +465,7 @@ impl GroupMembershipController {
         let _ = self.status();
     }
     /// # Errors
-    /// Rechecks the selected group, principal, revision, operation capability, and reason.
+    /// Rechecks the selected group, principal, revision, and operation capability.
     pub fn set_member(
         self,
         principal_id: &PermissionPrincipalId,
@@ -470,10 +475,14 @@ impl GroupMembershipController {
         if !status.is_editable() {
             return Err(PermissionEditError::NotEditable(status));
         }
-        let reason = self.reason.get_untracked();
-        if reason.trim().is_empty() {
-            return Err(PermissionEditError::ReasonRequired);
-        }
+        let reason = audit_reason(
+            self.reason.get_untracked(),
+            if member {
+                "Add group membership"
+            } else {
+                "Remove group membership"
+            },
+        );
         let row = self
             .rows()
             .into_iter()

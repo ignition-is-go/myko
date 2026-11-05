@@ -95,7 +95,7 @@ fn Demo() -> impl IntoView {
                 }
                 value.revision = value.revision.map(|revision| revision.saturating_add(1));
                 message.set(format!(
-                    "Role saved in disposable memory. Revision {}. Reason: {}",
+                    "Role saved in disposable memory. Revision {}. {}",
                     value.revision.unwrap_or(0),
                     edit.reason
                 ));
@@ -117,7 +117,7 @@ fn Demo() -> impl IntoView {
                 }
                 value.revision = value.revision.map(|revision| revision.saturating_add(1));
                 message.set(format!(
-                    "Membership saved in disposable memory. Revision {}. Reason: {}",
+                    "Membership saved in disposable memory. Revision {}. {}",
                     value.revision.unwrap_or(0),
                     edit.reason
                 ));

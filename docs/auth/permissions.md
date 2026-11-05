@@ -97,8 +97,9 @@ Use `UpsertPermissionPrincipal`, `UpsertPermissionGroup`,
 `UpsertPermissionMembership`, `UpsertPermissionRole`,
 `UpsertPermissionRoleBinding`, and `UpsertPermissionOverride`. Each has a matching
 `RemovePermission…` command. Every command takes `expected_revision` and `reason`,
-plus its row or ID. `ApplyPermissionChanges` accepts a `changes` vector for an
-atomic edit involving several rows. Deletes do not cascade; remove references
+plus its row or ID. The default Leptos editors supply an audit description
+automatically without asking users to type one. `ApplyPermissionChanges` accepts a
+`changes` vector for an atomic edit involving several rows. Deletes do not cascade; remove references
 in the same batch.
 
 Each command requires its generated entity write or delete grant. Batch edits

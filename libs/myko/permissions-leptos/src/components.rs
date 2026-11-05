@@ -96,7 +96,6 @@ pub fn RoleEditor(
                         view! { <p><code>{rule.scope}</code>" "{format!("{:?}", rule.effect)}<button type="button" disabled=move || !editor.status().is_editable() on:click=move |_| { let _ = editor.remove_obsolete(&scope); }>"Remove obsolete rule"</button></p> }
                     }).collect_view()}
                 </details>
-                <label>"Reason for role change"<input aria-label="Reason for role change" prop:value=move || editor.reason.get() on:input=move |event| editor.reason.set(event_target_value(&event)) disabled=move || !editor.status().is_editable()/></label>
                 <button type="button" disabled=move || !editor.can_submit() on:click=move |_| { let _ = editor.submit(); }>"Save role"</button>
                 <button type="button" on:click=move |_| editor.reload()>"Reload role draft"</button>
                 <p role="status">{move || editor.status().message()}</p>
@@ -133,12 +132,11 @@ pub fn GroupMembershipEditor(
         }
         view! {
             <section class="myko-membership-editor"><h2>{editor.group_name().map_or_else(String::new, |name| format!("Group: {name}"))}</h2>
-                <label>"Reason for membership change"<input aria-label="Reason for membership change" prop:value=move || editor.reason.get() on:input=move |event| editor.reason.set(event_target_value(&event))/></label>
                 <ul>{editor.rows().into_iter().map(|row| {
                     let is_member = row.membership.is_some();
                     let principal_id = row.principal.id.clone();
                     view! { <li>{row.principal.name}<button type="button" aria-label=format!("{} {}", if is_member { "Remove" } else { "Add" }, row.principal.subject)
-                        disabled=move || !row.editable || !editor.status().is_editable() || editor.reason.get().trim().is_empty()
+                        disabled=move || !row.editable || !editor.status().is_editable()
                         on:click=move |_| { let _ = editor.set_member(&principal_id, !is_member); }>{if is_member { "Remove member" } else { "Add member" }}</button></li> }
                 }).collect_view()}</ul>
                 <button type="button" on:click=move |_| editor.reload()>"Reload membership draft"</button>

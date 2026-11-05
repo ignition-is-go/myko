@@ -152,3 +152,26 @@ fn defaults_render_one_entity_row_with_three_distinct_action_cells() {
         assert!(html.contains("Why ForeignCamera:write?"));
     });
 }
+
+#[test]
+fn default_editors_do_not_render_reason_inputs_or_require_them_to_save() {
+    Owner::new().with(|| {
+        let mut value = fixture();
+        let role = PermissionRole { id: PermissionRoleId::from("operator"), authority_id: PermissionAuthorityId::from("permissions"), name: "Operators".into(), enabled: true, rules: vec![] };
+        if let Some(document) = &mut value.document {
+            document.roles.push(role.clone());
+            document.groups.push(PermissionGroup { id: PermissionGroupId::from("operators"), authority_id: PermissionAuthorityId::from("permissions"), name: "Operators".into(), enabled: true });
+            document.principals.push(PermissionPrincipal { id: PermissionPrincipalId::from("alice"), authority_id: PermissionAuthorityId::from("permissions"), issuer: "fixture".into(), subject: "alice".into(), kind: PermissionPrincipalKind::User, enabled: true, name: "Alice".into() });
+        }
+        value.commands = ["UpsertPermissionRole", "UpsertPermissionMembership"].map(|operation| PermissionCommandCapability { operation: operation.into(), allowed: true }).to_vec();
+        let role_html = view! { <RoleEditor structure=Signal::stored(Some(value.clone())) role on_save=Callback::new(|_| {})/> }.to_html();
+        assert!(!role_html.contains("Reason for"));
+        assert!(!role_html.contains("<input"));
+        assert!(role_html.contains("<button type=\"button\">Save role</button>"));
+        let membership_html = view! { <GroupMembershipEditor structure=Signal::stored(Some(value)) group_id=PermissionGroupId::from("operators") on_save=Callback::new(|_| {})/> }.to_html();
+        assert!(!membership_html.contains("Reason for"));
+        assert!(!membership_html.contains("<input"));
+        assert!(!membership_html.contains("disabled"));
+        assert!(membership_html.contains("Add member"));
+    });
+}

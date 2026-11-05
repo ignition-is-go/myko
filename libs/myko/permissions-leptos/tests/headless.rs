@@ -4,8 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use leptos::prelude::*;
 use myko_permissions_leptos::{
-    MembershipEdit, PermissionEditError, PermissionEditorStatus, RoleEdit, RoleRuleChoice,
-    inspection_matrix,
+    MembershipEdit, PermissionEditorStatus, RoleEdit, RoleRuleChoice, inspection_matrix,
     myko_permissions::{
         PERMISSION_STRUCTURE_VERSION, PermissionAuthorityId, PermissionCommandCapability,
         PermissionDocument, PermissionEffect, PermissionEntityDescription, PermissionGroup,
@@ -221,7 +220,8 @@ fn hidden_policy_and_changed_selection_cannot_expose_or_submit_previous_role() {
             Some(PermissionRoleId::from("role-b"))
         );
         assert!(editor.reason.get_untracked().is_empty());
-        assert_eq!(editor.submit(), Err(PermissionEditError::ReasonRequired));
+        assert!(editor.can_submit());
+        assert_eq!(editor.submit(), Ok(()));
         source.update(|value| {
             if let Some(value) = value {
                 value.status = PermissionInspectionStatus::Denied;
@@ -357,5 +357,103 @@ fn reload_invalidates_derived_status_without_another_server_update() {
         group.reload();
         assert_eq!(role_status.get(), PermissionEditorStatus::Ready);
         assert_eq!(group_status.get(), PermissionEditorStatus::Ready);
+    });
+}
+
+#[test]
+fn role_submission_generates_audit_context_when_optional_context_is_blank() {
+    Owner::new().with(|| {
+        let edits = Arc::new(Mutex::new(Vec::<RoleEdit>::new()));
+        let captured = edits.clone();
+        let editor = use_role_editor(
+            Signal::stored(Some(snapshot())),
+            Signal::stored(PermissionRoleId::from("role-a")),
+            Some(Callback::new(move |edit| {
+                captured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(edit);
+            })),
+        );
+        assert!(editor.can_submit());
+        assert_eq!(editor.submit(), Ok(()));
+        editor.reason.set(" \n\t ".into());
+        assert!(editor.can_submit());
+        assert_eq!(editor.submit(), Ok(()));
+        editor.reason.set("Application workflow approval".into());
+        assert_eq!(editor.submit(), Ok(()));
+        let edits = edits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            edits
+                .iter()
+                .map(|edit| edit.reason.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Update role permissions",
+                "Update role permissions",
+                "Application workflow approval"
+            ]
+        );
+        assert!(edits.iter().all(|edit| edit.expected_revision == 5));
+        drop(edits);
+    });
+}
+
+#[test]
+fn membership_submission_generates_action_specific_audit_context() {
+    Owner::new().with(|| {
+        let mut value = snapshot();
+        for command in &mut value.commands {
+            if command.operation == "RemovePermissionMembership" {
+                command.allowed = true;
+            }
+        }
+        let edits = Arc::new(Mutex::new(Vec::<MembershipEdit>::new()));
+        let captured = edits.clone();
+        let editor = use_group_membership_editor(
+            Signal::stored(Some(value)),
+            Signal::stored(PermissionGroupId::from("group-a")),
+            Some(Callback::new(move |edit| {
+                captured
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(edit);
+            })),
+        );
+        assert_eq!(
+            editor.set_member(&PermissionPrincipalId::from("bob"), true),
+            Ok(())
+        );
+        editor.reason.set(" \t ".into());
+        assert_eq!(
+            editor.set_member(&PermissionPrincipalId::from("alice"), false),
+            Ok(())
+        );
+        editor.reason.set("Application onboarding".into());
+        assert_eq!(
+            editor.set_member(&PermissionPrincipalId::from("bob"), true),
+            Ok(())
+        );
+        let edits = edits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            edits
+                .iter()
+                .map(|edit| edit.reason.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Add group membership",
+                "Remove group membership",
+                "Application onboarding"
+            ]
+        );
+        assert_eq!(
+            edits.iter().map(|edit| edit.member).collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        drop(edits);
     });
 }

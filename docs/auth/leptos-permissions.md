@@ -79,15 +79,12 @@ let editor = use_role_editor(
 ```
 
 The controller's `rows()`, `role()`, and `rule(scope)` methods expose the draft.
-Bind your own controls to `set_rule`, `remove_obsolete`, and `reason`. Your app
-chooses every element and class, including the save button.
+Bind your own controls to `set_rule` and `remove_obsolete`. Your app chooses every
+element and class, including the save button. No reason input is required.
 
 ```rust,ignore
 let error = RwSignal::new(None::<String>);
 view! {
-    <input class="app-audit-reason" aria-label="Reason for permission change"
-        prop:value=move || editor.reason.get()
-        on:input=move |event| editor.reason.set(event_target_value(&event))/>
     <button class="app-primary-button"
         disabled=move || !editor.can_submit()
         on:click=move |_| error.set(editor.submit().err().map(|value| value.to_string()))>
@@ -97,9 +94,11 @@ view! {
 }
 ```
 
-The controller checks the current revision, command capability, target, and audit
-reason before calling `on_save`. If the policy revision changes, reload the editor
-before submitting again. Denied, disconnected, unsupported, and deleted-target
+The controller checks the current revision, command capability, and target before
+calling `on_save`. It supplies an audit description automatically. Apps can set
+`editor.reason` programmatically to add context, but a blank value uses the default
+description. If the policy revision changes, reload the editor before submitting
+again. Denied, disconnected, unsupported, and deleted-target
 states block edits.
 
 The default `PermissionExplorer` and `RoleEditor` arrange entity rows in an
@@ -155,7 +154,8 @@ participate in the effective result.
 
 Membership edits change which groups contribute rules to a principal. Both role
 and membership edits use the existing protected administration commands with an
-expected policy revision and an audit reason. The server rechecks authorization,
+expected policy revision and an automatically supplied audit description. Users
+do not need to explain each edit. The server rechecks authorization,
 references, and the last effective administrator before committing.
 
 A stale edit fails instead of overwriting a newer policy. Refresh the structure
