@@ -166,3 +166,6 @@ root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "
 
 [tasks.test-auth-client-reconnect]
 root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "autosocket", "--lib", "native::tests::reconnect_obtains_credentials_before_each_authenticated_upgrade", "--", "--exact"]
+
+[tasks.check-permissions-ui-bridge]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-leptos", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]

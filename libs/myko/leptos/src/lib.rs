@@ -409,12 +409,8 @@ mod subscription_lifetime_tests {
             current.set(next_token.clone());
             assert_eq!(result.get_untracked(), None);
             let next = Cell::new(Some(Ok("new principal".to_string())));
-            let _next_guard = result_cell_subscription(
-                &next.clone().lock(),
-                write,
-                current.read_only(),
-                next_token,
-            );
+            let _next_guard =
+                result_cell_subscription(&next.lock(), write, current.read_only(), next_token);
             first.set(Some(Err("old denial".into())));
             assert_eq!(result.get_untracked(), Some(Ok("new principal".into())));
             first.set(Some(Ok("old principal".into())));
