@@ -17,4 +17,7 @@ pub use controllers::{
     GroupMembershipController, MembershipEditorRow, PermissionEditError, PermissionEditorStatus,
     RoleEditorController, use_group_membership_editor, use_role_editor,
 };
-pub use matrix::{PermissionMatrixRow, inspection_matrix, permission_matrix};
+pub use matrix::{
+    PermissionMatrixRow, PermissionTreeRow, inspection_matrix, permission_matrix, permission_tree,
+    visible_permission_tree,
+};

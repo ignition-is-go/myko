@@ -7,7 +7,8 @@ use myko_permissions::{
 use crate::controllers::structure_status;
 use crate::{
     MembershipEdit, PermissionEditorStatus, RoleEdit, RoleEditorController, RoleRuleChoice,
-    inspection_matrix, permission_matrix, use_group_membership_editor, use_role_editor,
+    inspection_matrix, permission_matrix, permission_tree, use_group_membership_editor,
+    use_role_editor,
 };
 
 #[component]
@@ -22,11 +23,12 @@ pub fn PermissionExplorer(structure: Signal<Option<PermissionStructure>>) -> imp
                     <p>"Read, write, and delete apply to entity types. Individual rows are not isolated by these grants."</p>
                     <table><caption>"Generated scopes and inheritance"</caption>
                         <thead><tr><th>"Entity"</th><th>"Read"</th><th>"Write"</th><th>"Delete"</th></tr></thead>
-                        <tbody>{permission_matrix(&value.entities).into_iter().map(|entity| view! {
-                            <tr><th scope="row">{entity.entity_type}<small>{format!("Inherits from: {}", if entity.parents.is_empty() { "None".into() } else { entity.parents.join(", ") })}</small></th>
-                                <td>{entity.read.unwrap_or_else(|| "Not advertised".into())}</td>
-                                <td>{entity.write.unwrap_or_else(|| "Not advertised".into())}</td>
-                                <td>{entity.delete.unwrap_or_else(|| "Not advertised".into())}</td></tr>
+                        <tbody>{permission_tree(&permission_matrix(&value.entities)).into_iter().map(|item| view! {
+                            <tr data-depth=item.depth data-entity=item.row.entity_type.clone() data-display-parent=item.display_parent.clone().unwrap_or_default() data-has-children=item.has_children style=format!("--myko-permission-depth: {}", item.depth)>
+                                <th scope="row"><TreeEntityLabel entity=item.row.entity_type.clone() depth=item.depth parents=item.row.parents/></th>
+                                <td>{item.row.read.unwrap_or_else(|| "Not advertised".into())}</td>
+                                <td>{item.row.write.unwrap_or_else(|| "Not advertised".into())}</td>
+                                <td>{item.row.delete.unwrap_or_else(|| "Not advertised".into())}</td></tr>
                         }).collect_view()}</tbody>
                     </table>
                     <details><summary>"Associated operations"</summary>
@@ -55,6 +57,14 @@ pub fn PermissionExplorer(structure: Signal<Option<PermissionStructure>>) -> imp
 }
 
 #[component]
+fn TreeEntityLabel(entity: String, depth: usize, parents: Vec<String>) -> impl IntoView {
+    view! {
+        <span class="myko-permission-tree-label"><span aria-hidden="true">{if depth == 0 { "" } else { "↳ " }}</span>{entity}</span>
+        {(!parents.is_empty()).then(|| view! { <small>{format!("Inherits from: {}", parents.join(", "))}</small> })}
+    }
+}
+
+#[component]
 pub fn RoleEditor(
     structure: Signal<Option<PermissionStructure>>,
     role: PermissionRole,
@@ -71,11 +81,12 @@ pub fn RoleEditor(
                 <h2>{move || editor.role().map_or_else(String::new, |role| format!("Role: {}", role.name))}</h2>
                 <p>"Inherit removes this role's rule. Other roles, overrides, and parent scopes still affect effective access."</p>
                 <table><caption>"Role scope rules"</caption><thead><tr><th>"Entity"</th><th>"Read"</th><th>"Write"</th><th>"Delete"</th></tr></thead><tbody>
-                    {editor.rows().into_iter().map(|row| view! {
-                        <tr><th scope="row">{row.entity_type}<small>{format!("Inherits from: {}", if row.parents.is_empty() { "None".into() } else { row.parents.join(", ") })}</small></th>
-                            <td><RoleRuleCell editor scope=row.read/></td>
-                            <td><RoleRuleCell editor scope=row.write/></td>
-                            <td><RoleRuleCell editor scope=row.delete/></td>
+                    {permission_tree(&editor.rows()).into_iter().map(|item| view! {
+                        <tr data-depth=item.depth data-entity=item.row.entity_type.clone() data-display-parent=item.display_parent.clone().unwrap_or_default() data-has-children=item.has_children style=format!("--myko-permission-depth: {}", item.depth)>
+                            <th scope="row"><TreeEntityLabel entity=item.row.entity_type.clone() depth=item.depth parents=item.row.parents/></th>
+                            <td><RoleRuleCell editor scope=item.row.read/></td>
+                            <td><RoleRuleCell editor scope=item.row.write/></td>
+                            <td><RoleRuleCell editor scope=item.row.delete/></td>
                         </tr>
                     }).collect_view()}
                 </tbody></table>

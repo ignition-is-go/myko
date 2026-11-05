@@ -102,16 +102,41 @@ reason before calling `on_save`. If the policy revision changes, reload the edit
 before submitting again. Denied, disconnected, unsupported, and deleted-target
 states block edits.
 
-The default `PermissionExplorer`, `RoleEditor`, and `PrincipalAccessInspector`
-render entity rows with Read, Write, and Delete columns. They use these same
-headless APIs and ship no stylesheet. Apply app CSS to their semantic HTML, or
+The default `PermissionExplorer` and `RoleEditor` arrange entity rows in an
+expanded inheritance tree, with aligned Read, Write, and Delete columns.
+`PrincipalAccessInspector` keeps the same columns for reported decisions. These
+views use the headless APIs and ship no stylesheet. Apply app CSS to their semantic HTML, or
 replace their markup entirely. Obsolete role scopes remain available for cleanup
 without inventing additional action columns.
 
+## Arrange entities as a tree
+
+Call `permission_tree(&permission_matrix(&structure.entities))` for headless tree
+rows. Each row includes its depth, display parent, ancestors, and whether it has
+displayed children. Your app can choose indentation, branch labels, and optional
+collapse behavior. `visible_permission_tree(&rows, &collapsed_entities)` filters
+display descendants without changing permission values or editor drafts.
+
+For the default components, put indentation in your app stylesheet.
+
+```css
+.myko-permission-tree-label,
+tr[data-depth] th[scope="row"] small {
+  display: block;
+  padding-inline-start: calc(var(--myko-permission-depth, 0) * 1.25rem);
+}
+```
+
+The default tree shows each entity once. Multiple-parent entities retain all real
+parents in their metadata, even though one branch determines their display
+position. The display parent does not change authorization precedence. Cycles and
+unavailable parent entities do not hide rows or cause endless recursion.
+
 ## Inspect access
 
-The entity explorer shows one row per entity and separate Read, Write, and Delete
-columns, with associated operations and parent relationships. Relationships form a graph. An entity can
+The entity explorer groups each display parent above its displayed descendants
+and keeps separate
+Read, Write, and Delete columns, with associated operations and parent metadata. Relationships form a graph. An entity can
 have several parents, and a cycle must not cause recursive rendering to hang.
 
 The principal inspector shows server-computed local grant decisions. Explanations
