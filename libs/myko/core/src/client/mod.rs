@@ -3293,10 +3293,10 @@ mod report_result_tests {
     }
     fn wait_for(
         receiver: &mpsc::Receiver<Option<Result<bool, String>>>,
-        expected: &Option<Result<bool, String>>,
+        expected: &Result<bool, String>,
     ) -> Result<(), Box<dyn std::error::Error>> {
         loop {
-            if &receiver.recv_timeout(Duration::from_secs(2))? == expected {
+            if receiver.recv_timeout(Duration::from_secs(2))?.as_ref() == Some(expected) {
                 return Ok(());
             }
         }
@@ -3325,7 +3325,7 @@ mod report_result_tests {
             &client.inner,
             &WsFrame::Text(serde_json::to_string(&frame)?),
         );
-        wait_for(&received, &Some(Err("forbidden".into())))?;
+        wait_for(&received, &Err("forbidden".into()))?;
         let frame = MykoMessage::ReportResponse(crate::wire::ReportResponse {
             tx: tx.to_string(),
             response: Value::Bool(true),
@@ -3334,7 +3334,7 @@ mod report_result_tests {
             &client.inner,
             &WsFrame::Text(serde_json::to_string(&frame)?),
         );
-        wait_for(&received, &Some(Ok(true)))?;
+        wait_for(&received, &Ok(true))?;
         let frame = MykoMessage::ReportResponse(crate::wire::ReportResponse {
             tx: tx.to_string(),
             response: Value::Null,

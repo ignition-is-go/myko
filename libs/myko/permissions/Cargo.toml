@@ -38,3 +38,23 @@ ci = []
 name = "myko-permissions"
 path = "src/bin/myko-permissions.rs"
 required-features = ["server"]
+
+[[test]]
+name = "administration"
+required-features = ["server"]
+
+[[test]]
+name = "client_mutations"
+required-features = ["server"]
+
+[[test]]
+name = "initialization"
+required-features = ["server"]
+
+[[test]]
+name = "inspection"
+required-features = ["server"]
+
+[[test]]
+name = "operator_cli"
+required-features = ["server"]

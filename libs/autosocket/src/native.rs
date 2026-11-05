@@ -691,25 +691,23 @@ mod tests {
                 stream
                     .set_read_timeout(Some(Duration::from_secs(3)))
                     .unwrap();
-                let tx = headers_tx.clone();
+                let mut authorization = String::new();
                 let mut socket = tungstenite::accept_hdr(
                     stream,
                     #[allow(clippy::result_large_err)]
-                    move |request: &tungstenite::handshake::server::Request, response| {
-                        tx.send(
-                            request
-                                .headers()
-                                .get("Authorization")
-                                .and_then(|value| value.to_str().ok())
-                                .unwrap_or("")
-                                .to_owned(),
-                        )
-                        .unwrap();
+                    |request: &tungstenite::handshake::server::Request, response| {
+                        authorization = request
+                            .headers()
+                            .get("Authorization")
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or("")
+                            .to_owned();
                         Ok(response)
                     },
                 )
                 .unwrap();
                 socket.close(None).unwrap();
+                headers_tx.send(authorization).unwrap();
             }
         });
         let socket = AutoReconnectSocket::new();

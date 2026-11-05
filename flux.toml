@@ -111,7 +111,7 @@ root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "
 root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-auth", "-p", "myko-auth0", "-p", "myko-macros", "-p", "myko-server", "-p", "autosocket", "--all-features", "--all-targets", "--no-deps", "--", "-D", "warnings"]
 
 [tasks.check-auth-core]
-root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "--no-deps", "--", "-D", "warnings"]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
 
 [tasks.check-auth-format]
 root = ["cargo", "fmt", "--all", "--", "--check"]
@@ -160,3 +160,9 @@ root = ["sh", "scripts/build-permissions-ui-demo.sh"]
 
 [tasks.test-permissions-client-regression]
 root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "client::"]
+
+[tasks.check-permissions-client-contract]
+root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-permissions", "--all-targets", "--no-default-features"]
+
+[tasks.test-auth-client-reconnect]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "autosocket", "--lib", "native::tests::reconnect_obtains_credentials_before_each_authenticated_upgrade", "--", "--exact"]
