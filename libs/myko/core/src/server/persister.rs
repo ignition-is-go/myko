@@ -173,7 +173,7 @@ pub trait Persister: Send + Sync + 'static {
     fn persist(&self, event: MEvent) -> Result<(), PersistError>;
 
     /// Persist an event with optional operation metadata. Legacy implementations
-    /// keep receiving `MEvent` (including correlated tx), but discard the sidecar.
+    /// keep receiving unchanged `MEvent` values, but discard the sidecar.
     /// Override this and `supports_provenance` together to retain provenance.
     ///
     /// # Errors

@@ -2291,7 +2291,7 @@ impl MykoServerContext {
             (None, None) => {}
             (Some(persister), None) => persister.persist_record(self.event_record(build()))?,
             (None, Some(sink)) => {
-                let _ = sink.send(self.event_record(build()).event);
+                let _ = sink.send(build());
             }
             (Some(persister), Some(sink)) => {
                 let record = self.event_record(build());
@@ -2320,7 +2320,7 @@ impl MykoServerContext {
 
     fn send_dyn_to_sink(&self, build: impl FnOnce() -> MEvent) {
         if let Some(sink) = &self.event_sink {
-            let _ = sink.send(self.event_record(build()).event);
+            let _ = sink.send(build());
         }
     }
 
@@ -3836,5 +3836,31 @@ mod tests {
         }));
         assert!(result.is_err());
         assert_eq!(ctx.current_provenance(), None);
+    }
+
+    #[test]
+    fn operation_envelope_preserves_existing_event_transaction() {
+        let ctx = make_ctx();
+        let provenance = super::super::OperationProvenance {
+            operation_id: "server-operation".into(),
+            request_tx: "caller-request".into(),
+            unverified_client_id: None,
+            command_id: "test".into(),
+            lineage: Vec::new(),
+        };
+        let mut event = MEvent::set_from_value(
+            "ImmediateTestItem",
+            serde_json::json!({"id": "one", "value": 1}),
+            "source",
+        );
+        event.tx = "existing-event-transaction".into();
+        assert_eq!(ctx.event_record(event.clone()).event, event);
+        let _scope = ctx.operation_scope(provenance.clone());
+        let record = ctx.event_record(event.clone());
+        assert_eq!(
+            record.event, event,
+            "the durable sidecar must not rewrite any MEvent fields"
+        );
+        assert_eq!(record.provenance, Some(provenance));
     }
 }

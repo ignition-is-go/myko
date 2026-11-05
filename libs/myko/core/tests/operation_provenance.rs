@@ -149,7 +149,14 @@ fn command_emissions_batches_replacements_and_cascades_share_operation() -> anyh
     anyhow::ensure!(first.operation_id.as_ref() != "caller-chosen-tx");
     for record in &records {
         anyhow::ensure!(record.provenance.as_ref() == Some(first));
-        anyhow::ensure!(record.event.tx.as_ref() == "caller-chosen-tx");
+        anyhow::ensure!(
+            Uuid::parse_str(&record.event.tx).is_ok(),
+            "legacy per-event UUID remains intact"
+        );
+        anyhow::ensure!(
+            record.event.tx.as_ref() != first.request_tx.as_ref()
+                && record.event.tx != first.operation_id
+        );
         let json = serde_json::to_string(record)?;
         anyhow::ensure!(serde_json::from_str::<EventRecord>(&json)? == *record);
         anyhow::ensure!(
@@ -157,7 +164,10 @@ fn command_emissions_batches_replacements_and_cascades_share_operation() -> anyh
             "old readers ignore sidecar"
         );
     }
-    anyhow::ensure!(sink.try_iter().all(|e| e.tx.as_ref() == "caller-chosen-tx"));
+    anyhow::ensure!(
+        sink.try_iter()
+            .all(|e| Uuid::parse_str(&e.tx).is_ok() && e.tx.as_ref() != "caller-chosen-tx")
+    );
     drop(records);
     server.set(&parent())?;
     let records = recorder
@@ -272,7 +282,8 @@ fn serialized_dispatch_uses_context_identity_not_wire_transaction() -> anyhow::R
         .clone();
     anyhow::ensure!(records.len() == 1);
     anyhow::ensure!(records.first().is_some_and(|r| {
-        r.event.tx.as_ref() == "caller-chosen-tx"
+        Uuid::parse_str(&r.event.tx).is_ok()
+            && r.event.tx.as_ref() != "caller-chosen-tx"
             && r.provenance
                 .as_ref()
                 .is_some_and(|p| p.request_tx.as_ref() == "caller-chosen-tx")

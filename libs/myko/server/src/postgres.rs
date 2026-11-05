@@ -452,6 +452,25 @@ impl PostgresProducerHandle {
     }
 
     fn produce_record(&self, mut record: EventRecord) -> Result<(), PersistError> {
+        // Caller labels are untrusted. PostgreSQL JSONB cannot encode NUL,
+        // and retrying such a sidecar would poison an otherwise valid batch.
+        if record.provenance.as_ref().is_some_and(|provenance| {
+            provenance.operation_id.contains('\0')
+                || provenance.request_tx.contains('\0')
+                || provenance.command_id.contains('\0')
+                || provenance
+                    .unverified_client_id
+                    .as_ref()
+                    .is_some_and(|id| id.contains('\0'))
+                || provenance.lineage.iter().any(|entry| entry.contains('\0'))
+        }) {
+            let message = "operation provenance contains unsupported null bytes".to_string();
+            self.health.record_dropped(message.clone());
+            return Err(PersistError {
+                entity_type: record.event.item_type,
+                message,
+            });
+        }
         let event = &mut record.event;
         if event.source_id.is_none() {
             event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
@@ -1448,11 +1467,11 @@ mod provenance_tests {
             Ok(EventRecord {
                 event: serde_json::from_value(serde_json::json!({
                     "item": {"id": id}, "itemType": "TestEntity", "changeType": "SET",
-                    "createdAt": "2026-11-05T00:00:00Z", "tx": "untrusted-label", "sourceId": null
+                    "createdAt": "2026-11-05T00:00:00Z", "tx": "legacy-event-tx", "sourceId": null
                 }))?,
                 provenance: Some(OperationProvenance {
                     operation_id: "server-operation".into(),
-                    request_tx: "untrusted-label".into(),
+                    request_tx: "untrusted-request-label".into(),
                     unverified_client_id: Some("connection-only".into()),
                     command_id: "EditTree".into(),
                     lineage: vec!["client".into()],
@@ -1473,6 +1492,14 @@ mod provenance_tests {
             PostgresProducer::new(&config, Uuid::new_v4()).map_err(anyhow::Error::msg)?;
         let handle = producer.handle();
         anyhow::ensure!(handle.supports_provenance());
+        let mut invalid = make("invalid")?;
+        if let Some(provenance) = &mut invalid.provenance {
+            provenance.request_tx = "untrusted\0label".into();
+        }
+        anyhow::ensure!(
+            handle.persist_record(invalid).is_err(),
+            "invalid metadata must fail before enqueue, without poisoning subsequent writes"
+        );
         handle.persist_record(make("worker")?)?;
         let history = PostgresHistoryStore::new(config.clone()).map_err(anyhow::Error::msg)?;
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
@@ -1516,7 +1543,7 @@ mod provenance_tests {
         );
         let count: i64 = client
             .query_one(
-                "SELECT COUNT(*) FROM provenance_test_events WHERE tx = 'untrusted-label'",
+                "SELECT COUNT(*) FROM provenance_test_events WHERE tx = 'legacy-event-tx'",
                 &[],
             )?
             .get(0);

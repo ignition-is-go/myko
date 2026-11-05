@@ -84,11 +84,8 @@ impl MykoServerContext {
         })
     }
 
-    pub(crate) fn event_record(&self, mut event: MEvent) -> EventRecord {
+    pub(crate) fn event_record(&self, event: MEvent) -> EventRecord {
         let provenance = self.current_provenance();
-        if let Some(provenance) = &provenance {
-            event.tx = provenance.request_tx.clone();
-        }
         EventRecord { event, provenance }
     }
 }
