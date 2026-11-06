@@ -116,6 +116,21 @@ pub trait Authenticator: Send + Sync + 'static {
         &self,
         credentials: Credentials,
     ) -> BoxFuture<'_, Result<AuthenticatedIdentity, AuthError>>;
+
+    /// Recheck local credential authority for an admitted identity.
+    ///
+    /// Stateless authenticators can rely on the session's expiry checks. Stateful
+    /// authenticators use this hook for session-specific logout or revocation.
+    /// This runs repeatedly on transport hot paths. It must be fast, idempotent,
+    /// and local, with no network I/O.
+    ///
+    /// # Errors
+    /// Returns an error when the identity's credential is no longer valid.
+    /// `Revoked` permanently invalidates the session. Other errors deny the
+    /// current check; `Unavailable` can recover when local state is available again.
+    fn validate_identity(&self, _identity: &AuthenticatedIdentity) -> Result<(), AuthError> {
+        Ok(())
+    }
 }
 
 /// Decisions read current app state locally. Implementations must enforce credential
@@ -150,7 +165,11 @@ impl MykoAuthProvider {
     /// Returns an error when credentials are invalid, expired, or verification is unavailable.
     pub async fn authenticate(&self, credentials: Credentials) -> Result<AuthSession, AuthError> {
         let identity = self.authenticator.authenticate(credentials).await?;
-        let session = AuthSession::new(identity, self.authorizer.clone());
+        let session = AuthSession::from_identity(
+            identity,
+            self.authorizer.clone(),
+            Some(self.authenticator.clone()),
+        );
         session.check()?;
         Ok(session)
     }
@@ -164,6 +183,7 @@ struct SessionInner {
     authorizer: Arc<dyn Authorizer>,
     revision: u64,
     revoked: AtomicBool,
+    authenticator: Option<Arc<dyn Authenticator>>,
 }
 impl fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -174,7 +194,17 @@ impl fmt::Debug for AuthSession {
     }
 }
 impl AuthSession {
+    /// Creates a session from a trusted identity without authenticator liveness checks.
+    /// Use `MykoAuthProvider::authenticate` to retain the credential authority.
     pub fn new(identity: AuthenticatedIdentity, authorizer: Arc<dyn Authorizer>) -> Self {
+        Self::from_identity(identity, authorizer, None)
+    }
+
+    fn from_identity(
+        identity: AuthenticatedIdentity,
+        authorizer: Arc<dyn Authorizer>,
+        authenticator: Option<Arc<dyn Authenticator>>,
+    ) -> Self {
         let revision = authorizer.revision();
         Self(Arc::new(SessionInner {
             id: uuid::Uuid::new_v4().to_string(),
@@ -182,6 +212,7 @@ impl AuthSession {
             authorizer,
             revision,
             revoked: AtomicBool::new(false),
+            authenticator,
         }))
     }
     #[must_use]
@@ -205,6 +236,14 @@ impl AuthSession {
         }
         if SystemTime::now() >= self.0.identity.expires_at {
             return Err(AuthError::Expired);
+        }
+        if let Some(authenticator) = &self.0.authenticator
+            && let Err(error) = authenticator.validate_identity(&self.0.identity)
+        {
+            if error == AuthError::Revoked {
+                self.revoke();
+            }
+            return Err(error);
         }
         Ok(())
     }

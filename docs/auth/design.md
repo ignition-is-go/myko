@@ -171,6 +171,17 @@ This prevents a shared default cache from capturing another caller's authority.
 ## Session lifetime
 
 Myko checks credential expiry, explicit revocation, and the authorizer's revision.
+Provider-created sessions also call `Authenticator::validate_identity` with the admitted identity.
+The default implementation accepts it, so stateless authenticators need no changes.
+Stateful authenticators can check a local session store to detect logout for one credential,
+including when another credential belongs to the same principal.
+This synchronous hook must not perform network I/O or retain the bearer token in identity claims.
+Return `AuthError::Revoked` to invalidate that session permanently.
+Other errors deny the current check; `Unavailable` permits later checks to recover.
+Transports close invalid sessions, so a client may still need to reconnect after an outage.
+Use `MykoAuthProvider::authenticate` to retain this hook.
+`AuthSession::new` accepts an already trusted identity without an authenticator liveness check.
+
 Increment `ScopePolicy::revision`, or a custom `Authorizer::revision`, when a policy update can invalidate existing subscriptions.
 The revision must be monotonic and published with the changed policy.
 A changed revision invalidates the session permanently.
