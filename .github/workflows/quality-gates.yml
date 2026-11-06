@@ -20,6 +20,8 @@ jobs:
       group: ci-untrusted
       labels: [self-hosted, Linux, X64, ram-ge-16g, disk-ge-100g]
     timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "4"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
