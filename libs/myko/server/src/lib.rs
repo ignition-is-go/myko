@@ -89,6 +89,7 @@ pub struct MykoServerConfig {
 /// Builder for creating a `MykoServer`.
 #[derive(Default)]
 pub struct MykoServerBuilder {
+    auth_provider: Option<Arc<myko_auth::MykoAuthProvider>>,
     bind_addr: Option<SocketAddr>,
     websocket_path: Option<String>,
     mcp_path: Option<String>,
@@ -109,13 +110,25 @@ pub struct MykoServerBuilder {
     server_info: Option<mcp::dispatch::ServerInfo>,
 }
 
-type AfterInitCallback = Box<dyn FnOnce(&MykoServer) + Send>;
+type AfterInitCallback =
+    Box<dyn FnOnce(&MykoServer) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send>;
 
 impl MykoServerBuilder {
     /// Create a new server builder.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Apply app-owned authentication and authorization to every external transport.
+    /// Accepts a provider or an optional provider for conditional configuration.
+    #[must_use]
+    pub fn with_auth_provider(
+        mut self,
+        provider: impl Into<Option<Arc<myko_auth::MykoAuthProvider>>>,
+    ) -> Self {
+        self.auth_provider = provider.into();
+        self
     }
 
     /// Set the WebSocket bind address.
@@ -220,7 +233,22 @@ impl MykoServerBuilder {
     /// that need entity data (e.g., scene engine).
     #[must_use]
     pub fn after_init(mut self, f: impl FnOnce(&MykoServer) + Send + 'static) -> Self {
-        self.after_init = Some(Box::new(f));
+        self.after_init = Some(Box::new(move |server| {
+            f(server);
+            Ok(())
+        }));
+        self
+    }
+
+    /// Register initialization that must succeed before the listener opens.
+    #[must_use]
+    pub fn try_after_init(
+        mut self,
+        callback: impl FnOnce(&MykoServer) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+        + Send
+        + 'static,
+    ) -> Self {
+        self.after_init = Some(Box::new(callback));
         self
     }
 
@@ -254,6 +282,7 @@ impl MykoServerBuilder {
         });
         server.after_init = std::sync::Mutex::new(self.after_init);
         server.server_info = server_info;
+        server.auth_provider = self.auth_provider;
         server.websocket_path = self.websocket_path.unwrap_or(server.websocket_path);
         server.mcp_path = self.mcp_path.unwrap_or(server.mcp_path);
         server
@@ -264,6 +293,7 @@ impl MykoServerBuilder {
 ///
 /// Uses hyphae cells for reactive queries and reports instead of actors.
 pub struct MykoServer {
+    auth_provider: Option<Arc<myko_auth::MykoAuthProvider>>,
     /// Central entity store registry
     pub registry: Arc<StoreRegistry>,
     /// Handler registry for items, queries, and reports
@@ -396,6 +426,7 @@ impl MykoServer {
             .unwrap_or_else(|| Arc::new(dashmap::DashMap::new()));
 
         Self {
+            auth_provider: None,
             registry,
             handler_registry,
             relationship_manager,
@@ -748,7 +779,7 @@ impl MykoServer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(hook) = hook {
-            hook(self);
+            hook(self)?;
         }
 
         self.start_saga_runtime();
@@ -901,15 +932,18 @@ impl MykoServer {
             let server_info = self.server_info.clone();
             let websocket_path = self.websocket_path.clone();
             let mcp_path = self.mcp_path.clone();
+            let auth_provider = self.auth_provider.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = router::route_connection_with_paths(
+                if let Err(e) = router::route_connection_with_paths_and_auth(
                     stream,
                     addr,
                     ctx,
                     server_info,
                     &websocket_path,
                     &mcp_path,
+                    GatewayAccess::Full,
+                    auth_provider,
                 )
                 .await
                 {

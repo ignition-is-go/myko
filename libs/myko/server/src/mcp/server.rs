@@ -36,6 +36,7 @@ use super::{
 /// Automatically exposes all registered queries, reports, and commands
 /// through the MCP protocol.
 pub struct McpServer {
+    credential_provider: Option<Arc<dyn myko_auth::CredentialProvider>>,
     info: ServerInfo,
 }
 
@@ -50,6 +51,7 @@ impl McpServer {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            credential_provider: None,
             info: ServerInfo::default(),
         }
     }
@@ -57,6 +59,7 @@ impl McpServer {
     /// Create a new MCP server with custom name and version.
     pub fn with_info(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
+            credential_provider: None,
             info: ServerInfo {
                 name: name.into(),
                 version: version.into(),
@@ -71,6 +74,16 @@ impl McpServer {
     #[must_use]
     pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
         self.info.instructions = Some(instructions.into());
+        self
+    }
+
+    /// Authenticate the remote Myko connection with renewable service credentials.
+    #[must_use]
+    pub fn with_credential_provider(
+        mut self,
+        provider: Arc<dyn myko_auth::CredentialProvider>,
+    ) -> Self {
+        self.credential_provider = Some(provider);
         self
     }
 
@@ -94,6 +107,11 @@ impl McpServer {
         eprintln!("[myko-mcp] Connecting to Myko at {myko_address}");
 
         let client = Arc::new(MykoClient::new());
+        if let Some(provider) = &self.credential_provider {
+            client
+                .set_credential_provider(Some(provider.clone()))
+                .map_err(io::Error::other)?;
+        }
         client.set_address(Some(myko_address));
 
         let status_guard = client.connection_status().subscribe(move |signal| {

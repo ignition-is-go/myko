@@ -113,7 +113,8 @@ pub use core::{
     command, common, graph, item, query, reflection, relationship, report, request, view,
 };
 
-pub use erased_serde; // For AnyItem::erased_serialize in generated code
+pub use erased_serde;
+pub use myko_auth as auth; // For AnyItem::erased_serialize in generated code
 // Re-export crates for use in macros
 pub use futures; // For proc macro generated stream adapters in typed sagas
 pub use hyphae; // For cell-based queries/reports in #[myko_item]

@@ -14,6 +14,8 @@ mod command;
 mod graph;
 mod item;
 mod message_events;
+mod permission;
+mod public_access;
 mod query;
 mod relationship;
 mod report;

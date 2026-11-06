@@ -5,6 +5,7 @@
 use crate::GatewayAccess;
 use crate::delivery_diagnostics::DeliveryDiagnostics;
 use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
+use myko_auth::{AuthSession, AuthorizationRequest, EventChange, OperationKind};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -257,6 +258,7 @@ impl Drop for DropLogger {
 }
 
 struct CommandJob {
+    auth: Option<AuthSession>,
     tx_id: Arc<str>,
     command_id: String,
     command: serde_json::Value,
@@ -300,6 +302,7 @@ type SharedTxTimes = Arc<Mutex<HashMap<Arc<str>, Instant>>>;
 type SharedOutboundCommands = Arc<Mutex<HashMap<String, (String, Instant)>>>;
 
 struct MessageContext<'a> {
+    auth: &'a Option<AuthSession>,
     priority_tx: &'a mpsc::Sender<MykoMessage>,
     drop_logger: &'a Arc<DropLogger>,
     query_ids_by_tx: &'a SharedTxNames,
@@ -314,6 +317,7 @@ struct MessageContext<'a> {
 }
 
 struct ReadLoopState {
+    auth: Option<AuthSession>,
     access: GatewayAccess,
     ctx: Arc<MykoServerContext>,
     client_id: Arc<str>,
@@ -333,6 +337,7 @@ struct ReadLoopState {
 }
 
 struct WriterState {
+    auth: Option<AuthSession>,
     write: futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
     rx: mpsc::Receiver<OutboundMessage>,
     deferred_rx: mpsc::Receiver<DeferredOutbound>,
@@ -412,19 +417,108 @@ impl WsHandler {
         client
     }
 
+    fn authorize_incoming(
+        auth: &AuthSession,
+        message: &mut MykoMessage,
+        client: &str,
+        host: uuid::Uuid,
+    ) -> Result<(), myko_auth::AuthError> {
+        auth.check()?;
+        let request = match message {
+            MykoMessage::Query(w) => AuthorizationRequest::Execute {
+                kind: OperationKind::Query,
+                operation: &w.query_id,
+                arguments: &w.query,
+            },
+            MykoMessage::View(w) => AuthorizationRequest::Execute {
+                kind: OperationKind::View,
+                operation: &w.view_id,
+                arguments: &w.view,
+            },
+            MykoMessage::Report(w) => AuthorizationRequest::Execute {
+                kind: OperationKind::Report,
+                operation: &w.report_id,
+                arguments: &w.report,
+            },
+            MykoMessage::Command(w) => AuthorizationRequest::Execute {
+                kind: OperationKind::Command,
+                operation: &w.command_id,
+                arguments: &w.command,
+            },
+            MykoMessage::Event(event) => return Self::authorize_event(auth, event, client, host),
+            MykoMessage::EventBatch(events) => {
+                for event in events {
+                    Self::authorize_event(auth, event, client, host)?;
+                }
+                return auth.check();
+            }
+            MykoMessage::CommandResponse(w) => {
+                AuthorizationRequest::CommandResult { transaction: &w.tx }
+            }
+            MykoMessage::CommandError(w) => {
+                AuthorizationRequest::CommandResult { transaction: &w.tx }
+            }
+            MykoMessage::Ping(_)
+            | MykoMessage::QueryCancel(_)
+            | MykoMessage::QueryWindow(_)
+            | MykoMessage::QueryCursorWindow(_)
+            | MykoMessage::ViewCancel(_)
+            | MykoMessage::ViewWindow(_)
+            | MykoMessage::ViewSampleRate(_)
+            | MykoMessage::ReportCancel(_) => return Ok(()),
+            _ => return Err(myko_auth::AuthError::Forbidden),
+        };
+        auth.authorize(request)
+    }
+
+    fn authorize_event(
+        auth: &AuthSession,
+        event: &mut MEvent,
+        client: &str,
+        host: uuid::Uuid,
+    ) -> Result<(), myko_auth::AuthError> {
+        event.sanitize_null_bytes();
+        normalize_incoming_event(event, client, host);
+        auth.authorize(AuthorizationRequest::ClientEvent {
+            entity_type: &event.item_type,
+            change: if event.change_type == MEventType::SET {
+                EventChange::Set
+            } else {
+                EventChange::Delete
+            },
+            proposed: &event.item,
+        })
+    }
+
     fn dispatch_incoming<W: WsWriter>(
         session: &mut ClientSession<W>,
         state: &ReadLoopState,
-        message: MykoMessage,
+        mut message: MykoMessage,
     ) -> bool {
         if !state.access.allows(&message) {
-            tracing::warn!("Forbidden gateway input from {}", state.client_id);
-            return false;
+            Self::reject_incoming(state, &message, "gateway is read-only".into());
+            return true;
+        }
+        if let Some(auth) = &state.auth {
+            // An invalid session terminates the transport; a denied operation does not.
+            if auth.check().is_err() {
+                return false;
+            }
+            if let Err(error) =
+                Self::authorize_incoming(auth, &mut message, &session.client_id, state.ctx.host_id)
+            {
+                if auth.check().is_err() {
+                    return false;
+                }
+                Self::reject_incoming(state, &message, error.to_string());
+                return true;
+            }
         }
         Self::handle_message(
             session,
             state.ctx.clone(),
             &MessageContext {
+                auth: &state.auth,
                 priority_tx: &state.priority_tx,
                 drop_logger: &state.drop_logger,
                 query_ids_by_tx: &state.query_ids_by_tx,
@@ -440,6 +534,47 @@ impl WsHandler {
             message,
         );
         true
+    }
+
+    fn reject_incoming(state: &ReadLoopState, message: &MykoMessage, reason: String) {
+        let transaction = |value: &serde_json::Value| {
+            value
+                .get("tx")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
+        let response = match message {
+            MykoMessage::Query(w) => MykoMessage::QueryError(myko::wire::QueryError::new(
+                transaction(&w.query),
+                w.query_id.to_string(),
+                reason,
+            )),
+            MykoMessage::View(w) => MykoMessage::ViewError(ViewError::new(
+                transaction(&w.view),
+                w.view_id.to_string(),
+                reason,
+            )),
+            MykoMessage::Report(w) => MykoMessage::ReportError(myko::wire::ReportError::new(
+                transaction(&w.report),
+                w.report_id.clone(),
+                reason,
+            )),
+            MykoMessage::Command(w) => MykoMessage::CommandError(CommandError::new(
+                transaction(&w.command),
+                w.command_id.clone(),
+                reason,
+            )),
+            // Entity events have no request/reply transaction. Reject the complete
+            // batch before applying anything, while preserving other subscriptions.
+            _ => {
+                tracing::warn!(client_id = %state.client_id, %reason, "Rejected WebSocket input");
+                return;
+            }
+        };
+        if let Err(error) = state.priority_tx.try_send(response) {
+            state.drop_logger.on_drop("AuthorizationError", &error);
+        }
     }
 
     async fn handle_ws_frame<W: WsWriter>(
@@ -507,8 +642,17 @@ impl WsHandler {
         let mut outbound_ttl_interval = interval(Duration::from_secs(10));
         outbound_ttl_interval.tick().await; // NOTE(ts): consume the immediate first tick
         let mut overload_rx = state.overload_rx.clone();
+        let mut auth_interval = interval(Duration::from_millis(100));
         loop {
+            if state
+                .auth
+                .as_ref()
+                .is_some_and(|auth| auth.check().is_err())
+            {
+                break;
+            }
             tokio::select! {
+                _ = auth_interval.tick(), if state.auth.is_some() => {}
                 _ = diagnostics_interval.tick() => {
                     if let Some(diagnostics) = &state.drop_logger.diagnostics { diagnostics.flush(false); }
                 }
@@ -523,6 +667,7 @@ impl WsHandler {
                 }
                 // Completed subscription builds — register with session
                 Some(ready) = subscribe_rx.recv() => {
+                    if state.auth.as_ref().is_some_and(|auth| auth.check().is_err()) { break; }
                     let tx_id = match &ready {
                         SubscriptionReady::Report { tx_id, .. }
                         | SubscriptionReady::WindowedQuery { tx_id, .. }
@@ -753,6 +898,7 @@ impl WsHandler {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn send_outbound(
         write: &mut futures_util::stream::SplitSink<
             tokio_tungstenite::WebSocketStream<TcpStream>,
@@ -764,6 +910,7 @@ impl WsHandler {
         outgoing_format: &AtomicU8,
         commands: &SharedOutboundCommands,
         diagnostics: &DeliveryDiagnostics,
+        auth: Option<&AuthSession>,
     ) -> bool {
         let (kind, tx, sequence) = Self::outbound_metadata(&message);
         Self::track_outbound_command(&message, commands, client_id);
@@ -780,6 +927,9 @@ impl WsHandler {
             _ => 0,
         };
         let send_started = Instant::now();
+        if auth.is_some_and(|session| session.check().is_err()) {
+            return false;
+        }
         let result = write.send(frame).await;
         let (diagnostic_message, command_id) = match &message {
             OutboundMessage::Message(message) => (Some(message), None),
@@ -850,6 +1000,7 @@ impl WsHandler {
 
     async fn run_writer(state: WriterState) {
         let WriterState {
+            auth,
             mut write,
             mut rx,
             mut deferred_rx,
@@ -929,6 +1080,7 @@ impl WsHandler {
                 &outgoing_format_writer,
                 &outbound_commands_by_tx_writer,
                 &diagnostics,
+                auth.as_ref(),
             )
             .await
             {
@@ -1016,6 +1168,23 @@ impl WsHandler {
         ctx: Arc<MykoServerContext>,
         access: GatewayAccess,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        Self::handle_upgraded_with_access_and_auth(ws_stream, addr, ctx, access, None).await
+    }
+
+    /// Run a gateway with verified authority and an independent access ceiling.
+    /// # Errors
+    /// Returns an error when the session is invalid or the transport fails.
+    #[allow(clippy::too_many_lines)]
+    pub async fn handle_upgraded_with_access_and_auth(
+        ws_stream: tokio_tungstenite::WebSocketStream<TcpStream>,
+        addr: SocketAddr,
+        ctx: Arc<MykoServerContext>,
+        access: GatewayAccess,
+        auth: Option<AuthSession>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if let Some(session) = &auth {
+            session.check()?;
+        }
         let (write, read) = ws_stream.split();
 
         // Create a bounded channel for sending messages to the client
@@ -1071,6 +1240,7 @@ impl WsHandler {
         let command_client_id = client_id.clone();
 
         let write_task = tokio::spawn(Self::run_writer(WriterState {
+            auth: auth.clone(),
             write,
             rx,
             deferred_rx,
@@ -1106,6 +1276,7 @@ impl WsHandler {
             &mut session,
             subscribe_rx,
             ReadLoopState {
+                auth,
                 access,
                 ctx: ctx.clone(),
                 client_id: client_id.clone(),
@@ -1159,11 +1330,10 @@ impl WsHandler {
         if let Ok(mut map) = message_context.subscribe_started_by_tx.lock() {
             map.entry(tx_id.clone()).or_insert_with(Instant::now);
         }
-        let request = Arc::new(RequestContext::from_client(
-            tx_id.clone(),
-            session.client_id.clone(),
-            ctx.host_id,
-        ));
+        let request = Arc::new(
+            RequestContext::from_client(tx_id.clone(), session.client_id.clone(), ctx.host_id)
+                .with_auth(message_context.auth.clone()),
+        );
         if let Some(query_data) = ctx.handler_registry.query(&query_id) {
             match (query_data.parse)(wrapped.query.clone()) {
                 Ok(query) => {
@@ -1273,11 +1443,10 @@ impl WsHandler {
         if let Ok(mut map) = message_context.subscribe_started_by_tx.lock() {
             map.entry(tx_id.clone()).or_insert_with(Instant::now);
         }
-        let request = Arc::new(RequestContext::from_client(
-            tx_id.clone(),
-            session.client_id.clone(),
-            ctx.host_id,
-        ));
+        let request = Arc::new(
+            RequestContext::from_client(tx_id.clone(), session.client_id.clone(), ctx.host_id)
+                .with_auth(message_context.auth.clone()),
+        );
         let Some(view_data) = ctx.handler_registry.view(&view_id) else {
             let message = format!("No registered handler for view: {view_id}");
             Self::send_view_error(message_context, &tx_id, &view_id, message);
@@ -1486,11 +1655,14 @@ impl WsHandler {
                 };
                 match (data.parse)(wrapped.report.clone()) {
                     Ok(report) => {
-                        let request = Arc::new(RequestContext::from_client(
-                            tx.clone(),
-                            session.client_id.clone(),
-                            ctx.host_id,
-                        ));
+                        let request = Arc::new(
+                            RequestContext::from_client(
+                                tx.clone(),
+                                session.client_id.clone(),
+                                ctx.host_id,
+                            )
+                            .with_auth(message_context.auth.clone()),
+                        );
                         let factory = data.cell_factory;
                         let sender = message_context.subscribe_tx.clone();
                         WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
@@ -1568,6 +1740,7 @@ impl WsHandler {
                 }
                 let command_id = wrapped.command_id;
                 if let Err(error) = message_context.command_tx.send(CommandJob {
+                    auth: message_context.auth.clone(),
                     tx_id: tx_id.clone(),
                     command_id: command_id.clone(),
                     command: wrapped.command,
@@ -1667,15 +1840,25 @@ impl WsHandler {
                 handler_found = true;
                 let executor = (registration.factory)();
 
-                let req = Arc::new(RequestContext::from_client(
-                    job.tx_id.clone(),
-                    client_id.clone(),
-                    host_id,
-                ));
+                let req = Arc::new(
+                    RequestContext::from_client(job.tx_id.clone(), client_id.clone(), host_id)
+                        .with_auth(job.auth.clone()),
+                );
                 let cmd_id: Arc<str> = Arc::from(command_id.clone());
                 let cmd_ctx = CommandContext::new(cmd_id, req, ctx);
                 let execute_started = Instant::now();
 
+                if let Some(auth) = &job.auth
+                    && auth
+                        .authorize(AuthorizationRequest::Execute {
+                            kind: OperationKind::Command,
+                            operation: &job.command_id,
+                            arguments: &job.command,
+                        })
+                        .is_err()
+                {
+                    return;
+                }
                 match executor.execute_from_value(job.command.clone(), cmd_ctx) {
                     Ok(result) => {
                         let response = CommandResponse {

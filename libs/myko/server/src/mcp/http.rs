@@ -3,6 +3,7 @@
 use std::{sync::Arc, time::Duration};
 
 use myko::server::MykoServerContext;
+use myko_auth::AuthSession;
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -32,11 +33,40 @@ const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 ///
 /// Returns an error when the HTTP request cannot be read or its response cannot be written.
 pub async fn handle_post(
-    mut stream: TcpStream,
+    stream: TcpStream,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_post_with_auth(stream, ctx, server_info, head, None).await
+}
+
+/// Handle an MCP POST with verified caller authority.
+/// # Errors
+/// Returns an error when transport handling fails or authority expires.
+pub async fn handle_post_with_auth(
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    auth: Option<AuthSession>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::select! {
+        result = run_post(stream, ctx, server_info, head, auth.clone()) => result,
+        () = super::invalidated(auth.as_ref()) => Ok(()),
+    }
+}
+
+async fn run_post(
+    mut stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    auth: Option<AuthSession>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(session) = &auth {
+        session.check()?;
+    }
     let content_length: usize = head
         .header("Content-Length")
         .and_then(|v| v.parse().ok())
@@ -59,7 +89,7 @@ pub async fn handle_post(
     };
 
     let filter = filter_from_head(&head);
-    let executor = Executor::InProcess(ctx);
+    let executor = Executor::in_process(ctx, auth.clone());
 
     let response: McpResponse = match serde_json::from_slice::<McpRequest>(&body) {
         Ok(req) => {
@@ -73,6 +103,9 @@ pub async fn handle_post(
     };
 
     let body = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
+    if let Some(session) = &auth {
+        session.check()?;
+    }
     let write_result = write_full(
         &mut stream,
         200,
@@ -95,10 +128,35 @@ pub async fn handle_post(
 ///
 /// Returns an error when the SSE response cannot be written.
 pub async fn handle_sse(
-    mut stream: TcpStream,
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    head: HttpRequestHead,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_sse_with_auth(stream, ctx, head, None).await
+}
+
+/// Handle an SSE connection until its authenticated session ends.
+/// # Errors
+/// Returns an error when transport handling fails or authority expires.
+pub async fn handle_sse_with_auth(
+    stream: TcpStream,
     _ctx: Arc<MykoServerContext>,
     _head: HttpRequestHead,
+    auth: Option<AuthSession>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::select! {
+        result = run_sse(stream, auth.clone()) => result,
+        () = super::invalidated(auth.as_ref()) => Ok(()),
+    }
+}
+
+async fn run_sse(
+    mut stream: TcpStream,
+    auth: Option<AuthSession>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(session) = &auth {
+        session.check()?;
+    }
     let head = "HTTP/1.1 200 OK\r\n\
                 Content-Type: text/event-stream\r\n\
                 Cache-Control: no-cache\r\n\
@@ -110,6 +168,9 @@ pub async fn handle_sse(
 
     loop {
         sleep(SSE_KEEPALIVE).await;
+        if let Some(session) = &auth {
+            session.check()?;
+        }
         if stream.write_all(b": keepalive\n\n").await.is_err() {
             break;
         }

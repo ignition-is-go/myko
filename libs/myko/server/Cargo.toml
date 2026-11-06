@@ -12,6 +12,8 @@ workspace = true
 tasks = ["check", "build", "test", "lint", "publish"]
 
 [dependencies]
+myko-auth.workspace = true
+base64 = "0.22"
 num-traits.workspace = true
 # Internal
 # myko-server instantiates `SearchIndex::new()` unconditionally, so it needs

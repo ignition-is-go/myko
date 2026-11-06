@@ -24,10 +24,17 @@ use crate::{
 pub struct ViewMapWatch<T: hyphae::CellValue> {
     map: CellMap<Arc<str>, Arc<T>, CellImmutable>,
     ready: Cell<bool, CellImmutable>,
+    error: Cell<Option<String>, CellImmutable>,
     sampling: Option<Arc<ViewSamplingControl>>,
 }
 
 impl<T: hyphae::CellValue> ViewMapWatch<T> {
+    /// Latest server rejection; existing data remains available separately.
+    #[must_use]
+    pub const fn error(&self) -> &Cell<Option<String>, CellImmutable> {
+        &self.error
+    }
+
     /// Update delivery cadence for every handle sharing this view subscription.
     /// The latest rate is retained across reconnects. None restores immediate delivery.
     ///
@@ -90,11 +97,12 @@ impl MykoClient {
             .map_watch_cache_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((map, ready, sampling)) = self.cached_map_watch(&cache_key) {
+        if let Some((map, ready, error, sampling)) = self.cached_map_watch(&cache_key) {
             debug!("watch_view_map_state: cache hit for {cache_key}");
             return ViewMapWatch {
                 map,
                 ready,
+                error,
                 sampling,
             };
         }
@@ -115,6 +123,7 @@ impl MykoClient {
             return ViewMapWatch {
                 map: map.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
                 sampling: None,
             };
         };
@@ -182,6 +191,7 @@ impl MykoClient {
             return ViewMapWatch {
                 map: map.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
                 sampling: None,
             };
         }
@@ -218,6 +228,7 @@ impl MykoClient {
         let watch = ViewMapWatch {
             map: map.lock(),
             ready: ready_read,
+            error: self.subscription_error(&tx),
             sampling: Some(sampling),
         };
         self.cache_map_watch(
