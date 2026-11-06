@@ -255,6 +255,9 @@ impl Permissions {
         let Some(session) = &request.auth else {
             return false;
         };
+        let Some(identity) = session.identity() else {
+            return false;
+        };
         let input = AuthorizationRequest::Discover {
             kind: OperationKind::Command,
             operation,
@@ -269,7 +272,7 @@ impl Permissions {
             snapshot,
             mode: self.0.mode,
         }))
-        .authorize(session.identity(), input)
+        .authorize(identity, input)
         .is_ok()
     }
 
@@ -280,6 +283,7 @@ impl Permissions {
         arguments: &Value,
     ) -> PermissionResult<Arc<PermissionAuthority>> {
         let session = request.auth.as_ref().ok_or(PermissionError::Unauthorized)?;
+        let identity = session.identity().ok_or(PermissionError::Unauthorized)?;
         let input = AuthorizationRequest::Execute {
             kind: OperationKind::Report,
             operation,
@@ -293,7 +297,7 @@ impl Permissions {
             snapshot: snapshot.clone(),
             mode: self.0.mode,
         }))
-        .authorize(session.identity(), input)
+        .authorize(identity, input)
         .map_err(|_| PermissionError::Unauthorized)?;
         Ok(snapshot)
     }
@@ -348,8 +352,8 @@ impl Permissions {
             ));
         }
         let session = request.auth.as_ref().ok_or(PermissionError::Unauthorized)?;
+        let identity = session.identity().ok_or(PermissionError::Unauthorized)?;
         session.check().map_err(|_| PermissionError::Unauthorized)?;
-        let identity = session.identity();
         let policy = SnapshotPolicy {
             snapshot: current.clone(),
             mode: self.0.mode,

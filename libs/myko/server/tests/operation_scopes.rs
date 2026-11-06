@@ -217,12 +217,7 @@ async fn next(socket: &mut Socket) -> TestResult<MykoMessage> {
         }
     }
 }
-async fn closed(socket: &mut Socket) -> TestResult {
-    match timeout(Duration::from_secs(3), socket.next()).await? {
-        None | Some(Err(_) | Ok(Message::Close(_))) => Ok(()),
-        other => Err(format!("expected closed connection, got {other:?}").into()),
-    }
-}
+
 fn setter() -> MykoMessage {
     MykoMessage::Command(WrappedCommand {
         command_id: "SetScopeCameraEnabled".into(),
@@ -404,7 +399,19 @@ async fn child_deny_blocks_inherited_write_and_child_allow_overrides_parent_deny
                 MykoMessage::CommandResponse(_)
             ));
         } else {
-            closed(&mut socket).await?;
+            assert!(
+                matches!(next(&mut socket).await?, MykoMessage::CommandError(ref error) if error.tx == "setter" && error.message == "permission denied")
+            );
+            send(
+                &mut socket,
+                &MykoMessage::Ping(PingData {
+                    id: "after-denial".into(),
+                    timestamp: 0,
+                }),
+                false,
+            )
+            .await?;
+            assert!(matches!(next(&mut socket).await?, MykoMessage::Ping(_)));
         }
         assert_eq!(
             stored_camera(&fixture, "camera-a")?.get("enabled"),

@@ -4,8 +4,8 @@ use syn::{ItemStruct, Path};
 
 #[allow(clippy::too_many_lines)]
 pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct) -> TokenStream {
-    let scopes = match crate::permission::take_scopes(&mut input_struct) {
-        Ok(scopes) => scopes,
+    let (scopes, public) = match crate::public_access::take_operation_access(&mut input_struct) {
+        Ok(access) => access,
         Err(error) => return error.to_compile_error(),
     };
     let manual_cache_key = crate::take_manual_cache_key_attr(&mut input_struct);
@@ -13,8 +13,14 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
     let struct_name = &input_struct.ident;
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
-    let scope_registration =
-        crate::permission::registration(&syn::parse_quote!(Report), struct_name, &scopes, krate);
+    let scope_registration = crate::public_access::registration(
+        &syn::parse_quote!(Report),
+        struct_name,
+        &scopes,
+        public,
+        krate,
+    );
+
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
 

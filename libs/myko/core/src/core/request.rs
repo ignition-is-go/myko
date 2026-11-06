@@ -54,7 +54,7 @@ pub enum RequestCacheScope {
 /// command execution, query subscriptions, and report generation.
 #[derive(Clone, Debug)]
 pub struct RequestContext {
-    /// Verified external authority. Internal requests have no external session.
+    /// External authenticated or anonymous authority. Internal requests have no external session.
     pub auth: Option<myko_auth::AuthSession>,
     /// Transaction ID - same across all operations in one request.
     /// Used to correlate logs, events, and responses.

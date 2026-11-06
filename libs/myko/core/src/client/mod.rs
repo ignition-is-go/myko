@@ -79,9 +79,16 @@ impl From<MykoProtocol> for u8 {
 pub struct ListWatch<T: CellValue> {
     items: Cell<Vec<T>, CellImmutable>,
     ready: Cell<bool, CellImmutable>,
+    error: Cell<Option<String>, CellImmutable>,
 }
 
 impl<T: CellValue> ListWatch<T> {
+    /// Latest server rejection for this subscription; data retains its existing shape.
+    #[must_use]
+    pub const fn error(&self) -> &Cell<Option<String>, CellImmutable> {
+        &self.error
+    }
+
     #[must_use]
     pub const fn items(&self) -> &Cell<Vec<T>, CellImmutable> {
         &self.items
@@ -169,9 +176,16 @@ pub struct WindowedQueryWatch<T: CellValue> {
     cursor_window: Arc<std::sync::Mutex<Option<QueryCursorWindow>>>,
     tx: Arc<str>,
     client: MykoClient,
+    error: Cell<Option<String>, CellImmutable>,
 }
 
 impl<T: CellValue> WindowedQueryWatch<T> {
+    /// Latest server rejection for this subscription; data retains its existing shape.
+    #[must_use]
+    pub const fn error(&self) -> &Cell<Option<String>, CellImmutable> {
+        &self.error
+    }
+
     #[must_use]
     pub const fn items(&self) -> &Cell<Vec<Arc<T>>, CellImmutable> {
         &self.items
@@ -451,6 +465,7 @@ type QueryState<T> = Arc<Mutex<HashMap<Arc<str>, Arc<T>>>>;
 type SharedMapWatchParts<T> = (
     CellMap<Arc<str>, Arc<T>, CellImmutable>,
     Cell<bool, CellImmutable>,
+    Cell<Option<String>, CellImmutable>,
     Option<Arc<view_map::ViewSamplingControl>>,
 );
 
@@ -519,6 +534,7 @@ fn query_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> Subscription
     SubscriptionGuard::from_callback(move || {
         info!("query_cancel_guard: cancelling tx={}", tx);
         inner.query_handlers.remove(&tx);
+        inner.subscription_errors.remove(&tx);
         let msg = MykoMessage::QueryCancel(crate::wire::CancelSubscription { tx: tx.to_string() });
         if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
             match inner.socket.send(frame) {
@@ -541,6 +557,7 @@ fn view_cancel_guard(tx: Arc<str>, inner: Arc<MykoClientInner>) -> SubscriptionG
     SubscriptionGuard::from_callback(move || {
         info!("view_cancel_guard: cancelling tx={}", tx);
         inner.query_handlers.remove(&tx);
+        inner.subscription_errors.remove(&tx);
         let msg = MykoMessage::ViewCancel(crate::wire::CancelSubscription { tx: tx.to_string() });
         if let Some(frame) = encode_protocol(&inner.protocol, &msg) {
             match inner.socket.send(frame) {
@@ -662,6 +679,7 @@ struct ClientListWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
     items: hyphae::cell::WeakCell<Vec<T>, CellImmutable>,
     ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+    error: hyphae::cell::WeakCell<Option<String>, CellImmutable>,
 }
 
 impl<T: CellValue> ClientListWatchCacheEntry<T> {
@@ -670,6 +688,7 @@ impl<T: CellValue> ClientListWatchCacheEntry<T> {
             tx,
             items: watch.items.downgrade(),
             ready: watch.ready.downgrade(),
+            error: watch.error.downgrade(),
         }
     }
 
@@ -677,6 +696,7 @@ impl<T: CellValue> ClientListWatchCacheEntry<T> {
         Some(ListWatch {
             items: self.items.upgrade()?,
             ready: self.ready.upgrade()?,
+            error: self.error.upgrade()?,
         })
     }
 }
@@ -699,6 +719,7 @@ struct ClientWindowWatchCacheEntry<T: CellValue> {
     window: hyphae::cell::WeakCell<Option<QueryWindow>, CellImmutable>,
     state: hyphae::cell::WeakCell<WindowedQueryState<T>, CellImmutable>,
     cursor_window: Arc<std::sync::Mutex<Option<QueryCursorWindow>>>,
+    error: hyphae::cell::WeakCell<Option<String>, CellImmutable>,
 }
 
 impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
@@ -707,6 +728,7 @@ impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
             tx: watch.tx.clone(),
             items: watch.items.downgrade(),
             ready: watch.ready.downgrade(),
+            error: watch.error.downgrade(),
             total_count: watch.total_count.downgrade(),
             window: watch.window.downgrade(),
             state: watch.state.downgrade(),
@@ -718,6 +740,7 @@ impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
         Some(WindowedQueryWatch {
             items: self.items.upgrade()?,
             ready: self.ready.upgrade()?,
+            error: self.error.upgrade()?,
             total_count: self.total_count.upgrade()?,
             window: self.window.upgrade()?,
             state: self.state.upgrade()?,
@@ -765,10 +788,11 @@ impl<T: CellValue> ClientMapWatchCacheEntry<T> {
         }
     }
 
-    fn get(&self) -> Option<SharedMapWatchParts<T>> {
+    fn get(&self, error: Cell<Option<String>, CellImmutable>) -> Option<SharedMapWatchParts<T>> {
         Some((
             self.map.upgrade()?.lock(),
             self.ready.upgrade()?,
+            error,
             self.sampling.clone(),
         ))
     }
@@ -823,6 +847,7 @@ struct MykoClientInner {
     peer_discovery_guard: Mutex<Option<SubscriptionGuard>>,
 
     // Dispatch maps keyed by tx
+    subscription_errors: DashMap<Arc<str>, Cell<Option<String>, CellMutable>>,
     query_handlers: DashMap<Arc<str>, QueryHandler>,
     report_handlers: DashMap<Arc<str>, ReportHandler>,
     report_result_handlers: DashMap<Arc<str>, ReportResultHandler>,
@@ -870,7 +895,32 @@ impl Default for MykoClient {
 }
 
 impl MykoClient {
+    fn subscription_error(&self, tx: &str) -> Cell<Option<String>, CellImmutable> {
+        self.inner
+            .subscription_errors
+            .entry(Arc::from(tx))
+            .or_insert_with(|| Cell::new(None))
+            .clone()
+            .lock()
+    }
+
     fn try_register_query_handler(&self, tx: Arc<str>, handler: QueryHandler) -> bool {
+        let error = self
+            .inner
+            .subscription_errors
+            .entry(tx.clone())
+            .or_insert_with(|| Cell::new(None))
+            .clone();
+        let handler: QueryHandler = Arc::new(move |response| {
+            if let Some(message) = response.get("error").and_then(Value::as_str) {
+                error.set(Some(message.to_string()));
+                return;
+            }
+            if error.get().is_some() {
+                error.set(None);
+            }
+            handler(response);
+        });
         match self.inner.query_handlers.entry(tx) {
             dashmap::mapref::entry::Entry::Vacant(entry) => {
                 entry.insert(handler);
@@ -919,7 +969,7 @@ impl MykoClient {
         existing
             .as_any()
             .downcast_ref::<ClientMapWatchCacheEntry<T>>()?
-            .get()
+            .get(self.subscription_error(existing.tx()))
     }
 
     fn cache_map_watch<T: CellValue>(
@@ -1162,6 +1212,14 @@ impl MykoClient {
                         return;
                     };
                     let conn_status = (**status).clone();
+                    let errors: Vec<_> = inner
+                        .subscription_errors
+                        .iter()
+                        .map(|entry| entry.value().clone())
+                        .collect();
+                    for error in errors {
+                        error.set(None);
+                    }
 
                     if !matches!(conn_status, ConnectionStatus::Connected(_)) {
                         inner.ping_ms.set(None);
@@ -1190,6 +1248,7 @@ impl MykoClient {
                 current_address: Mutex::new(None),
                 peer_failover_status_guard: Mutex::new(None),
                 peer_discovery_guard: Mutex::new(None),
+                subscription_errors: DashMap::new(),
                 query_handlers,
                 report_handlers,
                 report_result_handlers: DashMap::new(),
@@ -1415,6 +1474,9 @@ impl MykoClient {
                 let tx: Arc<str> = Arc::from(tx_str);
                 dispatch_query_response(&inner.query_handlers, &tx, data_val);
             }
+            "ws:m:query-error" | "ws:m:view-error" => {
+                Self::handle_subscription_error(inner, &data());
+            }
             "ws:m:report-response" => {
                 if let Ok(response) = serde_json::from_value::<crate::wire::ReportResponse>(data())
                 {
@@ -1502,6 +1564,19 @@ impl MykoClient {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn handle_subscription_error(inner: &MykoClientInner, payload: &Value) {
+        if let (Some(tx), Some(message)) = (
+            payload.get("tx").and_then(Value::as_str),
+            payload.get("message").and_then(Value::as_str),
+        ) {
+            dispatch_query_response(
+                &inner.query_handlers,
+                &Arc::from(tx),
+                serde_json::json!({"tx": tx, "error": message}),
+            );
         }
     }
 
@@ -1848,6 +1923,7 @@ impl MykoClient {
             return QueryWatch {
                 items: cell.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         };
 
@@ -1942,6 +2018,7 @@ impl MykoClient {
             return QueryWatch {
                 items: cell.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         }
 
@@ -1950,9 +2027,11 @@ impl MykoClient {
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode query request for {query_id}");
             self.inner.query_handlers.remove(&tx);
+            self.inner.subscription_errors.remove(&tx);
             return QueryWatch {
                 items: cell.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         };
 
@@ -1992,6 +2071,7 @@ impl MykoClient {
         let watch = QueryWatch {
             items: cell.lock(),
             ready: ready_read,
+            error: self.subscription_error(&tx),
         };
         self.cache_list_watch(cache_key, tx, &watch);
         watch
@@ -2254,6 +2334,7 @@ impl MykoClient {
             return ViewWatch {
                 items: cell.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         };
 
@@ -2264,6 +2345,7 @@ impl MykoClient {
             return ViewWatch {
                 items: cell.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         };
 
@@ -2347,6 +2429,7 @@ impl MykoClient {
             return ViewWatch {
                 items: cell.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         }
 
@@ -2385,6 +2468,7 @@ impl MykoClient {
         let watch = ViewWatch {
             items: cell.lock(),
             ready: ready_read,
+            error: self.subscription_error(&tx),
         };
         self.cache_list_watch(cache_key, tx, &watch);
         watch
@@ -2511,27 +2595,43 @@ impl MykoClient {
 
     /// Dynamic/raw query watch for runtimes that only know wrapped query data.
     #[must_use]
-    pub fn watch_query_raw(&self, mut query: WrappedQuery) -> Cell<Vec<Value>, CellImmutable> {
+    pub fn watch_query_raw(&self, query: WrappedQuery) -> Cell<Vec<Value>, CellImmutable> {
+        self.watch_query_raw_state(query).into_items()
+    }
+
+    /// Dynamic subscription data, readiness, and a separate reactive error.
+    #[must_use]
+    pub fn watch_query_raw_state(&self, mut query: WrappedQuery) -> ListWatch<Value> {
         let tx = next_subscription_tx();
         let Some(request) = query.query.as_object_mut() else {
             error!("Could not assign transaction ID to raw query request");
-            return Cell::new(Vec::<Value>::new()).lock();
+            return ListWatch {
+                items: Cell::new(Vec::<Value>::new()).lock(),
+                ready: Cell::new(false).lock(),
+                error: Cell::new(Some("request must be an object".into())).lock(),
+            };
         };
         request.insert("tx".to_owned(), Value::String(tx.to_string()));
 
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(query.query_id.as_ref());
         let cell_weak = cell.downgrade();
+        let ready = Cell::new(false);
+        let ready_weak = ready.downgrade();
         let state_clone = state;
         let tx_clone = tx.clone();
 
         let msg = MykoMessage::Query(query);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode raw query request");
-            return cell.lock();
+            return ListWatch {
+                items: cell.lock(),
+                ready: ready.lock(),
+                error: Cell::new(Some("could not encode request".into())).lock(),
+            };
         };
 
-        self.inner.query_handlers.insert(
+        self.try_register_query_handler(
             tx.clone(),
             Arc::new(move |response_value: Value| {
                 let Some(cell_writer) = cell_weak.upgrade() else {
@@ -2566,24 +2666,38 @@ impl MykoClient {
                     state.values().cloned().collect::<Vec<Value>>()
                 };
                 cell_writer.set(items);
+                if response.sequence == 0
+                    && let Some(ready) = ready_weak.upgrade()
+                {
+                    ready.set(true);
+                }
             }),
         );
 
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
         let frame_to_send = frame;
+        let ready_for_status = ready.downgrade();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal
-                && let ConnectionStatus::Connected(_) = &**status
-            {
-                let _ = socket.send(frame_to_send.clone());
+            if let hyphae::Signal::Value(status) = signal {
+                if let Some(ready) = ready_for_status.upgrade() {
+                    ready.set(false);
+                }
+                if let ConnectionStatus::Connected(_) = &**status {
+                    let _ = socket.send(frame_to_send.clone());
+                }
             }
         });
 
         cell.own(status_guard);
-        cell.own(query_cancel_guard(tx, self.inner.clone()));
+        cell.own(query_cancel_guard(tx.clone(), self.inner.clone()));
+        cell.own(retain_cell_guard(ready.clone().lock()));
 
-        cell.lock()
+        ListWatch {
+            items: cell.lock(),
+            ready: ready.lock(),
+            error: self.subscription_error(&tx),
+        }
     }
 
     /// Dynamic/raw view watch for runtimes that only know wrapped view data.
@@ -2594,27 +2708,43 @@ impl MykoClient {
     /// path as queries on the wire, so the same `query_handlers` slot
     /// stores the dispatch closure.
     #[must_use]
-    pub fn watch_view_raw(&self, mut view: WrappedView) -> Cell<Vec<Value>, CellImmutable> {
+    pub fn watch_view_raw(&self, view: WrappedView) -> Cell<Vec<Value>, CellImmutable> {
+        self.watch_view_raw_state(view).into_items()
+    }
+
+    /// Dynamic subscription data, readiness, and a separate reactive error.
+    #[must_use]
+    pub fn watch_view_raw_state(&self, mut view: WrappedView) -> ListWatch<Value> {
         let tx = next_subscription_tx();
         let Some(request) = view.view.as_object_mut() else {
             error!("Could not assign transaction ID to raw view request");
-            return Cell::new(Vec::<Value>::new()).lock();
+            return ListWatch {
+                items: Cell::new(Vec::<Value>::new()).lock(),
+                ready: Cell::new(false).lock(),
+                error: Cell::new(Some("request must be an object".into())).lock(),
+            };
         };
         request.insert("tx".to_owned(), Value::String(tx.to_string()));
 
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(view.view_id.as_ref());
         let cell_weak = cell.downgrade();
+        let ready = Cell::new(false);
+        let ready_weak = ready.downgrade();
         let state_clone = state;
         let tx_clone = tx.clone();
 
         let msg = MykoMessage::View(view);
         let Ok(frame) = self.encode_message(&msg) else {
             error!("Could not encode raw view request");
-            return cell.lock();
+            return ListWatch {
+                items: cell.lock(),
+                ready: ready.lock(),
+                error: Cell::new(Some("could not encode request".into())).lock(),
+            };
         };
 
-        self.inner.query_handlers.insert(
+        self.try_register_query_handler(
             tx.clone(),
             Arc::new(move |response_value: Value| {
                 let Some(cell_writer) = cell_weak.upgrade() else {
@@ -2649,24 +2779,38 @@ impl MykoClient {
                     state.values().cloned().collect::<Vec<Value>>()
                 };
                 cell_writer.set(items);
+                if response.sequence == 0
+                    && let Some(ready) = ready_weak.upgrade()
+                {
+                    ready.set(true);
+                }
             }),
         );
 
         let socket = self.inner.socket.clone();
         let status_cell = self.connection_status();
         let frame_to_send = frame;
+        let ready_for_status = ready.downgrade();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal
-                && let ConnectionStatus::Connected(_) = &**status
-            {
-                let _ = socket.send(frame_to_send.clone());
+            if let hyphae::Signal::Value(status) = signal {
+                if let Some(ready) = ready_for_status.upgrade() {
+                    ready.set(false);
+                }
+                if let ConnectionStatus::Connected(_) = &**status {
+                    let _ = socket.send(frame_to_send.clone());
+                }
             }
         });
 
         cell.own(status_guard);
-        cell.own(view_cancel_guard(tx, self.inner.clone()));
+        cell.own(view_cancel_guard(tx.clone(), self.inner.clone()));
+        cell.own(retain_cell_guard(ready.clone().lock()));
 
-        cell.lock()
+        ListWatch {
+            items: cell.lock(),
+            ready: ready.lock(),
+            error: self.subscription_error(&tx),
+        }
     }
 
     /// Dynamic/raw report watch for runtimes that only know wrapped report data.
@@ -3275,6 +3419,89 @@ mod report_result_tests {
         );
         (client, transport)
     }
+    #[test]
+    fn subscription_errors_are_separate_shared_recoverable_and_cleaned_up() {
+        use crate::entities::client::GetAllClients;
+        let (client, transport) = fixture();
+        let list = client.watch_query_state(GetAllClients {});
+        let map = client.watch_query_map_state(GetAllClients {});
+        let cached = client.watch_query_map_state(GetAllClients {});
+        let raw_query = client.watch_query_raw_state(WrappedQuery {
+            query: serde_json::json!({}),
+            query_id: Arc::from("GetAllClients"),
+            query_item_type: Arc::from("Client"),
+            window: None,
+        });
+        let raw_view = client.watch_view_raw_state(WrappedView {
+            view: serde_json::json!({}),
+            view_id: Arc::from("Fixture"),
+            view_item_type: Arc::from("Client"),
+            window: None,
+            sample_rate: None,
+        });
+        let window = client.watch_query_windowed(
+            GetAllClients {},
+            QueryWindow {
+                offset: 0,
+                limit: 10,
+            },
+        );
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
+        let transactions: Vec<_> = client
+            .inner
+            .query_handlers
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect();
+        assert_eq!(transactions.len(), 5);
+        for tx in &transactions {
+            let frame = serde_json::json!({"event":"ws:m:query-error", "data":{"tx":tx,"queryId":"GetAllClients","message":"permission denied"}});
+            MykoClient::handle_frame(&client.inner, &WsFrame::Text(frame.to_string()));
+        }
+        for error in [
+            list.error(),
+            map.error(),
+            cached.error(),
+            window.error(),
+            raw_query.error(),
+            raw_view.error(),
+        ] {
+            assert_eq!(error.get(), Some("permission denied".into()));
+        }
+        assert!(!list.ready().get());
+        assert!(!map.ready().get());
+        assert!(!window.ready().get());
+        assert!(list.items().get().is_empty());
+        for tx in &transactions {
+            let frame = serde_json::json!({"event":"ws:m:query-response", "data":{"tx":tx,"sequence":0,"upserts":[],"deletes":[]}});
+            MykoClient::handle_frame(&client.inner, &WsFrame::Text(frame.to_string()));
+        }
+        for error in [
+            list.error(),
+            map.error(),
+            cached.error(),
+            window.error(),
+            raw_query.error(),
+            raw_view.error(),
+        ] {
+            assert_eq!(error.get(), None);
+        }
+        assert!(list.ready().get());
+        assert!(map.ready().get());
+        assert!(window.ready().get());
+        for tx in &transactions {
+            let frame = serde_json::json!({"event":"ws:m:view-error", "data":{"tx":tx,"viewId":"Fixture","message":"denied again"}});
+            MykoClient::handle_frame(&client.inner, &WsFrame::Text(frame.to_string()));
+        }
+        transport.status.set(ConnectionStatus::Disconnected);
+        assert_eq!(map.error().get(), None);
+        drop((list, map, cached, window, raw_query, raw_view));
+        assert!(client.inner.query_handlers.is_empty());
+        assert!(client.inner.subscription_errors.is_empty());
+    }
+
     fn report() -> crate::report::ExportEntityTree {
         crate::report::ExportEntityTree {
             root_type: "Fixture".into(),

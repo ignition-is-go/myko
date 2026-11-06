@@ -138,7 +138,10 @@ fn local_logout_revokes_only_one_credential_and_all_its_session_clones() -> Resu
     let first = admit(&provider, "first")?;
     let first_clone = first.clone();
     let second = admit(&provider, "second")?;
-    assert_eq!(first.identity().principal, second.identity().principal);
+    assert_eq!(
+        first.identity().map(|identity| &identity.principal),
+        second.identity().map(|identity| &identity.principal)
+    );
     drop(provider);
     let request = AuthorizationRequest::Discover {
         kind: OperationKind::Query,
@@ -217,6 +220,96 @@ fn identity_revocation_during_authorization_is_caught_before_success() -> Result
         }),
         Err(AuthError::Revoked)
     );
+    assert_eq!(session.check(), Err(AuthError::Revoked));
+    Ok(())
+}
+
+struct AnonymousPolicy;
+impl Authorizer for AnonymousPolicy {
+    fn authorize(
+        &self,
+        _: &AuthenticatedIdentity,
+        _: AuthorizationRequest<'_>,
+    ) -> Result<(), AuthError> {
+        Err(AuthError::Forbidden)
+    }
+    fn authorize_anonymous(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
+        match request {
+            AuthorizationRequest::Execute {
+                kind: OperationKind::Query,
+                operation: "PublicQuery",
+                ..
+            }
+            | AuthorizationRequest::ClientEvent {
+                entity_type: "PublicEntity",
+                change: EventChange::Set,
+                ..
+            } => Ok(()),
+            _ => Err(AuthError::Unauthenticated),
+        }
+    }
+}
+struct RejectCredentials;
+impl Authenticator for RejectCredentials {
+    fn authenticate(
+        &self,
+        _: Credentials,
+    ) -> BoxFuture<'_, Result<AuthenticatedIdentity, AuthError>> {
+        Box::pin(async { Err(AuthError::Unauthenticated) })
+    }
+}
+#[test]
+#[allow(clippy::panic_in_result_fn)]
+fn anonymous_admission_is_opt_in_and_never_downgrades_invalid_credentials() -> Result<(), AuthError>
+{
+    let provider = MykoAuthProvider::new(Arc::new(RejectCredentials), Arc::new(AnonymousPolicy));
+    assert!(matches!(
+        futures::executor::block_on(provider.admit(Credentials::default())),
+        Err(AuthError::Unauthenticated)
+    ));
+    let provider = provider.with_anonymous_access();
+    let session = futures::executor::block_on(provider.admit(Credentials::default()))?;
+    assert!(session.identity().is_none());
+    let arguments = Value::Null;
+    assert_eq!(
+        session.authorize(AuthorizationRequest::Execute {
+            kind: OperationKind::Query,
+            operation: "PublicQuery",
+            arguments: &arguments
+        }),
+        Ok(())
+    );
+    assert_eq!(
+        session.authorize(AuthorizationRequest::Execute {
+            kind: OperationKind::Command,
+            operation: "PublicQuery",
+            arguments: &arguments
+        }),
+        Err(AuthError::Unauthenticated)
+    );
+    assert_eq!(
+        session.authorize(AuthorizationRequest::ClientEvent {
+            entity_type: "PublicEntity",
+            change: EventChange::Set,
+            proposed: &arguments
+        }),
+        Ok(())
+    );
+    assert_eq!(
+        session.authorize(AuthorizationRequest::ClientEvent {
+            entity_type: "PublicEntity",
+            change: EventChange::Delete,
+            proposed: &arguments
+        }),
+        Err(AuthError::Unauthenticated)
+    );
+    assert!(matches!(
+        futures::executor::block_on(provider.admit(Credentials {
+            bearer: Some("invalid".into())
+        })),
+        Err(AuthError::Unauthenticated)
+    ));
+    session.revoke();
     assert_eq!(session.check(), Err(AuthError::Revoked));
     Ok(())
 }

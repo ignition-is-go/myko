@@ -120,10 +120,14 @@ impl MykoServerBuilder {
         Self::default()
     }
 
-    /// Require verified credentials and app-owned local authorization on every external transport.
+    /// Apply app-owned authentication and authorization to every external transport.
+    /// Accepts a provider or an optional provider for conditional configuration.
     #[must_use]
-    pub fn with_auth_provider(mut self, provider: Arc<myko_auth::MykoAuthProvider>) -> Self {
-        self.auth_provider = Some(provider);
+    pub fn with_auth_provider(
+        mut self,
+        provider: impl Into<Option<Arc<myko_auth::MykoAuthProvider>>>,
+    ) -> Self {
+        self.auth_provider = provider.into();
         self
     }
 

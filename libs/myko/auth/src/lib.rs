@@ -1,4 +1,5 @@
 //! Verified identities and app-owned local authorization.
+pub mod public_access;
 pub mod scopes;
 use futures::future::BoxFuture;
 pub use scopes::{
@@ -143,6 +144,13 @@ pub trait Authorizer: Send + Sync + 'static {
         identity: &AuthenticatedIdentity,
         request: AuthorizationRequest<'_>,
     ) -> Result<(), AuthError>;
+    /// Authorize a caller without a verified identity. Explicit public metadata
+    /// is allowed by default; applications may impose additional restrictions.
+    /// # Errors
+    /// Returns a denial for operations not exposed to anonymous callers.
+    fn authorize_anonymous(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
+        public_access::authorize(request)
+    }
     /// Increment when a policy change can invalidate active subscriptions.
     fn revision(&self) -> u64 {
         0
@@ -153,14 +161,37 @@ pub trait Authorizer: Send + Sync + 'static {
 pub struct MykoAuthProvider {
     authenticator: Arc<dyn Authenticator>,
     authorizer: Arc<dyn Authorizer>,
+    anonymous_access: bool,
 }
 impl MykoAuthProvider {
     pub fn new(authenticator: Arc<dyn Authenticator>, authorizer: Arc<dyn Authorizer>) -> Self {
         Self {
             authenticator,
             authorizer,
+            anonymous_access: false,
         }
     }
+    /// Enable app-defined anonymous admission even without public decorators.
+    /// The authorizer still decides access to each operation.
+    #[must_use]
+    pub const fn with_anonymous_access(mut self) -> Self {
+        self.anonymous_access = true;
+        self
+    }
+
+    /// Admit an authenticated caller or an explicitly enabled anonymous caller.
+    /// Invalid supplied credentials never fall back to anonymous access.
+    /// # Errors
+    /// Returns an error if admission or credential verification fails.
+    pub async fn admit(&self, credentials: Credentials) -> Result<AuthSession, AuthError> {
+        if credentials.bearer.is_none()
+            && (self.anonymous_access || public_access::has_registrations())
+        {
+            return Ok(AuthSession::anonymous(self.authorizer.clone()));
+        }
+        self.authenticate(credentials).await
+    }
+
     /// # Errors
     /// Returns an error when credentials are invalid, expired, or verification is unavailable.
     pub async fn authenticate(&self, credentials: Credentials) -> Result<AuthSession, AuthError> {
@@ -179,7 +210,7 @@ impl MykoAuthProvider {
 pub struct AuthSession(Arc<SessionInner>);
 struct SessionInner {
     id: String,
-    identity: AuthenticatedIdentity,
+    identity: Option<AuthenticatedIdentity>,
     authorizer: Arc<dyn Authorizer>,
     revision: u64,
     revoked: AtomicBool,
@@ -189,7 +220,10 @@ impl fmt::Debug for AuthSession {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthSession")
             .field("id", &self.0.id)
-            .field("principal", &self.0.identity.principal)
+            .field(
+                "principal",
+                &self.0.identity.as_ref().map(|identity| &identity.principal),
+            )
             .finish_non_exhaustive()
     }
 }
@@ -208,20 +242,33 @@ impl AuthSession {
         let revision = authorizer.revision();
         Self(Arc::new(SessionInner {
             id: uuid::Uuid::new_v4().to_string(),
-            identity,
+            identity: Some(identity),
             authorizer,
             revision,
             revoked: AtomicBool::new(false),
             authenticator,
         }))
     }
+    fn anonymous(authorizer: Arc<dyn Authorizer>) -> Self {
+        let revision = authorizer.revision();
+        Self(Arc::new(SessionInner {
+            id: uuid::Uuid::new_v4().to_string(),
+            identity: None,
+            authorizer,
+            revision,
+            revoked: AtomicBool::new(false),
+            authenticator: None,
+        }))
+    }
+
     #[must_use]
     pub fn id(&self) -> &str {
         &self.0.id
     }
     #[must_use]
-    pub fn identity(&self) -> &AuthenticatedIdentity {
-        &self.0.identity
+    /// The verified identity, absent for an explicitly admitted anonymous caller.
+    pub fn identity(&self) -> Option<&AuthenticatedIdentity> {
+        self.0.identity.as_ref()
     }
     pub fn revoke(&self) {
         self.0.revoked.store(true, Ordering::Release);
@@ -234,16 +281,18 @@ impl AuthSession {
             self.revoke();
             return Err(AuthError::Revoked);
         }
-        if SystemTime::now() >= self.0.identity.expires_at {
-            return Err(AuthError::Expired);
-        }
-        if let Some(authenticator) = &self.0.authenticator
-            && let Err(error) = authenticator.validate_identity(&self.0.identity)
-        {
-            if error == AuthError::Revoked {
-                self.revoke();
+        if let Some(identity) = &self.0.identity {
+            if SystemTime::now() >= identity.expires_at {
+                return Err(AuthError::Expired);
             }
-            return Err(error);
+            if let Some(authenticator) = &self.0.authenticator
+                && let Err(error) = authenticator.validate_identity(identity)
+            {
+                if error == AuthError::Revoked {
+                    self.revoke();
+                }
+                return Err(error);
+            }
         }
         Ok(())
     }
@@ -251,7 +300,10 @@ impl AuthSession {
     /// Returns an error when the session or local policy rejects the request.
     pub fn authorize(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
         self.check()?;
-        self.0.authorizer.authorize(&self.0.identity, request)?;
+        match &self.0.identity {
+            Some(identity) => self.0.authorizer.authorize(identity, request)?,
+            None => self.0.authorizer.authorize_anonymous(request)?,
+        }
         self.check()
     }
 }

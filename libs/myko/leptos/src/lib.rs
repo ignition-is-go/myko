@@ -98,11 +98,31 @@ pub type LiveQuerySignals<T> = (ReadSignal<Vec<Arc<T>>>, ReadSignal<bool>);
 /// A fine-grained keyed store and authoritative readiness signal.
 pub type LiveStoreSignals<T> = (CellMapStore<Arc<str>, Arc<T>>, ReadSignal<bool>);
 
+/// Query rows, initial-response readiness, and a separate subscription error.
+pub type LiveQueryStateSignals<T> = (
+    ReadSignal<Vec<Arc<T>>>,
+    ReadSignal<bool>,
+    ReadSignal<Option<String>>,
+);
+/// View rows, initial-response readiness, and a separate subscription error.
+pub type LiveViewStateSignals<T> = (
+    ReadSignal<Vec<T>>,
+    ReadSignal<bool>,
+    ReadSignal<Option<String>>,
+);
+/// Fine-grained rows, initial-response readiness, and a separate subscription error.
+pub type LiveStoreStateSignals<T> = (
+    CellMapStore<Arc<str>, Arc<T>>,
+    ReadSignal<bool>,
+    ReadSignal<Option<String>>,
+);
+
 /// A Leptos-readable server-side query window with pagination controls.
 #[derive(Clone)]
 pub struct LiveWindowedQuery<T: myko::hyphae::CellValue> {
     state: ReadSignal<myko::client::WindowedQueryState<T>>,
     watch: myko::client::WindowedQueryWatch<T>,
+    error: ReadSignal<Option<String>>,
 }
 
 impl<T: myko::hyphae::CellValue> LiveWindowedQuery<T> {
@@ -110,6 +130,12 @@ impl<T: myko::hyphae::CellValue> LiveWindowedQuery<T> {
     #[must_use]
     pub const fn state(&self) -> ReadSignal<myko::client::WindowedQueryState<T>> {
         self.state
+    }
+
+    /// Latest subscription rejection, separate from the retained page data.
+    #[must_use]
+    pub const fn error(&self) -> ReadSignal<Option<String>> {
+        self.error
     }
 
     /// Request the next page when one exists.
@@ -155,7 +181,12 @@ where
     let client = expect_context::<MykoClient>();
     let watch = client.watch_query_windowed(query, initial_window);
     let state = watch.state().to_leptos_signal();
-    LiveWindowedQuery { state, watch }
+    let error = watch.error().to_leptos_signal();
+    LiveWindowedQuery {
+        state,
+        watch,
+        error,
+    }
 }
 
 pub fn live_query_loaded<Q>(
@@ -172,29 +203,62 @@ where
         + Sync
         + 'static,
 {
+    let (data, loaded, _error) = live_query_state(query);
+    (data, loaded)
+}
+
+/// Live subscription data with readiness and a separate error signal.
+/// A denied subscription stays unloaded and can render fallback content.
+pub fn live_query_state<Q>(
+    query: impl Fn() -> Q + Send + Sync + 'static,
+) -> LiveQueryStateSignals<Q::Item>
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
     use myko::client::MykoClient;
 
     let (read, write) = signal(vec![]);
     let (loaded, set_loaded) = signal(false);
+    let (error, set_error) = signal(None);
 
     let client = expect_context::<MykoClient>();
 
     // Keep callbacks on the view owner; storing them on their source cells
     // would retain the cells and disposed Leptos writers in a cycle.
     let prev_watch = StoredValue::new(None);
+    let current = RwSignal::new(Arc::new(()));
 
     Effect::new(move || {
+        let token = Arc::new(());
+        current.set(token.clone());
         let q = query(); // tracks signals read inside the closure
         set_loaded.set(false);
+        set_error.set(None);
         let watch = client.watch_query_state(q);
-        let items_guard = cell_subscription(watch.items(), write);
-        let ready_guard = cell_subscription(watch.ready(), set_loaded);
+        let items_guard =
+            scoped_cell_subscription(watch.items(), write, current.read_only(), token.clone());
+        let ready_guard = scoped_cell_subscription(
+            watch.ready(),
+            set_loaded,
+            current.read_only(),
+            token.clone(),
+        );
+        let error_guard =
+            scoped_cell_subscription(watch.error(), set_error, current.read_only(), token);
 
         // Drop the previous watch (unsubscribes) and hold the new one.
-        prev_watch.set_value(Some((watch, items_guard, ready_guard)));
+        prev_watch.set_value(Some((watch, items_guard, ready_guard, error_guard)));
     });
 
-    (read, loaded)
+    (read, loaded, error)
 }
 
 /// Returns a reactive signal of view rows that updates when the server pushes data.
@@ -239,26 +303,59 @@ where
         + Sync
         + 'static,
 {
+    let (data, loaded, _error) = live_view_state(view);
+    (data, loaded)
+}
+
+/// Live subscription data with readiness and a separate error signal.
+/// A denied subscription stays unloaded and can render fallback content.
+pub fn live_view_state<V>(
+    view: impl Fn() -> V + Send + Sync + 'static,
+) -> LiveViewStateSignals<V::Item>
+where
+    V: myko::core::view::ViewParams + Clone + Send + Sync + 'static,
+    V::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
     use myko::client::MykoClient;
 
     let (read, write) = signal(vec![]);
     let (loaded, set_loaded) = signal(false);
+    let (error, set_error) = signal(None);
 
     let client = expect_context::<MykoClient>();
 
     // Holds the previous watch so it drops (and unsubscribes) on each re-run.
     let prev_watch = StoredValue::new(None);
+    let current = RwSignal::new(Arc::new(()));
 
     Effect::new(move || {
+        let token = Arc::new(());
+        current.set(token.clone());
         let v = view(); // tracks signals read inside the closure
         set_loaded.set(false);
+        set_error.set(None);
         let watch = client.watch_view_state(v);
-        let items_guard = cell_subscription(watch.items(), write);
-        let ready_guard = cell_subscription(watch.ready(), set_loaded);
-        prev_watch.set_value(Some((watch, items_guard, ready_guard)));
+        let items_guard =
+            scoped_cell_subscription(watch.items(), write, current.read_only(), token.clone());
+        let ready_guard = scoped_cell_subscription(
+            watch.ready(),
+            set_loaded,
+            current.read_only(),
+            token.clone(),
+        );
+        let error_guard =
+            scoped_cell_subscription(watch.error(), set_error, current.read_only(), token);
+        prev_watch.set_value(Some((watch, items_guard, ready_guard, error_guard)));
     });
 
-    (read, loaded)
+    (read, loaded, error)
 }
 
 /// Returns a reactive signal of a report's value that updates live.
@@ -366,6 +463,27 @@ where
     })
 }
 
+fn scoped_cell_subscription<O>(
+    cell: &myko::hyphae::Cell<O, myko::hyphae::CellImmutable>,
+    write: WriteSignal<O>,
+    current: ReadSignal<Arc<()>>,
+    token: Arc<()>,
+) -> myko::hyphae::SubscriptionGuard
+where
+    O: Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
+{
+    use myko::hyphae::{Signal, Watchable};
+    cell.subscribe(move |signal| {
+        if let Signal::Value(value) = signal
+            && current
+                .try_get_untracked()
+                .is_some_and(|active| Arc::ptr_eq(&active, &token))
+        {
+            let _ = write.try_set((**value).clone());
+        }
+    })
+}
+
 fn cell_subscription<O>(
     cell: &myko::hyphae::Cell<O, myko::hyphae::CellImmutable>,
     write: WriteSignal<O>,
@@ -441,6 +559,36 @@ mod subscription_lifetime_tests {
         owner.cleanup();
         items.set(vec![3]);
         ready.set(false);
+    }
+
+    #[test]
+    fn denied_collection_can_render_fallback_and_retired_errors_cannot_restore_it() {
+        let owner = Owner::new_root(None);
+        let denied = Cell::new(None::<String>);
+        let next = Cell::new(None::<String>);
+        owner.with(|| {
+            let token = Arc::new(());
+            let current = RwSignal::new(token.clone());
+            let (error, write) = signal(None);
+            let _old_guard =
+                scoped_cell_subscription(&denied.clone().lock(), write, current.read_only(), token);
+            denied.set(Some("permission denied".into()));
+            assert_eq!(error.get_untracked().as_deref(), Some("permission denied"));
+            let token = Arc::new(());
+            current.set(token.clone());
+            let _next_guard =
+                scoped_cell_subscription(&next.clone().lock(), write, current.read_only(), token);
+            assert_eq!(error.get_untracked(), None);
+            denied.set(Some("late denial from old view".into()));
+            assert_eq!(error.get_untracked(), None);
+            next.set(Some("new view denied".into()));
+            assert_eq!(error.get_untracked().as_deref(), Some("new view denied"));
+            next.set(None);
+            assert_eq!(error.get_untracked(), None);
+        });
+        owner.cleanup();
+        denied.set(Some("after disposal".into()));
+        next.set(Some("after disposal".into()));
     }
 
     type ReportView = (
@@ -593,13 +741,34 @@ where
         + 'static,
     <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
 {
+    let (data, loaded, _error) = live_query_store_state(query);
+    (data, loaded)
+}
+
+/// Live subscription data with readiness and a separate error signal.
+/// A denied subscription stays unloaded and can render fallback content.
+pub fn live_query_store_state<Q>(query: Q) -> LiveStoreStateSignals<Q::Item>
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + WithTypedId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + PartialEq
+        + Send
+        + Sync
+        + 'static,
+    <Q::Item as WithTypedId>::Id: IdFor<Q::Item, MapKey = Arc<str>>,
+{
     use myko::client::MykoClient;
 
     let client = expect_context::<MykoClient>();
     let watch = client.watch_query_map_state(query);
     let store = watch.map().to_leptos_store();
     let loaded = watch.ready().to_leptos_signal();
-    (store, loaded)
+    let error = watch.error().to_leptos_signal();
+    (store, loaded, error)
 }
 
 /// Fine-grained reactive view rows with stable per-row Leptos signals.
@@ -634,13 +803,32 @@ where
         + Sync
         + 'static,
 {
+    let (data, loaded, _error) = live_view_store_state(view);
+    (data, loaded)
+}
+
+/// Live subscription data with readiness and a separate error signal.
+/// A denied subscription stays unloaded and can render fallback content.
+pub fn live_view_store_state<V>(view: V) -> LiveStoreStateSignals<V::Item>
+where
+    V: myko::core::view::ViewParams + Clone + Send + Sync + 'static,
+    V::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
     use myko::client::MykoClient;
 
     let client = expect_context::<MykoClient>();
     let watch = client.watch_view_map_state(view);
     let store = watch.map().to_leptos_store();
     let loaded = watch.ready().to_leptos_signal();
-    (store, loaded)
+    let error = watch.error().to_leptos_signal();
+    (store, loaded, error)
 }
 
 /// Send a command to the Myko server and return a reactive signal with the result.

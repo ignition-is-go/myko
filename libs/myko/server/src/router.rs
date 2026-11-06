@@ -295,7 +295,7 @@ pub(crate) async fn route_connection_with_paths_and_auth(
             let result = match credentials_from_head(&head) {
                 Ok(credentials) => tokio::time::timeout(
                     std::time::Duration::from_secs(10),
-                    provider.authenticate(credentials),
+                    provider.admit(credentials),
                 )
                 .await
                 .unwrap_or(Err(AuthError::Unavailable)),

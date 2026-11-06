@@ -47,8 +47,8 @@ pub enum Executor {
     Client(Arc<MykoClient>),
     /// Talk to a server hosted in the same process via its `MykoServerContext`.
     InProcess(Arc<MykoServerContext>),
-    /// External MCP execution with verified identity and local policy.
-    Authenticated {
+    /// External MCP execution with authenticated or anonymous local authority.
+    External {
         ctx: Arc<MykoServerContext>,
         session: AuthSession,
     },
@@ -57,20 +57,20 @@ pub enum Executor {
 impl Executor {
     pub(crate) fn in_process(ctx: Arc<MykoServerContext>, auth: Option<AuthSession>) -> Self {
         match auth {
-            Some(session) => Self::Authenticated { ctx, session },
+            Some(session) => Self::External { ctx, session },
             None => Self::InProcess(ctx),
         }
     }
 
     pub(crate) fn check(&self) -> Result<(), String> {
-        if let Self::Authenticated { session, .. } = self {
+        if let Self::External { session, .. } = self {
             session.check().map_err(|error| error.to_string())?;
         }
         Ok(())
     }
 
     pub(crate) fn can_discover(&self, kind: &str, operation: &str) -> bool {
-        let Self::Authenticated { session, .. } = self else {
+        let Self::External { session, .. } = self else {
             return true;
         };
         let kind = match kind {
@@ -93,7 +93,7 @@ impl Executor {
         match self {
             Self::Client(client) => client_execute_query(client.clone(), query_id, args).await,
             Self::InProcess(ctx) => in_process_execute_query(ctx.clone(), query_id, args, None),
-            Self::Authenticated { ctx, session } => {
+            Self::External { ctx, session } => {
                 session
                     .authorize(AuthorizationRequest::Execute {
                         kind: OperationKind::Query,
@@ -118,7 +118,7 @@ impl Executor {
             Self::InProcess(ctx) => {
                 in_process_execute_report(ctx.clone(), report_id, args, None).await
             }
-            Self::Authenticated { ctx, session } => {
+            Self::External { ctx, session } => {
                 session
                     .authorize(AuthorizationRequest::Execute {
                         kind: OperationKind::Report,
@@ -142,7 +142,7 @@ impl Executor {
         match self {
             Self::Client(client) => client_execute_view(client.clone(), view_id, args).await,
             Self::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args, None),
-            Self::Authenticated { ctx, session } => {
+            Self::External { ctx, session } => {
                 session
                     .authorize(AuthorizationRequest::Execute {
                         kind: OperationKind::View,
@@ -165,7 +165,7 @@ impl Executor {
         match self {
             Self::Client(client) => client_execute_command(client.clone(), command_id, args).await,
             Self::InProcess(ctx) => in_process_execute_command(ctx.clone(), command_id, args, None),
-            Self::Authenticated { ctx, session } => {
+            Self::External { ctx, session } => {
                 session
                     .authorize(AuthorizationRequest::Execute {
                         kind: OperationKind::Command,
@@ -198,16 +198,16 @@ impl Executor {
                 };
                 json!({ "status": text, "name": info.name, "version": info.version })
             }
-            Self::Authenticated { ctx, session } => json!({
-                "status": if session.check().is_ok() { "authenticated" } else { "invalidated" },
+            Self::External { ctx, session } => json!({
+                "status": if session.check().is_err() { "invalidated" } else if session.identity().is_some() { "authenticated" } else { "anonymous" },
                 "name": info.name,
                 "version": info.version,
                 "hostId": ctx.host_id,
                 "sessionId": session.id(),
-                "principal": session.identity().principal,
-                "credentialScopes": session.identity().scopes,
-                "delegation": session.identity().delegation,
-                "expiresAt": session.identity().expires_at.duration_since(std::time::UNIX_EPOCH).ok().map(|duration| duration.as_secs()),
+                "principal": session.identity().map(|identity| &identity.principal),
+                "credentialScopes": session.identity().map(|identity| &identity.scopes),
+                "delegation": session.identity().map(|identity| &identity.delegation),
+                "expiresAt": session.identity().and_then(|identity| identity.expires_at.duration_since(std::time::UNIX_EPOCH).ok()).map(|duration| duration.as_secs()),
             }),
             Self::InProcess(ctx) => json!({
                 "status": "In-process (always connected)",

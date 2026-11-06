@@ -496,14 +496,23 @@ impl WsHandler {
         mut message: MykoMessage,
     ) -> bool {
         if !state.access.allows(&message) {
-            tracing::warn!("Forbidden gateway input from {}", state.client_id);
-            return false;
+            Self::reject_incoming(state, &message, "gateway is read-only".into());
+            return true;
         }
-        if let Some(auth) = &state.auth
-            && Self::authorize_incoming(auth, &mut message, &session.client_id, state.ctx.host_id)
-                .is_err()
-        {
-            return false;
+        if let Some(auth) = &state.auth {
+            // An invalid session terminates the transport; a denied operation does not.
+            if auth.check().is_err() {
+                return false;
+            }
+            if let Err(error) =
+                Self::authorize_incoming(auth, &mut message, &session.client_id, state.ctx.host_id)
+            {
+                if auth.check().is_err() {
+                    return false;
+                }
+                Self::reject_incoming(state, &message, error.to_string());
+                return true;
+            }
         }
         Self::handle_message(
             session,
@@ -525,6 +534,47 @@ impl WsHandler {
             message,
         );
         true
+    }
+
+    fn reject_incoming(state: &ReadLoopState, message: &MykoMessage, reason: String) {
+        let transaction = |value: &serde_json::Value| {
+            value
+                .get("tx")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("")
+                .to_owned()
+        };
+        let response = match message {
+            MykoMessage::Query(w) => MykoMessage::QueryError(myko::wire::QueryError::new(
+                transaction(&w.query),
+                w.query_id.to_string(),
+                reason,
+            )),
+            MykoMessage::View(w) => MykoMessage::ViewError(ViewError::new(
+                transaction(&w.view),
+                w.view_id.to_string(),
+                reason,
+            )),
+            MykoMessage::Report(w) => MykoMessage::ReportError(myko::wire::ReportError::new(
+                transaction(&w.report),
+                w.report_id.clone(),
+                reason,
+            )),
+            MykoMessage::Command(w) => MykoMessage::CommandError(CommandError::new(
+                transaction(&w.command),
+                w.command_id.clone(),
+                reason,
+            )),
+            // Entity events have no request/reply transaction. Reject the complete
+            // batch before applying anything, while preserving other subscriptions.
+            _ => {
+                tracing::warn!(client_id = %state.client_id, %reason, "Rejected WebSocket input");
+                return;
+            }
+        };
+        if let Err(error) = state.priority_tx.try_send(response) {
+            state.drop_logger.on_drop("AuthorizationError", &error);
+        }
     }
 
     async fn handle_ws_frame<W: WsWriter>(

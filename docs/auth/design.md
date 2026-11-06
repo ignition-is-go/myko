@@ -240,3 +240,101 @@ The script uses serial Rust tests and runs scope, macro, graph, client, server, 
 Auth0 tests use signed fixtures and local HTTP servers.
 They do not require tenant credentials.
 The WASM check compiles browser transport code. It does not prove browser runtime behavior.
+
+## Explicit public operations and remote events
+
+With authentication configured, unmarked operations remain protected. Place
+`#[myko_public]` after a command, query, view, or report decorator to allow that
+specific operation without a verified identity:
+
+```rust,ignore
+#[myko_command(EnrollmentStatus)]
+#[myko_public]
+pub struct CheckEnrollment { pub installation_id: String }
+
+#[myko_query(ExecutorTarget)]
+#[myko_public]
+pub struct DiscoverExecutorTargets { pub service_id: String }
+```
+
+The same marker works after `#[myko_view(...)]` and `#[myko_report(...)]`.
+Discovery and execution use the exact operation kind and ID. Marking a query
+public does not expose other queries, generated operations, or its entity events.
+Public handlers must validate their arguments and limit the data or effects they
+expose to an unauthenticated caller.
+
+Entities opt into client-originated events separately, by change type:
+
+```rust,ignore
+#[myko_item]
+#[myko_public_events(set)]
+pub struct ExecutorPulse { pub value: f64 }
+```
+
+Use `#[myko_public_events(set, delete)]` only when anonymous deletion is also
+intended. Neither form makes generated queries, setters, reports, or delete
+commands public. Normal gateway ceilings, server-owned field checks, and
+connection-owned field normalization still apply.
+
+The provider's transport admission accepts anonymous sessions when public
+metadata is present. Invalid supplied credentials are rejected, never downgraded
+to anonymous access. `authenticate` remains strictly authenticated; transport
+routing uses `admit`. `AuthSession::identity()` returns `None` for anonymous
+sessions, which remain distinct from trusted internal requests with no session.
+WebSocket JSON/CBOR and MCP use the same authorization boundary.
+
+`Authorizer::authorize_anonymous` defaults to the explicit public registrations.
+Applications may override it to restrict arguments or entity rows, or define
+additional anonymous policy. `with_anonymous_access()` enables anonymous
+admission without decorators for such policies; it grants no operations itself.
+Authenticated calls continue through the application's authenticated authorizer.
+Permission administration still requires a verified identity. Policy revision
+changes invalidate anonymous sessions too, and request caches remain partitioned
+by external session.
+
+Generated entity queries are selected separately with
+`#[myko_public_queries(all, by_ids, by_query)]`. Include only the needed families:
+`all` exposes `GetAll<Entity>s`, `by_ids` exposes `Get<Entity>sByIds`, and
+`by_query` exposes `Get<Entity>sByQuery`. This never exposes generated reports,
+setters, or delete commands.
+
+### Operation errors do not disconnect valid sessions
+
+A rejected command, query, view, or report returns its existing transaction-correlated
+`ws:m:*-error` message. The request is not executed or installed as a subscription;
+other subscriptions on the socket continue. Read-only gateway denials use the same
+path. Rejected entity events (including a mixed authorized/unauthorized batch) have
+no effects and are logged; entity events have no request/reply transaction.
+Expired, revoked, or otherwise invalid sessions still close the connection.
+
+Native query/view watches expose a separate reactive error cell:
+
+```rust,ignore
+let watch = client.watch_query_state(GetAllProjects {});
+let items = watch.items(); // existing Vec<Arc<Project>> data shape
+let ready = watch.ready(); // an error is not a successful empty snapshot
+let error = watch.error(); // Cell<Option<String>>
+```
+
+The same `error()` accessor exists on query/view map watches and windowed/cursor
+query watches. Shared watches share their error state. An error does not overwrite
+the last successful data snapshot or advance its sequence. A subsequent response
+clears the error, and a reconnect clears the previous connection's error before
+resubscription. Existing data-only methods and success payloads are unchanged;
+there is no new `Result` wrapper. TypeScript subscriptions already route these
+error messages through their existing observable error channel.
+
+Leptos callers can opt in without changing the existing data-only or loaded APIs:
+
+```rust,ignore
+let (rows, loaded, error) = myko_leptos::live_view_state(|| MyView { /* ... */ });
+// Render the error/fallback when error.get() is Some, loading while !loaded.get(),
+// and the ordinary rows when loaded. An initial denial never marks data loaded.
+```
+
+`live_query_state`, `live_view_state`, `live_query_store_state`, and
+`live_view_store_state` return `(data, loaded, error)`; windowed query handles expose
+`error()` separately. Reactive parameter changes clear the previous error, and
+callbacks from a retired subscription cannot restore its rows or denial message.
+Raw Rust clients can use `watch_query_raw_state` and `watch_view_raw_state` for the
+same data/readiness/error separation; their original data-only methods are retained.

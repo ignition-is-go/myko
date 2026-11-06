@@ -863,8 +863,23 @@ fn required_belongs_to(
         .collect()
 }
 
-pub fn myko_item_impl(args: &ItemArgs, input_struct: ItemStruct) -> TokenStream {
-    prepare_item(args, input_struct).map_or_else(|err| err.to_compile_error(), expand_prepared_item)
+pub fn myko_item_impl(args: &ItemArgs, mut input_struct: ItemStruct) -> TokenStream {
+    let registration = match crate::public_access::take_public_events(
+        &mut input_struct,
+        &DeriveCtx::new().krate,
+    ) {
+        Ok(registration) => registration,
+        Err(error) => return error.to_compile_error(),
+    };
+    let queries =
+        match crate::public_access::take_public_queries(&mut input_struct, &DeriveCtx::new().krate)
+        {
+            Ok(queries) => queries,
+            Err(error) => return error.to_compile_error(),
+        };
+    let expanded = prepare_item(args, input_struct)
+        .map_or_else(|err| err.to_compile_error(), expand_prepared_item);
+    quote!(#expanded #registration #queries)
 }
 
 #[allow(clippy::too_many_lines)]

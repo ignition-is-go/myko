@@ -34,9 +34,12 @@ static MUTATIONS: AtomicUsize = AtomicUsize::new(0);
 struct CallerIdentity {}
 impl CommandHandler for CallerIdentity {
     fn execute(self, ctx: CommandContext) -> std::result::Result<String, CommandError> {
-        let identity = ctx.req.auth.as_ref().map_or("missing", |session| {
-            session.identity().principal.subject.as_str()
-        });
+        let identity = ctx
+            .req
+            .auth
+            .as_ref()
+            .and_then(AuthSession::identity)
+            .map_or("missing", |identity| identity.principal.subject.as_str());
         Ok(format!(
             "{identity}:{}",
             ctx.req.client_id.as_deref().unwrap_or("internal")

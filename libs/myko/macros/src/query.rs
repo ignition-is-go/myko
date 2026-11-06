@@ -46,23 +46,24 @@ pub fn myko_query_impl(
     include_in_typegen: bool,
     mut input_struct: ItemStruct,
 ) -> TokenStream {
-    let extra_scopes = match crate::permission::take_scopes(&mut input_struct) {
-        Ok(scopes) => scopes,
-        Err(error) => return error.to_compile_error(),
-    };
+    let (extra_scopes, public) =
+        match crate::public_access::take_operation_access(&mut input_struct) {
+            Ok(access) => access,
+            Err(error) => return error.to_compile_error(),
+        };
     let manual_cache_key = crate::take_manual_cache_key_attr(&mut input_struct);
     let non_hash_cache_key = crate::take_non_hash_cache_key_attr(&mut input_struct);
     let struct_name = &input_struct.ident;
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
-    let scopes = std::iter::once(crate::permission::ScopeSpec {
-        entity: query_item_type.clone(),
-        action: syn::parse_quote!(Read),
-    })
-    .chain(extra_scopes)
-    .collect::<Vec<_>>();
-    let scope_registration =
-        crate::permission::registration(&syn::parse_quote!(Query), struct_name, &scopes, krate);
+    let scope_registration = crate::public_access::read_registration(
+        &syn::parse_quote!(Query),
+        struct_name,
+        query_item_type,
+        extra_scopes,
+        public,
+        krate,
+    );
 
     // Reflection metadata for the MCP `search()` operation index — captured
     // here from the struct's own fields/doc comment before any further

@@ -213,7 +213,20 @@ async fn rejected_event_batch_has_no_store_or_journal_effect_in_json_and_cbor() 
             binary,
         )
         .await?;
-        closed(&mut socket).await?;
+        send(
+            &mut socket,
+            &MykoMessage::Ping(PingData {
+                id: "after-denial".into(),
+                timestamp: 0,
+            }),
+            binary,
+        )
+        .await?;
+        assert!(
+            timeout(Duration::from_secs(3), socket.next())
+                .await?
+                .is_some_and(|frame| matches!(frame, Ok(Message::Text(_) | Message::Binary(_))))
+        );
         assert_eq!(
             f.server.registry.get_or_create("DemoTask").snapshot().len(),
             0
@@ -259,7 +272,20 @@ async fn read_only_ceiling_cannot_be_overridden_by_policy() -> TestResult {
     let f = fixture(GatewayAccess::ReadOnly).await?;
     let mut socket = connect(&f).await?;
     send(&mut socket, &MykoMessage::Event(event("allowed")), false).await?;
-    closed(&mut socket).await?;
+    send(
+        &mut socket,
+        &MykoMessage::Ping(PingData {
+            id: "read-only-alive".into(),
+            timestamp: 0,
+        }),
+        false,
+    )
+    .await?;
+    assert!(
+        timeout(Duration::from_secs(3), socket.next())
+            .await?
+            .is_some_and(|frame| matches!(frame, Ok(Message::Text(_) | Message::Binary(_))))
+    );
     assert_eq!(
         f.server.registry.get_or_create("DemoTask").snapshot().len(),
         0
@@ -312,7 +338,8 @@ impl myko::query::QueryHandler for CallerTasks {
             .req
             .auth
             .as_ref()
-            .is_some_and(|session| session.identity().principal.subject == ctx.item.id.to_string())
+            .and_then(myko_auth::AuthSession::identity)
+            .is_some_and(|identity| identity.principal.subject == ctx.item.id.to_string())
     }
 }
 
