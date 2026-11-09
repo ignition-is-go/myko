@@ -139,13 +139,61 @@ async fn fixture_oauth(access: GatewayAccess, oauth: bool) -> TestResult<Fixture
 }
 
 #[tokio::test]
-async fn oauth_mcp_discovery_requires_login_without_disabling_public_websocket_operations()
--> TestResult {
+async fn oauth_mcp_static_discovery_is_public_while_tool_calls_require_login() -> TestResult {
     let f = fixture_oauth(GatewayAccess::Full, true).await?;
     let client = reqwest::Client::new();
+    for method in ["initialize", "tools/list"] {
+        let response = client
+            .post(format!("http://{}/myko/mcp", f.addr))
+            .json(&json!({"jsonrpc":"2.0","id":2,"method":method}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let value: Value = response.json().await?;
+        assert!(value.get("result").is_some());
+    }
+    let stream_probe = client
+        .get(format!("http://{}/myko/mcp", f.addr))
+        .header("accept", "text/event-stream")
+        .send()
+        .await?;
+    assert_eq!(
+        stream_probe.status(),
+        reqwest::StatusCode::METHOD_NOT_ALLOWED
+    );
+    assert_eq!(
+        stream_probe
+            .headers()
+            .get("allow")
+            .and_then(|value| value.to_str().ok()),
+        Some("POST")
+    );
+    let invalid = client
+        .post(format!("http://{}/myko/mcp", f.addr))
+        .bearer_auth("invalid")
+        .json(&json!({"jsonrpc":"2.0","id":3,"method":"tools/list"}))
+        .send()
+        .await?;
+    assert_eq!(invalid.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let notification = client
+        .post(format!("http://{}/myko/mcp", f.addr))
+        .json(&json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
+        .send()
+        .await?;
+    assert_eq!(notification.status(), reqwest::StatusCode::ACCEPTED);
+    for method in ["resources/list", "resources/read", "unknown", "tools/call"] {
+        let denied = client
+            .post(format!("http://{}/myko/mcp", f.addr))
+            .json(&json!({"jsonrpc":"2.0","id":4,"method":method}))
+            .send()
+            .await?;
+        assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
+        assert!(denied.headers().get("www-authenticate").is_some());
+    }
+
     let response = client
         .post(format!("http://{}/myko/mcp", f.addr))
-        .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"connection_status","arguments":{}}}))
         .send()
         .await?;
     assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);

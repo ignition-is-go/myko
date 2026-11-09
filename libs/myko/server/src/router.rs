@@ -320,6 +320,44 @@ pub(crate) async fn route_connection_with_paths_and_auth(
         return Ok(());
     }
 
+    if head.method == "POST"
+        && path == mcp_path
+        && let Some(provider) = &provider
+    {
+        if access == GatewayAccess::ReadOnly {
+            write_status(&mut stream, 403, "Forbidden").await?;
+            shutdown_cleanly(stream).await;
+            return Ok(());
+        }
+        return mcp::http::handle_post_with_provider(
+            stream,
+            ctx,
+            server_info,
+            head,
+            provider.clone(),
+        )
+        .await;
+    }
+
+    if head.method == "GET"
+        && path == mcp_path
+        && provider.is_some()
+        && head.wants_event_stream()
+        && !head.is_websocket_upgrade()
+        && credentials_from_head(&head).is_ok_and(|credentials| credentials.bearer.is_none())
+    {
+        // An optional event-stream probe must not start login before a tool call.
+        // No server notifications are available to an unauthenticated caller.
+        let (status, reason) = if access == GatewayAccess::ReadOnly {
+            (403, "Forbidden")
+        } else {
+            (405, "Method Not Allowed")
+        };
+        write_full(&mut stream, status, reason, &[("Allow", "POST")], &[]).await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    }
+
     let auth = if path == websocket_path || path == mcp_path {
         if let Some(provider) = provider {
             let result = match credentials_from_head(&head) {
@@ -567,7 +605,7 @@ pub async fn shutdown_cleanly(mut stream: TcpStream) {
     .await;
 }
 
-fn credentials_from_head(head: &HttpRequestHead) -> Result<Credentials, AuthError> {
+pub(crate) fn credentials_from_head(head: &HttpRequestHead) -> Result<Credentials, AuthError> {
     let headers: Vec<_> = head
         .headers
         .iter()

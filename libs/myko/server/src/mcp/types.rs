@@ -14,6 +14,17 @@ pub struct McpRequest {
     pub params: Option<Value>,
 }
 
+impl McpRequest {
+    /// Bootstrap exposes static capabilities, never application operations or data.
+    #[must_use]
+    pub fn is_public_bootstrap(&self) -> bool {
+        matches!(
+            self.method.as_str(),
+            "initialize" | "tools/list" | "notifications/initialized"
+        )
+    }
+}
+
 // A present null ID still identifies a request; only an omitted ID is a notification.
 fn request_id<'de, D: serde::Deserializer<'de>>(
     deserializer: D,

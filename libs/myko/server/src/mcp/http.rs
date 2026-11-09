@@ -3,7 +3,7 @@
 use std::{sync::Arc, time::Duration};
 
 use myko::server::MykoServerContext;
-use myko_auth::AuthSession;
+use myko_auth::{AuthError, AuthSession, MykoAuthProvider};
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -52,9 +52,74 @@ pub async fn handle_post_with_auth(
     auth: Option<AuthSession>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     tokio::select! {
-        result = run_post(stream, ctx, server_info, head, auth.clone()) => result,
+        result = run_post(stream, ctx, server_info, head, auth.clone(), None) => result,
         () = super::invalidated(auth.as_ref()) => Ok(()),
     }
+}
+
+/// Admit MCP bootstrap publicly and authenticate every application request.
+/// # Errors
+/// Returns errors reading or writing the bounded HTTP exchange.
+pub async fn handle_post_with_provider(
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    provider: Arc<MykoAuthProvider>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_post(stream, ctx, server_info, head, None, Some(provider)).await
+}
+
+async fn authenticate_post(
+    provider: &MykoAuthProvider,
+    head: &HttpRequestHead,
+    public: bool,
+) -> Result<Option<AuthSession>, AuthError> {
+    let credentials = crate::router::credentials_from_head(head)?;
+    if credentials.bearer.is_none() && public {
+        return Ok(None);
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        if let Some(server) = provider.oauth_server() {
+            credentials
+                .bearer
+                .as_deref()
+                .ok_or(AuthError::Unauthenticated)
+                .and_then(|token| server.authenticate(token))
+        } else if provider.mcp_oauth().is_some() {
+            provider.authenticate(credentials).await
+        } else {
+            provider.admit(credentials).await
+        }
+    })
+    .await
+    .unwrap_or(Err(AuthError::Unavailable))
+    .map(Some)
+}
+
+async fn write_auth_error(
+    mut stream: TcpStream,
+    provider: &MykoAuthProvider,
+    error: AuthError,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (status, reason) = if error == AuthError::Unavailable {
+        (503, "Service Unavailable")
+    } else {
+        (401, "Unauthorized")
+    };
+    let challenge = provider
+        .mcp_oauth()
+        .map_or_else(|| "Bearer".to_string(), myko_auth::OAuthResource::challenge);
+    write_full(
+        &mut stream,
+        status,
+        reason,
+        &[("WWW-Authenticate", &challenge)],
+        &[],
+    )
+    .await?;
+    shutdown_cleanly(stream).await;
+    Ok(())
 }
 
 async fn run_post(
@@ -62,7 +127,8 @@ async fn run_post(
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
-    auth: Option<AuthSession>,
+    mut auth: Option<AuthSession>,
+    provider: Option<Arc<MykoAuthProvider>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if let Some(session) = &auth {
         session.check()?;
@@ -88,19 +154,42 @@ async fn run_post(
         }
     };
 
+    let request = serde_json::from_slice::<McpRequest>(&body);
+    if let Some(provider) = &provider {
+        match authenticate_post(
+            provider,
+            &head,
+            request.as_ref().is_ok_and(McpRequest::is_public_bootstrap),
+        )
+        .await
+        {
+            Ok(session) => auth = session,
+            Err(error) => return write_auth_error(stream, provider, error).await,
+        }
+    }
     let filter = filter_from_head(&head);
     let executor = Executor::in_process(ctx, auth.clone());
-
-    let response = match serde_json::from_slice::<McpRequest>(&body) {
-        Ok(req) => dispatch::handle_request(req, &filter, &executor, &server_info).await,
+    let response = match request {
+        Ok(req) => tokio::select! {
+            response = dispatch::handle_request(req, &filter, &executor, &server_info) => response,
+            () = super::invalidated(auth.as_ref()) => {
+                if let Some(provider) = &provider {return write_auth_error(stream, provider, AuthError::Unauthenticated).await;}
+                return Ok(());
+            }
+        },
         Err(e) => Some(McpResponse::error(
             Value::Null,
             McpError::parse_error(e.to_string()),
         )),
     };
 
-    if let Some(session) = &auth {
-        session.check()?;
+    if let Some(session) = &auth
+        && let Err(error) = session.check()
+    {
+        if let Some(provider) = &provider {
+            return write_auth_error(stream, provider, error).await;
+        }
+        return Err(error.into());
     }
     let Some(response) = response else {
         write_status(&mut stream, 202, "Accepted").await?;

@@ -369,8 +369,12 @@ let provider = MykoAuthProvider::new(authentication, authorization)
     .with_mcp_oauth(resource);
 ```
 
-This mode requires authenticated admission for MCP, including initialization,
-while preserving the configured anonymous policy for the Myko WebSocket gateway.
+MCP HTTP initialization, initialized notifications and the static code-mode tool
+list are public. Application requests still require authentication and return an
+HTTP OAuth challenge before executing. Invalid supplied credentials fail closed,
+even for bootstrap. Anonymous optional event-stream probes receive 405, so they do
+not start login during discovery. This preserves the configured anonymous policy
+for the ordinary Myko WebSocket gateway.
 The router exposes RFC 9728 protected-resource metadata at both the root well-known
 URI and its resource-path variant. A 401 challenge points to that metadata and
 advertises configured scopes. Metadata retrieval itself requires no credential.
@@ -434,8 +438,10 @@ issuing a one-use callback code; it never trusts a browser-supplied identity.
 The host must retain the handoff parameter across external login redirects.
 No approval is automatic, even for previously signed-in users.
 
-Only this framework command becomes anonymously available when the service is
-configured; ordinary operation policy is unchanged. Invalid credentials fail
+This framework command becomes anonymously available when the service is
+configured; ordinary operation policy is unchanged. MCP HTTP bootstrap exposes
+only static capabilities and tool definitions, never operation search results or
+application data. Invalid credentials fail
 closed. MCP requires a resource-specific access token. Browser session credentials
 remain usable on the normal Myko WebSocket transport, and issued OAuth credentials
 can use that same transport and local authorizer.
