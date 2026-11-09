@@ -4790,10 +4790,13 @@ dependencies = [
 name = "myko-auth"
 version = "6.11.6"
 dependencies = [
+ "base64",
  "futures",
  "inventory",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "ts-rs",
  "url",
  "uuid",
 ]
@@ -4906,6 +4909,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tungstenite",
+ "url",
  "uuid",
 ]
 

@@ -396,3 +396,57 @@ a hosted login page or prescribe a component library.
 verification used by the Auth0 authenticator, including explicit trusted JWKS
 configuration for other OIDC workload issuers. ID-token checks additionally bind
 the authorized party and nonce; API-token verification binds its resource audience.
+
+### OAuth handoff with a custom login UI
+
+`MykoAuthProvider::with_oauth_server(Arc<OAuthServer>)` enables a same-listener
+OAuth authorization service. Configure its canonical issuer, MCP resource URI,
+and host login URL explicitly. HTTPS is required outside loopback development.
+It advertises RFC 8414 server metadata and RFC 9728 resource metadata, requires
+S256 PKCE and exact registered redirects, and binds authorization and token
+requests to the configured resource. Authorization responses include RFC 9207
+`iss`. The service issues resource-bound opaque access tokens, not OIDC ID tokens.
+
+```rust,ignore
+let oauth = myko_auth::oauth::OAuthServer::new(
+    "https://api.example.com/myko/oauth",
+    "https://api.example.com/myko/mcp",
+    "https://app.example.com/",
+)?;
+oauth.add_client("desktop", "Desktop client", vec![
+    "http://127.0.0.1:8765/callback".into(),
+])?;
+let provider = MykoAuthProvider::new(authentication, authorization)
+    .with_oauth_server(Arc::new(oauth));
+```
+
+Public-client dynamic registration is an explicit opt-in via
+`with_dynamic_registration()`. Pre-registration works without it. Confidential
+clients and client-ID metadata documents are not implemented; metadata does not
+advertise those capabilities. Client names are untrusted presentation text.
+
+The authorize endpoint validates the request, then redirects to the host login
+page with a short-lived opaque `myko_oauth` query parameter. After login, the UI
+uses the `MykoOAuthRequest` command to inspect the request and show explicit
+consent, including its client name, callback and scopes. Approval submits the
+existing session credential through that command. Myko authenticates it before
+issuing a one-use callback code; it never trusts a browser-supplied identity.
+The host must retain the handoff parameter across external login redirects.
+No approval is automatic, even for previously signed-in users.
+
+Only this framework command becomes anonymously available when the service is
+configured; ordinary operation policy is unchanged. Invalid credentials fail
+closed. MCP requires a resource-specific access token. Browser session credentials
+remain usable on the normal Myko WebSocket transport, and issued OAuth credentials
+can use that same transport and local authorizer.
+
+Access tokens last at most five minutes and never outlive the parent login
+session. Refresh tokens rotate; reuse revokes the grant family. Parent logout,
+expiry and current local permission checks apply to already admitted OAuth
+sessions. Revoking a grant does not log the user out of the browser. Grants do
+not introduce offline access or additional entity permissions.
+
+Pending requests, codes, clients and issued tokens are bounded, process-local
+state. Restarting the service requires clients to sign in again. Multiple
+instances need routing affinity; durable shared OAuth state is not provided.
+Only SHA-256 digests of pending requests/codes/tokens are used as lookup keys.

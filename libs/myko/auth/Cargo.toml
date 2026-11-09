@@ -18,9 +18,13 @@ serde_json.workspace = true
 futures.workspace = true
 uuid.workspace = true
 url = "2"
+sha2 = "0.10"
+base64 = "0.22"
+ts-rs = { version = "12", optional = true, features = ["serde-compat", "no-serde-warnings"] }
 
 [features]
 ci = []
+codegen-ts = ["dep:ts-rs"]
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["js"] }

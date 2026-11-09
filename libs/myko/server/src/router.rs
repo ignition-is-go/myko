@@ -289,6 +289,15 @@ pub(crate) async fn route_connection_with_paths_and_auth(
     tracing::trace!("router accept from {}", addr);
 
     let path = head.path.split('?').next().unwrap_or(&head.path);
+    let _oauth_flow = provider
+        .as_ref()
+        .map(|provider| crate::oauth_http::install(&ctx, provider))
+        .transpose()?;
+    if let Some(provider) = &provider
+        && crate::oauth_http::handles(provider, path)
+    {
+        return crate::oauth_http::handle(stream, head, provider.clone()).await;
+    }
 
     if head.method == "GET"
         && let Some(resource) = provider.as_ref().and_then(|provider| provider.mcp_oauth())
@@ -302,6 +311,7 @@ pub(crate) async fn route_connection_with_paths_and_auth(
             &[
                 ("Content-Type", "application/json"),
                 ("Cache-Control", "no-store"),
+                ("Access-Control-Allow-Origin", "*"),
             ],
             &body,
         )
@@ -315,7 +325,15 @@ pub(crate) async fn route_connection_with_paths_and_auth(
             let result = match credentials_from_head(&head) {
                 Ok(credentials) => {
                     tokio::time::timeout(std::time::Duration::from_secs(10), async {
-                        if path == mcp_path && provider.mcp_oauth().is_some() {
+                        if path == mcp_path
+                            && let Some(server) = provider.oauth_server()
+                        {
+                            credentials
+                                .bearer
+                                .as_deref()
+                                .ok_or(AuthError::Unauthenticated)
+                                .and_then(|token| server.authenticate(token))
+                        } else if path == mcp_path && provider.mcp_oauth().is_some() {
                             provider.authenticate(credentials).await
                         } else {
                             provider.admit(credentials).await

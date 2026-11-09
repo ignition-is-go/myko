@@ -1,7 +1,26 @@
 //! Host-configured OAuth protected-resource discovery for MCP HTTP clients.
 use crate::AuthError;
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use url::{Host, Url};
+
+pub mod server;
+pub use server::{AuthorizationInfo, OAuthFlowOperation, OAuthFlowReply, OAuthServer};
+
+/// Compute an S256 challenge from an RFC 7636 verifier.
+/// # Errors
+/// Rejects malformed or insufficiently long verifiers.
+pub fn pkce_challenge(verifier: &str) -> Result<String, AuthError> {
+    if !(43..=128).contains(&verifier.len())
+        || !verifier
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-._~".contains(&byte))
+    {
+        return Err(AuthError::Unauthenticated);
+    }
+    Ok(URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())))
+}
 
 /// Discovery metadata only. The authenticator must validate resource-bound tokens.
 #[derive(Clone, Debug)]

@@ -87,6 +87,7 @@ pub mod codegen_types;
 pub mod core;
 pub mod entities;
 pub mod identity;
+pub mod oauth_flow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod operation_index;
 pub mod search;

@@ -177,6 +177,7 @@ pub struct MykoAuthProvider {
     anonymous_access: bool,
     live_permissions: bool,
     mcp_oauth: Option<OAuthResource>,
+    oauth_server: Option<Arc<oauth::OAuthServer>>,
 }
 impl MykoAuthProvider {
     pub fn new(authenticator: Arc<dyn Authenticator>, authorizer: Arc<dyn Authorizer>) -> Self {
@@ -186,6 +187,7 @@ impl MykoAuthProvider {
             anonymous_access: false,
             live_permissions: false,
             mcp_oauth: None,
+            oauth_server: None,
         }
     }
     /// Require authenticated MCP admission and advertise its OAuth resource.
@@ -193,12 +195,83 @@ impl MykoAuthProvider {
     #[must_use]
     pub fn with_mcp_oauth(mut self, resource: OAuthResource) -> Self {
         self.mcp_oauth = Some(resource);
+        self.oauth_server = None;
         self
     }
 
     #[must_use]
     pub const fn mcp_oauth(&self) -> Option<&OAuthResource> {
         self.mcp_oauth.as_ref()
+    }
+
+    /// Enable the framework OAuth handoff to a host-owned login/consent UI.
+    #[must_use]
+    pub fn with_oauth_server(mut self, server: Arc<oauth::OAuthServer>) -> Self {
+        self.mcp_oauth = Some(server.resource().clone());
+        self.oauth_server = Some(server);
+        self
+    }
+
+    #[must_use]
+    pub const fn oauth_server(&self) -> Option<&Arc<oauth::OAuthServer>> {
+        self.oauth_server.as_ref()
+    }
+
+    fn session_authorizer(&self) -> Arc<dyn Authorizer> {
+        if self.oauth_server.is_some() {
+            Arc::new(OAuthFlowAuthorizer(self.authorizer.clone()))
+        } else {
+            self.authorizer.clone()
+        }
+    }
+
+    /// Inspect or complete a browser authorization handoff. Approval always
+    /// authenticates the submitted session credential before issuing a code.
+    /// # Errors
+    /// Rejects invalid login state or authority; no anonymous approval is possible.
+    pub async fn oauth_flow(
+        &self,
+        operation: oauth::OAuthFlowOperation,
+    ) -> Result<oauth::OAuthFlowReply, String> {
+        use oauth::{OAuthFlowOperation, OAuthFlowReply};
+        let server = self
+            .oauth_server
+            .as_ref()
+            .ok_or("OAuth authorization is not configured")?;
+        match operation {
+            OAuthFlowOperation::Inspect { request } => Ok(OAuthFlowReply {
+                info: Some(server.inspect(&request).map_err(|e| e.to_string())?),
+                redirect: None,
+            }),
+            OAuthFlowOperation::Complete {
+                request,
+                credential,
+                approve,
+            } => {
+                let authority = if approve {
+                    let credential = credential
+                        .filter(|v| !v.is_empty())
+                        .ok_or("Sign in before approving access")?;
+                    Some(
+                        self.authenticate(Credentials {
+                            bearer: Some(credential),
+                        })
+                        .await
+                        .map_err(|e| e.to_string())?,
+                    )
+                } else {
+                    None
+                };
+                Ok(OAuthFlowReply {
+                    info: None,
+                    redirect: Some(
+                        server
+                            .complete(&request, authority)
+                            .map_err(|e| e.to_string())?,
+                    ),
+                })
+            }
+        }
     }
 
     /// Keep authenticated transports alive across permission edits.
@@ -224,10 +297,12 @@ impl MykoAuthProvider {
     /// Returns an error if admission or credential verification fails.
     pub async fn admit(&self, credentials: Credentials) -> Result<AuthSession, AuthError> {
         if credentials.bearer.is_none()
-            && (self.anonymous_access || public_access::has_registrations())
+            && (self.anonymous_access
+                || public_access::has_registrations()
+                || self.oauth_server.is_some())
         {
             return Ok(AuthSession::anonymous(
-                self.authorizer.clone(),
+                self.session_authorizer(),
                 self.live_permissions,
             ));
         }
@@ -237,10 +312,21 @@ impl MykoAuthProvider {
     /// # Errors
     /// Returns an error when credentials are invalid, expired, or verification is unavailable.
     pub async fn authenticate(&self, credentials: Credentials) -> Result<AuthSession, AuthError> {
+        if let Some(token) = credentials
+            .bearer
+            .as_deref()
+            .filter(|token| token.starts_with("myko_access_"))
+        {
+            return self
+                .oauth_server
+                .as_ref()
+                .ok_or(AuthError::Unauthenticated)?
+                .authenticate(token);
+        }
         let identity = self.authenticator.authenticate(credentials).await?;
         let session = AuthSession::from_identity(
             identity,
-            self.authorizer.clone(),
+            self.session_authorizer(),
             Some(self.authenticator.clone()),
             self.live_permissions,
         );
@@ -273,6 +359,17 @@ impl fmt::Debug for AuthSession {
     }
 }
 impl AuthSession {
+    pub(crate) fn with_deadline(&self, deadline: SystemTime) -> Result<Self, AuthError> {
+        self.check()?;
+        let mut identity = self.identity().cloned().ok_or(AuthError::Unauthenticated)?;
+        identity.expires_at = identity.expires_at.min(deadline);
+        Ok(Self::from_identity(
+            identity,
+            self.0.authorizer.clone(),
+            Some(Arc::new(ParentAuthority(self.clone()))),
+            self.0.live_permissions,
+        ))
+    }
     /// Creates a session from a trusted identity without authenticator liveness checks.
     /// Use `MykoAuthProvider::authenticate` to retain the credential authority.
     pub fn new(identity: AuthenticatedIdentity, authorizer: Arc<dyn Authorizer>) -> Self {
@@ -400,6 +497,60 @@ impl AuthSession {
             return decision;
         }
         Err(AuthError::Unavailable)
+    }
+}
+
+struct ParentAuthority(AuthSession);
+impl Authenticator for ParentAuthority {
+    fn authenticate(
+        &self,
+        _credentials: Credentials,
+    ) -> BoxFuture<'_, Result<AuthenticatedIdentity, AuthError>> {
+        Box::pin(async { Err(AuthError::Unauthenticated) })
+    }
+    fn validate_identity(&self, _identity: &AuthenticatedIdentity) -> Result<(), AuthError> {
+        self.0.check()
+    }
+}
+
+struct OAuthFlowAuthorizer(Arc<dyn Authorizer>);
+fn is_oauth_flow(request: AuthorizationRequest<'_>) -> bool {
+    matches!(
+        request,
+        AuthorizationRequest::Execute {
+            kind: OperationKind::Command,
+            operation: "MykoOAuthRequest",
+            ..
+        } | AuthorizationRequest::Discover {
+            kind: OperationKind::Command,
+            operation: "MykoOAuthRequest"
+        }
+    )
+}
+impl Authorizer for OAuthFlowAuthorizer {
+    fn authorize(
+        &self,
+        identity: &AuthenticatedIdentity,
+        request: AuthorizationRequest<'_>,
+    ) -> Result<(), AuthError> {
+        if is_oauth_flow(request) {
+            Ok(())
+        } else {
+            self.0.authorize(identity, request)
+        }
+    }
+    fn authorize_anonymous(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
+        if is_oauth_flow(request) {
+            Ok(())
+        } else {
+            self.0.authorize_anonymous(request)
+        }
+    }
+    fn revision(&self) -> u64 {
+        self.0.revision()
+    }
+    fn session_revision(&self, identity: Option<&AuthenticatedIdentity>) -> u64 {
+        self.0.session_revision(identity)
     }
 }
 

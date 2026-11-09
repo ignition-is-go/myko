@@ -16,6 +16,7 @@ mod subscription_authorization;
 mod view_sampling;
 
 pub mod mcp;
+mod oauth_http;
 pub mod peer_persister;
 pub mod peer_registry;
 pub mod postgres;

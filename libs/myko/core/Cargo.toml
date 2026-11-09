@@ -121,6 +121,7 @@ typegen = []
 # formatter, and typegen/docgen binaries. Runtime/default Myko builds do not
 # compile or link ts-rs or dprint.
 codegen-ts = [
+  "myko-auth/codegen-ts",
   "typegen",
   "dep:ts-rs",
   "dep:dprint-plugin-typescript",
