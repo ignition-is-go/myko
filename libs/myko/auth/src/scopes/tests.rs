@@ -198,6 +198,7 @@ impl ScopePolicy for ProjectWriter {
 }
 fn identity() -> AuthenticatedIdentity {
     AuthenticatedIdentity {
+        user_id: None,
         principal: Principal {
             issuer: "fixture".into(),
             subject: "user".into(),

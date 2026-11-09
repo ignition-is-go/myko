@@ -41,6 +41,7 @@ impl Authenticator for Identity {
                 .filter(|token| token == "user" || token == "service")
                 .ok_or(AuthError::Unauthenticated)?;
             Ok(AuthenticatedIdentity {
+                user_id: None,
                 principal: Principal {
                     issuer: "fixture".into(),
                     kind: if subject == "user" {

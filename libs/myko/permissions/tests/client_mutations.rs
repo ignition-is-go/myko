@@ -42,6 +42,7 @@ impl Authenticator for Identity {
                 return Err(AuthError::Unauthenticated);
             }
             Ok(AuthenticatedIdentity {
+                user_id: None,
                 principal: Principal {
                     issuer: "fixture".into(),
                     subject: "administrator".into(),

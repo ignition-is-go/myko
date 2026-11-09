@@ -52,6 +52,7 @@ struct Fixture {
 
 fn identity(subject: &str) -> TestResult<AuthenticatedIdentity> {
     Ok(AuthenticatedIdentity {
+        user_id: None,
         principal: Principal {
             issuer: "fixture".into(),
             subject: subject.into(),

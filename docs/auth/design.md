@@ -450,3 +450,13 @@ Pending requests, codes, clients and issued tokens are bounded, process-local
 state. Restarting the service requires clients to sign in again. Multiple
 instances need routing affinity; durable shared OAuth state is not provided.
 Only SHA-256 digests of pending requests/codes/tokens are used as lookup keys.
+
+### Authenticated application users in handlers
+
+An authenticator can supply `AuthenticatedIdentity.user_id` as a typed shared
+application `UserId`, independently of its provider subject or connection ID.
+Every request context exposes `user_id()`, and command handlers use
+`ctx.user_id()?`. The accessor returns the verified user and an ordinary error
+when no live authenticated application user is available; nested requests retain
+it. Hosts choose the user mapping during authentication. This supplies caller
+identity only and does not add row-level authorization rules.

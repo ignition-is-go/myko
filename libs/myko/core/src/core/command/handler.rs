@@ -27,6 +27,19 @@ pub struct CommandContext {
 }
 
 impl CommandContext {
+    /// Resolve the authenticated application user from this request.
+    /// # Errors
+    /// Returns a command error if no live authenticated user is available.
+    pub fn user_id(&self) -> Result<&crate::identity::UserId, CommandError> {
+        self.req.user_id().map_err(|error| {
+            CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                error.to_string(),
+            )
+        })
+    }
+
     /// Create a new `CommandContext`.
     #[must_use]
     pub const fn new(

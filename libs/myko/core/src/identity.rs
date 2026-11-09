@@ -1,46 +1,7 @@
 //! Stable application user references supplied by a host authentication provider.
 //! These IDs carry no grants and are distinct from permission principal IDs.
-use serde::{Deserialize, Serialize};
-use std::sync::Arc;
+pub use myko_auth::identity::UserId;
 
-/// A stable application-scoped profile identifier, never an authentication credential.
-#[derive(
-    Clone, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize, crate::TS,
-)]
-#[ts(crate = "crate::ts_rs")]
-#[serde(transparent)]
-pub struct UserId(pub String);
-
-impl From<String> for UserId {
-    fn from(value: String) -> Self {
-        Self(value)
-    }
-}
-impl From<&str> for UserId {
-    fn from(value: &str) -> Self {
-        Self(value.to_owned())
-    }
-}
-impl From<Arc<str>> for UserId {
-    fn from(value: Arc<str>) -> Self {
-        Self(value.to_string())
-    }
-}
-impl From<UserId> for Arc<str> {
-    fn from(value: UserId) -> Self {
-        value.0.into()
-    }
-}
-impl AsRef<str> for UserId {
-    fn as_ref(&self) -> &str {
-        &self.0
-    }
-}
-impl std::fmt::Display for UserId {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
 impl crate::query::Filterable for UserId {
     type Filter = crate::query::EqFilter<Self>;
 }
@@ -58,5 +19,69 @@ mod tests {
         assert_eq!(serde_json::to_value(&id).ok(), Some(wire.clone()));
         assert_eq!(serde_json::from_value::<UserId>(wire).ok(), Some(id));
         accepts_filter::<UserId>();
+    }
+}
+
+#[cfg(test)]
+mod tests_context {
+    use super::UserId;
+    use myko_auth::{
+        AuthError, AuthSession, AuthenticatedIdentity, AuthorizationRequest, Authorizer, Principal,
+        PrincipalKind,
+    };
+    use std::{
+        sync::Arc,
+        time::{Duration, SystemTime},
+    };
+    struct Policy;
+    impl Authorizer for Policy {
+        fn authorize(
+            &self,
+            _: &AuthenticatedIdentity,
+            _: AuthorizationRequest<'_>,
+        ) -> Result<(), AuthError> {
+            Ok(())
+        }
+    }
+    #[test]
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "assertions fail the test; Result propagates setup errors"
+    )]
+    fn request_user_is_typed_shared_and_requires_live_authority()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let session = AuthSession::new(
+            AuthenticatedIdentity {
+                user_id: Some(UserId::from("shared-user")),
+                principal: Principal {
+                    issuer: "issuer".into(),
+                    subject: "provider-subject".into(),
+                    kind: PrincipalKind::User,
+                },
+                client_id: None,
+                scopes: vec![],
+                delegation: vec![],
+                claims: serde_json::Value::Null,
+                expires_at: SystemTime::now()
+                    .checked_add(Duration::from_hours(1))
+                    .ok_or("expiry overflow")?,
+            },
+            Arc::new(Policy),
+        );
+        let request = crate::request::RequestContext::from_client(
+            "transaction".into(),
+            "socket-id".into(),
+            uuid::Uuid::nil(),
+        );
+        assert_eq!(request.user_id(), Err(AuthError::Unauthenticated));
+        let request = request.with_auth(Some(session.clone()));
+        assert_eq!(request.user_id().ok(), Some(&UserId::from("shared-user")));
+        assert_eq!(
+            request.child("nested").user_id().ok(),
+            request.user_id().ok()
+        );
+        session.revoke();
+        assert_eq!(request.user_id(), Err(AuthError::Revoked));
+        Ok(())
     }
 }

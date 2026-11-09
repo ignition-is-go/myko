@@ -1,4 +1,5 @@
 //! Verified identities and app-owned local authorization.
+pub mod identity;
 pub mod oauth;
 pub mod public_access;
 pub mod scopes;
@@ -37,6 +38,9 @@ pub struct Principal {
 /// Claims are verified by the authenticator. Local policy must honor their limits.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AuthenticatedIdentity {
+    /// Stable application user supplied by the authenticator, distinct from the provider subject.
+    #[serde(default)]
+    pub user_id: Option<identity::UserId>,
     pub principal: Principal,
     pub client_id: Option<String>,
     pub scopes: Vec<String>,

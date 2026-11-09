@@ -80,6 +80,7 @@ impl Authorizer for Policy {
 fn session(lifetime: Duration) -> AuthSession {
     AuthSession::new(
         AuthenticatedIdentity {
+            user_id: None,
             principal: Principal {
                 issuer: "fixture".into(),
                 subject: "service:executor-7".into(),

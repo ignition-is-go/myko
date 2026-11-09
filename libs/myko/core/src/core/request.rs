@@ -82,6 +82,22 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
+    /// Resolve the authenticated application user supplied by the host.
+    /// # Errors
+    /// Rejects missing, expired or revoked authority and identities without a user.
+    pub fn user_id(&self) -> Result<&crate::identity::UserId, myko_auth::AuthError> {
+        let session = self
+            .auth
+            .as_ref()
+            .ok_or(myko_auth::AuthError::Unauthenticated)?;
+        session.check()?;
+        session
+            .identity()
+            .and_then(|identity| identity.user_id.as_ref())
+            .filter(|id| !id.as_ref().is_empty())
+            .ok_or(myko_auth::AuthError::Unauthenticated)
+    }
+
     #[must_use]
     pub fn with_auth(mut self, auth: Option<myko_auth::AuthSession>) -> Self {
         self.auth = auth;

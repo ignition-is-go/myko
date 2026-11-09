@@ -341,6 +341,7 @@ impl Auth0Authenticator {
             .map(str::to_owned)
             .collect();
         Ok(AuthenticatedIdentity {
+            user_id: None,
             principal: Principal {
                 issuer: self.issuer.identifier.clone(),
                 subject,

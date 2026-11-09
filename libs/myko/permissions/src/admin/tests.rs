@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime};
 
 fn identity(subject: &str) -> AuthenticatedIdentity {
     AuthenticatedIdentity {
+        user_id: None,
         principal: Principal {
             issuer: "https://login.example/".into(),
             subject: subject.into(),

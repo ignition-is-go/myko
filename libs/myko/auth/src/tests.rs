@@ -24,6 +24,7 @@ impl Authorizer for Policy {
 }
 fn identity(expires_at: SystemTime) -> AuthenticatedIdentity {
     AuthenticatedIdentity {
+        user_id: None,
         principal: Principal {
             issuer: "issuer".into(),
             subject: "service-1".into(),

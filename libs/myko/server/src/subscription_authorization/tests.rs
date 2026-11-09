@@ -19,6 +19,7 @@ impl Authenticator for Identity {
     ) -> BoxFuture<'_, Result<AuthenticatedIdentity, AuthError>> {
         Box::pin(async {
             Ok(AuthenticatedIdentity {
+                user_id: None,
                 principal: Principal {
                     issuer: "fixture".into(),
                     subject: "user".into(),

@@ -47,6 +47,7 @@ fn fixture() -> TestResult<(OAuthServer, AuthSession)> {
         vec!["http://127.0.0.1:9000/callback".into()],
     )?;
     let identity = AuthenticatedIdentity {
+        user_id: None,
         principal: Principal {
             issuer: "https://login.example".into(),
             subject: "user-1".into(),

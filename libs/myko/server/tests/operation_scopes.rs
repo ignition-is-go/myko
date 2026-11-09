@@ -105,6 +105,7 @@ impl Authenticator for TestIdentity {
                 return Err(AuthError::Unauthenticated);
             }
             Ok(AuthenticatedIdentity {
+                user_id: None,
                 principal: Principal {
                     issuer: "fixture".into(),
                     subject: "operators-group-member".into(),

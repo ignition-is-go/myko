@@ -183,6 +183,7 @@ impl ReportHandler for InspectPermissionPrincipal {
                         )
                     })?;
                 let identity = AuthenticatedIdentity {
+                    user_id: None,
                     principal: Principal {
                         issuer: principal.issuer.clone(),
                         subject: principal.subject.clone(),

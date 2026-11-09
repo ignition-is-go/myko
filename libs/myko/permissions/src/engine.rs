@@ -383,6 +383,7 @@ pub fn has_administrator(document: &PermissionDocument) -> bool {
         .filter(|principal| principal.enabled)
         .any(|principal| {
             let identity = AuthenticatedIdentity {
+                user_id: None,
                 principal: Principal {
                     issuer: principal.issuer.clone(),
                     subject: principal.subject.clone(),
@@ -490,6 +491,7 @@ mod tests {
     }
     fn identity() -> AuthenticatedIdentity {
         AuthenticatedIdentity {
+            user_id: None,
             principal: Principal {
                 issuer: "fixture".into(),
                 subject: "admin".into(),
