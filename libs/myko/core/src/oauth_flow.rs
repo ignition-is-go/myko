@@ -1,6 +1,8 @@
 //! Framework authentication commands, bound to a host's installed OAuth service.
 pub use myko_auth::oauth::{AuthorizationInfo, OAuthFlowOperation, OAuthFlowReply};
 
+crate::register_typegen_type!(AuthorizationInfo, OAuthFlowOperation, OAuthFlowReply);
+
 #[crate::myko_command(OAuthFlowReply)]
 pub struct MykoOAuthRequest {
     pub operation: OAuthFlowOperation,

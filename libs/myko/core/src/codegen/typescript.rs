@@ -1311,6 +1311,30 @@ mod tests {
     }
 
     #[test]
+    fn framework_oauth_command_exports_its_complete_wire_contract() {
+        let _serial = typegen_test_serial();
+        let dir = unique_bindings_dir("oauth-wire-contract");
+        let catalog = TypegenCatalog::collect("myko");
+        let generated = generate_item_types_for_catalog(&dir.to_string_lossy(), &catalog);
+        assert!(
+            generated.is_ok(),
+            "OAuth command bindings should render: {generated:?}"
+        );
+        for name in [
+            "MykoOAuthRequest",
+            "OAuthFlowOperation",
+            "OAuthFlowReply",
+            "AuthorizationInfo",
+        ] {
+            assert!(
+                dir.join(format!("{name}.ts")).exists(),
+                "missing generated OAuth type: {name}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn aggregate_catalog_exports_framework_filter_dependencies() {
         let _serial = typegen_test_serial();
         let dir = unique_bindings_dir("aggregate-framework-types");
