@@ -351,3 +351,34 @@ let (rows, loaded, error) = myko_leptos::live_view_state(|| MyView { /* ... */ }
 callbacks from a retired subscription cannot restore its rows or denial message.
 Raw Rust clients can use `watch_query_raw_state` and `watch_view_raw_state` for the
 same data/readiness/error separation; their original data-only methods are retained.
+
+## MCP OAuth resource discovery
+
+An HTTP MCP host can advertise an external OAuth authorization server through
+`OAuthResource` and `MykoAuthProvider::with_mcp_oauth`. The resource is the
+public canonical MCP endpoint URI, not a socket address inferred from a request.
+The host supplies configuration explicitly; Myko never reads an issuer or
+resource from environment variables or untrusted forwarding headers.
+
+```rust,ignore
+let resource = myko_auth::OAuthResource::new(
+    "https://api.example.com/myko/mcp",
+    vec!["https://login.example.com/".into()],
+)?.with_scopes(vec!["mcp:use".into()])?;
+let provider = MykoAuthProvider::new(authentication, authorization)
+    .with_mcp_oauth(resource);
+```
+
+This mode requires authenticated admission for MCP, including initialization,
+while preserving the configured anonymous policy for the Myko WebSocket gateway.
+The router exposes RFC 9728 protected-resource metadata at both the root well-known
+URI and its resource-path variant. A 401 challenge points to that metadata and
+advertises configured scopes. Metadata retrieval itself requires no credential.
+HTTPS is required except for explicit loopback HTTP development endpoints.
+
+The authenticator must accept OAuth access tokens for the advertised resource,
+validate signature, issuer, audience, expiry and any identity policy, and return
+a trusted identity. Local authorization still decides operation access. This API
+does not turn Myko into an authorization server, register clients, or implement
+login or consent screens. Clients obtain tokens from the advertised provider
+using its supported registration mechanism and authorization-code flow with PKCE.

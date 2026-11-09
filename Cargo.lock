@@ -4794,6 +4794,7 @@ dependencies = [
  "inventory",
  "serde",
  "serde_json",
+ "url",
  "uuid",
 ]
 

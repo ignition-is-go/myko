@@ -290,15 +290,40 @@ pub(crate) async fn route_connection_with_paths_and_auth(
 
     let path = head.path.split('?').next().unwrap_or(&head.path);
 
+    if head.method == "GET"
+        && let Some(resource) = provider.as_ref().and_then(|provider| provider.mcp_oauth())
+        && (path == resource.metadata_path() || path == "/.well-known/oauth-protected-resource")
+    {
+        let body = serde_json::to_vec(&resource.metadata())?;
+        write_full(
+            &mut stream,
+            200,
+            "OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("Cache-Control", "no-store"),
+            ],
+            &body,
+        )
+        .await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    }
+
     let auth = if path == websocket_path || path == mcp_path {
         if let Some(provider) = provider {
             let result = match credentials_from_head(&head) {
-                Ok(credentials) => tokio::time::timeout(
-                    std::time::Duration::from_secs(10),
-                    provider.admit(credentials),
-                )
-                .await
-                .unwrap_or(Err(AuthError::Unavailable)),
+                Ok(credentials) => {
+                    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                        if path == mcp_path && provider.mcp_oauth().is_some() {
+                            provider.authenticate(credentials).await
+                        } else {
+                            provider.admit(credentials).await
+                        }
+                    })
+                    .await
+                    .unwrap_or(Err(AuthError::Unavailable))
+                }
                 Err(error) => Err(error),
             };
             match result {
@@ -314,11 +339,15 @@ pub(crate) async fn route_connection_with_paths_and_auth(
                     } else {
                         "Unauthorized"
                     };
+                    let challenge = provider
+                        .mcp_oauth()
+                        .filter(|_| path == mcp_path)
+                        .map_or_else(|| "Bearer".to_owned(), myko_auth::OAuthResource::challenge);
                     write_full(
                         &mut stream,
                         status,
                         reason,
-                        &[("WWW-Authenticate", "Bearer"), ("Content-Length", "0")],
+                        &[("WWW-Authenticate", &challenge), ("Content-Length", "0")],
                         b"",
                     )
                     .await?;

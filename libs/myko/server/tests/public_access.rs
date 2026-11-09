@@ -107,11 +107,24 @@ impl Drop for Fixture {
     }
 }
 async fn fixture(access: GatewayAccess) -> TestResult<Fixture> {
+    fixture_oauth(access, false).await
+}
+async fn fixture_oauth(access: GatewayAccess, oauth: bool) -> TestResult<Fixture> {
     let server = Arc::new(MykoServer::builder().build());
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let runtime = server.clone();
-    let provider = Arc::new(MykoAuthProvider::new(Arc::new(Reject), Arc::new(Policy)));
+    let mut provider = MykoAuthProvider::new(Arc::new(Reject), Arc::new(Policy));
+    if oauth {
+        provider = provider.with_mcp_oauth(
+            myko_auth::OAuthResource::new(
+                format!("http://{addr}/myko/mcp"),
+                vec!["https://login.example/".into()],
+            )?
+            .with_scopes(vec!["mcp:use".into()])?,
+        );
+    }
+    let provider = Arc::new(provider);
     let task = tokio::spawn(async move {
         while let Ok((stream, peer)) = listener.accept().await {
             let ctx = Arc::new(runtime.ctx());
@@ -123,6 +136,42 @@ async fn fixture(access: GatewayAccess) -> TestResult<Fixture> {
         }
     });
     Ok(Fixture { server, addr, task })
+}
+
+#[tokio::test]
+async fn oauth_mcp_discovery_requires_login_without_disabling_public_websocket_operations()
+-> TestResult {
+    let f = fixture_oauth(GatewayAccess::Full, true).await?;
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("http://{}/myko/mcp", f.addr))
+        .json(&json!({"jsonrpc":"2.0","id":1,"method":"initialize"}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    assert_eq!(response.headers().get("www-authenticate").and_then(|v| v.to_str().ok()),
+        Some(format!("Bearer resource_metadata=\"http://{}/.well-known/oauth-protected-resource/myko/mcp\", scope=\"mcp:use\"",f.addr).as_str()));
+    for path in [
+        "/.well-known/oauth-protected-resource",
+        "/.well-known/oauth-protected-resource/myko/mcp",
+    ] {
+        let response = client
+            .get(format!("http://{}{path}", f.addr))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let metadata: Value = response.json().await?;
+        assert_eq!(
+            metadata.get("resource"),
+            Some(&json!(format!("http://{}/myko/mcp", f.addr)))
+        );
+        assert_eq!(
+            metadata.get("authorization_servers"),
+            Some(&json!(["https://login.example/"]))
+        );
+    }
+    let _socket = connect(&f).await?;
+    Ok(())
 }
 async fn connect(f: &Fixture) -> TestResult<Socket> {
     Ok(

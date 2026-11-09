@@ -1,7 +1,9 @@
 //! Verified identities and app-owned local authorization.
+pub mod oauth;
 pub mod public_access;
 pub mod scopes;
 use futures::future::BoxFuture;
+pub use oauth::OAuthResource;
 pub use scopes::{
     EntityAction, EntityScope, EntityScopeRegistration, OperationScopeRegistration,
     PermissionCatalog, ScopeDecision, ScopeInheritanceRegistration, ScopePolicy, ScopedAuthorizer,
@@ -174,6 +176,7 @@ pub struct MykoAuthProvider {
     authorizer: Arc<dyn Authorizer>,
     anonymous_access: bool,
     live_permissions: bool,
+    mcp_oauth: Option<OAuthResource>,
 }
 impl MykoAuthProvider {
     pub fn new(authenticator: Arc<dyn Authenticator>, authorizer: Arc<dyn Authorizer>) -> Self {
@@ -182,8 +185,22 @@ impl MykoAuthProvider {
             authorizer,
             anonymous_access: false,
             live_permissions: false,
+            mcp_oauth: None,
         }
     }
+    /// Require authenticated MCP admission and advertise its OAuth resource.
+    /// Anonymous Myko WebSocket operations retain their configured policy.
+    #[must_use]
+    pub fn with_mcp_oauth(mut self, resource: OAuthResource) -> Self {
+        self.mcp_oauth = Some(resource);
+        self
+    }
+
+    #[must_use]
+    pub const fn mcp_oauth(&self) -> Option<&OAuthResource> {
+        self.mcp_oauth.as_ref()
+    }
+
     /// Keep authenticated transports alive across permission edits.
     /// Transports must reauthorize subscriptions and queued data before delivery.
     /// Credential expiry, logout, and explicit session revocation still apply.
