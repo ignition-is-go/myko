@@ -23,7 +23,7 @@ use myko::{
     view::ViewRegistration,
     wire::{WrappedCommand, WrappedQuery, WrappedReport, WrappedView},
 };
-use myko_auth::{AuthSession, AuthorizationRequest, OperationKind};
+use myko_auth::{AuthError, AuthSession, AuthorizationRequest, OperationKind};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -52,6 +52,10 @@ pub enum Executor {
         ctx: Arc<MykoServerContext>,
         session: AuthSession,
     },
+}
+
+fn operation_auth_error(error: AuthError, kind: &str, operation: &str) -> String {
+    format!("{error} for {kind} {operation}")
 }
 
 impl Executor {
@@ -85,6 +89,30 @@ impl Executor {
             .is_ok()
     }
 
+    /// An advisory preflight, never an execution grant. Actual arguments are checked at dispatch.
+    pub(crate) fn permission_snapshot(&self, kind: &str, operation: &str) -> Value {
+        let Self::External { session, .. } = self else {
+            return json!({"status": "unknown", "reason": "No local caller policy is available"});
+        };
+        let kind = match kind {
+            "query" => OperationKind::Query,
+            "view" => OperationKind::View,
+            "report" => OperationKind::Report,
+            "command" => OperationKind::Command,
+            _ => return json!({"status": "unknown"}),
+        };
+        match session.authorize(AuthorizationRequest::Execute {
+            kind,
+            operation,
+            arguments: &json!({}),
+        }) {
+            Ok(()) => json!({"status": "allowed", "basis": "empty-argument preflight"}),
+            Err(error) => {
+                json!({"status": "denied", "reason": error.to_string(), "basis": "empty-argument preflight"})
+            }
+        }
+    }
+
     /// Execute a query and return its current items as JSON.
     /// # Errors
     ///
@@ -100,7 +128,7 @@ impl Executor {
                         operation: query_id,
                         arguments: &args,
                     })
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| operation_auth_error(error, "query", query_id))?;
                 let result =
                     in_process_execute_query(ctx.clone(), query_id, args.clone(), Some(session));
                 session
@@ -109,7 +137,7 @@ impl Executor {
                         operation: query_id,
                         arguments: &args,
                     })
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| operation_auth_error(error, "query", query_id))?;
                 result
             }
         }
@@ -132,7 +160,7 @@ impl Executor {
                         operation: report_id,
                         arguments: &args,
                     })
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| operation_auth_error(error, "report", report_id))?;
                 let result =
                     in_process_execute_report(ctx.clone(), report_id, args.clone(), Some(session))
                         .await;
@@ -142,7 +170,7 @@ impl Executor {
                         operation: report_id,
                         arguments: &args,
                     })
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| operation_auth_error(error, "report", report_id))?;
                 result
             }
         }
@@ -163,7 +191,7 @@ impl Executor {
                         operation: view_id,
                         arguments: &args,
                     })
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| operation_auth_error(error, "view", view_id))?;
                 let result =
                     in_process_execute_view(ctx.clone(), view_id, args.clone(), Some(session));
                 session
@@ -172,7 +200,7 @@ impl Executor {
                         operation: view_id,
                         arguments: &args,
                     })
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| operation_auth_error(error, "view", view_id))?;
                 result
             }
         }
@@ -193,10 +221,12 @@ impl Executor {
                         operation: command_id,
                         arguments: &args,
                     })
-                    .map_err(|error| error.to_string())?;
+                    .map_err(|error| operation_auth_error(error, "command", command_id))?;
                 let result =
                     in_process_execute_command(ctx.clone(), command_id, args, Some(session));
-                session.check().map_err(|error| error.to_string())?;
+                session
+                    .check()
+                    .map_err(|error| operation_auth_error(error, "command", command_id))?;
                 result
             }
         }

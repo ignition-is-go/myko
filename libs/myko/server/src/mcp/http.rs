@@ -97,27 +97,33 @@ async fn authenticate_post(
     .map(Some)
 }
 
+const fn auth_error_status(error: AuthError) -> (u16, &'static str, &'static str) {
+    match error {
+        AuthError::Forbidden => (403, "Forbidden", "permission_denied"),
+        AuthError::Unavailable => (503, "Service Unavailable", "authentication_unavailable"),
+        AuthError::Expired => (401, "Unauthorized", "credential_expired"),
+        AuthError::Revoked => (401, "Unauthorized", "session_revoked"),
+        AuthError::Unauthenticated => (401, "Unauthorized", "authentication_required"),
+    }
+}
+
 async fn write_auth_error(
     mut stream: TcpStream,
     provider: &MykoAuthProvider,
     error: AuthError,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let (status, reason) = if error == AuthError::Unavailable {
-        (503, "Service Unavailable")
-    } else {
-        (401, "Unauthorized")
-    };
+    let (status, reason, code) = auth_error_status(error);
     let challenge = provider
         .mcp_oauth()
         .map_or_else(|| "Bearer".to_string(), myko_auth::OAuthResource::challenge);
-    write_full(
-        &mut stream,
-        status,
-        reason,
-        &[("WWW-Authenticate", &challenge)],
-        &[],
-    )
-    .await?;
+    let mut headers = vec![("Content-Type", "application/json")];
+    if status == 401 {
+        headers.push(("WWW-Authenticate", &challenge));
+    }
+    let body = serde_json::to_vec(&serde_json::json!({
+        "error": code, "error_description": error.to_string()
+    }))?;
+    write_full(&mut stream, status, reason, &headers, &body).await?;
     shutdown_cleanly(stream).await;
     Ok(())
 }
@@ -320,6 +326,22 @@ async fn read_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_denial_is_not_an_authentication_challenge() {
+        assert_eq!(
+            auth_error_status(AuthError::Forbidden),
+            (403, "Forbidden", "permission_denied")
+        );
+        for error in [
+            AuthError::Unauthenticated,
+            AuthError::Expired,
+            AuthError::Revoked,
+        ] {
+            assert_eq!(auth_error_status(error).0, 401);
+        }
+        assert_eq!(auth_error_status(AuthError::Unavailable).0, 503);
+    }
 
     fn head_with(headers: Vec<(&str, &str)>) -> HttpRequestHead {
         HttpRequestHead {

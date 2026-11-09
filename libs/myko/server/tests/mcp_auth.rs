@@ -3,7 +3,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     time::{Duration, SystemTime},
 };
@@ -235,7 +235,11 @@ async fn mcp_preserves_service_identity_and_denies_execution_before_side_effects
     let before = MUTATIONS.load(Ordering::SeqCst);
     let denied = post(&fixture, "tools/call", json!({"name":"execute", "arguments":{"code":"return await myko.command('ForbiddenMutation', {});"}})).await?;
     assert_eq!(denied.pointer("/result/isError"), Some(&Value::Bool(true)));
-    assert!(denied.to_string().contains("permission denied"));
+    assert!(
+        denied
+            .to_string()
+            .contains("permission denied for command ForbiddenMutation")
+    );
     assert_eq!(MUTATIONS.load(Ordering::SeqCst), before);
     Ok(())
 }
@@ -314,5 +318,90 @@ async fn mcp_sse_closes_when_credential_expires() -> TestResult {
     let mut bytes = Vec::new();
     timeout(Duration::from_secs(3), stream.read_to_end(&mut bytes)).await??;
     assert!(String::from_utf8(bytes)?.starts_with("HTTP/1.1 200 OK\r\n"));
+    Ok(())
+}
+
+struct DiscoverablePolicy(AtomicBool);
+impl Authorizer for DiscoverablePolicy {
+    fn authorize(
+        &self,
+        identity: &AuthenticatedIdentity,
+        request: AuthorizationRequest<'_>,
+    ) -> std::result::Result<(), AuthError> {
+        if matches!(request, AuthorizationRequest::Discover { .. }) {
+            return Ok(());
+        }
+        if !self.0.load(Ordering::SeqCst) {
+            return Err(AuthError::Forbidden);
+        }
+        Policy.authorize(identity, request)
+    }
+}
+
+#[tokio::test]
+async fn search_annotations_are_advisory_and_execution_remains_enforced() -> TestResult {
+    let original = session(Duration::from_secs(30));
+    let identity = original.identity().ok_or("missing identity")?.clone();
+    let policy = Arc::new(DiscoverablePolicy(AtomicBool::new(true)));
+    let fixture = fixture(AuthSession::new(identity, policy.clone())).await?;
+    for details in [false, true] {
+        let response = post(
+            &fixture,
+            "tools/call",
+            json!({"name":"search", "arguments":{"details":details}}),
+        )
+        .await?;
+        let data = content(&response)?;
+        assert!(
+            data.get("permissionNotice")
+                .ok_or("missing notice")?
+                .as_str()
+                .ok_or("missing notice")?
+                .contains("Permissions change live")
+        );
+        let ops = data
+            .get("operations")
+            .and_then(Value::as_array)
+            .ok_or("missing operations")?;
+        let allowed = ops
+            .iter()
+            .find(|op| {
+                op.get("id").or_else(|| op.pointer("/operation/id"))
+                    == Some(&json!("CallerIdentity"))
+            })
+            .ok_or("missing allowed operation")?;
+        let denied = ops
+            .iter()
+            .find(|op| {
+                op.get("id").or_else(|| op.pointer("/operation/id"))
+                    == Some(&json!("ForbiddenMutation"))
+            })
+            .ok_or("missing denied operation")?;
+        assert_eq!(
+            allowed.pointer("/authorization/status"),
+            Some(&json!("allowed"))
+        );
+        assert_eq!(
+            denied.pointer("/authorization/status"),
+            Some(&json!("denied"))
+        );
+    }
+    let before = MUTATIONS.load(Ordering::SeqCst);
+    let response = post(&fixture, "tools/call", json!({"name":"execute", "arguments":{"code":"return await myko.command('ForbiddenMutation', {});"}})).await?;
+    assert_eq!(response.pointer("/result/isError"), Some(&json!(true)));
+    assert_eq!(MUTATIONS.load(Ordering::SeqCst), before);
+    policy.0.store(false, Ordering::SeqCst);
+    let response = post(&fixture, "tools/call", json!({"name":"execute", "arguments":{"code":"return await myko.command('CallerIdentity', {});"}})).await?;
+    assert_eq!(response.pointer("/result/isError"), Some(&json!(true)));
+    let response = post(
+        &fixture,
+        "tools/call",
+        json!({"name":"search", "arguments":{"query":"CallerIdentity"}}),
+    )
+    .await?;
+    assert_eq!(
+        content(&response)?.pointer("/operations/0/authorization/status"),
+        Some(&json!("denied"))
+    );
     Ok(())
 }

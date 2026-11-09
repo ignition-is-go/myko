@@ -176,7 +176,9 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
             description: "Search the index of available Myko queries/views/reports/commands. \
                 Returns compact {id, kind, args, outputType} entries — call this before \
                 `execute` to find operation ids and argument shapes. Set `details: true` to \
-                get wire argument names, input/output types, result wrappers, and a validated example."
+                get wire argument names, input/output types, result wrappers, and a validated example. \
+                Permission annotations are advisory preflight snapshots: live permissions and arguments \
+                can change the decision. Do not retain old permission conclusions; every call is reauthorized."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -369,15 +371,27 @@ fn handle_search(
         })
         .collect();
 
-    if args
+    let details = args
         .get("details")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        json!({ "operations": operations.iter().map(|op| op.describe()).collect::<Vec<_>>() })
-    } else {
-        json!({ "operations": operations })
-    }
+        .unwrap_or(false);
+    let operations = operations
+        .iter()
+        .map(|op| {
+            let mut entry = if details { op.describe() } else { json!(op) };
+            if let Value::Object(fields) = &mut entry {
+                fields.insert(
+                    "authorization".into(),
+                    executor.permission_snapshot(&op.kind, &op.id),
+                );
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "operations": operations,
+        "permissionNotice": "Advisory snapshot only. Permissions change live; do not rely on previously gathered permission information. Preflight uses empty arguments; actual arguments may change authorization. Every execution checks current permissions. Refresh search after a denial. Discovery restrictions may hide operations."
+    })
 }
 
 async fn handle_execute(
