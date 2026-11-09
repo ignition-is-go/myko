@@ -517,6 +517,22 @@ impl WsHandler {
                 return true;
             }
         }
+        // Entity declarations apply even to trusted gateways without an auth provider.
+        let mutability = match &mut message {
+            MykoMessage::Event(event) => {
+                event.sanitize_null_bytes();
+                myko_auth::client_events::authorize(&event.item_type)
+            }
+            MykoMessage::EventBatch(events) => events.iter_mut().try_for_each(|event| {
+                event.sanitize_null_bytes();
+                myko_auth::client_events::authorize(&event.item_type)
+            }),
+            _ => Ok(()),
+        };
+        if let Err(error) = mutability {
+            Self::reject_incoming(state, &message, error.to_string());
+            return true;
+        }
         if state
             .auth
             .as_ref()

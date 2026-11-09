@@ -460,3 +460,13 @@ Every request context exposes `user_id()`, and command handlers use
 when no live authenticated application user is available; nested requests retain
 it. Hosts choose the user mapping during authentication. This supplies caller
 identity only and does not add row-level authorization rules.
+
+### Server-owned entities
+
+Libraries can declare an entity server-owned with
+`myko_auth::client_events::ServerOwnedEntityRegistration` through inventory.
+Myko rejects raw client SET/DEL events for that type before app grants can allow
+them. The WebSocket gateway enforces the same contract without an auth provider,
+normalizes event names before checking, and rejects an entire mixed batch before
+applying any events. This is an entity-wide ingress contract, not a row policy.
+Trusted server events and explicitly exposed commands remain available.

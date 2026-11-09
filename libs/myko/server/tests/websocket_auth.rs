@@ -1,6 +1,7 @@
 #![allow(clippy::panic_in_result_fn)]
 use futures_util::{SinkExt, StreamExt, future::BoxFuture};
 use myko::common::to_value::ToValue;
+use myko::prelude::{EventPublishing, Querying, RegistryScoped, RequestScoped};
 use myko::{
     entities::demo::{DemoStatusId, DemoTask, DemoTaskId},
     server::{PersistError, Persister},
@@ -529,6 +530,156 @@ async fn live_permission_edits_stop_denied_data_but_keep_socket_and_other_subscr
             matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "restored" && response.upserts.len() == 1)
         );
         assert_eq!(f.authenticated.load(Ordering::Acquire), 1);
+    }
+    Ok(())
+}
+
+#[myko::prelude::myko_item]
+pub struct ServerOwnedFixture {
+    value: i32,
+}
+myko::submit! {
+    myko_auth::client_events::ServerOwnedEntityRegistration {entity_type:"ServerOwnedFixture"}
+}
+struct AllowAll;
+impl Authorizer for AllowAll {
+    fn authorize(
+        &self,
+        _: &AuthenticatedIdentity,
+        _: AuthorizationRequest<'_>,
+    ) -> Result<(), AuthError> {
+        Ok(())
+    }
+}
+async fn server_owned_fixture(
+    authenticated: bool,
+) -> TestResult<(
+    Arc<MykoServer>,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+)> {
+    let server = Arc::new(MykoServer::builder().build());
+    let kept = ServerOwnedFixture {
+        id: "kept".into(),
+        value: 1,
+    };
+    server.ctx().set(&kept)?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let runtime = server.clone();
+    let provider = Arc::new(MykoAuthProvider::new(
+        Arc::new(Identity(Arc::new(AtomicUsize::new(0)))),
+        Arc::new(AllowAll),
+    ));
+    let task = tokio::spawn(async move {
+        while let Ok((stream, peer)) = listener.accept().await {
+            let server = runtime.clone();
+            let provider = provider.clone();
+            tokio::spawn(async move {
+                if authenticated {
+                    myko_server::router::route_connection_with_auth(
+                        stream,
+                        peer,
+                        Arc::new(server.ctx()),
+                        server.server_info(),
+                        GatewayAccess::Full,
+                        provider,
+                    )
+                    .await
+                } else {
+                    myko_server::router::route_connection(
+                        stream,
+                        peer,
+                        Arc::new(server.ctx()),
+                        server.server_info(),
+                    )
+                    .await
+                }
+            });
+        }
+    });
+    Ok((server, addr, task))
+}
+#[tokio::test]
+async fn server_owned_entities_reject_raw_events_without_auth_and_with_permissive_policy()
+-> TestResult {
+    for authenticated in [false, true] {
+        let (server, addr, task) = server_owned_fixture(authenticated).await?;
+        for binary in [false, true] {
+            let mut request = format!("ws://{addr}/myko").into_client_request()?;
+            if authenticated {
+                request
+                    .headers_mut()
+                    .insert("authorization", "Bearer user".parse()?);
+            }
+            let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+            for change in [MEventType::SET, MEventType::DEL] {
+                let mut attack = MEvent::from_item(
+                    &ServerOwnedFixture {
+                        id: "kept".into(),
+                        value: 99,
+                    },
+                    change,
+                    "untrusted",
+                );
+                // Normalization must not permit bypassing the declaration.
+                attack.item_type = "ServerOwned\0Fixture".into();
+                for message in [
+                    MykoMessage::Event(attack.clone()),
+                    MykoMessage::EventBatch(vec![event("allowed"), attack.clone()]),
+                ] {
+                    send(&mut socket, &message, binary).await?;
+                    send(
+                        &mut socket,
+                        &MykoMessage::Ping(PingData {
+                            id: "barrier".into(),
+                            timestamp: 0,
+                        }),
+                        binary,
+                    )
+                    .await?;
+                    loop {
+                        let frame = timeout(Duration::from_secs(3), socket.next())
+                            .await?
+                            .ok_or("connection closed")??;
+                        let response: MykoMessage = match frame {
+                            Message::Text(value) => serde_json::from_str(&value)?,
+                            Message::Binary(value) => ciborium::de::from_reader(value.as_ref())?,
+                            _ => continue,
+                        };
+                        if matches!(response, MykoMessage::Ping(_)) {
+                            break;
+                        }
+                    }
+                    assert_eq!(
+                        server
+                            .registry
+                            .get_or_create("ServerOwnedFixture")
+                            .snapshot()
+                            .len(),
+                        1
+                    );
+                    assert!(
+                        server
+                            .registry
+                            .get_or_create("DemoTask")
+                            .snapshot()
+                            .is_empty()
+                    );
+                }
+            }
+            socket.close(None).await?;
+        }
+        let stored = server
+            .registry
+            .get_or_create("ServerOwnedFixture")
+            .snapshot();
+        assert!(stored.iter().all(|(_, item)| {
+            item.as_any()
+                .downcast_ref::<ServerOwnedFixture>()
+                .is_some_and(|item| item.value == 1)
+        }));
+        task.abort();
     }
     Ok(())
 }

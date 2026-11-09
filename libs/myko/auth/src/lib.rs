@@ -1,4 +1,5 @@
 //! Verified identities and app-owned local authorization.
+pub mod client_events;
 pub mod identity;
 pub mod oauth;
 pub mod public_access;
@@ -487,6 +488,10 @@ impl AuthSession {
     /// # Errors
     /// Returns an error when the session or local policy rejects the request.
     pub fn authorize(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
+        if let AuthorizationRequest::ClientEvent { entity_type, .. } = request {
+            self.check()?;
+            client_events::authorize(entity_type)?;
+        }
         for _ in 0..3 {
             self.check()?;
             let revision = self.policy_revision();
