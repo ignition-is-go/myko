@@ -175,3 +175,6 @@ root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "m
 
 [tasks.check-subscription-errors-wasm]
 root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-leptos", "--target", "wasm32-unknown-unknown"]
+
+[tasks.test-identity]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "identity::tests"]

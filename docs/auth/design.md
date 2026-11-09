@@ -34,6 +34,16 @@ Its `GatewayAccess::ReadOnly` ceiling applies even when the provider permits a m
 Without a configured provider, existing trusted entry points retain their prior behavior.
 Expose only the authenticated entry points to untrusted clients.
 
+### Application user references
+
+`myko::identity::UserId` is a shared newtype for stable application profile IDs.
+The host authentication provider supplies its value; Myko does not generate it
+from an email, a connection ID, or a permission principal. It serializes as a
+string and supports typed equality filters and generated TypeScript bindings.
+It carries no credentials or grants. `PermissionPrincipalId` remains a separate
+type for policy records, so deleting a permission principal does not change an
+application user's durable identity.
+
 ## Generated operation scopes
 
 Use `ScopedAuthorizer` when the app grants permissions by entity instead of matching command names.
@@ -99,7 +109,10 @@ pub struct CalibrateCamera {
 ```
 
 Multiple helper attributes require every declared scope.
-Queries and views always require read permission for their output entity type and can declare additional requirements.
+Generated entity queries and views over actual entities require that entity's
+read permission and can declare additional requirements. Computed `view_item`
+rows and `myko_subtype` helper types do not acquire entity scopes. Views over
+computed rows declare the required source entity scopes explicitly.
 Unannotated custom commands and reports are denied by `ScopedAuthorizer`.
 Trusted handler code must declare all the authority its operation requires.
 The operation layer does not reauthorize every internal handler read or emitted mutation.
