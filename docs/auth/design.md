@@ -382,3 +382,17 @@ a trusted identity. Local authorization still decides operation access. This API
 does not turn Myko into an authorization server, register clients, or implement
 login or consent screens. Clients obtain tokens from the advertised provider
 using its supported registration mechanism and authorization-code flow with PKCE.
+
+### Provider login adapters
+
+`myko-auth0::login::LoginProvider` handles Auth0 OIDC discovery, bounded code
+exchange with PKCE verifier validation, ID-token nonce/authorized-party binding,
+and the Auth0 passwordless email-code extension. It returns verified provider
+claims. Hosts choose supported methods, render their own login UI, and apply
+profile/email-domain admission policy. These provider operations do not require
+a hosted login page or prescribe a component library.
+
+`myko-auth0::JwtVerifier` exposes the same key cache and issuer/audience/lifetime
+verification used by the Auth0 authenticator, including explicit trusted JWKS
+configuration for other OIDC workload issuers. ID-token checks additionally bind
+the authorized party and nonce; API-token verification binds its resource audience.

@@ -20,6 +20,8 @@ mod machine;
 #[cfg(feature = "client-credentials")]
 pub use machine::Auth0ClientCredentials;
 
+pub mod login;
+
 const KEY_TTL: Duration = Duration::from_mins(10);
 const REFRESH_COOLDOWN: Duration = Duration::from_secs(30);
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
@@ -29,6 +31,7 @@ const MAX_TOKEN_BYTES: usize = 16 * 1024;
 struct Issuer {
     url: reqwest::Url,
     audience: String,
+    identifier: String,
 }
 
 impl Issuer {
@@ -47,6 +50,7 @@ impl Issuer {
         }
         url.set_path("/");
         Ok(Self {
+            identifier: url.to_string(),
             url,
             audience: audience.to_owned(),
         })
@@ -94,7 +98,11 @@ pub struct Auth0Authenticator {
     issuer: Issuer,
     client: reqwest::Client,
     keys: Arc<Mutex<KeyCache>>,
+    jwks_uri: reqwest::Url,
 }
+
+/// General RS256/OIDC verification using an explicitly trusted JWKS endpoint.
+pub type JwtVerifier = Auth0Authenticator;
 
 impl Auth0Authenticator {
     /// `issuer` is an HTTPS tenant origin. `audience` is the API identifier.
@@ -114,12 +122,51 @@ impl Auth0Authenticator {
         Self::build(issuer, audience, keys, true)
     }
 
+    /// Configure a trusted OIDC signing-key endpoint. Loopback HTTP is permitted
+    /// for local providers; production endpoints require HTTPS.
+    /// # Errors
+    /// Rejects unsafe endpoint configuration or an empty audience.
+    pub fn with_jwks_uri(issuer: &str, audience: &str, jwks_uri: &str) -> Result<Self, AuthError> {
+        let url = login::endpoint(issuer)?;
+        let jwks_uri = login::endpoint(jwks_uri)?;
+        if audience.trim().is_empty() {
+            return Err(AuthError::Unavailable);
+        }
+        Ok(Self {
+            issuer: Issuer {
+                url,
+                audience: audience.into(),
+                identifier: issuer.into(),
+            },
+            jwks_uri,
+            client: http_client()?,
+            keys: Arc::new(Mutex::new(KeyCache {
+                keys: JwkSet { keys: Vec::new() },
+                fetched_at: None,
+                last_attempt: None,
+            })),
+        })
+    }
+
+    /// Bind another expected audience while sharing the signing-key cache.
+    /// # Errors
+    /// Rejects an empty audience.
+    pub fn for_audience(&self, audience: &str) -> Result<Self, AuthError> {
+        if audience.trim().is_empty() {
+            return Err(AuthError::Unavailable);
+        }
+        let mut verifier = self.clone();
+        verifier.issuer.audience = audience.into();
+        Ok(verifier)
+    }
+
     fn build(issuer: &str, audience: &str, keys: JwkSet, seeded: bool) -> Result<Self, AuthError> {
         if keys.keys.len() > 128 {
             return Err(AuthError::Unavailable);
         }
         let now = seeded.then(Instant::now);
         Ok(Self {
+            jwks_uri: Issuer::new(issuer, audience)?.endpoint(".well-known/jwks.json")?,
             issuer: Issuer::new(issuer, audience)?,
             client: http_client()?,
             keys: Arc::new(Mutex::new(KeyCache {
@@ -147,17 +194,7 @@ impl Auth0Authenticator {
             });
         }
         cache.last_attempt = Some(Instant::now());
-        let response = self
-            .client
-            .get(self.issuer.endpoint(".well-known/jwks.json")?)
-            .send()
-            .await
-            .map_err(|_| AuthError::Unavailable)?;
-        let keys: JwkSet = serde_json::from_value(read_json(response).await?)
-            .map_err(|_| AuthError::Unavailable)?;
-        if keys.keys.is_empty() || keys.keys.len() > 128 {
-            return Err(AuthError::Unavailable);
-        }
+        let keys = self.fetch_keys().await?;
         cache.keys = keys;
         cache.fetched_at = Some(Instant::now());
         cache
@@ -167,12 +204,44 @@ impl Auth0Authenticator {
             .and_then(decoding_key)
     }
 
-    async fn verify(&self, credentials: Credentials) -> Result<AuthenticatedIdentity, AuthError> {
-        let token = credentials.bearer.ok_or(AuthError::Unauthenticated)?;
+    async fn fetch_keys(&self) -> Result<JwkSet, AuthError> {
+        let response = self
+            .client
+            .get(self.jwks_uri.clone())
+            .send()
+            .await
+            .map_err(|_| AuthError::Unavailable)?;
+        let keys: JwkSet = serde_json::from_value(read_json(response).await?)
+            .map_err(|_| AuthError::Unavailable)?;
+        if keys.keys.is_empty()
+            || keys.keys.len() > 128
+            || !keys.keys.iter().any(|key| decoding_key(key).is_ok())
+        {
+            return Err(AuthError::Unavailable);
+        }
+        Ok(keys)
+    }
+
+    /// Load trusted signing keys before accepting traffic.
+    /// # Errors
+    /// Rejects unavailable or invalid key documents.
+    pub async fn preload(&self) -> Result<(), AuthError> {
+        let mut cache = self.keys.lock().await;
+        cache.last_attempt = Some(Instant::now());
+        cache.keys = self.fetch_keys().await?;
+        cache.fetched_at = Some(Instant::now());
+        drop(cache);
+        Ok(())
+    }
+
+    /// Verify signature, signing-key restrictions, issuer, audience, expiry and not-before.
+    /// # Errors
+    /// Rejects invalid credentials or unavailable signing-key authority.
+    pub async fn verify_claims(&self, token: &str) -> Result<Value, AuthError> {
         if token.len() > MAX_TOKEN_BYTES {
             return Err(AuthError::Unauthenticated);
         }
-        let header = decode_header(&token).map_err(|_| AuthError::Unauthenticated)?;
+        let header = decode_header(token).map_err(|_| AuthError::Unauthenticated)?;
         if header.alg != Algorithm::RS256 {
             return Err(AuthError::Unauthenticated);
         }
@@ -185,9 +254,9 @@ impl Auth0Authenticator {
         validation.leeway = 0;
         validation.validate_nbf = true;
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        validation.set_issuer(&[self.issuer.url.as_str()]);
+        validation.set_issuer(&[self.issuer.identifier.as_str()]);
         validation.set_audience(&[self.issuer.audience.as_str()]);
-        let claims = decode::<Value>(&token, &key, &validation)
+        let claims = decode::<Value>(token, &key, &validation)
             .map_err(|error| {
                 if matches!(
                     error.kind(),
@@ -199,6 +268,42 @@ impl Auth0Authenticator {
                 }
             })?
             .claims;
+        if claims
+            .get("sub")
+            .and_then(Value::as_str)
+            .is_none_or(|subject| subject.trim().is_empty())
+        {
+            return Err(AuthError::Unauthenticated);
+        }
+        Ok(claims)
+    }
+
+    /// Enforce OIDC authorized-party and nonce binding in addition to JWT validation.
+    /// # Errors
+    /// Rejects tokens for another client or login transaction.
+    pub async fn verify_id_token(
+        &self,
+        token: &str,
+        nonce: Option<&str>,
+    ) -> Result<Value, AuthError> {
+        let claims = self.verify_claims(token).await?;
+        let azp = claims.get("azp").and_then(Value::as_str);
+        if azp.is_some_and(|azp| azp != self.issuer.audience)
+            || (claims
+                .get("aud")
+                .and_then(Value::as_array)
+                .is_some_and(|aud| aud.len() > 1)
+                && azp != Some(self.issuer.audience.as_str()))
+            || nonce.is_some_and(|nonce| claims.get("nonce").and_then(Value::as_str) != Some(nonce))
+        {
+            return Err(AuthError::Unauthenticated);
+        }
+        Ok(claims)
+    }
+
+    async fn verify(&self, credentials: Credentials) -> Result<AuthenticatedIdentity, AuthError> {
+        let token = credentials.bearer.ok_or(AuthError::Unauthenticated)?;
+        let claims = self.verify_claims(&token).await?;
         let subject = claims
             .get("sub")
             .and_then(Value::as_str)
@@ -237,7 +342,7 @@ impl Auth0Authenticator {
             .collect();
         Ok(AuthenticatedIdentity {
             principal: Principal {
-                issuer: self.issuer.url.to_string(),
+                issuer: self.issuer.identifier.clone(),
                 subject,
                 kind: principal_kind,
             },
@@ -302,8 +407,11 @@ mod tests {
             stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
             Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
         });
-        let mut provider = Auth0Authenticator::new("https://tenant.example/", "myko-api")?;
-        provider.issuer.url = reqwest::Url::parse(&format!("http://{address}/"))?;
+        let provider = Auth0Authenticator::with_jwks_uri(
+            &format!("http://{address}/"),
+            "myko-api",
+            &format!("http://{address}/.well-known/jwks.json"),
+        )?;
         let claims = serde_json::json!({"iss":provider.issuer.url.as_str(),"aud":"myko-api","sub":"user-1","exp":SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs().saturating_add(300)});
         let key = EncodingKey::from_rsa_pem(include_bytes!("../tests/fixtures/test-key.pem"))?;
         let mut header = Header::new(Algorithm::RS256);

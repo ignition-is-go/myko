@@ -224,3 +224,44 @@ fn invalid_issuer_configuration_and_debug_secrets_are_rejected() -> Result {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn id_tokens_bind_nonce_and_authorized_party_to_the_browser_client() -> Result {
+    let provider = provider()?.for_audience("browser-client")?;
+    let mut value = claims()?;
+    let object = value.as_object_mut().ok_or("claims")?;
+    object.insert("aud".into(), json!(["browser-client", "another-resource"]));
+    object.insert("azp".into(), json!("browser-client"));
+    object.insert("nonce".into(), json!("expected-nonce"));
+    let signed = token(&value, Some("fixture-key"))?;
+    assert!(
+        provider
+            .verify_id_token(&signed, Some("expected-nonce"))
+            .await
+            .is_ok()
+    );
+    assert!(
+        provider
+            .verify_id_token(&signed, Some("other-nonce"))
+            .await
+            .is_err()
+    );
+    for azp in [None, Some("another-client")] {
+        let mut changed = value.clone();
+        let object = changed.as_object_mut().ok_or("claims")?;
+        object.remove("azp");
+        if let Some(azp) = azp {
+            object.insert("azp".into(), json!(azp));
+        }
+        assert!(
+            provider
+                .verify_id_token(
+                    &token(&changed, Some("fixture-key"))?,
+                    Some("expected-nonce")
+                )
+                .await
+                .is_err()
+        );
+    }
+    Ok(())
+}
