@@ -58,3 +58,7 @@ required-features = ["server"]
 [[test]]
 name = "operator_cli"
 required-features = ["server"]
+
+[[test]]
+name = "host_setup"
+required-features = ["server"]

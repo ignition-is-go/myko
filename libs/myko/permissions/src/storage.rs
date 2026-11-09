@@ -12,6 +12,8 @@ use crate::{
     model::{AUTHORITY_ID, PermissionAuthority},
 };
 
+pub(crate) mod entities;
+
 const MAX_RECORD_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_HISTORY_RECORDS: usize = 4096;
 
@@ -20,9 +22,27 @@ const MAX_HISTORY_RECORDS: usize = 4096;
 /// Implementations must compare the stored revision and publish the next revision
 /// as one durable operation. An identical retry may succeed without another write.
 pub trait PermissionStorage: Send + Sync + 'static {
+    /// Bind a storage adapter to the initialized server after normal event replay.
+    /// # Errors
+    /// Rejects an incompatible runtime or unavailable reactive queries.
+    fn attach(&self, _context: Arc<myko::server::MykoServerContext>) -> PermissionResult<()> {
+        Ok(())
+    }
+    /// A reactive source's current change generation; external stores return None.
+    fn reactive_revision(&self) -> Option<u64> {
+        None
+    }
+
     /// # Errors
     /// Returns an error when the accepted snapshot cannot be read or validated.
     fn load(&self) -> PermissionResult<Option<PermissionAuthority>>;
+
+    /// Read a shared reactive value without cloning the complete policy on every check.
+    /// # Errors
+    /// Returns the same storage and validation errors as load.
+    fn load_shared(&self) -> PermissionResult<Option<Arc<PermissionAuthority>>> {
+        self.load().map(|snapshot| snapshot.map(Arc::new))
+    }
 
     /// # Errors
     /// Returns a conflict when the expected revision is stale, or a storage error.

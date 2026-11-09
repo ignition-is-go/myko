@@ -1,4 +1,4 @@
-//! Explicit host configuration for administrator admission; no environment reads.
+//! Explicit host configuration for administrator admission and user discovery; no environment reads.
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use myko_auth::{
@@ -162,12 +162,13 @@ fn ensure_document(
     Ok(())
 }
 
-/// Adds configured administrator reconciliation to an existing authenticator.
+/// Adds configured administrator reconciliation and optional user discovery to an authenticator.
 /// The wrapped authenticator must produce trusted, verified identity claims.
 pub struct PermissionAuthenticator {
     inner: Arc<dyn Authenticator>,
     permissions: Permissions,
     admin_email: Option<AdminEmail>,
+    discover_users: bool,
 }
 impl PermissionAuthenticator {
     pub fn new(inner: Arc<dyn Authenticator>, permissions: Permissions) -> Self {
@@ -175,7 +176,16 @@ impl PermissionAuthenticator {
             inner,
             permissions,
             admin_email: None,
+            discover_users: false,
         }
+    }
+
+    /// Record verified user identities in an initialized authority without granting
+    /// roles or re-enabling existing principals. Services and delegated identities are skipped.
+    #[must_use]
+    pub const fn with_user_discovery(mut self) -> Self {
+        self.discover_users = true;
+        self
     }
 
     /// On every matching sign-in, persist an enabled Admin role and assignment.
@@ -200,6 +210,11 @@ impl Authenticator for PermissionAuthenticator {
             if let Some(email) = &self.admin_email {
                 self.permissions
                     .ensure_admin_email(email, &identity)
+                    .map_err(|_| AuthError::Unavailable)?;
+            }
+            if self.discover_users {
+                self.permissions
+                    .register_identity(&identity)
                     .map_err(|_| AuthError::Unavailable)?;
             }
             Ok(identity)

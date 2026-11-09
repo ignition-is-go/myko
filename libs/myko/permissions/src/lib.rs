@@ -3,6 +3,10 @@
 mod admin;
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 pub use admin::{AdminEmail, PermissionAuthenticator};
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+mod provider;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+pub use provider::PermissionAuthProviderBuilder;
 mod commands;
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 mod engine;

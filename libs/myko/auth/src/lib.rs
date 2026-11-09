@@ -1,4 +1,6 @@
 //! Verified identities and app-owned local authorization.
+mod access;
+pub use access::AuthenticatedAccess;
 pub mod client_events;
 pub mod identity;
 pub mod oauth;

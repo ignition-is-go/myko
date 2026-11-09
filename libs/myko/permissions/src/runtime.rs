@@ -18,8 +18,8 @@ use myko::{
     store::StoreRegistry,
 };
 use myko_auth::{
-    AuthenticatedIdentity, AuthorizationRequest, Authorizer, EntityScope, OperationKind,
-    ScopeDecision, ScopePolicy, ScopedAuthorizer,
+    AuthError, AuthenticatedIdentity, AuthorizationRequest, Authorizer, EntityScope, OperationKind,
+    PermissionCatalog, PrincipalKind, ScopeDecision, ScopePolicy, ScopedAuthorizer,
 };
 use serde_json::Value;
 use std::{
@@ -65,6 +65,46 @@ pub struct PermissionEdit {
     pub reason: String,
 }
 impl Permissions {
+    /// Use normal Myko entity persistence and reactive query reads.
+    /// Attach after replay and before accepting authenticated requests.
+    #[must_use]
+    pub fn from_entities(mode: CredentialScopeMode) -> Self {
+        Self::new(
+            Arc::new(crate::storage::entities::EntityPermissionStorage::default()),
+            mode,
+        )
+    }
+
+    /// Import an existing policy only while this authority is empty. The source
+    /// remains untouched and is never consulted again once entity state exists.
+    /// # Errors
+    /// Rejects invalid source grants, a missing administrator, or persistence failures.
+    pub fn import_from(&self, source: &dyn PermissionStorage) -> PermissionResult<bool> {
+        let _gate = self.0.gate.lock().map_err(|_| PermissionError::Detached)?;
+        if self.0.storage.load_shared()?.is_some() {
+            return Ok(false);
+        }
+        let Some(mut snapshot) = source.load()? else {
+            return Ok(false);
+        };
+        engine::validate(&snapshot.document, true)?;
+        if !engine::has_administrator(&snapshot.document) {
+            return Err(PermissionError::LockedOut);
+        }
+        let source_revision = snapshot.revision;
+        snapshot.revision = 1;
+        snapshot.change_id = uuid::Uuid::new_v4().to_string();
+        snapshot.actor = PermissionAuditActor::Operator {
+            identity: "permission storage migration".into(),
+        };
+        snapshot.reason =
+            format!("Import existing grants from permission revision {source_revision}");
+        snapshot.mode = PermissionChangeMode::Bootstrap;
+        self.0.storage.compare_and_swap(None, &snapshot)?;
+        self.publish(Some(snapshot))?;
+        Ok(true)
+    }
+
     pub fn new(storage: Arc<dyn PermissionStorage>, mode: CredentialScopeMode) -> Self {
         Self(Arc::new(Inner {
             storage,
@@ -85,6 +125,68 @@ impl Permissions {
             self.refresh_locked()?;
         }
         Ok(())
+    }
+
+    /// Apply persisted grants to permission administration while delegating all
+    /// application operations and anonymous access to the host's policy.
+    #[must_use]
+    pub fn administration_authorizer(
+        &self,
+        application: Arc<dyn Authorizer>,
+    ) -> Arc<dyn Authorizer> {
+        Arc::new(AdministrationAuthorizer {
+            permissions: self.clone(),
+            application,
+        })
+    }
+
+    pub(crate) fn register_identity(
+        &self,
+        identity: &AuthenticatedIdentity,
+    ) -> PermissionResult<()> {
+        if identity.principal.kind != PrincipalKind::User || !identity.delegation.is_empty() {
+            return Ok(());
+        }
+        let _gate = self.0.gate.lock().map_err(|_| PermissionError::Detached)?;
+        for _ in 0..5 {
+            let Some(snapshot) = self.0.storage.load()? else {
+                return Ok(());
+            };
+            if snapshot.document.principals.iter().any(|principal| {
+                principal.issuer == identity.principal.issuer
+                    && principal.subject == identity.principal.subject
+            }) {
+                return Ok(());
+            }
+            let mut document = snapshot.document;
+            document.principals.push(PermissionPrincipal {
+                id: uuid::Uuid::new_v4().to_string().into(),
+                authority_id: PermissionAuthorityId::from(AUTHORITY_ID),
+                issuer: identity.principal.issuer.clone(),
+                subject: identity.principal.subject.clone(),
+                kind: crate::PermissionPrincipalKind::User,
+                enabled: true,
+                name: identity
+                    .claims
+                    .get("verified_email")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&identity.principal.subject)
+                    .to_owned(),
+            });
+            match crate::replace_as_operator(
+                self.0.storage.as_ref(),
+                snapshot.revision,
+                document,
+                "authenticated identity discovery",
+                "Record signed-in user without granting permissions",
+                false,
+            ) {
+                Ok(_) => return self.refresh_locked(),
+                Err(PermissionError::Conflict { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Err(PermissionError::Busy)
     }
 
     /// Attach after server initialization and before accepting connections.
@@ -122,7 +224,18 @@ impl Permissions {
             *attached = Some(context);
         }
         drop(attached);
+        self.0.storage.attach(
+            self.0
+                .context
+                .lock()
+                .map_err(|_| PermissionError::Detached)?
+                .clone()
+                .ok_or(PermissionError::Detached)?,
+        )?;
         let initial = self.refresh_locked();
+        if self.0.storage.reactive_revision().is_some() {
+            return initial;
+        }
         if self.0.watcher_started.swap(true, Ordering::AcqRel) {
             return initial;
         }
@@ -157,6 +270,10 @@ impl Permissions {
         self.refresh_locked()
     }
     fn refresh_locked(&self) -> PermissionResult<()> {
+        if self.0.storage.reactive_revision().is_some() {
+            self.0.storage.load()?;
+            return Ok(());
+        }
         let result = self.0.storage.load().and_then(|snapshot| {
             if let Some(snapshot) = &snapshot {
                 engine::validate(&snapshot.document, false)?;
@@ -210,6 +327,9 @@ impl Permissions {
         }
     }
     fn publish(&self, snapshot: Option<PermissionAuthority>) -> PermissionResult<()> {
+        if self.0.storage.reactive_revision().is_some() {
+            return Ok(());
+        }
         let context = self
             .0
             .context
@@ -314,10 +434,13 @@ impl Permissions {
         Ok(snapshot)
     }
 
-    /// The accepted local snapshot. Projected row stores are not an authority source.
+    /// The effective policy from live entity queries or the configured external storage.
     /// # Errors
     /// Returns an error while storage is unavailable or invalid.
     pub fn snapshot(&self) -> PermissionResult<Option<Arc<PermissionAuthority>>> {
+        if self.0.storage.reactive_revision().is_some() {
+            return self.0.storage.load_shared();
+        }
         let state = self.0.state.read().map_err(|_| PermissionError::Detached)?;
         if let Some(error) = &state.error {
             return Err(error.clone());
@@ -511,6 +634,57 @@ impl ScopePolicy for Permissions {
             })
     }
     fn revision(&self) -> u64 {
-        self.0.state.read().map_or(u64::MAX, |state| state.epoch)
+        self.0
+            .storage
+            .reactive_revision()
+            .unwrap_or_else(|| self.0.state.read().map_or(u64::MAX, |state| state.epoch))
+    }
+}
+
+struct AdministrationAuthorizer {
+    permissions: Permissions,
+    application: Arc<dyn Authorizer>,
+}
+impl Authorizer for AdministrationAuthorizer {
+    fn authorize(
+        &self,
+        identity: &AuthenticatedIdentity,
+        request: AuthorizationRequest<'_>,
+    ) -> Result<(), AuthError> {
+        if is_administration(request) {
+            ScopedAuthorizer::new(Arc::new(self.permissions.clone())).authorize(identity, request)
+        } else {
+            self.application.authorize(identity, request)
+        }
+    }
+    fn authorize_anonymous(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
+        // A permissive application policy must not expose permission administration.
+        if is_administration(request) {
+            Err(AuthError::Unauthenticated)
+        } else {
+            self.application.authorize_anonymous(request)
+        }
+    }
+    fn revision(&self) -> u64 {
+        // Both policies can invalidate active subscriptions or admission snapshots.
+        ScopePolicy::revision(&self.permissions).wrapping_add(self.application.revision())
+    }
+}
+
+fn is_administration(request: AuthorizationRequest<'_>) -> bool {
+    let entities = engine::protected_entities();
+    match request {
+        AuthorizationRequest::ClientEvent { entity_type, .. } => entities.contains(&entity_type),
+        AuthorizationRequest::Execute {
+            kind, operation, ..
+        }
+        | AuthorizationRequest::Discover { kind, operation } => PermissionCatalog::registered()
+            .requirements(kind, operation)
+            .is_some_and(|scopes| {
+                scopes
+                    .iter()
+                    .any(|scope| entities.contains(&scope.entity_type))
+            }),
+        AuthorizationRequest::CommandResult { .. } => false,
     }
 }
