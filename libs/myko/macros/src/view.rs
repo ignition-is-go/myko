@@ -107,8 +107,6 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
         #input_struct
 
         #krate::register_typegen_type!(#name);
-        #[cfg(not(target_arch = "wasm32"))]
-        #krate::submit! { #krate::auth::EntityScopeRegistration { entity_type: stringify!(#name) } }
 
 
         impl #krate::prelude::WithId for #name {
@@ -145,6 +143,7 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         impl #krate::prelude::Eventable for #name {
             const ENTITY_NAME_STATIC: &'static str = stringify!(#name);
+            const HAS_ENTITY_PERMISSIONS: bool = false;
         }
     }
 }
@@ -162,11 +161,10 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
-    let scope_registration = crate::public_access::read_registration(
-        &syn::parse_quote!(View),
+    let scope_registration = crate::public_access::view_read_registration(
         struct_name,
         &item_type,
-        extra_scopes,
+        &extra_scopes,
         public,
         krate,
     );
@@ -258,4 +256,33 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
         input_contract: &input_contract,
         scope_registration: &scope_registration,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn computed_view_items_do_not_register_entity_scopes() {
+        let expanded = super::myko_view_item_impl(syn::parse_quote! {
+            pub struct DerivedRow { pub id: std::sync::Arc<str> }
+        })
+        .to_string();
+        assert!(!expanded.contains("EntityScopeRegistration"));
+        assert!(expanded.contains("register_typegen_type"));
+    }
+
+    #[test]
+    fn computed_views_map_to_explicit_source_entities() {
+        let expanded = super::myko_view_impl(
+            super::ViewArgs {
+                item_type: syn::parse_quote!(DerivedRow),
+            },
+            syn::parse_quote! {
+                #[myko_scope(SourceEntity, read)]
+                pub struct DerivedView {}
+            },
+        )
+        .to_string();
+        assert!(expanded.contains("< SourceEntity as"));
+        assert!(expanded.contains("HAS_ENTITY_PERMISSIONS"));
+    }
 }

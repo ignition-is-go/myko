@@ -64,6 +64,46 @@ pub fn read_registration(
     registration(kind, name, &scopes, public, krate)
 }
 
+/// Preserve additive entity requirements without giving computed output rows scopes.
+pub fn view_read_registration(
+    name: &syn::Ident,
+    item: &Path,
+    extra_scopes: &[crate::permission::ScopeSpec],
+    public: bool,
+    krate: &Path,
+) -> TokenStream {
+    let extras = extra_scopes
+        .iter()
+        .map(|scope| {
+            let entity = &scope.entity;
+            let action = &scope.action;
+            quote! { #krate::auth::EntityScope {
+                entity_type: <#entity as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                action: #krate::auth::EntityAction::#action,
+            } }
+        })
+        .collect::<Vec<_>>();
+    let public_registration = operation_registration(&syn::parse_quote!(View), name, public, krate);
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        #krate::submit! {
+            #krate::auth::OperationScopeRegistration {
+                kind: #krate::auth::OperationKind::View,
+                operation: stringify!(#name),
+                scopes: if <#item as #krate::item::Eventable>::HAS_ENTITY_PERMISSIONS {
+                    &[#krate::auth::EntityScope {
+                        entity_type: <#item as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                        action: #krate::auth::EntityAction::Read,
+                    }, #(#extras),*]
+                } else {
+                    &[#(#extras),*]
+                },
+            }
+        }
+        #public_registration
+    }
+}
+
 pub fn operation_registration(
     kind: &syn::Ident,
     name: &syn::Ident,

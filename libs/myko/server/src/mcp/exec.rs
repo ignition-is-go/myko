@@ -101,8 +101,15 @@ impl Executor {
                         arguments: &args,
                     })
                     .map_err(|error| error.to_string())?;
-                let result = in_process_execute_query(ctx.clone(), query_id, args, Some(session));
-                session.check().map_err(|error| error.to_string())?;
+                let result =
+                    in_process_execute_query(ctx.clone(), query_id, args.clone(), Some(session));
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::Query,
+                        operation: query_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| error.to_string())?;
                 result
             }
         }
@@ -127,8 +134,15 @@ impl Executor {
                     })
                     .map_err(|error| error.to_string())?;
                 let result =
-                    in_process_execute_report(ctx.clone(), report_id, args, Some(session)).await;
-                session.check().map_err(|error| error.to_string())?;
+                    in_process_execute_report(ctx.clone(), report_id, args.clone(), Some(session))
+                        .await;
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::Report,
+                        operation: report_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| error.to_string())?;
                 result
             }
         }
@@ -150,8 +164,15 @@ impl Executor {
                         arguments: &args,
                     })
                     .map_err(|error| error.to_string())?;
-                let result = in_process_execute_view(ctx.clone(), view_id, args, Some(session));
-                session.check().map_err(|error| error.to_string())?;
+                let result =
+                    in_process_execute_view(ctx.clone(), view_id, args.clone(), Some(session));
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::View,
+                        operation: view_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| error.to_string())?;
                 result
             }
         }

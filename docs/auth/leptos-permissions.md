@@ -108,6 +108,49 @@ views use the headless APIs and ship no stylesheet. Apply app CSS to their seman
 replace their markup entirely. Obsolete role scopes remain available for cleanup
 without inventing additional action columns.
 
+## Build users and roles pages
+
+Use the headless administration helpers for application-styled lists and pickers:
+
+- `use_permission_users` searches human users by name or role;
+  `use_permission_roles` and `use_permission_groups` list roles and groups alphabetically.
+- `use_grantee_roles` returns direct and inherited assignments for a user or group,
+  including provenance, active state, and an optional removable direct binding ID.
+- `use_assignable_roles`, `use_role_users`, and `use_assignable_users` drive role
+  and user pickers. Inherited roles may also be assigned directly. Removing a
+  direct binding does not remove a group-inherited assignment.
+- `use_permission_reference` supplies entity and operation metadata for searchable
+  scope browsers. `permission_explanation_text` formats server-computed decisions.
+- `use_role_rule_values` indexes draft rules once; `use_role_permission_rows`
+  computes a filtered hierarchy only when entity metadata or search changes.
+
+Create one batch action at page scope so its pending state and completion outlive
+individual list rows. It uses the latest advertised policy revision and reports
+errors through `permissions.mutation`.
+
+```rust,ignore
+let (can_edit, apply) = use_permission_changes(permissions, "Access administration");
+let grantee = Signal::stored(PermissionGrantee::Principal(principal_id));
+let assigned = use_grantee_roles(permissions, grantee);
+let available = use_assignable_roles(permissions, grantee);
+// In an assignment action:
+apply.run(vec![assign_role(role_id, grantee.get_untracked())]);
+// In a remove action, use a direct binding ID returned in assigned:
+apply.run(vec![PermissionChange::DeleteRoleBinding(binding_id)]);
+```
+
+`create_role(name)` and `create_group(name)` construct enabled records without
+additional grants; submit them through the same action. These helpers provide no
+local authorization bypass. The server validates each change and its references.
+
+`use_permission_list_search(rows, search, text)` adds trimmed, case-insensitive
+search to any list or picker. Apps supply the searchable text for each row.
+Filtering preserves the source rows and editor drafts, and follows live updates.
+
+All list helpers return memos so equal data stays stable across unrelated policy
+revisions. Apps own table markup, buttons, popovers, navigation, and styling. Keep
+large permission grids behind an explicit selection or inspection action.
+
 ## Arrange entities as a tree
 
 Call `permission_tree(&permission_matrix(&structure.entities))` for headless tree
@@ -159,9 +202,10 @@ do not need to explain each edit. The server rechecks authorization,
 references, and the last effective administrator before committing.
 
 A stale edit fails instead of overwriting a newer policy. Refresh the structure
-before preparing another edit. Permission changes revoke existing sessions and can
-disconnect the editing client before its success response arrives. Reconnect and
-inspect the accepted policy before retrying an uncertain edit.
+before preparing another edit. With `MykoAuthProvider::with_live_permissions()`,
+policy edits reauthorize operations without disconnecting the socket. Without
+that mode, edits can revoke sessions before their success response arrives.
+Reconnect and inspect the accepted policy before retrying an uncertain edit.
 
 ## Keep inspection authorized
 

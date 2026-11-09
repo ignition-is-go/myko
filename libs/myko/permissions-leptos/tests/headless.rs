@@ -457,3 +457,154 @@ fn membership_submission_generates_action_specific_audit_context() {
         drop(edits);
     });
 }
+
+fn administration_connection(
+    structure: RwSignal<Option<PermissionStructure>>,
+) -> myko_permissions_leptos::PermissionConnection {
+    myko_permissions_leptos::PermissionConnection {
+        structure: structure.into(),
+        selected_principal: RwSignal::new(None),
+        inspection: Signal::stored(None),
+        mutation: RwSignal::new(myko_permissions_leptos::PermissionMutationState::Idle),
+        save_role: Callback::new(|_: RoleEdit| {}),
+        save_membership: Callback::new(|_: MembershipEdit| {}),
+    }
+}
+
+#[test]
+fn administration_selectors_follow_assignments_and_disabled_inheritance() {
+    use myko_permissions_leptos::myko_permissions::{PermissionChange, PermissionGrantee};
+    use myko_permissions_leptos::{
+        assign_role, use_assignable_roles, use_grantee_roles, use_role_users,
+    };
+    let owner = Owner::new();
+    owner.with(|| {
+        let structure = RwSignal::new(Some(snapshot()));
+        let connection = administration_connection(structure);
+        let grantee = Signal::stored(PermissionGrantee::Principal("alice".into()));
+        let roles = use_grantee_roles(connection, grantee);
+        let choices = use_assignable_roles(connection, grantee);
+        let members = use_role_users(connection, Signal::stored("role-a".into()));
+        assert!(roles.get().is_empty());
+        assert_eq!(choices.get().len(), 2);
+        structure.update(|s| {
+            if let Some(document) = s.as_mut().and_then(|s| s.document.as_mut())
+                && let PermissionChange::UpsertRoleBinding(binding) =
+                    assign_role("role-a".into(), PermissionGrantee::Group("group-a".into()))
+            {
+                document.bindings.push(binding);
+            }
+        });
+        assert!(
+            roles
+                .get()
+                .first()
+                .is_some_and(|r| r.direct.is_none() && r.role.active)
+        );
+        assert_eq!(members.get().len(), 1);
+        assert_eq!(
+            choices.get().len(),
+            2,
+            "inherited roles may also be assigned directly"
+        );
+        structure.update(|s| {
+            if let Some(group) = s
+                .as_mut()
+                .and_then(|s| s.document.as_mut())
+                .and_then(|d| d.groups.first_mut())
+            {
+                group.enabled = false;
+            }
+        });
+        assert!(roles.get().first().is_some_and(|r| !r.role.active));
+        structure.update(|s| {
+            if let Some(document) = s.as_mut().and_then(|s| s.document.as_mut())
+                && let PermissionChange::UpsertRoleBinding(binding) = assign_role(
+                    "role-a".into(),
+                    PermissionGrantee::Principal("alice".into()),
+                )
+            {
+                document.bindings.push(binding);
+            }
+        });
+        assert!(
+            roles
+                .get()
+                .first()
+                .is_some_and(|r| r.role.active && r.direct.is_some()),
+            "direct grant survives disabled group"
+        );
+        assert_eq!(
+            roles.get().len(),
+            1,
+            "direct and inherited sources share one row"
+        );
+        assert_eq!(choices.get().len(), 1);
+        structure.update(|s| {
+            if let Some(document) = s.as_mut().and_then(|s| s.document.as_mut()) {
+                document.bindings.clear();
+            }
+        });
+        assert!(roles.get().is_empty());
+        assert!(members.get().is_empty());
+    });
+    owner.cleanup();
+}
+
+#[test]
+fn administration_metadata_stays_equal_across_policy_revisions() {
+    use myko_permissions_leptos::{
+        use_permission_reference, use_permission_users, use_role_permission_rows,
+    };
+    let owner = Owner::new();
+    owner.with(|| {
+        let structure = RwSignal::new(Some(snapshot()));
+        let connection = administration_connection(structure);
+        let reference = use_permission_reference(connection);
+        let rows = use_role_permission_rows(connection, Signal::stored(String::new()));
+        let search = RwSignal::new(String::new());
+        let users = use_permission_users(connection, search.into());
+        let before = reference.get();
+        let before_rows = rows.get();
+        assert_eq!(users.get().len(), 2);
+        structure.update(|s| {
+            if let Some(s) = s {
+                s.revision = Some(6);
+            }
+        });
+        assert!(reference.get() == before);
+        assert_eq!(rows.get(), before_rows);
+        search.set("alice".into());
+        assert_eq!(users.get().len(), 1);
+        assert!(
+            users
+                .get()
+                .first()
+                .is_some_and(|u| u.principal.name == "alice")
+        );
+        structure.set(None);
+        assert!(users.get().is_empty());
+        assert!(reference.get().is_empty());
+    });
+    owner.cleanup();
+}
+
+#[test]
+fn list_search_normalizes_text_and_follows_source_changes() {
+    use myko_permissions_leptos::use_permission_list_search;
+    let owner = Owner::new();
+    owner.with(|| {
+        let rows = RwSignal::new(vec!["Lighting Operators".to_owned(), "Readers".to_owned()]);
+        let search = RwSignal::new("  OPERATORS  ".to_owned());
+        let matches = use_permission_list_search(rows, search.into(), Clone::clone);
+        assert_eq!(matches.get(), vec!["Lighting Operators"]);
+        rows.update(|rows| rows.push("Audio Operators".into()));
+        assert_eq!(matches.get().len(), 2);
+        search.set("missing".into());
+        assert!(matches.get().is_empty());
+        search.set("   ".into());
+        assert_eq!(matches.get(), rows.get());
+        assert_eq!(rows.get().len(), 3, "search never edits source records");
+    });
+    owner.cleanup();
+}

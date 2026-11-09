@@ -12,6 +12,7 @@
 mod blocking_work;
 mod delivery_diagnostics;
 mod gateway_access;
+mod subscription_authorization;
 mod view_sampling;
 
 pub mod mcp;

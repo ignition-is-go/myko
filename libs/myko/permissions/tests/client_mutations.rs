@@ -3,7 +3,7 @@
 use futures_util::{SinkExt, StreamExt, future::BoxFuture};
 use myko::{
     item::Eventable,
-    wire::{MEvent, MEventType, MykoMessage, command::WrappedCommand},
+    wire::{MEvent, MEventType, MykoMessage, PingData, command::WrappedCommand},
 };
 use myko_auth::{
     AuthError, AuthenticatedIdentity, Authenticator, Credentials, MykoAuthProvider, Principal,
@@ -78,11 +78,49 @@ async fn send(socket: &mut Socket, message: &MykoMessage, binary: bool) -> TestR
     Ok(())
 }
 
-async fn closed(socket: &mut Socket) -> TestResult {
-    match timeout(Duration::from_secs(3), socket.next()).await? {
-        None | Some(Err(_) | Ok(Message::Close(_))) => Ok(()),
-        frame => Err(format!("expected authorization closure, got {frame:?}").into()),
+async fn next(socket: &mut Socket) -> TestResult<MykoMessage> {
+    match timeout(Duration::from_secs(3), socket.next())
+        .await?
+        .ok_or("socket closed")??
+    {
+        Message::Text(text) => Ok(serde_json::from_str(text.as_str())?),
+        Message::Binary(bytes) => Ok(ciborium::de::from_reader(bytes.as_ref())?),
+        frame => Err(format!("unexpected frame {frame:?}").into()),
     }
+}
+
+async fn rejected_but_connected(
+    socket: &mut Socket,
+    message: &MykoMessage,
+    binary: bool,
+) -> TestResult {
+    if let MykoMessage::Command(command) = message {
+        let MykoMessage::CommandError(error) = next(socket).await? else {
+            return Err("expected command permission error".into());
+        };
+        assert_eq!(error.command_id, command.command_id);
+        assert_eq!(
+            error.tx,
+            command
+                .command
+                .get("tx")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("missing transaction")?
+        );
+        assert_eq!(error.message, "permission denied");
+    }
+    // NOTE(ts): event rejection has no reply; ping is an ordered processing barrier.
+    send(
+        socket,
+        &MykoMessage::Ping(PingData {
+            id: "after-rejection".into(),
+            timestamp: 0,
+        }),
+        binary,
+    )
+    .await?;
+    assert!(matches!(next(socket).await?, MykoMessage::Ping(ping) if ping.id == "after-rejection"));
+    Ok(())
 }
 
 #[tokio::test]
@@ -141,7 +179,7 @@ async fn full_administrators_cannot_bypass_commands_with_client_events_or_genera
                 .insert("Authorization", "Bearer admin-fixture".parse()?);
             let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
             send(&mut socket, message, binary).await?;
-            closed(&mut socket).await?;
+            rejected_but_connected(&mut socket, message, binary).await?;
             assert_eq!(storage.load()?, Some(before.clone()));
             let projected = server
                 .registry

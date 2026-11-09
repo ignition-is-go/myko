@@ -708,6 +708,33 @@ mod tests {
     }
 
     #[test]
+    fn principal_management_does_not_grant_role_assignment() -> PermissionResult<()> {
+        let mut document = document();
+        document
+            .roles
+            .first_mut()
+            .ok_or_else(|| invalid("fixture role"))?
+            .rules = vec![PermissionRule {
+            scope: "PermissionPrincipal:write".into(),
+            effect: PermissionEffect::Allow,
+        }];
+        let identity = identity();
+        let catalog = PermissionCatalog::registered();
+        let permitted = |entity_type| {
+            catalog.authorize_scope(
+                EntityScope {
+                    entity_type,
+                    action: EntityAction::Write,
+                },
+                |scope| explicit_decision(&document, &identity, scope),
+            )
+        };
+        assert!(permitted("PermissionPrincipal").is_ok());
+        assert!(permitted("PermissionRoleBinding").is_err());
+        Ok(())
+    }
+
+    #[test]
     fn mutation_batches_have_no_hidden_cascades_and_unknown_deletes_are_idempotent()
     -> PermissionResult<()> {
         let mut document = document();

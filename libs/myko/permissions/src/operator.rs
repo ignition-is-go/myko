@@ -92,7 +92,7 @@ pub fn replace_as_operator(
     )
 }
 
-fn commit_operator(
+pub fn commit_operator(
     storage: &dyn PermissionStorage,
     expected: Option<u64>,
     document: PermissionDocument,

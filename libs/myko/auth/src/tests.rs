@@ -313,3 +313,102 @@ fn anonymous_admission_is_opt_in_and_never_downgrades_invalid_credentials() -> R
     assert_eq!(session.check(), Err(AuthError::Revoked));
     Ok(())
 }
+
+struct IdentityScopedPolicy {
+    global_revision: AtomicU64,
+    affected_revision: AtomicU64,
+    evaluations: AtomicU64,
+}
+impl Authorizer for IdentityScopedPolicy {
+    fn authorize(
+        &self,
+        _: &AuthenticatedIdentity,
+        _: AuthorizationRequest<'_>,
+    ) -> Result<(), AuthError> {
+        Ok(())
+    }
+    fn revision(&self) -> u64 {
+        self.global_revision.load(Ordering::Acquire)
+    }
+    fn session_revision(&self, identity: Option<&AuthenticatedIdentity>) -> u64 {
+        self.evaluations.fetch_add(1, Ordering::AcqRel);
+        if identity.is_some_and(|identity| identity.principal.subject == "affected-user") {
+            self.affected_revision.load(Ordering::Acquire)
+        } else {
+            0
+        }
+    }
+}
+
+#[test]
+fn identity_scoped_revision_preserves_unaffected_sessions_and_rechecks_only_policy_changes() {
+    let policy = Arc::new(IdentityScopedPolicy {
+        global_revision: AtomicU64::new(0),
+        affected_revision: AtomicU64::new(0),
+        evaluations: AtomicU64::new(0),
+    });
+    let editor = AuthSession::new(
+        identity(SystemTime::now() + Duration::from_mins(1)),
+        policy.clone(),
+    );
+    let mut affected_identity = identity(SystemTime::now() + Duration::from_mins(1));
+    affected_identity.principal.subject = "affected-user".into();
+    let affected = AuthSession::new(affected_identity, policy.clone());
+    assert_eq!(editor.check(), Ok(()));
+    assert_eq!(policy.evaluations.load(Ordering::Acquire), 2);
+    policy.affected_revision.store(1, Ordering::Release);
+    policy.global_revision.store(1, Ordering::Release);
+    assert_eq!(editor.check(), Ok(()));
+    assert_eq!(editor.check(), Ok(()));
+    assert_eq!(policy.evaluations.load(Ordering::Acquire), 3);
+    assert_eq!(affected.check(), Err(AuthError::Revoked));
+    policy.affected_revision.store(0, Ordering::Release);
+    policy.global_revision.store(2, Ordering::Release);
+    assert_eq!(affected.check(), Err(AuthError::Revoked));
+    assert_eq!(editor.check(), Ok(()));
+}
+
+#[test]
+#[allow(clippy::panic_in_result_fn)]
+fn live_permissions_reauthorize_without_revoking_credentials() -> Result<(), AuthError> {
+    let authenticator = Arc::new(SessionAuthenticator {
+        authenticated: AtomicU64::new(0),
+        denied_session: std::sync::Mutex::new(None),
+        unavailable: AtomicBool::new(false),
+    });
+    let policy = Arc::new(Policy {
+        revision: AtomicU64::new(0),
+        allow: AtomicBool::new(true),
+    });
+    let provider =
+        MykoAuthProvider::new(authenticator.clone(), policy.clone()).with_live_permissions();
+    let session = futures::executor::block_on(provider.authenticate(Credentials {
+        bearer: Some("user-session".into()),
+    }))?;
+    let request = AuthorizationRequest::Discover {
+        kind: OperationKind::Query,
+        operation: "GetThings",
+    };
+    assert_eq!(session.authorize(request), Ok(()));
+    policy.allow.store(false, Ordering::Release);
+    policy.revision.store(1, Ordering::Release);
+    assert_eq!(session.check(), Ok(()));
+    assert_eq!(session.authorize(request), Err(AuthError::Forbidden));
+    policy.allow.store(true, Ordering::Release);
+    policy.revision.store(2, Ordering::Release);
+    assert_eq!(session.authorize(request), Ok(()));
+    *authenticator
+        .denied_session
+        .lock()
+        .map_err(|_| AuthError::Unavailable)? = Some("user-session".into());
+    assert_eq!(session.check(), Err(AuthError::Revoked));
+    *authenticator
+        .denied_session
+        .lock()
+        .map_err(|_| AuthError::Unavailable)? = None;
+    assert_eq!(session.check(), Err(AuthError::Revoked));
+    let expired = AuthSession::from_identity(identity(SystemTime::UNIX_EPOCH), policy, None, true);
+    assert_eq!(expired.check(), Err(AuthError::Expired));
+    assert_eq!(authenticator.authenticated.load(Ordering::Acquire), 1);
+    Ok(())
+}

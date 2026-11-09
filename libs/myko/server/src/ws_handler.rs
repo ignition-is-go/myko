@@ -4,6 +4,7 @@
 
 use crate::GatewayAccess;
 use crate::delivery_diagnostics::DeliveryDiagnostics;
+use crate::subscription_authorization::{Delivery, SubscriptionAuthorization};
 use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
 use myko_auth::{AuthSession, AuthorizationRequest, EventChange, OperationKind};
 use std::{
@@ -317,6 +318,7 @@ struct MessageContext<'a> {
 }
 
 struct ReadLoopState {
+    subscription_auth: Arc<SubscriptionAuthorization>,
     auth: Option<AuthSession>,
     access: GatewayAccess,
     ctx: Arc<MykoServerContext>,
@@ -337,6 +339,7 @@ struct ReadLoopState {
 }
 
 struct WriterState {
+    subscription_auth: Arc<SubscriptionAuthorization>,
     auth: Option<AuthSession>,
     write: futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
     rx: mpsc::Receiver<OutboundMessage>,
@@ -514,6 +517,26 @@ impl WsHandler {
                 return true;
             }
         }
+        if state
+            .auth
+            .as_ref()
+            .is_some_and(AuthSession::uses_live_permissions)
+        {
+            match &message {
+                MykoMessage::QueryCancel(w)
+                | MykoMessage::ViewCancel(w)
+                | MykoMessage::ReportCancel(w) => state.subscription_auth.cancel(&w.tx),
+                _ => {}
+            }
+            if !state.subscription_auth.register(&message) {
+                Self::reject_incoming(
+                    state,
+                    &message,
+                    "subscription transaction is no longer active; use a fresh transaction".into(),
+                );
+                return true;
+            }
+        }
         Self::handle_message(
             session,
             state.ctx.clone(),
@@ -632,10 +655,78 @@ impl WsHandler {
         true
     }
 
+    fn register_ready_subscription<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        ready: SubscriptionReady,
+        state: &ReadLoopState,
+    ) -> bool {
+        if state
+            .auth
+            .as_ref()
+            .is_some_and(|auth| auth.check().is_err())
+        {
+            return false;
+        }
+        let tx_id = match &ready {
+            SubscriptionReady::Report { tx_id, .. }
+            | SubscriptionReady::WindowedQuery { tx_id, .. }
+            | SubscriptionReady::Query { tx_id, .. }
+            | SubscriptionReady::View { tx_id, .. } => tx_id.clone(),
+        };
+        if state
+            .auth
+            .as_ref()
+            .is_some_and(AuthSession::uses_live_permissions)
+            && !state.subscription_auth.active(&tx_id)
+        {
+            return true;
+        }
+        if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
+            map.remove(&tx_id);
+        }
+        if let Some(diagnostics) = &state.drop_logger.diagnostics {
+            diagnostics.ready(&tx_id);
+        }
+        match ready {
+            SubscriptionReady::Report {
+                tx_id,
+                report_id,
+                cell,
+            } => {
+                session.subscribe_report(tx_id, report_id, cell);
+            }
+            SubscriptionReady::WindowedQuery {
+                tx_id,
+                query_id,
+                source,
+            } => {
+                session.subscribe_windowed_query(tx_id, query_id, source);
+            }
+            SubscriptionReady::Query {
+                tx_id,
+                query_id,
+                cellmap,
+                window,
+            } => {
+                session.subscribe_query(tx_id, query_id, cellmap, window);
+            }
+            SubscriptionReady::View {
+                tx_id,
+                view_id,
+                cellmap,
+                window,
+            } => {
+                session.subscribe_view_with_id(tx_id, view_id, cellmap, window);
+            }
+        }
+        true
+    }
+
     async fn run_read_loop<W: WsWriter>(
         mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
         session: &mut ClientSession<W>,
         mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionReady>,
+        mut denied_rx: mpsc::UnboundedReceiver<Arc<str>>,
         state: ReadLoopState,
     ) {
         let mut diagnostics_interval = interval(Duration::from_secs(5));
@@ -643,6 +734,7 @@ impl WsHandler {
         outbound_ttl_interval.tick().await; // NOTE(ts): consume the immediate first tick
         let mut overload_rx = state.overload_rx.clone();
         let mut auth_interval = interval(Duration::from_millis(100));
+        let mut policy_revision = None;
         loop {
             if state
                 .auth
@@ -651,8 +743,30 @@ impl WsHandler {
             {
                 break;
             }
+            if let Some(auth) = &state.auth
+                && auth.uses_live_permissions()
+            {
+                let revision = auth.policy_revision();
+                if policy_revision != Some(revision) {
+                    for error in state.subscription_auth.recheck(auth) {
+                        if let Err(error) = state.priority_tx.try_send(error) {
+                            state
+                                .drop_logger
+                                .on_drop("subscription authorization error", &error);
+                        }
+                    }
+                    policy_revision = Some(revision);
+                }
+            }
             tokio::select! {
                 _ = auth_interval.tick(), if state.auth.is_some() => {}
+                Some(tx) = denied_rx.recv() => {
+                    session.cancel(&tx);
+                    let _ = state.view_delivery_tx.send(ViewDeliveryControl::Cancel(tx.clone()));
+                    if let Ok(mut map) = state.query_ids_by_tx.lock() { map.remove(&tx); }
+                    if let Ok(mut map) = state.view_ids_by_tx.lock() { map.remove(&tx); }
+                    if let Ok(mut map) = state.subscribe_started_by_tx.lock() { map.remove(&tx); }
+                }
                 _ = diagnostics_interval.tick() => {
                     if let Some(diagnostics) = &state.drop_logger.diagnostics { diagnostics.flush(false); }
                 }
@@ -667,31 +781,7 @@ impl WsHandler {
                 }
                 // Completed subscription builds — register with session
                 Some(ready) = subscribe_rx.recv() => {
-                    if state.auth.as_ref().is_some_and(|auth| auth.check().is_err()) { break; }
-                    let tx_id = match &ready {
-                        SubscriptionReady::Report { tx_id, .. }
-                        | SubscriptionReady::WindowedQuery { tx_id, .. }
-                        | SubscriptionReady::Query { tx_id, .. }
-                        | SubscriptionReady::View { tx_id, .. } => tx_id.clone(),
-                    };
-                    if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
-                        map.remove(&tx_id);
-                    }
-                    if let Some(diagnostics) = &state.drop_logger.diagnostics { diagnostics.ready(&tx_id); }
-                    match ready {
-                        SubscriptionReady::Report { tx_id, report_id, cell } => {
-                            session.subscribe_report(tx_id, report_id, cell);
-                        }
-                        SubscriptionReady::WindowedQuery { tx_id, query_id, source } => {
-                            session.subscribe_windowed_query(tx_id, query_id, source);
-                        }
-                        SubscriptionReady::Query { tx_id, query_id, cellmap, window } => {
-                            session.subscribe_query(tx_id, query_id, cellmap, window);
-                        }
-                        SubscriptionReady::View { tx_id, view_id, cellmap, window } => {
-                            session.subscribe_view_with_id(tx_id, view_id, cellmap, window);
-                        }
-                    }
+                    if !Self::register_ready_subscription(session, ready, &state) { break; }
                 }
                 // NOTE(ts): Sweep outbound command entries older than 10s.
                 // Responses normally arrive quickly; stale entries are from
@@ -904,29 +994,49 @@ impl WsHandler {
             tokio_tungstenite::WebSocketStream<TcpStream>,
             Message,
         >,
-        message: OutboundMessage,
+        mut message: OutboundMessage,
         client_id: &str,
         addr: SocketAddr,
         outgoing_format: &AtomicU8,
         commands: &SharedOutboundCommands,
         diagnostics: &DeliveryDiagnostics,
         auth: Option<&AuthSession>,
+        subscription_auth: &SubscriptionAuthorization,
     ) -> bool {
         let (kind, tx, sequence) = Self::outbound_metadata(&message);
         Self::track_outbound_command(&message, commands, client_id);
         let serialize_started = Instant::now();
-        let Some(frame) = Self::serialize_outbound(&message, outgoing_format) else {
+        let Some(mut frame) = Self::serialize_outbound(&message, outgoing_format) else {
             // A serialization failure is just as lossy as a full queue. Stop
             // this session rather than allowing later sequenced diffs through.
             return false;
         };
+        let send_started = Instant::now();
+        if auth.is_some_and(|session| session.check().is_err()) {
+            return false;
+        }
+        if let (Some(auth), OutboundMessage::Message(output)) = (auth, &message)
+            && auth.uses_live_permissions()
+        {
+            match subscription_auth.delivery(output, auth) {
+                Delivery::Allow => {}
+                Delivery::Drop => return true,
+                Delivery::Error(error) => {
+                    message = OutboundMessage::Message(error);
+                    let Some(error_frame) = Self::serialize_outbound(&message, outgoing_format)
+                    else {
+                        return false;
+                    };
+                    frame = error_frame;
+                }
+            }
+        }
         let serialize_elapsed = serialize_started.elapsed();
         let payload_bytes = match &frame {
             Message::Binary(bytes) => bytes.len(),
             Message::Text(text) => text.len(),
             _ => 0,
         };
-        let send_started = Instant::now();
         if auth.is_some_and(|session| session.check().is_err()) {
             return false;
         }
@@ -1000,6 +1110,7 @@ impl WsHandler {
 
     async fn run_writer(state: WriterState) {
         let WriterState {
+            subscription_auth,
             auth,
             mut write,
             mut rx,
@@ -1081,6 +1192,7 @@ impl WsHandler {
                 &outbound_commands_by_tx_writer,
                 &diagnostics,
                 auth.as_ref(),
+                &subscription_auth,
             )
             .await
             {
@@ -1239,7 +1351,10 @@ impl WsHandler {
         let command_drop_logger = drop_logger.clone();
         let command_client_id = client_id.clone();
 
+        let (denied_tx, denied_rx) = mpsc::unbounded_channel();
+        let subscription_auth = Arc::new(SubscriptionAuthorization::new(denied_tx));
         let write_task = tokio::spawn(Self::run_writer(WriterState {
+            subscription_auth: subscription_auth.clone(),
             auth: auth.clone(),
             write,
             rx,
@@ -1275,7 +1390,9 @@ impl WsHandler {
             read,
             &mut session,
             subscribe_rx,
+            denied_rx,
             ReadLoopState {
+                subscription_auth,
                 auth,
                 access,
                 ctx: ctx.clone(),

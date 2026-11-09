@@ -1,6 +1,6 @@
 #![allow(clippy::panic_in_result_fn)]
 
-use hyphae::{Gettable, Materialize};
+use hyphae::{Gettable, Materialize, Watchable};
 use myko::{
     report::{ReportContext, ReportHandler},
     request::{RequestCacheScope, RequestContext},
@@ -30,6 +30,16 @@ mod application {
     use myko::prelude::*;
     #[myko::myko_item]
     pub struct ForeignPermissionProject {
+        pub name: String,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[myko::myko_view_item]
+    pub struct ForeignPermissionComputedRow {
+        pub id: std::sync::Arc<str>,
+    }
+    #[allow(clippy::derive_partial_eq_without_eq)]
+    #[myko::myko_subtype]
+    pub struct ForeignPermissionHelper {
         pub name: String,
     }
     pub mod child {
@@ -412,24 +422,35 @@ async fn typed_client_receives_generated_structure_over_an_authenticated_websock
     socket
         .send(Message::Text(serde_json::to_string(&message)?.into()))
         .await?;
-    tokio::time::timeout(Duration::from_secs(3), async {
-        loop {
-            match socket.next().await {
-                None | Some(Err(_) | Ok(Message::Close(_))) => {
-                    break Ok::<_, Box<dyn std::error::Error + Send + Sync>>(());
-                }
-                Some(Ok(Message::Text(text))) => {
-                    if let Ok(myko::wire::MykoMessage::ReportResponse(_)) =
-                        serde_json::from_str(&text)
-                    {
-                        break Err("unauthorized caller received policy".into());
-                    }
-                }
-                _ => {}
-            }
-        }
-    })
-    .await??;
+    let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await?
+        .ok_or("socket closed on denied report")??;
+    let Message::Text(text) = frame else {
+        return Err("expected report error frame".into());
+    };
+    let myko::wire::MykoMessage::ReportError(error) = serde_json::from_str(&text)? else {
+        return Err("unauthorized caller did not receive report error".into());
+    };
+    assert_eq!(error.tx, "denied-inspection");
+    assert_eq!(error.report_id, "GetPermissionStructure");
+    assert_eq!(error.message, "permission denied");
+    let ping = myko::wire::MykoMessage::Ping(myko::wire::PingData {
+        id: "after-denied-inspection".into(),
+        timestamp: 0,
+    });
+    socket
+        .send(Message::Text(serde_json::to_string(&ping)?.into()))
+        .await?;
+    let frame = tokio::time::timeout(Duration::from_secs(3), socket.next())
+        .await?
+        .ok_or("socket closed after denial")??;
+    let Message::Text(text) = frame else {
+        return Err("expected ping response".into());
+    };
+    assert!(matches!(
+        serde_json::from_str::<myko::wire::MykoMessage>(&text)?,
+        myko::wire::MykoMessage::Ping(_)
+    ));
     Ok(())
 }
 
@@ -481,4 +502,162 @@ fn edit_capabilities_intersect_custom_authorizer_and_current_local_grants() -> T
     assert!(!output.commands.is_empty());
     assert!(output.commands.iter().all(|command| !command.allowed));
     Ok(())
+}
+
+async fn refresh_to(fixture: &Fixture, revision: u64) -> TestResult {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            fixture.permissions.refresh()?;
+            if fixture
+                .permissions
+                .snapshot()?
+                .is_some_and(|snapshot| snapshot.revision >= revision)
+            {
+                return Ok::<_, myko_permissions::PermissionError>(());
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await??;
+    Ok(())
+}
+
+fn live_inspection_context(fixture: &Fixture, session: AuthSession) -> ReportContext {
+    ReportContext::new(
+        Arc::new(
+            RequestContext::from_client(
+                "live-inspection".into(),
+                "client".into(),
+                fixture.context.host_id,
+            )
+            .with_auth(Some(session)),
+        ),
+        fixture.context.clone(),
+    )
+}
+
+#[tokio::test]
+async fn existing_inspection_cells_follow_role_assignment_and_removal() -> TestResult {
+    let fixture = Fixture::new()?;
+    let initial = fixture.storage.load()?.ok_or("missing policy")?;
+    let mut document = initial.document;
+    let mut person = document
+        .principals
+        .first()
+        .ok_or("missing administrator")?
+        .clone();
+    person.id = "new-user".into();
+    person.subject = "new-user".into();
+    document.principals.push(person);
+    let result = replace_as_operator(
+        fixture.storage.as_ref(),
+        initial.revision,
+        document,
+        "operator",
+        "Discover user",
+        false,
+    )?;
+    refresh_to(&fixture, result.revision).await?;
+    let session = myko_auth::MykoAuthProvider::new(
+        Arc::new(FixtureAuthenticator),
+        Arc::new(ScopedAuthorizer::new(fixture.permissions.clone())),
+    )
+    .with_live_permissions()
+    .authenticate(myko_auth::Credentials {
+        bearer: Some("admin".into()),
+    })
+    .await?;
+    let context = live_inspection_context(&fixture, session.clone());
+    let structure = GetPermissionStructure {}
+        .compute(context.clone())
+        .materialize();
+    let inspection = InspectPermissionPrincipal {
+        principal_id: "new-user".into(),
+    }
+    .compute(context)
+    .materialize();
+    let _structure_subscription = structure.subscribe(|_| {});
+    let _inspection_subscription = inspection.subscribe(|_| {});
+    assert!(inspection.get().scopes.iter().all(|scope| !scope.allowed));
+    let current = fixture.storage.load()?.ok_or("missing policy")?;
+    let mut document = current.document;
+    let role_id = document.roles.first().ok_or("missing role")?.id.clone();
+    document.bindings.push(PermissionRoleBinding {
+        id: "live-binding".into(),
+        authority_id: AUTHORITY_ID.into(),
+        role_id,
+        grantee: PermissionGrantee::Principal("new-user".into()),
+    });
+    let assigned = replace_as_operator(
+        fixture.storage.as_ref(),
+        current.revision,
+        document,
+        "operator",
+        "Assign role",
+        false,
+    )?;
+    refresh_to(&fixture, assigned.revision).await?;
+    assert_eq!(structure.get().revision, Some(assigned.revision));
+    assert!(structure.get().document.as_ref().is_some_and(|document| {
+        document
+            .bindings
+            .iter()
+            .any(|binding| binding.id.as_ref() == "live-binding")
+    }));
+    assert!(
+        inspection
+            .get()
+            .scopes
+            .iter()
+            .any(|scope| scope.scope == "PermissionRole:write" && scope.allowed)
+    );
+    let current = fixture.storage.load()?.ok_or("missing policy")?;
+    let mut document = current.document;
+    document
+        .bindings
+        .retain(|binding| binding.id.as_ref() != "live-binding");
+    let removed = replace_as_operator(
+        fixture.storage.as_ref(),
+        current.revision,
+        document,
+        "operator",
+        "Remove role",
+        false,
+    )?;
+    refresh_to(&fixture, removed.revision).await?;
+    assert_eq!(structure.get().revision, Some(removed.revision));
+    assert_eq!(inspection.get().revision, Some(removed.revision));
+    assert!(inspection.get().scopes.iter().all(|scope| !scope.allowed));
+    session.check()?;
+    Ok(())
+}
+
+#[test]
+fn only_entities_advertise_generated_permission_scopes() {
+    let _row = application::ForeignPermissionComputedRow { id: "row".into() };
+    let _helper = application::ForeignPermissionHelper {
+        name: "helper".into(),
+    };
+    let catalog = PermissionCatalog::registered();
+    for action in [
+        EntityAction::Read,
+        EntityAction::Write,
+        EntityAction::Delete,
+    ] {
+        assert!(
+            catalog
+                .entity_scope("ForeignPermissionProject", action)
+                .is_some()
+        );
+        assert!(
+            catalog
+                .entity_scope("ForeignPermissionComputedRow", action)
+                .is_none()
+        );
+        assert!(
+            catalog
+                .entity_scope("ForeignPermissionHelper", action)
+                .is_none()
+        );
+    }
 }

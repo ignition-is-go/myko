@@ -1,4 +1,8 @@
 //! Persisted grants, reactive permission entities, and protected administration.
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+mod admin;
+#[cfg(all(feature = "server", not(target_arch = "wasm32")))]
+pub use admin::{AdminEmail, PermissionAuthenticator};
 mod commands;
 #[cfg(all(feature = "server", not(target_arch = "wasm32")))]
 mod engine;

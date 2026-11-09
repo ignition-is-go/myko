@@ -75,6 +75,18 @@ impl Permissions {
             watcher_started: AtomicBool::new(false),
         }))
     }
+    pub(crate) fn ensure_admin_email(
+        &self,
+        email: &crate::AdminEmail,
+        identity: &AuthenticatedIdentity,
+    ) -> PermissionResult<()> {
+        let _gate = self.0.gate.lock().map_err(|_| PermissionError::Detached)?;
+        if email.ensure(self.0.storage.as_ref(), identity)? {
+            self.refresh_locked()?;
+        }
+        Ok(())
+    }
+
     /// Attach after server initialization and before accepting connections.
     /// # Errors
     /// Returns an error for invalid storage or a different policy already attached to this registry.

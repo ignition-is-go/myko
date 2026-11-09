@@ -12,7 +12,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::SystemTime,
 };
@@ -151,9 +151,20 @@ pub trait Authorizer: Send + Sync + 'static {
     fn authorize_anonymous(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
         public_access::authorize(request)
     }
-    /// Increment when a policy change can invalidate active subscriptions.
+    /// Increment whenever local authorization decisions can change.
+    /// Live transports use this to recheck active subscription permissions.
     fn revision(&self) -> u64 {
         0
+    }
+    /// Invalidation revision for this identity, or for an anonymous session.
+    ///
+    /// Defaults to global invalidation. Authorizers may isolate unrelated policy
+    /// edits by returning a revision of this identity's effective access instead.
+    /// It must change whenever existing subscriptions could lose authorization.
+    /// `revision()` must also change whenever this value may change; sessions
+    /// recompute it only after observing a new global policy revision.
+    fn session_revision(&self, _identity: Option<&AuthenticatedIdentity>) -> u64 {
+        self.revision()
     }
 }
 
@@ -162,6 +173,7 @@ pub struct MykoAuthProvider {
     authenticator: Arc<dyn Authenticator>,
     authorizer: Arc<dyn Authorizer>,
     anonymous_access: bool,
+    live_permissions: bool,
 }
 impl MykoAuthProvider {
     pub fn new(authenticator: Arc<dyn Authenticator>, authorizer: Arc<dyn Authorizer>) -> Self {
@@ -169,8 +181,18 @@ impl MykoAuthProvider {
             authenticator,
             authorizer,
             anonymous_access: false,
+            live_permissions: false,
         }
     }
+    /// Keep authenticated transports alive across permission edits.
+    /// Transports must reauthorize subscriptions and queued data before delivery.
+    /// Credential expiry, logout, and explicit session revocation still apply.
+    #[must_use]
+    pub const fn with_live_permissions(mut self) -> Self {
+        self.live_permissions = true;
+        self
+    }
+
     /// Enable app-defined anonymous admission even without public decorators.
     /// The authorizer still decides access to each operation.
     #[must_use]
@@ -187,7 +209,10 @@ impl MykoAuthProvider {
         if credentials.bearer.is_none()
             && (self.anonymous_access || public_access::has_registrations())
         {
-            return Ok(AuthSession::anonymous(self.authorizer.clone()));
+            return Ok(AuthSession::anonymous(
+                self.authorizer.clone(),
+                self.live_permissions,
+            ));
         }
         self.authenticate(credentials).await
     }
@@ -200,6 +225,7 @@ impl MykoAuthProvider {
             identity,
             self.authorizer.clone(),
             Some(self.authenticator.clone()),
+            self.live_permissions,
         );
         session.check()?;
         Ok(session)
@@ -213,6 +239,8 @@ struct SessionInner {
     identity: Option<AuthenticatedIdentity>,
     authorizer: Arc<dyn Authorizer>,
     revision: u64,
+    live_permissions: bool,
+    observed_policy_revision: AtomicU64,
     revoked: AtomicBool,
     authenticator: Option<Arc<dyn Authenticator>>,
 }
@@ -231,31 +259,38 @@ impl AuthSession {
     /// Creates a session from a trusted identity without authenticator liveness checks.
     /// Use `MykoAuthProvider::authenticate` to retain the credential authority.
     pub fn new(identity: AuthenticatedIdentity, authorizer: Arc<dyn Authorizer>) -> Self {
-        Self::from_identity(identity, authorizer, None)
+        Self::from_identity(identity, authorizer, None, false)
     }
 
     fn from_identity(
         identity: AuthenticatedIdentity,
         authorizer: Arc<dyn Authorizer>,
         authenticator: Option<Arc<dyn Authenticator>>,
+        live_permissions: bool,
     ) -> Self {
-        let revision = authorizer.revision();
+        let policy_revision = authorizer.revision();
+        let revision = authorizer.session_revision(Some(&identity));
         Self(Arc::new(SessionInner {
             id: uuid::Uuid::new_v4().to_string(),
             identity: Some(identity),
             authorizer,
             revision,
+            live_permissions,
+            observed_policy_revision: AtomicU64::new(policy_revision),
             revoked: AtomicBool::new(false),
             authenticator,
         }))
     }
-    fn anonymous(authorizer: Arc<dyn Authorizer>) -> Self {
-        let revision = authorizer.revision();
+    fn anonymous(authorizer: Arc<dyn Authorizer>, live_permissions: bool) -> Self {
+        let policy_revision = authorizer.revision();
+        let revision = authorizer.session_revision(None);
         Self(Arc::new(SessionInner {
             id: uuid::Uuid::new_v4().to_string(),
             identity: None,
             authorizer,
             revision,
+            live_permissions,
+            observed_policy_revision: AtomicU64::new(policy_revision),
             revoked: AtomicBool::new(false),
             authenticator: None,
         }))
@@ -270,16 +305,28 @@ impl AuthSession {
     pub fn identity(&self) -> Option<&AuthenticatedIdentity> {
         self.0.identity.as_ref()
     }
+    #[must_use]
+    pub fn uses_live_permissions(&self) -> bool {
+        self.0.live_permissions
+    }
+
+    /// Current local authorization policy version, independent of credential validity.
+    #[must_use]
+    pub fn policy_revision(&self) -> u64 {
+        self.0.authorizer.revision()
+    }
+
     pub fn revoke(&self) {
         self.0.revoked.store(true, Ordering::Release);
     }
     /// # Errors
     /// Returns an error when credentials expire or authority is invalidated.
     pub fn check(&self) -> Result<(), AuthError> {
-        if self.0.revoked.load(Ordering::Acquire) || self.0.authorizer.revision() != self.0.revision
-        {
-            self.revoke();
+        if self.0.revoked.load(Ordering::Acquire) {
             return Err(AuthError::Revoked);
+        }
+        if !self.0.live_permissions {
+            self.check_policy_revision()?;
         }
         if let Some(identity) = &self.0.identity {
             if SystemTime::now() >= identity.expires_at {
@@ -296,15 +343,46 @@ impl AuthSession {
         }
         Ok(())
     }
+    fn check_policy_revision(&self) -> Result<(), AuthError> {
+        for _ in 0..3 {
+            let policy_revision = self.0.authorizer.revision();
+            if policy_revision == self.0.observed_policy_revision.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            let revision = self.0.authorizer.session_revision(self.0.identity.as_ref());
+            // NOTE(ts): do not cache an effective revision assembled across
+            // multiple policy snapshots while concurrent edits are publishing.
+            if self.0.authorizer.revision() != policy_revision {
+                continue;
+            }
+            if revision != self.0.revision {
+                self.revoke();
+                return Err(AuthError::Revoked);
+            }
+            self.0
+                .observed_policy_revision
+                .store(policy_revision, Ordering::Release);
+            return Ok(());
+        }
+        Err(AuthError::Unavailable)
+    }
     /// # Errors
     /// Returns an error when the session or local policy rejects the request.
     pub fn authorize(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
-        self.check()?;
-        match &self.0.identity {
-            Some(identity) => self.0.authorizer.authorize(identity, request)?,
-            None => self.0.authorizer.authorize_anonymous(request)?,
+        for _ in 0..3 {
+            self.check()?;
+            let revision = self.policy_revision();
+            let decision = self.0.identity.as_ref().map_or_else(
+                || self.0.authorizer.authorize_anonymous(request),
+                |identity| self.0.authorizer.authorize(identity, request),
+            );
+            self.check()?;
+            if self.0.live_permissions && self.policy_revision() != revision {
+                continue;
+            }
+            return decision;
         }
-        self.check()
+        Err(AuthError::Unavailable)
     }
 }
 

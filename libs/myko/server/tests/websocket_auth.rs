@@ -74,8 +74,13 @@ impl Authorizer for Policy {
         match request {
             AuthorizationRequest::Execute {
                 kind: myko_auth::OperationKind::Query,
+                operation,
                 ..
-            } => Ok(()),
+            } if operation != "GetDemoTasks"
+                || self.0.load(Ordering::Acquire).is_multiple_of(2) =>
+            {
+                Ok(())
+            }
             AuthorizationRequest::ClientEvent {
                 entity_type: "DemoTask",
                 change: myko_auth::EventChange::Set,
@@ -112,6 +117,9 @@ impl Drop for Fixture {
     }
 }
 async fn fixture(access: GatewayAccess) -> TestResult<Fixture> {
+    fixture_mode(access, false).await
+}
+async fn fixture_mode(access: GatewayAccess, live: bool) -> TestResult<Fixture> {
     let journal = Arc::new(Journal::default());
     let server = Arc::new(
         MykoServer::builder()
@@ -120,10 +128,12 @@ async fn fixture(access: GatewayAccess) -> TestResult<Fixture> {
     );
     let policy = Arc::new(Policy(AtomicU64::new(0)));
     let authenticated = Arc::new(AtomicUsize::new(0));
-    let provider = Arc::new(MykoAuthProvider::new(
-        Arc::new(Identity(authenticated.clone())),
-        policy.clone(),
-    ));
+    let mut provider =
+        MykoAuthProvider::new(Arc::new(Identity(authenticated.clone())), policy.clone());
+    if live {
+        provider = provider.with_live_permissions();
+    }
+    let provider = Arc::new(provider);
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let runtime = server.clone();
@@ -441,5 +451,83 @@ async fn typed_client_authenticates_before_subscribing() -> TestResult {
     assert_eq!(watch.items().get().len(), 1);
     assert_eq!(f.authenticated.load(Ordering::SeqCst), 1);
     client.close();
+    Ok(())
+}
+
+async fn next_message(socket: &mut Socket) -> TestResult<MykoMessage> {
+    match timeout(Duration::from_secs(3), socket.next())
+        .await?
+        .ok_or("socket closed")??
+    {
+        Message::Text(text) => Ok(serde_json::from_str(&text)?),
+        Message::Binary(bytes) => Ok(ciborium::de::from_reader(bytes.as_ref())?),
+        other => Err(format!("unexpected frame {other:?}").into()),
+    }
+}
+fn live_query(tx: &str, operation: &str) -> MykoMessage {
+    MykoMessage::Query(WrappedQuery {
+        query: serde_json::json!({"tx":tx}),
+        query_id: operation.into(),
+        query_item_type: "DemoTask".into(),
+        window: None,
+    })
+}
+
+#[tokio::test]
+async fn live_permission_edits_stop_denied_data_but_keep_socket_and_other_subscriptions()
+-> TestResult {
+    for binary in [false, true] {
+        let f = fixture_mode(GatewayAccess::Full, true).await?;
+        let mut socket = connect(&f).await?;
+        send(
+            &mut socket,
+            &live_query("restricted", "GetDemoTasks"),
+            binary,
+        )
+        .await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "restricted")
+        );
+        send(&mut socket, &live_query("unaffected", "OtherTasks"), binary).await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "unaffected")
+        );
+        f.policy.0.store(1, Ordering::Release);
+        // No incoming request or new data is required to notify a denied subscriber.
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryError(error) if error.tx == "restricted" && error.message == "permission denied")
+        );
+        f.server.ctx().apply_event(event("service"))?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "unaffected")
+        );
+        send(
+            &mut socket,
+            &live_query("still-denied", "GetDemoTasks"),
+            binary,
+        )
+        .await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryError(error) if error.tx == "still-denied")
+        );
+        send(
+            &mut socket,
+            &MykoMessage::Ping(PingData {
+                id: "alive".into(),
+                timestamp: 0,
+            }),
+            binary,
+        )
+        .await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::Ping(ping) if ping.id == "alive")
+        );
+        f.policy.0.store(2, Ordering::Release);
+        send(&mut socket, &live_query("restored", "GetDemoTasks"), binary).await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "restored" && response.upserts.len() == 1)
+        );
+        assert_eq!(f.authenticated.load(Ordering::Acquire), 1);
+    }
     Ok(())
 }

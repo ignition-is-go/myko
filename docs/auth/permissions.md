@@ -47,12 +47,55 @@ cannot supply a local grant by itself.
 Authentication does not call Auth0 for every command. Authorization reads an
 in-memory snapshot. A background observer refreshes storage every 100 milliseconds;
 permission administration also loads the latest accepted revision before editing.
-A policy change invalidates existing sessions, so clients must reconnect.
+Structure and principal-inspection reports follow the authority projection and
+update on each accepted policy revision without requiring a new subscription.
+By default, a policy change invalidates existing sessions. Applications can opt
+into `MykoAuthProvider::with_live_permissions()` to keep connections across role
+and grant edits. The WebSocket transport rechecks subscriptions on policy changes
+and before delivering queued query, view, or report data. Subscriptions that lose
+access stop and receive a typed error; permitted subscriptions stay active.
+New operations immediately use the latest grants. A denied subscription can be
+requested again with a fresh transaction after access is restored. Credential
+expiry, logout, and explicit session revocation still close the connection.
+MCP query, view, and report reads are reauthorized before returning results.
+Custom transports enabling this option must enforce equivalent delivery checks.
 
 ## Bootstrap and recover
 
 An empty store denies access. It never makes the first client an administrator.
-Run the host-only operator CLI before first startup, using the exact verified
+Applications may opt in to email-based administrator reconciliation by wrapping
+an existing authenticator. The application owns configuration loading; Myko does
+not read environment variables or select a default email.
+
+```rust,ignore
+use myko_permissions::{AdminEmail, PermissionAuthenticator};
+
+let mut authenticator = PermissionAuthenticator::new(authenticator, permissions.as_ref().clone());
+if let Some(email) = config.admin_email {
+    authenticator = authenticator.with_admin_email(AdminEmail::new(email)?);
+}
+let provider = MykoAuthProvider::new(Arc::new(authenticator), authorizer);
+```
+
+The wrapped authenticator must supply a trusted `verified_email` string claim.
+Only non-delegated user identities with that verified address qualify. Expiry and
+credential liveness are checked before any grant is written. On each matching
+sign-in, the helper atomically bootstraps or reconciles an enabled principal,
+a normal persisted `Admin` role with allow rules for every registered entity's
+read/write/delete scopes, and that principal's role binding. Password and OTP
+identities with the same trusted verified email can receive the same role.
+Unchanged sign-ins do not write another revision. Other people can receive this
+role through normal administration. Explicit overrides retain their normal
+precedence; this is a role assignment, not an authorization bypass.
+
+Removing the configuration stops automatic grants and restoration, but does not
+remove persisted roles or bindings. Legacy bootstrap role IDs and assignments
+are retained when the helper adopts them. Updates are audited and use storage
+compare-and-swap retries. The helper refreshes the attached runtime before
+returning the identity, so its new access is visible on admission.
+
+For host-only initialization without email reconciliation, run the operator CLI
+before first startup, using the exact verified
 issuer, subject, and principal kind.
 
 ```sh
@@ -83,7 +126,10 @@ registered as WebSocket or MCP commands.
 
 The canonical model contains principals, groups, memberships, roles, role bindings,
 and overrides. Principals match verified issuer, subject, and user/service/agent
-kind. Bind roles to a principal or group. Rules hold a generated scope such as
+kind. Bind roles to a principal or group. Permission records belong to their authority;
+role and grantee references do not introduce ownership or permission inheritance.
+Principal management does not implicitly authorize role assignment.
+Rules hold a generated scope such as
 `Project:write` and an `Allow` or `Deny` effect.
 
 For one entity scope, principal overrides take precedence over group overrides,
@@ -115,8 +161,8 @@ exists or can authenticate; host recovery handles that failure.
 
 Direct client SET/DEL events and generated deletion commands cannot mutate
 permission entities, even for administrators. Use the protected commands.
-A successful edit can invalidate the caller's session before its response is
-sent. Reconnect and inspect the revision and change ID before retrying an edit.
+Without live permission mode, a successful edit can invalidate the caller's
+session before its response is sent. Reconnect and inspect the revision and change ID before retrying an edit.
 
 ## Persistence and reactive stores
 
@@ -145,3 +191,13 @@ Storage failures deny authorization until a valid snapshot can be loaded again.
 
 See [Render a server's permissions in Leptos](leptos-permissions.md) for reusable
 components that discover entity scopes and permission records from the server.
+
+## Entity scopes and helper types
+
+Generated read, write, and delete scopes belong to `#[myko_item]` entities.
+`#[myko_view_item]` computed rows and `#[myko_subtype]` helper types do not own
+permission scopes. A computed view can declare `#[myko_scope(SourceEntity, read)]`
+for each source entity it exposes. These explicit mappings use real entity scopes
+instead of a synthetic scope for the output row. A view over an actual entity
+retains its default entity-read mapping. Unmapped computed views remain denied
+by scope-based authorization unless the application's authorizer handles them.

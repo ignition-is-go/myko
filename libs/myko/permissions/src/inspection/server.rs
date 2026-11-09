@@ -11,6 +11,7 @@ use crate::{
     model::{PermissionAuthority, PermissionPrincipalKind},
     runtime::Permissions,
 };
+use hyphae::MapExt;
 use myko::{
     core::capability::ServerScoped,
     report::{ReportContext, ReportHandler},
@@ -74,54 +75,60 @@ impl ReportHandler for GetPermissionStructure {
         &self,
         ctx: ReportContext,
     ) -> impl hyphae::Materialize<Arc<Self::Output>, hyphae::Definite> {
-        let output = match snapshot(&ctx, "GetPermissionStructure", &serde_json::json!({})) {
-            Ok(snapshot) => {
-                let catalog = PermissionCatalog::registered();
-                let entities = catalog
-                    .scopes()
-                    .map(|scope| scope.entity_type)
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .map(|entity_type| PermissionEntityDescription {
-                        entity_type: entity_type.into(),
-                        parents: catalog
-                            .parents(entity_type)
-                            .iter()
-                            .map(|parent| (*parent).into())
-                            .collect(),
-                        scopes: catalog
+        ctx.__server_ctx()
+            .registry
+            .get_or_create("PermissionAuthority")
+            .entries()
+            .map(move |_| {
+                let output = match snapshot(&ctx, "GetPermissionStructure", &serde_json::json!({}))
+                {
+                    Ok(snapshot) => {
+                        let catalog = PermissionCatalog::registered();
+                        let entities = catalog
                             .scopes()
-                            .filter(|scope| scope.entity_type == entity_type)
-                            .map(|scope| scope.to_string())
-                            .collect(),
-                    })
-                    .collect();
-                let operations = catalog
-                    .operations()
-                    .map(|(kind, operation, scopes)| PermissionOperationDescription {
-                        kind: format!("{kind:?}"),
-                        operation: operation.into(),
-                        required_scopes: scopes
-                            .unwrap_or_default()
-                            .iter()
-                            .map(ToString::to_string)
-                            .collect(),
-                        mapped: scopes.is_some(),
-                    })
-                    .collect();
-                let commands = inventory::iter::<PermissionAdminOperation>
-                    .into_iter()
-                    .map(|entry| entry.operation)
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .map(|operation| PermissionCommandCapability {
-                        operation: operation.into(),
-                        allowed: Permissions::for_context(ctx.__server_ctx()).is_ok_and(
-                            |runtime| runtime.permits_administration(&ctx.req, operation),
-                        ),
-                    })
-                    .collect();
-                PermissionStructure {
+                            .map(|scope| scope.entity_type)
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .map(|entity_type| PermissionEntityDescription {
+                                entity_type: entity_type.into(),
+                                parents: catalog
+                                    .parents(entity_type)
+                                    .iter()
+                                    .map(|parent| (*parent).into())
+                                    .collect(),
+                                scopes: catalog
+                                    .scopes()
+                                    .filter(|scope| scope.entity_type == entity_type)
+                                    .map(|scope| scope.to_string())
+                                    .collect(),
+                            })
+                            .collect();
+                        let operations = catalog
+                            .operations()
+                            .map(|(kind, operation, scopes)| PermissionOperationDescription {
+                                kind: format!("{kind:?}"),
+                                operation: operation.into(),
+                                required_scopes: scopes
+                                    .unwrap_or_default()
+                                    .iter()
+                                    .map(ToString::to_string)
+                                    .collect(),
+                                mapped: scopes.is_some(),
+                            })
+                            .collect();
+                        let commands = inventory::iter::<PermissionAdminOperation>
+                            .into_iter()
+                            .map(|entry| entry.operation)
+                            .collect::<BTreeSet<_>>()
+                            .into_iter()
+                            .map(|operation| PermissionCommandCapability {
+                                operation: operation.into(),
+                                allowed: Permissions::for_context(ctx.__server_ctx()).is_ok_and(
+                                    |runtime| runtime.permits_administration(&ctx.req, operation),
+                                ),
+                            })
+                            .collect();
+                        PermissionStructure {
                     version: PERMISSION_STRUCTURE_VERSION,
                     status: PermissionInspectionStatus::Ready,
                     message:
@@ -133,19 +140,20 @@ impl ReportHandler for GetPermissionStructure {
                     document: Some(snapshot.document.clone()),
                     commands,
                 }
-            }
-            Err((status, message)) => PermissionStructure {
-                version: PERMISSION_STRUCTURE_VERSION,
-                status,
-                message,
-                revision: None,
-                entities: Vec::new(),
-                operations: Vec::new(),
-                document: None,
-                commands: Vec::new(),
-            },
-        };
-        hyphae::Cell::new(Arc::new(output))
+                    }
+                    Err((status, message)) => PermissionStructure {
+                        version: PERMISSION_STRUCTURE_VERSION,
+                        status,
+                        message,
+                        revision: None,
+                        entities: Vec::new(),
+                        operations: Vec::new(),
+                        document: None,
+                        commands: Vec::new(),
+                    },
+                };
+                Arc::new(output)
+            })
     }
 }
 
@@ -158,14 +166,16 @@ impl ReportHandler for InspectPermissionPrincipal {
         &self,
         ctx: ReportContext,
     ) -> impl hyphae::Materialize<Arc<Self::Output>, hyphae::Definite> {
-        let arguments = serde_json::json!({"principalId":self.principal_id});
+        let principal_id = self.principal_id.clone();
+        ctx.__server_ctx().registry.get_or_create("PermissionAuthority").entries().map(move |_| {
+        let arguments = serde_json::json!({"principalId":principal_id});
         let result =
             snapshot(&ctx, "InspectPermissionPrincipal", &arguments).and_then(|snapshot| {
                 let principal = snapshot
                     .document
                     .principals
                     .iter()
-                    .find(|entry| entry.id == self.principal_id)
+                    .find(|entry| entry.id == principal_id)
                     .ok_or_else(|| {
                         (
                             PermissionInspectionStatus::Unavailable,
@@ -234,13 +244,14 @@ impl ReportHandler for InspectPermissionPrincipal {
                 "Local grants only. Token scope ceilings, delegation, external account availability, and row policies are not evaluated".into(), Some(revision), scopes),
             Err((status, message)) => (status, message, None, Vec::new()),
         };
-        hyphae::Cell::new(Arc::new(PermissionPrincipalInspection {
+        Arc::new(PermissionPrincipalInspection {
             version: PERMISSION_STRUCTURE_VERSION,
             status,
             message,
             revision,
-            principal_id: self.principal_id.clone(),
+            principal_id: principal_id.clone(),
             scopes,
-        }))
+        })
+        })
     }
 }
