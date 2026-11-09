@@ -167,6 +167,59 @@ fn content(response: &Value) -> TestResult<Value> {
 }
 
 #[tokio::test]
+async fn http_notifications_are_accepted_without_json_rpc_responses() -> TestResult {
+    let f = fixture(session(Duration::from_secs(30))).await?;
+    for method in [
+        "notifications/initialized",
+        "notifications/cancelled",
+        "unknown/notification",
+    ] {
+        let response = reqwest::Client::new()
+            .post(format!("http://{}/myko/mcp", f.addr))
+            .json(&json!({"jsonrpc":"2.0", "method":method}))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::ACCEPTED);
+        assert!(response.bytes().await?.is_empty());
+    }
+    assert!(
+        post(&f, "tools/list", json!({}))
+            .await?
+            .get("result")
+            .is_some()
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn websocket_notifications_do_not_emit_a_response_or_break_the_connection() -> TestResult {
+    let f = fixture(session(Duration::from_secs(30))).await?;
+    let (mut socket, _) =
+        tokio_tungstenite::connect_async(format!("ws://{}/myko/mcp", f.addr)).await?;
+    socket
+        .send(Message::Text(
+            json!({"jsonrpc":"2.0", "method":"notifications/initialized"})
+                .to_string()
+                .into(),
+        ))
+        .await?;
+    socket
+        .send(Message::Text(
+            json!({"jsonrpc":"2.0", "id":7, "method":"tools/list"})
+                .to_string()
+                .into(),
+        ))
+        .await?;
+    let frame = timeout(Duration::from_secs(5), socket.next())
+        .await?
+        .ok_or("socket closed")??;
+    let response: Value = serde_json::from_str(frame.to_text()?)?;
+    assert_eq!(response.get("id"), Some(&json!(7)));
+    assert!(response.get("result").is_some());
+    Ok(())
+}
+
+#[tokio::test]
 async fn mcp_preserves_service_identity_and_denies_execution_before_side_effects() -> TestResult {
     let _ = CallerIdentityArgs {};
     let _ = ForbiddenMutationArgs {};

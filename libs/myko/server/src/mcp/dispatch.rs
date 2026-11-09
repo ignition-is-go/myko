@@ -117,28 +117,19 @@ pub async fn handle_request(
     executor: &Executor,
     info: &ServerInfo,
 ) -> Option<McpResponse> {
+    let id = request.id?;
     if let Err(message) = executor.check() {
-        return Some(McpResponse::error(
-            request.id,
-            McpError::invalid_params(message),
-        ));
+        return Some(McpResponse::error(id, McpError::invalid_params(message)));
     }
     match request.method.as_str() {
-        "initialize" => Some(handle_initialize(request.id, info)),
+        "initialize" => Some(handle_initialize(id, info)),
         "notifications/initialized" | "notifications/cancelled" => None,
-        "tools/list" => Some(handle_tools_list(request.id, filter)),
-        "tools/call" => {
-            Some(handle_tools_call(request.id, request.params, filter, executor, info).await)
-        }
-        "resources/list" => Some(handle_resources_list(request.id, filter, executor)),
-        "resources/read" => Some(handle_resources_read(
-            request.id,
-            request.params,
-            filter,
-            executor,
-        )),
+        "tools/list" => Some(handle_tools_list(id, filter)),
+        "tools/call" => Some(handle_tools_call(id, request.params, filter, executor, info).await),
+        "resources/list" => Some(handle_resources_list(id, filter, executor)),
+        "resources/read" => Some(handle_resources_read(id, request.params, filter, executor)),
         _ => Some(McpResponse::error(
-            request.id,
+            id,
             McpError::method_not_found(&request.method),
         )),
     }
@@ -601,7 +592,7 @@ mod tests {
     fn make_request(method: &str) -> McpRequest {
         McpRequest {
             jsonrpc: "2.0".to_string(),
-            id: Value::Number(1.into()),
+            id: Some(Value::Number(1.into())),
             method: method.to_string(),
             params: None,
         }
@@ -696,16 +687,34 @@ mod tests {
         let info = ServerInfo::default();
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
-        assert!(
-            handle_request(
-                make_request("notifications/initialized"),
-                &filter,
-                &executor,
-                &info,
+        for method in [
+            "notifications/initialized",
+            "notifications/cancelled",
+            "unknown/notification",
+        ] {
+            let request = require_some!(
+                serde_json::from_value::<McpRequest>(json!({"jsonrpc":"2.0", "method":method}))
+                    .ok(),
+                "notification must deserialize without an id"
+            );
+            assert!(
+                handle_request(request, &filter, &executor, &info)
+                    .await
+                    .is_none()
+            );
+        }
+        let request = require_some!(
+            serde_json::from_value::<McpRequest>(
+                json!({"jsonrpc":"2.0", "id":null, "method":"tools/list"})
             )
-            .await
-            .is_none()
+            .ok(),
+            "explicit null id must deserialize"
         );
+        let response = require_some!(
+            handle_request(request, &filter, &executor, &info).await,
+            "an explicit null id is a request, not a notification"
+        );
+        assert_eq!(response.id, Value::Null);
     }
 
     #[tokio::test]
@@ -726,7 +735,7 @@ mod tests {
     fn make_tool_call(name: &str, arguments: Value) -> McpRequest {
         let request = McpRequest {
             jsonrpc: "2.0".to_string(),
-            id: Value::Number(1.into()),
+            id: Some(Value::Number(1.into())),
             method: "tools/call".to_string(),
             params: Some(json!({ "name": name, "arguments": arguments })),
         };

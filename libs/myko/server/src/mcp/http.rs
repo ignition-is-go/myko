@@ -91,21 +91,23 @@ async fn run_post(
     let filter = filter_from_head(&head);
     let executor = Executor::in_process(ctx, auth.clone());
 
-    let response: McpResponse = match serde_json::from_slice::<McpRequest>(&body) {
-        Ok(req) => {
-            // Notifications (no id, no response expected) get an empty 204
-            // body anyway — MCP HTTP keeps the request/response shape.
-            dispatch::handle_request(req, &filter, &executor, &server_info)
-                .await
-                .unwrap_or_else(|| McpResponse::success(Value::Null, Value::Null))
-        }
-        Err(e) => McpResponse::error(Value::Null, McpError::parse_error(e.to_string())),
+    let response = match serde_json::from_slice::<McpRequest>(&body) {
+        Ok(req) => dispatch::handle_request(req, &filter, &executor, &server_info).await,
+        Err(e) => Some(McpResponse::error(
+            Value::Null,
+            McpError::parse_error(e.to_string()),
+        )),
     };
 
-    let body = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
     if let Some(session) = &auth {
         session.check()?;
     }
+    let Some(response) = response else {
+        write_status(&mut stream, 202, "Accepted").await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    };
+    let body = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
     let write_result = write_full(
         &mut stream,
         200,
