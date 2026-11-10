@@ -127,6 +127,18 @@ impl Auth0Authenticator {
     /// # Errors
     /// Rejects unsafe endpoint configuration or an empty audience.
     pub fn with_jwks_uri(issuer: &str, audience: &str, jwks_uri: &str) -> Result<Self, AuthError> {
+        Self::with_jwks_uri_and_client(issuer, audience, jwks_uri, http_client()?)
+    }
+
+    /// Configure a trusted key endpoint using the caller's HTTP trust roots and policy.
+    /// # Errors
+    /// Rejects unsafe endpoint configuration or an empty audience.
+    pub fn with_jwks_uri_and_client(
+        issuer: &str,
+        audience: &str,
+        jwks_uri: &str,
+        client: reqwest::Client,
+    ) -> Result<Self, AuthError> {
         let url = login::endpoint(issuer)?;
         let jwks_uri = login::endpoint(jwks_uri)?;
         if audience.trim().is_empty() {
@@ -139,7 +151,7 @@ impl Auth0Authenticator {
                 identifier: issuer.into(),
             },
             jwks_uri,
-            client: http_client()?,
+            client,
             keys: Arc::new(Mutex::new(KeyCache {
                 keys: JwkSet { keys: Vec::new() },
                 fetched_at: None,
@@ -391,6 +403,56 @@ mod tests {
     };
 
     type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+    #[tokio::test]
+    async fn login_discovery_and_signing_keys_share_the_supplied_http_client() -> Result {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let issuer = format!("http://{}/", listener.local_addr()?);
+        let source = issuer.clone();
+        let server = tokio::spawn(async move {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().await?;
+                let mut bytes = [0u8; 4096];
+                let n = stream.read(&mut bytes).await?;
+                let request = std::str::from_utf8(bytes.get(..n).ok_or("request")?)?;
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("x-provider-policy: fixture\r\n")
+                );
+                let body = if index == 0 {
+                    assert!(request.starts_with("GET /.well-known/openid-configuration "));
+                    serde_json::json!({"issuer":source,"jwks_uri":format!("{source}keys")})
+                        .to_string()
+                } else {
+                    assert!(request.starts_with("GET /keys "));
+                    include_str!("../tests/fixtures/jwks.json").to_owned()
+                };
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await?;
+            }
+            Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+        });
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            "x-provider-policy",
+            reqwest::header::HeaderValue::from_static("fixture"),
+        );
+        let http = reqwest::Client::builder()
+            .default_headers(headers)
+            .timeout(Duration::from_secs(5))
+            .build()?;
+        login::LoginProvider::discover(
+            login::LoginConfig {
+                issuer,
+                client_id: "client".into(),
+                client_secret: "secret".into(),
+            },
+            http,
+        )
+        .await?;
+        server.await??;
+        Ok(())
+    }
 
     #[tokio::test]
     async fn downloaded_keys_are_cached_and_unknown_keys_cannot_force_repeated_fetches() -> Result {

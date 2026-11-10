@@ -57,7 +57,12 @@ impl LoginProvider {
         if config.client_id.trim().is_empty() || config.client_secret.trim().is_empty() {
             return Err(AuthError::Unavailable);
         }
-        let verifier = JwtVerifier::with_jwks_uri(&config.issuer, &config.client_id, jwks_uri)?;
+        let verifier = JwtVerifier::with_jwks_uri_and_client(
+            &config.issuer,
+            &config.client_id,
+            jwks_uri,
+            http.clone(),
+        )?;
         Ok(Self {
             config,
             http,
