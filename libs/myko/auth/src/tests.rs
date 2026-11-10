@@ -1,3 +1,6 @@
+inventory::submit! {
+    crate::client_events::ExternalEventRegistration { entity_type: "PublicEntity", set: true, delete: true }
+}
 use super::*;
 use std::{sync::atomic::AtomicU64, time::Duration};
 

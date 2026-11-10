@@ -490,9 +490,14 @@ impl AuthSession {
     /// # Errors
     /// Returns an error when the session or local policy rejects the request.
     pub fn authorize(&self, request: AuthorizationRequest<'_>) -> Result<(), AuthError> {
-        if let AuthorizationRequest::ClientEvent { entity_type, .. } = request {
+        if let AuthorizationRequest::ClientEvent {
+            entity_type,
+            change,
+            ..
+        } = request
+        {
             self.check()?;
-            client_events::authorize(entity_type)?;
+            client_events::authorize(entity_type, change)?;
         }
         for _ in 0..3 {
             self.check()?;

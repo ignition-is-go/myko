@@ -467,12 +467,36 @@ when no live authenticated application user is available; nested requests retain
 it. Hosts choose the user mapping during authentication. This supplies caller
 identity only and does not add row-level authorization rules.
 
-### Server-owned entities
+### External entity events
 
-Libraries can declare an entity server-owned with
-`myko_auth::client_events::ServerOwnedEntityRegistration` through inventory.
-Myko rejects raw client SET/DEL events for that type before app grants can allow
-them. The WebSocket gateway enforces the same contract without an auth provider,
-normalizes event names before checking, and rejects an entire mixed batch before
-applying any events. This is an entity-wide ingress contract, not a row policy.
-Trusted server events and explicitly exposed commands remain available.
+Raw client SET/DEL events are denied by default, including gateways without an
+auth provider. Opt an entity into those events explicitly:
+
+```rust
+#[myko_item]
+#[myko_external(SET)]
+pub struct RemoteObservation {
+    pub value: String,
+}
+```
+
+Use `#[myko_external(SET, DEL)]` for both operations, or `#[myko_external(DEL)]`
+for delete-only ingress. These schema limits apply even to authenticated callers
+and cannot be expanded by an authorizer. An authorized command handler may still
+perform its own server-side mutations.
+
+The attribute also works on manually implemented `Eventable` types and uses their
+declared entity name. Applications do not need inventory registration syntax.
+This enables an ingress mechanism; it does not bypass application authorization.
+To permit anonymous events with auth configured, also select the changes with
+`#[myko_public_events(set)]` or `#[myko_public_events(set, delete)]`.
+
+Myko normalizes event names before checking and rejects an entire mixed batch
+before applying any events. Trusted in-process server events and authorized commands remain
+available for every entity; reads are unaffected. This is an entity-wide ingress
+contract, not a row policy.
+
+Upgrading an app that previously sent raw entity events requires adding the
+`myko_external` attribute to the intended remote-write types. An app without
+an auth provider still allows its existing commands, queries, views and reports;
+raw client events now require this explicit opt-in.

@@ -864,6 +864,11 @@ fn required_belongs_to(
 }
 
 pub fn myko_item_impl(args: &ItemArgs, mut input_struct: ItemStruct) -> TokenStream {
+    let external_events =
+        match crate::client_events::take_declaration(&mut input_struct, &DeriveCtx::new().krate) {
+            Ok(registration) => registration,
+            Err(error) => return error.to_compile_error(),
+        };
     let registration = match crate::public_access::take_public_events(
         &mut input_struct,
         &DeriveCtx::new().krate,
@@ -879,7 +884,7 @@ pub fn myko_item_impl(args: &ItemArgs, mut input_struct: ItemStruct) -> TokenStr
         };
     let expanded = prepare_item(args, input_struct)
         .map_or_else(|err| err.to_compile_error(), expand_prepared_item);
-    quote!(#expanded #registration #queries)
+    quote!(#expanded #registration #queries #external_events)
 }
 
 #[allow(clippy::too_many_lines)]

@@ -535,11 +535,8 @@ async fn live_permission_edits_stop_denied_data_but_keep_socket_and_other_subscr
 }
 
 #[myko::prelude::myko_item]
-pub struct ServerOwnedFixture {
+pub struct InternalFixture {
     value: i32,
-}
-myko::submit! {
-    myko_auth::client_events::ServerOwnedEntityRegistration {entity_type:"ServerOwnedFixture"}
 }
 struct AllowAll;
 impl Authorizer for AllowAll {
@@ -551,7 +548,7 @@ impl Authorizer for AllowAll {
         Ok(())
     }
 }
-async fn server_owned_fixture(
+async fn internal_fixture(
     authenticated: bool,
 ) -> TestResult<(
     Arc<MykoServer>,
@@ -559,7 +556,7 @@ async fn server_owned_fixture(
     tokio::task::JoinHandle<()>,
 )> {
     let server = Arc::new(MykoServer::builder().build());
-    let kept = ServerOwnedFixture {
+    let kept = InternalFixture {
         id: "kept".into(),
         value: 1,
     };
@@ -601,10 +598,10 @@ async fn server_owned_fixture(
     Ok((server, addr, task))
 }
 #[tokio::test]
-async fn server_owned_entities_reject_raw_events_without_auth_and_with_permissive_policy()
+async fn undeclared_entities_reject_raw_events_without_auth_and_with_permissive_policy()
 -> TestResult {
     for authenticated in [false, true] {
-        let (server, addr, task) = server_owned_fixture(authenticated).await?;
+        let (server, addr, task) = internal_fixture(authenticated).await?;
         for binary in [false, true] {
             let mut request = format!("ws://{addr}/myko").into_client_request()?;
             if authenticated {
@@ -615,7 +612,7 @@ async fn server_owned_entities_reject_raw_events_without_auth_and_with_permissiv
             let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
             for change in [MEventType::SET, MEventType::DEL] {
                 let mut attack = MEvent::from_item(
-                    &ServerOwnedFixture {
+                    &InternalFixture {
                         id: "kept".into(),
                         value: 99,
                     },
@@ -623,7 +620,7 @@ async fn server_owned_entities_reject_raw_events_without_auth_and_with_permissiv
                     "untrusted",
                 );
                 // Normalization must not permit bypassing the declaration.
-                attack.item_type = "ServerOwned\0Fixture".into();
+                attack.item_type = "Internal\0Fixture".into();
                 for message in [
                     MykoMessage::Event(attack.clone()),
                     MykoMessage::EventBatch(vec![event("allowed"), attack.clone()]),
@@ -654,7 +651,7 @@ async fn server_owned_entities_reject_raw_events_without_auth_and_with_permissiv
                     assert_eq!(
                         server
                             .registry
-                            .get_or_create("ServerOwnedFixture")
+                            .get_or_create("InternalFixture")
                             .snapshot()
                             .len(),
                         1
@@ -670,15 +667,269 @@ async fn server_owned_entities_reject_raw_events_without_auth_and_with_permissiv
             }
             socket.close(None).await?;
         }
-        let stored = server
-            .registry
-            .get_or_create("ServerOwnedFixture")
-            .snapshot();
+        let stored = server.registry.get_or_create("InternalFixture").snapshot();
         assert!(stored.iter().all(|(_, item)| {
             item.as_any()
-                .downcast_ref::<ServerOwnedFixture>()
+                .downcast_ref::<InternalFixture>()
                 .is_some_and(|item| item.value == 1)
         }));
+        task.abort();
+    }
+    Ok(())
+}
+
+mod external_fixture {
+    #[allow(clippy::wildcard_imports)]
+    use myko::prelude::*;
+    #[myko::prelude::myko_item(post_deserialize = hydrate)]
+    #[myko::myko_external(SET, DEL)]
+    pub struct ExternalFixture {
+        pub value: i32,
+    }
+    fn hydrate(row: &mut ExternalFixture) {
+        row.value = row.value.max(0);
+    }
+}
+use external_fixture::ExternalFixture;
+
+#[tokio::test]
+async fn external_ownership_enables_set_and_delete_with_and_without_auth() -> TestResult {
+    for authenticated in [false, true] {
+        let (server, addr, task) = internal_fixture(authenticated).await?;
+        for binary in [false, true] {
+            let mut request = format!("ws://{addr}/myko").into_client_request()?;
+            if authenticated {
+                request
+                    .headers_mut()
+                    .insert("authorization", "Bearer user".parse()?);
+            }
+            let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+            for change in [MEventType::SET, MEventType::DEL] {
+                send(
+                    &mut socket,
+                    &MykoMessage::Event(MEvent::from_item(
+                        &ExternalFixture {
+                            id: "external".into(),
+                            value: 42,
+                        },
+                        change,
+                        "fixture",
+                    )),
+                    binary,
+                )
+                .await?;
+                send(
+                    &mut socket,
+                    &MykoMessage::Ping(PingData {
+                        id: "barrier".into(),
+                        timestamp: 0,
+                    }),
+                    binary,
+                )
+                .await?;
+                while !matches!(next_message(&mut socket).await?, MykoMessage::Ping(_)) {}
+                let rows = server.registry.get_or_create("ExternalFixture").snapshot();
+                assert_eq!(rows.len(), usize::from(change == MEventType::SET));
+            }
+            socket.close(None).await?;
+        }
+        task.abort();
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn commands_can_mutate_entities_without_external_ownership() -> TestResult {
+    for authenticated in [false, true] {
+        let (server, addr, task) = internal_fixture(authenticated).await?;
+        let mut request = format!("ws://{addr}/myko").into_client_request()?;
+        if authenticated {
+            request
+                .headers_mut()
+                .insert("authorization", "Bearer user".parse()?);
+        }
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+        send(
+            &mut socket,
+            &MykoMessage::Command(myko::wire::command::WrappedCommand {
+                command_id: "DeleteInternalFixture".into(),
+                command: serde_json::json!({"tx":"trusted-command","id":"kept"}),
+            }),
+            false,
+        )
+        .await?;
+        assert!(matches!(
+            next_message(&mut socket).await?,
+            MykoMessage::CommandResponse(_)
+        ));
+        assert_eq!(
+            server
+                .registry
+                .get_or_create("InternalFixture")
+                .snapshot()
+                .len(),
+            0
+        );
+        socket.close(None).await?;
+        task.abort();
+    }
+    Ok(())
+}
+
+mod set_only_fixture {
+    #[allow(clippy::wildcard_imports)]
+    use myko::prelude::*;
+    #[myko::myko_item]
+    #[myko::myko_external(SET)]
+    pub struct SetOnlyFixture {
+        pub value: i32,
+    }
+}
+mod delete_only_fixture {
+    #[allow(clippy::wildcard_imports)]
+    use myko::prelude::*;
+    #[myko::myko_external(DEL)]
+    #[myko::myko_item]
+    pub struct DeleteOnlyFixture {
+        pub value: i32,
+    }
+}
+
+fn external_operation_cases() -> [(MEvent, &'static str, usize); 4] {
+    use delete_only_fixture::DeleteOnlyFixture;
+    use set_only_fixture::SetOnlyFixture;
+    [
+        (
+            MEvent::from_item(
+                &SetOnlyFixture {
+                    id: "accepted".into(),
+                    value: 2,
+                },
+                MEventType::SET,
+                "client",
+            ),
+            "SetOnlyFixture",
+            1,
+        ),
+        (
+            MEvent::from_item(
+                &SetOnlyFixture {
+                    id: "accepted".into(),
+                    value: 2,
+                },
+                MEventType::DEL,
+                "client",
+            ),
+            "SetOnlyFixture",
+            1,
+        ),
+        (
+            MEvent::from_item(
+                &DeleteOnlyFixture {
+                    id: "rejected".into(),
+                    value: 9,
+                },
+                MEventType::SET,
+                "client",
+            ),
+            "DeleteOnlyFixture",
+            1,
+        ),
+        (
+            MEvent::from_item(
+                &DeleteOnlyFixture {
+                    id: "kept".into(),
+                    value: 1,
+                },
+                MEventType::DEL,
+                "client",
+            ),
+            "DeleteOnlyFixture",
+            0,
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn declared_external_operations_cannot_be_expanded_by_permissive_policy() -> TestResult {
+    use delete_only_fixture::DeleteOnlyFixture;
+    use set_only_fixture::SetOnlyFixture;
+    async fn apply(socket: &mut Socket, message: MykoMessage, binary: bool) -> TestResult {
+        send(socket, &message, binary).await?;
+        send(
+            socket,
+            &MykoMessage::Ping(PingData {
+                id: "barrier".into(),
+                timestamp: 0,
+            }),
+            binary,
+        )
+        .await?;
+        while !matches!(next_message(socket).await?, MykoMessage::Ping(_)) {}
+        Ok(())
+    }
+    for authenticated in [false, true] {
+        let (server, addr, task) = internal_fixture(authenticated).await?;
+        for binary in [false, true] {
+            server.ctx().set(&DeleteOnlyFixture {
+                id: "kept".into(),
+                value: 1,
+            })?;
+            let mut request = format!("ws://{addr}/myko").into_client_request()?;
+            if authenticated {
+                request
+                    .headers_mut()
+                    .insert("authorization", "Bearer user".parse()?);
+            }
+            let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+            for (event, kind, count) in external_operation_cases() {
+                apply(&mut socket, MykoMessage::Event(event), binary).await?;
+                assert_eq!(
+                    server.registry.get_or_create(kind).snapshot().len(),
+                    count,
+                    "{kind}"
+                );
+            }
+            apply(
+                &mut socket,
+                MykoMessage::EventBatch(vec![
+                    MEvent::from_item(
+                        &ExternalFixture {
+                            id: "batch".into(),
+                            value: 1,
+                        },
+                        MEventType::SET,
+                        "client",
+                    ),
+                    MEvent::from_item(
+                        &SetOnlyFixture {
+                            id: "accepted".into(),
+                            value: 2,
+                        },
+                        MEventType::DEL,
+                        "client",
+                    ),
+                ]),
+                binary,
+            )
+            .await?;
+            assert!(
+                server
+                    .registry
+                    .get_or_create("ExternalFixture")
+                    .snapshot()
+                    .is_empty()
+            );
+            assert_eq!(
+                server
+                    .registry
+                    .get_or_create("SetOnlyFixture")
+                    .snapshot()
+                    .len(),
+                1
+            );
+            socket.close(None).await?;
+        }
         task.abort();
     }
     Ok(())

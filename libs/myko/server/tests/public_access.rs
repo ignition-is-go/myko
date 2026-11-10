@@ -28,6 +28,7 @@ type Socket = WebSocketStream<MaybeTlsStream<tokio::net::TcpStream>>;
 #[myko_item]
 #[myko_public_events(set)]
 #[myko_public_queries(by_query)]
+#[myko::myko_external(SET)]
 pub struct PublicRecord {
     value: i32,
 }

@@ -521,11 +521,25 @@ impl WsHandler {
         let mutability = match &mut message {
             MykoMessage::Event(event) => {
                 event.sanitize_null_bytes();
-                myko_auth::client_events::authorize(&event.item_type)
+                myko_auth::client_events::authorize(
+                    &event.item_type,
+                    if event.change_type == MEventType::SET {
+                        EventChange::Set
+                    } else {
+                        EventChange::Delete
+                    },
+                )
             }
             MykoMessage::EventBatch(events) => events.iter_mut().try_for_each(|event| {
                 event.sanitize_null_bytes();
-                myko_auth::client_events::authorize(&event.item_type)
+                myko_auth::client_events::authorize(
+                    &event.item_type,
+                    if event.change_type == MEventType::SET {
+                        EventChange::Set
+                    } else {
+                        EventChange::Delete
+                    },
+                )
             }),
             _ => Ok(()),
         };

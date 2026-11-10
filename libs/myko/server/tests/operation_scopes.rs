@@ -48,6 +48,7 @@ pub mod camera {
     use myko::prelude::*;
 
     #[myko::myko_item]
+    #[myko::myko_external(SET, DEL)]
     pub struct ScopeCamera {
         #[belongs_to(ScopeProject)]
         pub project_id: ScopeProjectId,
