@@ -58,12 +58,10 @@ default = ["cargo", "run", "-p", "myko", "--features", "codegen-ts", "--bin", "t
 cascade = "all"
 autoapply = "inherit"
 depends_on = ["build"]
-cargo = ["cargo", "publish", "--locked"]
+cargo = 'bun "$(git rev-parse --show-toplevel)/scripts/publish-package.ts" cargo'
 bun = """cp package.json package.json.bak \
   && bun "$(git rev-parse --show-toplevel)/scripts/apply-publish-config.ts" \
-  && VERSION=$(bun -p "require('./package.json').version") \
-  && if echo "$VERSION" | grep -q '-'; then TAG=canary; else TAG=latest; fi \
-  && npm publish --provenance=false --access public --tag "$TAG"; status=$?; mv package.json.bak package.json; exit $status"""
+  && bun "$(git rev-parse --show-toplevel)/scripts/publish-package.ts" npm; status=$?; mv package.json.bak package.json; exit $status"""
 # `--provenance=false`: npm rejects provenance from self-hosted runners (E422),
 # and the old `; mv` made that failure the exit status of `mv`, so every npm
 # publish since the runner move silently failed while the workflow stayed green
@@ -178,3 +176,6 @@ root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "
 
 [tasks.test-identity]
 root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "identity::tests"]
+
+[tasks.test-publish]
+root = ["bun", "test", "scripts/publish-package.test.ts"]

@@ -1,11 +1,16 @@
 name: Publish
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
 
 env:
   CARGO_TERM_COLOR: always
+
+concurrency:
+  group: myko-publish
+  cancel-in-progress: false
 
 jobs:
   publish:
