@@ -230,3 +230,69 @@ fn approval_requires_verified_credentials_and_does_not_expose_other_operations()
         Ok(())
     })
 }
+
+#[test]
+fn dynamic_registration_evicts_lru_without_revoking_grants() -> TestResult {
+    let (server, parent) = fixture()?;
+    let metadata =
+        json!({"client_name":"Dynamic", "redirect_uris":["http://127.0.0.1:9000/callback"]});
+    let first = server.register(&metadata)?;
+    let first_id = field(&first, "client_id")?;
+    let second = server.register(&metadata)?;
+    let second_id = field(&second, "client_id")?;
+    let mut args = authorization()?;
+    args.insert("client_id".into(), first_id.into());
+    let request = query(&server.begin(&args)?, "myko_oauth")?;
+    let callback = server.complete(&request, Some(parent))?;
+    let tokens = server.token(&params(&[
+        ("grant_type", "authorization_code"),
+        ("client_id", first_id),
+        ("resource", "http://localhost:5155/myko/mcp"),
+        ("redirect_uri", "http://127.0.0.1:9000/callback"),
+        ("code_verifier", VERIFIER),
+        ("code", &query(&callback, "code")?),
+    ]))?;
+    // One configured and 4,095 dynamic registrations fill the registry.
+    for _ in 0..4093 {
+        server.register(&metadata)?;
+    }
+    server.authenticate(field(&tokens, "access_token")?)?;
+    server.register(&metadata)?;
+    args.insert("client_id".into(), second_id.into());
+    assert!(server.begin(&args).is_err());
+    args.insert("client_id".into(), first_id.into());
+    assert!(server.begin(&args).is_ok());
+    assert!(server.begin(&authorization()?).is_ok());
+    // Force eviction of the formerly active client by admitting a full new set.
+    for _ in 0..4095 {
+        server.register(&metadata)?;
+    }
+    assert!(server.begin(&args).is_err());
+    server.authenticate(field(&tokens, "access_token")?)?;
+    server.token(&params(&[
+        ("grant_type", "refresh_token"),
+        ("client_id", first_id),
+        ("resource", "http://localhost:5155/myko/mcp"),
+        ("refresh_token", field(&tokens, "refresh_token")?),
+    ]))?;
+    Ok(())
+}
+
+#[test]
+fn configured_clients_are_never_evicted() -> TestResult {
+    let (server, _) = fixture()?;
+    for index in 1..4096 {
+        server.add_client(
+            &format!("configured-{index}"),
+            "Configured",
+            vec!["http://127.0.0.1:9000/callback".into()],
+        )?;
+    }
+    assert!(
+        server
+            .register(&json!({"redirect_uris":["http://127.0.0.1:9000/callback"]}))
+            .is_err()
+    );
+    assert!(server.begin(&authorization()?).is_ok());
+    Ok(())
+}

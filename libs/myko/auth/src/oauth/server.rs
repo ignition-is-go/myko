@@ -90,6 +90,8 @@ impl OAuthError {
 struct Client {
     name: String,
     redirects: Vec<String>,
+    dynamic: bool,
+    last_used: Instant,
 }
 struct Pending {
     info: AuthorizationInfo,
@@ -124,6 +126,11 @@ struct State {
     refresh: HashMap<String, Refresh>,
 }
 impl State {
+    fn touch_client(&mut self, id: &str) {
+        if let Some(client) = self.clients.get_mut(id) {
+            client.last_used = Instant::now();
+        }
+    }
     fn cleanup(&mut self) {
         let now = Instant::now();
         let wall = SystemTime::now();
@@ -247,7 +254,7 @@ impl OAuthServer {
         }
         value
     }
-    /// Register one configured public client.
+    /// Register one configured public client, protected from LRU eviction.
     /// # Errors
     /// Rejects duplicate IDs and unsafe redirect metadata.
     pub fn add_client(
@@ -255,6 +262,15 @@ impl OAuthServer {
         id: &str,
         name: &str,
         redirects: Vec<String>,
+    ) -> Result<(), OAuthError> {
+        self.insert_client(id, name, redirects, false)
+    }
+    fn insert_client(
+        &self,
+        id: &str,
+        name: &str,
+        redirects: Vec<String>,
+        dynamic: bool,
     ) -> Result<(), OAuthError> {
         if id.is_empty()
             || id.len() > 256
@@ -269,23 +285,35 @@ impl OAuthServer {
             redirect(uri)?;
         }
         let mut state = self.state.lock().map_err(|_| OAuthError::busy())?;
-        if state.clients.len() >= LIMIT {
-            return Err(OAuthError::busy());
-        }
         if state.clients.contains_key(id) {
             return Err(OAuthError::invalid("Client ID is already registered"));
+        }
+        if state.clients.len() >= LIMIT {
+            let oldest = state
+                .clients
+                .iter()
+                .filter(|(_, client)| client.dynamic)
+                .min_by_key(|(_, client)| client.last_used)
+                .map(|(id, _)| id.clone())
+                .ok_or_else(OAuthError::busy)?;
+            // Registration eviction must not revoke independently authorized grants.
+            state.clients.remove(&oldest);
         }
         state.clients.insert(
             id.into(),
             Client {
                 name: name.into(),
                 redirects,
+                dynamic,
+                last_used: Instant::now(),
             },
         );
         drop(state);
         Ok(())
     }
     /// Register an untrusted public client; this never grants access by itself.
+    /// At capacity, the least recently used dynamic registration is evicted.
+    /// Existing grants survive eviction; starting a new login needs registration again.
     /// # Errors
     /// Rejects unsupported authentication/grant types or unsafe callbacks.
     pub fn register(&self, value: &Value) -> Result<Value, OAuthError> {
@@ -335,7 +363,7 @@ impl OAuthServer {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let id = secret("client_");
-        self.add_client(&id, name, redirects.clone())?;
+        self.insert_client(&id, name, redirects.clone(), true)?;
         Ok(
             json!({"client_id":id,"client_name":name,"redirect_uris":redirects,"token_endpoint_auth_method":"none",
             "grant_types":["authorization_code","refresh_token"],"response_types":["code"]}),
@@ -390,7 +418,7 @@ impl OAuthServer {
         state.cleanup();
         let registered = state
             .clients
-            .get(client)
+            .get_mut(client)
             .ok_or_else(|| OAuthError::invalid("Unknown client"))?;
         if !registered
             .redirects
@@ -399,6 +427,7 @@ impl OAuthServer {
         {
             return Err(OAuthError::invalid("Redirect URI is not registered"));
         }
+        registered.last_used = Instant::now();
         let info = AuthorizationInfo {
             client_id: client.into(),
             client_name: registered.name.clone(),
@@ -547,6 +576,9 @@ impl OAuthServer {
             }
         };
         let result = Self::issue(&mut state, client, authority, &scopes, family);
+        if result.is_ok() {
+            state.touch_client(client);
+        }
         drop(state);
         result
     }
@@ -606,15 +638,19 @@ impl OAuthServer {
     /// # Errors
     /// Rejects unknown, expired or revoked credentials.
     pub fn authenticate(&self, token: &str) -> Result<AuthSession, AuthError> {
-        let session = self
-            .state
-            .lock()
-            .map_err(|_| AuthError::Unavailable)?
+        let state = self.state.lock().map_err(|_| AuthError::Unavailable)?;
+        let access = state
             .access
             .get(&digest(token))
-            .map(|a| a.session.clone())
             .ok_or(AuthError::Unauthenticated)?;
+        let session = access.session.clone();
+        let client = access.client.clone();
+        drop(state);
         session.check()?;
+        self.state
+            .lock()
+            .map_err(|_| AuthError::Unavailable)?
+            .touch_client(&client);
         Ok(session)
     }
     /// Revoke a known grant family without disclosing whether a token exists.
