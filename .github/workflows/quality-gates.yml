@@ -56,7 +56,7 @@ jobs:
         with:
           version: "1.21.1"
       - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --no-confirm --force
+        run: cargo binstall cargo-flux --version 0.11.5 --no-confirm --force
       - name: Verify publication ordering and recovery
         run: cargo flux run test-publish
       - name: Check Rust formatting
@@ -126,7 +126,7 @@ jobs:
         with:
           version: "1.21.1"
       - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --no-confirm --force
+        run: cargo binstall cargo-flux --version 0.11.5 --no-confirm --force
       - name: Check WebAssembly targets
         run: cargo flux run check-wasm
         env:

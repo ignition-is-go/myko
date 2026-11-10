@@ -9,8 +9,6 @@ license = "AGPL-3.0-or-later"
 workspace = true
 
 [package.metadata.flux]
-# NOTE(ts): Cargo packaging resolves dev dependencies; publish the server first.
-bridges = ["cargo:myko-server"]
 tasks = ["check", "build", "test", "lint", "publish"]
 
 [dependencies]

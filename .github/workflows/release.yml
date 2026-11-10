@@ -65,7 +65,7 @@ jobs:
         with:
           version: "1.21.1"
       - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --no-confirm --force
+        run: cargo binstall cargo-flux --version 0.11.5 --no-confirm --force
 
       - name: Check if release commit
         id: check

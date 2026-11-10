@@ -55,6 +55,7 @@ cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown"]
 default = ["cargo", "run", "-p", "myko", "--features", "codegen-ts", "--bin", "typegen", "--", "src/generated"]
 
 [tasks.publish]
+include_dev_dependencies = true
 cascade = "all"
 autoapply = "inherit"
 depends_on = ["build"]
