@@ -1679,6 +1679,7 @@ impl MykoClient {
         self.inner.ping_ms.get()
     }
 
+    /// Connect to an endpoint, using the scheme default port when none is supplied.
     pub fn set_address(&self, addr: Option<String>) {
         let Some(addr) = addr else {
             let current = self
@@ -2901,7 +2902,6 @@ impl MykoClient {
 }
 
 fn normalize_myko_address(addr: &str) -> Result<String, url::ParseError> {
-    let has_explicit_port = address_has_explicit_port(addr);
     let mut parsed = match Url::parse(addr) {
         Ok(url) if url.scheme() == "ws" || url.scheme() == "wss" => url,
         _ => Url::parse(&format!("ws://{addr}"))?,
@@ -2911,36 +2911,7 @@ fn normalize_myko_address(addr: &str) -> Result<String, url::ParseError> {
         parsed.set_path("/myko");
     }
 
-    // `url::Url` canonicalizes explicit default ports (`:80` for ws and
-    // `:443` for wss) to `None`. Preserve that standard-port intent instead of
-    // replacing it with Myko's legacy 5155 default. Inputs that omit a port
-    // entirely retain the established 5155 behavior.
-    if parsed.port().is_none() && !has_explicit_port {
-        let _ = parsed.set_port(Some(5155));
-    }
-
     Ok(parsed.to_string())
-}
-
-fn address_has_explicit_port(addr: &str) -> bool {
-    let authority = addr
-        .split_once("://")
-        .map_or(addr, |(_, remainder)| remainder)
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default();
-
-    if let Some(remainder) = authority.strip_prefix('[')
-        && let Some((_, suffix)) = remainder.split_once(']')
-    {
-        return suffix
-            .strip_prefix(':')
-            .is_some_and(|port| port.parse::<u16>().is_ok());
-    }
-
-    authority
-        .rsplit_once(':')
-        .is_some_and(|(host, port)| !host.is_empty() && port.parse::<u16>().is_ok())
 }
 
 #[cfg(test)]
@@ -3255,21 +3226,28 @@ mod address_tests {
     }
 
     #[test]
-    fn retains_legacy_default_when_port_is_omitted() {
-        assert_eq!(
-            normalize_myko_address("agents.example").ok().as_deref(),
-            Some("ws://agents.example:5155/myko")
-        );
-        assert_eq!(
-            normalize_myko_address("ws://agents.example")
-                .ok()
-                .as_deref(),
-            Some("ws://agents.example:5155/myko")
-        );
-        assert_eq!(
-            normalize_myko_address("[::1]").ok().as_deref(),
-            Some("ws://[::1]:5155/myko")
-        );
+    fn uses_scheme_default_when_port_is_omitted() {
+        for (address, expected, port) in [
+            ("agents.example", "ws://agents.example/myko", 80),
+            ("ws://agents.example", "ws://agents.example/myko", 80),
+            ("wss://agents.example", "wss://agents.example/myko", 443),
+            ("[::1]", "ws://[::1]/myko", 80),
+            ("wss://[::1]", "wss://[::1]/myko", 443),
+            (
+                "wss://agents.example/control/myko?tenant=test",
+                "wss://agents.example/control/myko?tenant=test",
+                443,
+            ),
+        ] {
+            let normalized = normalize_myko_address(address);
+            assert_eq!(normalized.as_deref(), Ok(expected));
+            let parsed = normalized.and_then(|address| url::Url::parse(&address));
+            assert_eq!(parsed.as_ref().map(url::Url::port), Ok(None));
+            assert_eq!(
+                parsed.as_ref().map(url::Url::port_or_known_default),
+                Ok(Some(port))
+            );
+        }
     }
 
     #[test]
