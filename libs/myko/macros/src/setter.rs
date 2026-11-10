@@ -164,6 +164,7 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
             quote! {
                 /// Auto-generated setter command
                 #[#krate::myko_command]
+                #[myko_scope(#entity_ident, write)]
                 pub struct #command_name {
                     pub id: #id_type_ident,
                     #param_field,

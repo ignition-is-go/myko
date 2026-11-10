@@ -15,6 +15,7 @@ workspace = true
 tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 
 [dependencies]
+myko-auth.workspace = true
 num-traits.workspace = true
 # Core deps (available on all targets)
 serde.workspace = true
@@ -120,6 +121,7 @@ typegen = []
 # formatter, and typegen/docgen binaries. Runtime/default Myko builds do not
 # compile or link ts-rs or dprint.
 codegen-ts = [
+  "myko-auth/codegen-ts",
   "typegen",
   "dep:ts-rs",
   "dep:dprint-plugin-typescript",

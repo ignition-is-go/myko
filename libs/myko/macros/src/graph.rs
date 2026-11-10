@@ -7,12 +7,46 @@ use syn::{
 
 use crate::myko_path;
 
+fn graph_read_scope_registration(
+    krate: &Path,
+    kind: &syn::Ident,
+    operation: &syn::Ident,
+    entities: &[&Type],
+) -> TokenStream {
+    let scopes = entities.iter().map(|entity| {
+        quote! {
+            #krate::auth::EntityScope {
+                entity_type: <#entity as #krate::item::Eventable>::ENTITY_NAME_STATIC,
+                action: #krate::auth::EntityAction::Read,
+            }
+        }
+    });
+    quote! {
+        #[cfg(not(target_arch = "wasm32"))]
+        #krate::submit! {
+            #krate::auth::OperationScopeRegistration {
+                kind: #krate::auth::OperationKind::#kind,
+                operation: stringify!(#operation),
+                scopes: &[#(#scopes),*],
+            }
+        }
+    }
+}
+
 fn graph_query_common(
     krate: &syn::Path,
     query_ident: &syn::Ident,
     edge_type: &Type,
+    protected_entities: &[&Type],
 ) -> TokenStream {
+    let scope_registration = graph_read_scope_registration(
+        krate,
+        &syn::parse_quote!(Query),
+        query_ident,
+        protected_entities,
+    );
     quote! {
+        #scope_registration
         impl #krate::query::QueryId for #query_ident {
             fn query_id(&self) -> std::sync::Arc<str> {
                 stringify!(#query_ident).into()
@@ -148,8 +182,18 @@ fn graph_related_query_tokens(
         many_client_trait,
         many_client_method,
     } = spec;
-    let common = graph_query_common(krate, &query_ident, target_entity);
-    let many_common = graph_query_common(krate, &many_query_ident, target_entity);
+    let common = graph_query_common(
+        krate,
+        &query_ident,
+        target_entity,
+        &[edge_type, target_entity],
+    );
+    let many_common = graph_query_common(
+        krate,
+        &many_query_ident,
+        target_entity,
+        &[edge_type, target_entity],
+    );
 
     quote! {
         /// Ordinary Myko query for typed entities reached through matching edges.
@@ -298,7 +342,7 @@ fn graph_neighbor_query_tokens(
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
     let query_ident = format_ident!("{}GraphNeighbors", edge_name);
     let address_ident = format_ident!("{}AAddress", edge_name);
-    let common = graph_query_common(krate, &query_ident, entity);
+    let common = graph_query_common(krate, &query_ident, entity, &[edge_type, entity]);
 
     quote! {
         /// Ordinary Myko query for distinct entities adjacent through an undirected edge.
@@ -384,6 +428,7 @@ fn graph_aggregate_tokens(
         /// Live number of edges whose A endpoint matches `endpoint`.
         #[#krate::myko_non_hash_cache_key]
         #[#krate::myko_report(usize)]
+        #[myko_scope(#edge_type, read)]
         pub struct #count_from {
             pub endpoint: #a_address,
         }
@@ -409,6 +454,7 @@ fn graph_aggregate_tokens(
         /// Live number of edges whose B endpoint matches `endpoint`.
         #[#krate::myko_non_hash_cache_key]
         #[#krate::myko_report(usize)]
+        #[myko_scope(#edge_type, read)]
         pub struct #count_to {
             pub endpoint: #b_address,
         }
@@ -434,6 +480,7 @@ fn graph_aggregate_tokens(
         /// Live number of edges matching one exact A/B pair.
         #[#krate::myko_non_hash_cache_key]
         #[#krate::myko_report(usize)]
+        #[myko_scope(#edge_type, read)]
         pub struct #count_between {
             pub a: #a_address,
             pub b: #b_address,
@@ -460,6 +507,7 @@ fn graph_aggregate_tokens(
         /// Live existence check for one exact A/B pair.
         #[#krate::myko_non_hash_cache_key]
         #[#krate::myko_report(bool)]
+        #[myko_scope(#edge_type, read)]
         pub struct #exists_between {
             pub a: #a_address,
             pub b: #b_address,
@@ -712,6 +760,7 @@ fn graph_mutation_tokens(
     quote! {
         /// Authoritative graph upsert using Myko's ordinary command protocol.
         #[#krate::myko_command]
+        #[myko_scope(#edge_type, write)]
         pub struct #connect {
             pub edge: #edge_type,
         }
@@ -727,6 +776,7 @@ fn graph_mutation_tokens(
 
         /// Bulk authoritative graph upsert using one reducer batch.
         #[#krate::myko_command(usize)]
+        #[myko_scope(#edge_type, write)]
         pub struct #connect_many {
             pub edges: Vec<#edge_type>,
         }
@@ -744,6 +794,8 @@ fn graph_mutation_tokens(
 
         /// Atomically make these the exact edges at endpoint A and scope.
         #[#krate::myko_command(#krate::graph::GraphSyncResult)]
+        #[myko_scope(#edge_type, write)]
+        #[myko_scope(#edge_type, delete)]
         pub struct #sync_from {
             pub endpoint: #a_address,
             pub scope: Option<#krate::serde_json::Value>,
@@ -761,6 +813,8 @@ fn graph_mutation_tokens(
 
         /// Atomically make these the exact edges at endpoint B and scope.
         #[#krate::myko_command(#krate::graph::GraphSyncResult)]
+        #[myko_scope(#edge_type, write)]
+        #[myko_scope(#edge_type, delete)]
         pub struct #sync_to {
             pub endpoint: #b_address,
             pub scope: Option<#krate::serde_json::Value>,
@@ -798,6 +852,7 @@ fn graph_mutation_tokens(
         /// If another command wins the unique-pair reservation concurrently,
         /// this returns that edge instead of surfacing a duplicate error.
         #[#krate::myko_command(#ensure_result)]
+        #[myko_scope(#edge_type, write)]
         pub struct #ensure {
             pub edge: #edge_type,
         }
@@ -1009,18 +1064,18 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
         let between_query = format_ident!("{}GraphBetween", edge_name);
         let between_id_query = format_ident!("{}GraphBetweenId", edge_name);
         let selected_between_query = format_ident!("{}GraphBetweenIds", edge_name);
-        let from_common = graph_query_common(krate, &from_query, &edge_type);
-        let from_id_common = graph_query_common(krate, &from_id_query, &edge_type);
-        let selected_from_common = graph_query_common(krate, &selected_from_query, &edge_type);
-        let from_many_common = graph_query_common(krate, &from_many_query, &edge_type);
-        let to_common = graph_query_common(krate, &to_query, &edge_type);
-        let to_id_common = graph_query_common(krate, &to_id_query, &edge_type);
-        let selected_to_common = graph_query_common(krate, &selected_to_query, &edge_type);
-        let to_many_common = graph_query_common(krate, &to_many_query, &edge_type);
-        let between_common = graph_query_common(krate, &between_query, &edge_type);
-        let between_id_common = graph_query_common(krate, &between_id_query, &edge_type);
+        let from_common = graph_query_common(krate, &from_query, &edge_type, &[&edge_type]);
+        let from_id_common = graph_query_common(krate, &from_id_query, &edge_type, &[&edge_type]);
+        let selected_from_common = graph_query_common(krate, &selected_from_query, &edge_type, &[&edge_type]);
+        let from_many_common = graph_query_common(krate, &from_many_query, &edge_type, &[&edge_type]);
+        let to_common = graph_query_common(krate, &to_query, &edge_type, &[&edge_type]);
+        let to_id_common = graph_query_common(krate, &to_id_query, &edge_type, &[&edge_type]);
+        let selected_to_common = graph_query_common(krate, &selected_to_query, &edge_type, &[&edge_type]);
+        let to_many_common = graph_query_common(krate, &to_many_query, &edge_type, &[&edge_type]);
+        let between_common = graph_query_common(krate, &between_query, &edge_type, &[&edge_type]);
+        let between_id_common = graph_query_common(krate, &between_id_query, &edge_type, &[&edge_type]);
         let selected_between_common =
-            graph_query_common(krate, &selected_between_query, &edge_type);
+            graph_query_common(krate, &selected_between_query, &edge_type, &[&edge_type]);
 
         quote! {
             /// Ordinary Myko query for edges whose A endpoint matches `endpoint`.
@@ -2008,7 +2063,28 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
     let graph_traversals = edge_name
         .as_ref()
         .map_or_else(TokenStream::new, |edge_name| {
-            graph_traversal_tokens(&ctx, edge_name, &edge_type)
+            let reports = graph_traversal_tokens(&ctx, edge_name, &edge_type);
+            let requirements = edge_endpoint_types(&input)
+                .and_then(|(a, b)| Some((endpoint_entity_type(&a)?, endpoint_entity_type(&b)?)))
+                .map_or_else(TokenStream::new, |(a, b)| {
+                    let from = format_ident!("{}GraphTraverseFrom", edge_name);
+                    let to = format_ident!("{}GraphTraverseTo", edge_name);
+                    let scopes = [&edge_type, &a, &b];
+                    let from = graph_read_scope_registration(
+                        krate,
+                        &syn::parse_quote!(Report),
+                        &from,
+                        &scopes,
+                    );
+                    let to = graph_read_scope_registration(
+                        krate,
+                        &syn::parse_quote!(Report),
+                        &to,
+                        &scopes,
+                    );
+                    quote! { #from #to }
+                });
+            quote! { #reports #requirements }
         });
 
     quote! {
@@ -2060,5 +2136,183 @@ pub fn edge(mut input: ItemImpl) -> TokenStream {
         }
 
         #neighbor_registration
+    }
+}
+
+#[cfg(test)]
+mod permission_tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn scope_name(scope: syn::Expr) -> Option<(String, String)> {
+        let syn::Expr::Struct(scope) = scope else {
+            return None;
+        };
+        let mut entity = None;
+        let mut action = None;
+        for field in scope.fields {
+            let syn::Expr::Path(path) = field.expr else {
+                continue;
+            };
+            match field.member {
+                syn::Member::Named(name) if name == "entity_type" => {
+                    entity = path.qself.map(|qualified| {
+                        let ty = qualified.ty;
+                        quote!(#ty).to_string()
+                    });
+                }
+                syn::Member::Named(name) if name == "action" => {
+                    action = path
+                        .path
+                        .segments
+                        .last()
+                        .map(|segment| segment.ident.to_string());
+                }
+                _ => {}
+            }
+        }
+        Some((entity?, action?))
+    }
+
+    fn operation_scopes(item: syn::ItemMacro) -> Option<(String, Vec<(String, String)>)> {
+        let registration = syn::parse2::<syn::ExprStruct>(item.mac.tokens).ok()?;
+        if registration.path.segments.last()?.ident != "OperationScopeRegistration" {
+            return None;
+        }
+        let mut operation = None;
+        let mut scopes = Vec::new();
+        for field in registration.fields {
+            match (&field.member, field.expr) {
+                (syn::Member::Named(name), syn::Expr::Macro(value)) if name == "operation" => {
+                    operation = Some(value.mac.tokens.to_string());
+                }
+                (syn::Member::Named(name), syn::Expr::Reference(value)) if name == "scopes" => {
+                    if let syn::Expr::Array(array) = *value.expr {
+                        scopes.extend(array.elems.into_iter().filter_map(scope_name));
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some((operation?, scopes))
+    }
+
+    fn generated_requirements(input: ItemImpl) -> BTreeMap<String, Vec<(String, String)>> {
+        let parsed = syn::parse2::<syn::File>(edge(input));
+        assert!(parsed.is_ok());
+        let Ok(file) = parsed else {
+            return BTreeMap::new();
+        };
+        let mut requirements = BTreeMap::new();
+        for item in file.items {
+            match item {
+                syn::Item::Struct(mut operation) => {
+                    let scopes = crate::permission::take_scopes(&mut operation);
+                    assert!(scopes.is_ok());
+                    if let Ok(scopes) = scopes
+                        && !scopes.is_empty()
+                    {
+                        requirements.insert(
+                            operation.ident.to_string(),
+                            scopes
+                                .into_iter()
+                                .map(|scope| {
+                                    let entity = scope.entity;
+                                    (quote!(#entity).to_string(), scope.action.to_string())
+                                })
+                                .collect(),
+                        );
+                    }
+                }
+                syn::Item::Macro(item) => {
+                    if let Some((operation, scopes)) = operation_scopes(item) {
+                        requirements.insert(operation, scopes);
+                    }
+                }
+                _ => {}
+            }
+        }
+        requirements
+    }
+
+    #[test]
+    fn generated_graph_operations_require_edge_and_endpoint_scopes() {
+        let requirements = generated_requirements(syn::parse_quote! {
+            impl GraphEdge for Link {
+                type Ends = Directed<ConcreteEndpoint<Camera>, ConcreteEndpoint<Project>>;
+            }
+        });
+        assert_eq!(
+            requirements.get("ConnectLink"),
+            Some(&vec![("Link".into(), "Write".into())])
+        );
+        assert_eq!(
+            requirements.get("EnsureLink"),
+            Some(&vec![("Link".into(), "Write".into())])
+        );
+        assert_eq!(
+            requirements.get("SyncLinksFrom"),
+            Some(&vec![
+                ("Link".into(), "Write".into()),
+                ("Link".into(), "Delete".into())
+            ])
+        );
+        assert_eq!(
+            requirements.get("SyncLinksTo"),
+            Some(&vec![
+                ("Link".into(), "Write".into()),
+                ("Link".into(), "Delete".into())
+            ])
+        );
+        assert_eq!(
+            requirements.get("LinkGraphFrom"),
+            Some(&vec![("Link".into(), "Read".into())])
+        );
+        assert_eq!(
+            requirements.get("LinkGraphCountFrom"),
+            Some(&vec![("Link".into(), "Read".into())])
+        );
+        assert_eq!(
+            requirements.get("LinkGraphTargetsFrom"),
+            Some(&vec![
+                ("Link".into(), "Read".into()),
+                ("Project".into(), "Read".into())
+            ])
+        );
+        assert_eq!(
+            requirements.get("LinkGraphSourcesTo"),
+            Some(&vec![
+                ("Link".into(), "Read".into()),
+                ("Camera".into(), "Read".into())
+            ])
+        );
+        assert_eq!(
+            requirements.get("LinkGraphTraverseFrom"),
+            Some(&vec![
+                ("Link".into(), "Read".into()),
+                ("Camera".into(), "Read".into()),
+                ("Project".into(), "Read".into())
+            ])
+        );
+    }
+
+    #[test]
+    fn polymorphic_traversal_has_no_inferred_permission() {
+        let requirements = generated_requirements(syn::parse_quote! {
+            impl GraphEdge for Link {
+                type Ends = Directed<ConcreteEndpoint<Camera>, CategoryEndpoint<AnyNode>>;
+            }
+        });
+        assert!(!requirements.contains_key("LinkGraphTraverseFrom"));
+        assert!(!requirements.contains_key("LinkGraphTraverseTo"));
+        assert!(!requirements.contains_key("LinkGraphTargetsFrom"));
+        assert_eq!(
+            requirements.get("LinkGraphSourcesTo"),
+            Some(&vec![
+                ("Link".into(), "Read".into()),
+                ("Camera".into(), "Read".into())
+            ])
+        );
     }
 }

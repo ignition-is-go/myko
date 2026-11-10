@@ -18,6 +18,7 @@ struct ViewExpansion<'a> {
     item_type: &'a Path,
     cache_key_impl: &'a TokenStream,
     input_contract: &'a TokenStream,
+    scope_registration: &'a TokenStream,
 }
 
 fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
@@ -30,12 +31,14 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
         item_type,
         cache_key_impl,
         input_contract,
+        scope_registration,
     } = expansion;
     let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
     quote! {
         #derives
         #input_struct
         #input_contract
+        #scope_registration
 
         #[cfg(not(target_arch = "wasm32"))]
         #krate::submit! {
@@ -105,6 +108,7 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         #krate::register_typegen_type!(#name);
 
+
         impl #krate::prelude::WithId for #name {
             fn id(&self) -> std::sync::Arc<str> {
                 self.id.clone()
@@ -139,11 +143,17 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         impl #krate::prelude::Eventable for #name {
             const ENTITY_NAME_STATIC: &'static str = stringify!(#name);
+            const HAS_ENTITY_PERMISSIONS: bool = false;
         }
     }
 }
 
 pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStream {
+    let (extra_scopes, public) =
+        match crate::public_access::take_operation_access(&mut input_struct) {
+            Ok(access) => access,
+            Err(error) => return error.to_compile_error(),
+        };
     let manual_cache_key = crate::take_manual_cache_key_attr(&mut input_struct);
     let non_hash_cache_key = crate::take_non_hash_cache_key_attr(&mut input_struct);
     let struct_name = &input_struct.ident;
@@ -151,6 +161,14 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
+    let scope_registration = crate::public_access::view_read_registration(
+        struct_name,
+        &item_type,
+        &extra_scopes,
+        public,
+        krate,
+    );
+
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
 
@@ -236,5 +254,35 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
         item_type: &item_type,
         cache_key_impl: &cache_key_impl,
         input_contract: &input_contract,
+        scope_registration: &scope_registration,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn computed_view_items_do_not_register_entity_scopes() {
+        let expanded = super::myko_view_item_impl(syn::parse_quote! {
+            pub struct DerivedRow { pub id: std::sync::Arc<str> }
+        })
+        .to_string();
+        assert!(!expanded.contains("EntityScopeRegistration"));
+        assert!(expanded.contains("register_typegen_type"));
+    }
+
+    #[test]
+    fn computed_views_map_to_explicit_source_entities() {
+        let expanded = super::myko_view_impl(
+            super::ViewArgs {
+                item_type: syn::parse_quote!(DerivedRow),
+            },
+            syn::parse_quote! {
+                #[myko_scope(SourceEntity, read)]
+                pub struct DerivedView {}
+            },
+        )
+        .to_string();
+        assert!(expanded.contains("< SourceEntity as"));
+        assert!(expanded.contains("HAS_ENTITY_PERMISSIONS"));
+    }
 }

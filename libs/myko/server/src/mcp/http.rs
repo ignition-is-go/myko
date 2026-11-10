@@ -3,6 +3,7 @@
 use std::{sync::Arc, time::Duration};
 
 use myko::server::MykoServerContext;
+use myko_auth::{AuthError, AuthSession, MykoAuthProvider};
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -32,11 +33,112 @@ const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 ///
 /// Returns an error when the HTTP request cannot be read or its response cannot be written.
 pub async fn handle_post(
-    mut stream: TcpStream,
+    stream: TcpStream,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_post_with_auth(stream, ctx, server_info, head, None).await
+}
+
+/// Handle an MCP POST with verified caller authority.
+/// # Errors
+/// Returns an error when transport handling fails or authority expires.
+pub async fn handle_post_with_auth(
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    auth: Option<AuthSession>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::select! {
+        result = run_post(stream, ctx, server_info, head, auth.clone(), None) => result,
+        () = super::invalidated(auth.as_ref()) => Ok(()),
+    }
+}
+
+/// Admit MCP bootstrap publicly and authenticate every application request.
+/// # Errors
+/// Returns errors reading or writing the bounded HTTP exchange.
+pub async fn handle_post_with_provider(
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    provider: Arc<MykoAuthProvider>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_post(stream, ctx, server_info, head, None, Some(provider)).await
+}
+
+async fn authenticate_post(
+    provider: &MykoAuthProvider,
+    head: &HttpRequestHead,
+    public: bool,
+) -> Result<Option<AuthSession>, AuthError> {
+    let credentials = crate::router::credentials_from_head(head)?;
+    if credentials.bearer.is_none() && public {
+        return Ok(None);
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        if let Some(server) = provider.oauth_server() {
+            credentials
+                .bearer
+                .as_deref()
+                .ok_or(AuthError::Unauthenticated)
+                .and_then(|token| server.authenticate(token))
+        } else if provider.mcp_oauth().is_some() {
+            provider.authenticate(credentials).await
+        } else {
+            provider.admit(credentials).await
+        }
+    })
+    .await
+    .unwrap_or(Err(AuthError::Unavailable))
+    .map(Some)
+}
+
+const fn auth_error_status(error: AuthError) -> (u16, &'static str, &'static str) {
+    match error {
+        AuthError::Forbidden => (403, "Forbidden", "permission_denied"),
+        AuthError::Unavailable => (503, "Service Unavailable", "authentication_unavailable"),
+        AuthError::Expired => (401, "Unauthorized", "credential_expired"),
+        AuthError::Revoked => (401, "Unauthorized", "session_revoked"),
+        AuthError::Unauthenticated => (401, "Unauthorized", "authentication_required"),
+    }
+}
+
+async fn write_auth_error(
+    mut stream: TcpStream,
+    provider: &MykoAuthProvider,
+    error: AuthError,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (status, reason, code) = auth_error_status(error);
+    let challenge = provider
+        .mcp_oauth()
+        .map_or_else(|| "Bearer".to_string(), myko_auth::OAuthResource::challenge);
+    let mut headers = vec![("Content-Type", "application/json")];
+    if status == 401 {
+        headers.push(("WWW-Authenticate", &challenge));
+    }
+    let body = serde_json::to_vec(&serde_json::json!({
+        "error": code, "error_description": error.to_string()
+    }))?;
+    write_full(&mut stream, status, reason, &headers, &body).await?;
+    shutdown_cleanly(stream).await;
+    Ok(())
+}
+
+async fn run_post(
+    mut stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    mut auth: Option<AuthSession>,
+    provider: Option<Arc<MykoAuthProvider>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(session) = &auth {
+        session.check()?;
+    }
     let content_length: usize = head
         .header("Content-Length")
         .and_then(|v| v.parse().ok())
@@ -58,20 +160,48 @@ pub async fn handle_post(
         }
     };
 
-    let filter = filter_from_head(&head);
-    let executor = Executor::InProcess(ctx);
-
-    let response: McpResponse = match serde_json::from_slice::<McpRequest>(&body) {
-        Ok(req) => {
-            // Notifications (no id, no response expected) get an empty 204
-            // body anyway — MCP HTTP keeps the request/response shape.
-            dispatch::handle_request(req, &filter, &executor, &server_info)
-                .await
-                .unwrap_or_else(|| McpResponse::success(Value::Null, Value::Null))
+    let request = serde_json::from_slice::<McpRequest>(&body);
+    if let Some(provider) = &provider {
+        match authenticate_post(
+            provider,
+            &head,
+            request.as_ref().is_ok_and(McpRequest::is_public_bootstrap),
+        )
+        .await
+        {
+            Ok(session) => auth = session,
+            Err(error) => return write_auth_error(stream, provider, error).await,
         }
-        Err(e) => McpResponse::error(Value::Null, McpError::parse_error(e.to_string())),
+    }
+    let filter = filter_from_head(&head);
+    let executor = Executor::in_process(ctx, auth.clone());
+    let response = match request {
+        Ok(req) => tokio::select! {
+            response = dispatch::handle_request(req, &filter, &executor, &server_info) => response,
+            () = super::invalidated(auth.as_ref()) => {
+                if let Some(provider) = &provider {return write_auth_error(stream, provider, AuthError::Unauthenticated).await;}
+                return Ok(());
+            }
+        },
+        Err(e) => Some(McpResponse::error(
+            Value::Null,
+            McpError::parse_error(e.to_string()),
+        )),
     };
 
+    if let Some(session) = &auth
+        && let Err(error) = session.check()
+    {
+        if let Some(provider) = &provider {
+            return write_auth_error(stream, provider, error).await;
+        }
+        return Err(error.into());
+    }
+    let Some(response) = response else {
+        write_status(&mut stream, 202, "Accepted").await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    };
     let body = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
     let write_result = write_full(
         &mut stream,
@@ -95,10 +225,35 @@ pub async fn handle_post(
 ///
 /// Returns an error when the SSE response cannot be written.
 pub async fn handle_sse(
-    mut stream: TcpStream,
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    head: HttpRequestHead,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_sse_with_auth(stream, ctx, head, None).await
+}
+
+/// Handle an SSE connection until its authenticated session ends.
+/// # Errors
+/// Returns an error when transport handling fails or authority expires.
+pub async fn handle_sse_with_auth(
+    stream: TcpStream,
     _ctx: Arc<MykoServerContext>,
     _head: HttpRequestHead,
+    auth: Option<AuthSession>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::select! {
+        result = run_sse(stream, auth.clone()) => result,
+        () = super::invalidated(auth.as_ref()) => Ok(()),
+    }
+}
+
+async fn run_sse(
+    mut stream: TcpStream,
+    auth: Option<AuthSession>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(session) = &auth {
+        session.check()?;
+    }
     let head = "HTTP/1.1 200 OK\r\n\
                 Content-Type: text/event-stream\r\n\
                 Cache-Control: no-cache\r\n\
@@ -110,6 +265,9 @@ pub async fn handle_sse(
 
     loop {
         sleep(SSE_KEEPALIVE).await;
+        if let Some(session) = &auth {
+            session.check()?;
+        }
         if stream.write_all(b": keepalive\n\n").await.is_err() {
             break;
         }
@@ -168,6 +326,22 @@ async fn read_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_denial_is_not_an_authentication_challenge() {
+        assert_eq!(
+            auth_error_status(AuthError::Forbidden),
+            (403, "Forbidden", "permission_denied")
+        );
+        for error in [
+            AuthError::Unauthenticated,
+            AuthError::Expired,
+            AuthError::Revoked,
+        ] {
+            assert_eq!(auth_error_status(error).0, 401);
+        }
+        assert_eq!(auth_error_status(AuthError::Unavailable).0, 503);
+    }
 
     fn head_with(headers: Vec<(&str, &str)>) -> HttpRequestHead {
         HttpRequestHead {

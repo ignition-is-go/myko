@@ -10,16 +10,31 @@ use syn::{
     spanned::Spanned,
 };
 
+mod client_events;
 mod command;
 mod graph;
 mod item;
 mod message_events;
+mod permission;
+mod public_access;
 mod query;
 mod relationship;
 mod report;
 mod saga;
 mod setter;
 mod view;
+
+/// Permit explicitly selected raw client entity events: SET, DEL, or both.
+///
+/// Raw client events are denied by default. Application authorization still applies.
+/// Command handlers and other server-side mutations are unaffected.
+#[proc_macro_attribute]
+pub fn myko_external(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let changes = parse_macro_input!(attr as client_events::Changes);
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    let registration = client_events::registration(&input.ident, &myko_path(), changes);
+    quote!(#input #registration).into()
+}
 
 /// Declare an open, downstream-defined Myko entity category.
 #[proc_macro_attribute]

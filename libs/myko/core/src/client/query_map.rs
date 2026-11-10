@@ -45,9 +45,16 @@ type WindowQueryState<T> = Arc<Mutex<HashMap<Arc<str>, Arc<T>>>>;
 pub struct QueryMapWatch<T: hyphae::CellValue> {
     map: CellMap<Arc<str>, Arc<T>, CellImmutable>,
     ready: Cell<bool, CellImmutable>,
+    error: Cell<Option<String>, CellImmutable>,
 }
 
 impl<T: hyphae::CellValue> QueryMapWatch<T> {
+    /// Latest server rejection; existing data remains available separately.
+    #[must_use]
+    pub const fn error(&self) -> &Cell<Option<String>, CellImmutable> {
+        &self.error
+    }
+
     #[must_use]
     pub const fn map(&self) -> &CellMap<Arc<str>, Arc<T>, CellImmutable> {
         &self.map
@@ -713,9 +720,9 @@ impl MykoClient {
             .map_watch_cache_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((map, ready, _)) = self.cached_map_watch(&cache_key) {
+        if let Some((map, ready, error, _)) = self.cached_map_watch(&cache_key) {
             debug!("watch_query_map_state: cache hit for {cache_key}");
-            return QueryMapWatch { map, ready };
+            return QueryMapWatch { map, ready, error };
         }
         self.inner.map_watch_cache.remove(&cache_key);
 
@@ -735,6 +742,7 @@ impl MykoClient {
             return QueryMapWatch {
                 map: map.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         };
 
@@ -813,6 +821,7 @@ impl MykoClient {
             return QueryMapWatch {
                 map: map.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         }
 
@@ -824,6 +833,7 @@ impl MykoClient {
             return QueryMapWatch {
                 map: map.lock(),
                 ready: ready_read,
+                error: self.subscription_error(&tx),
             };
         };
 
@@ -864,6 +874,7 @@ impl MykoClient {
         let watch = QueryMapWatch {
             map: map.lock(),
             ready: ready_read,
+            error: self.subscription_error(&tx),
         };
         self.cache_map_watch(cache_key, tx, &watch.map, &watch.ready, None);
         watch
@@ -924,6 +935,7 @@ impl MykoClient {
         let early_watch = WindowedQueryWatch {
             items: items.clone().lock(),
             ready: ready.clone().lock(),
+            error: self.subscription_error(&tx),
             total_count: total_count.clone().lock(),
             window: window.clone().lock(),
             state: page_state.clone().lock(),
@@ -1115,6 +1127,7 @@ impl MykoClient {
         let watch = WindowedQueryWatch {
             items: items.lock(),
             ready: ready.lock(),
+            error: early_watch.error,
             total_count: total_count.lock(),
             window: window.lock(),
             state: page_state.lock(),

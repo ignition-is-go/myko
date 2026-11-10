@@ -7,10 +7,29 @@ use serde_json::Value;
 #[derive(Debug, Deserialize)]
 pub struct McpRequest {
     pub jsonrpc: String,
-    pub id: Value,
+    #[serde(default, deserialize_with = "request_id")]
+    pub id: Option<Value>,
     pub method: String,
     #[serde(default)]
     pub params: Option<Value>,
+}
+
+impl McpRequest {
+    /// Bootstrap exposes static capabilities, never application operations or data.
+    #[must_use]
+    pub fn is_public_bootstrap(&self) -> bool {
+        matches!(
+            self.method.as_str(),
+            "initialize" | "tools/list" | "notifications/initialized"
+        )
+    }
+}
+
+// A present null ID still identifies a request; only an omitted ID is a notification.
+fn request_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 /// MCP JSON-RPC response.

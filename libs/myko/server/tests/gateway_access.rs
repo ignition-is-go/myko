@@ -84,6 +84,27 @@ async fn closed(socket: &mut Socket) -> Result {
     }
 }
 
+async fn assert_rejection_keeps_connection(
+    socket: &mut Socket,
+    message: &MykoMessage,
+    binary: bool,
+) -> Result {
+    if matches!(message, MykoMessage::Command(_)) {
+        assert!(matches!(next(socket).await?, MykoMessage::CommandError(_)));
+    }
+    send(
+        socket,
+        &MykoMessage::Ping(myko::wire::PingData {
+            id: "after-denial".into(),
+            timestamp: 0,
+        }),
+        binary,
+    )
+    .await?;
+    assert!(matches!(next(socket).await?, MykoMessage::Ping(_)));
+    Ok(())
+}
+
 fn task(id: &str) -> DemoTask {
     DemoTask {
         id: DemoTaskId::from(id),
@@ -148,7 +169,7 @@ async fn readonly_denies_valid_mutations_in_both_encodings_before_store_or_journ
                 .filter(|event| event.item_type.as_ref() == "DemoTask")
                 .count();
             send(&mut socket, &message, binary).await?;
-            closed(&mut socket).await?;
+            assert_rejection_keeps_connection(&mut socket, &message, binary).await?;
             assert_eq!(count(&server), before_count);
             assert_eq!(
                 journal
@@ -326,7 +347,7 @@ async fn readonly_denies_result_injection_and_benchmark() -> Result {
             let (mut socket, _) =
                 tokio_tungstenite::connect_async(format!("ws://{addr}/myko")).await?;
             send(&mut socket, &message, binary).await?;
-            closed(&mut socket).await?;
+            assert_rejection_keeps_connection(&mut socket, &message, binary).await?;
             assert_eq!(count(&server), 0);
             assert!(
                 journal

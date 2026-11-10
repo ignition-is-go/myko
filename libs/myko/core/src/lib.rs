@@ -86,6 +86,8 @@ pub mod codegen;
 pub mod codegen_types;
 pub mod core;
 pub mod entities;
+pub mod identity;
+pub mod oauth_flow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod operation_index;
 pub mod search;
@@ -113,7 +115,8 @@ pub use core::{
     command, common, graph, item, query, reflection, relationship, report, request, view,
 };
 
-pub use erased_serde; // For AnyItem::erased_serialize in generated code
+pub use erased_serde;
+pub use myko_auth as auth; // For AnyItem::erased_serialize in generated code
 // Re-export crates for use in macros
 pub use futures; // For proc macro generated stream adapters in typed sagas
 pub use hyphae; // For cell-based queries/reports in #[myko_item]

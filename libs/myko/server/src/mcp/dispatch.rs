@@ -117,17 +117,19 @@ pub async fn handle_request(
     executor: &Executor,
     info: &ServerInfo,
 ) -> Option<McpResponse> {
+    let id = request.id?;
+    if let Err(message) = executor.check() {
+        return Some(McpResponse::error(id, McpError::invalid_params(message)));
+    }
     match request.method.as_str() {
-        "initialize" => Some(handle_initialize(request.id, info)),
+        "initialize" => Some(handle_initialize(id, info)),
         "notifications/initialized" | "notifications/cancelled" => None,
-        "tools/list" => Some(handle_tools_list(request.id, filter)),
-        "tools/call" => {
-            Some(handle_tools_call(request.id, request.params, filter, executor, info).await)
-        }
-        "resources/list" => Some(handle_resources_list(request.id, filter)),
-        "resources/read" => Some(handle_resources_read(request.id, request.params, filter)),
+        "tools/list" => Some(handle_tools_list(id, filter)),
+        "tools/call" => Some(handle_tools_call(id, request.params, filter, executor, info).await),
+        "resources/list" => Some(handle_resources_list(id, filter, executor)),
+        "resources/read" => Some(handle_resources_read(id, request.params, filter, executor)),
         _ => Some(McpResponse::error(
-            request.id,
+            id,
             McpError::method_not_found(&request.method),
         )),
     }
@@ -174,7 +176,9 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
             description: "Search the index of available Myko queries/views/reports/commands. \
                 Returns compact {id, kind, args, outputType} entries — call this before \
                 `execute` to find operation ids and argument shapes. Set `details: true` to \
-                get wire argument names, input/output types, result wrappers, and a validated example."
+                get wire argument names, input/output types, result wrappers, and a validated example. \
+                Permission annotations are advisory preflight snapshots: live permissions and arguments \
+                can change the decision. Do not retain old permission conclusions; every call is reauthorized."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -321,7 +325,12 @@ async fn execute_tool(
 ) -> Result<Value, String> {
     match tool_name {
         CONNECTION_STATUS_TOOL => Ok(executor.connection_status(info)),
-        SEARCH_TOOL => Ok(handle_search(&args, filter, &info.operation_index)),
+        SEARCH_TOOL => Ok(handle_search(
+            &args,
+            filter,
+            &info.operation_index,
+            executor,
+        )),
         EXECUTE_TOOL => handle_execute(&args, executor, filter).await,
         // Most commonly hit by a client with a cached pre-Code-Mode tool
         // name (e.g. `report_ServerStats`) from before this server
@@ -334,7 +343,12 @@ async fn execute_tool(
     }
 }
 
-fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]) -> Value {
+fn handle_search(
+    args: &Value,
+    filter: &ClientFilters,
+    index: &[OperationSchema],
+    executor: &Executor,
+) -> Value {
     let query = args
         .get("query")
         .and_then(|v| v.as_str())
@@ -344,6 +358,7 @@ fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]
     let operations: Vec<&OperationSchema> = index
         .iter()
         .filter(|op| filter.tool_visible(&format!("{}_{}", op.kind, op.id)))
+        .filter(|op| executor.can_discover(&op.kind, &op.id))
         .filter(|op| kind.is_none_or(|k| op.kind == k))
         .filter(|op| {
             query.as_deref().is_none_or(|q| {
@@ -356,15 +371,27 @@ fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]
         })
         .collect();
 
-    if args
+    let details = args
         .get("details")
         .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        json!({ "operations": operations.iter().map(|op| op.describe()).collect::<Vec<_>>() })
-    } else {
-        json!({ "operations": operations })
-    }
+        .unwrap_or(false);
+    let operations = operations
+        .iter()
+        .map(|op| {
+            let mut entry = if details { op.describe() } else { json!(op) };
+            if let Value::Object(fields) = &mut entry {
+                fields.insert(
+                    "authorization".into(),
+                    executor.permission_snapshot(&op.kind, &op.id),
+                );
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "operations": operations,
+        "permissionNotice": "Advisory snapshot only. Permissions change live; do not rely on previously gathered permission information. Preflight uses empty arguments; actual arguments may change authorization. Every execution checks current permissions. Refresh search after a denial. Discovery restrictions may hide operations."
+    })
 }
 
 async fn handle_execute(
@@ -378,12 +405,12 @@ async fn handle_execute(
     sandbox::execute(code, Arc::new(executor.clone()), filter.clone()).await
 }
 
-fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_list(id: Value, filter: &ClientFilters, executor: &Executor) -> McpResponse {
     let mut resources: Vec<McpResource> = Vec::new();
 
     for reg in inventory::iter::<QueryRegistration> {
         let tool_name = format!("query_{}", reg.query_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("query", reg.query_id) {
             continue;
         }
         resources.push(McpResource {
@@ -396,7 +423,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ViewRegistration> {
         let tool_name = format!("view_{}", reg.view_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("view", reg.view_id) {
             continue;
         }
         resources.push(McpResource {
@@ -409,7 +436,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ReportRegistration> {
         let tool_name = format!("report_{}", reg.report_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("report", reg.report_id) {
             continue;
         }
         resources.push(McpResource {
@@ -422,7 +449,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<CommandRegistration> {
         let tool_name = format!("command_{}", reg.command_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("command", reg.command_id) {
             continue;
         }
         resources.push(McpResource {
@@ -436,7 +463,12 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
     McpResponse::success(id, json!({ "resources": resources }))
 }
 
-fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_read(
+    id: Value,
+    params: Option<Value>,
+    filter: &ClientFilters,
+    executor: &Executor,
+) -> McpResponse {
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
     };
@@ -448,7 +480,7 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
         && let Some((schema_type, schema_id)) = path.split_once('/')
     {
         let tool_name = format!("{schema_type}:{schema_id}");
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover(schema_type, schema_id) {
             return McpResponse::error(
                 id,
                 McpError {
@@ -574,7 +606,7 @@ mod tests {
     fn make_request(method: &str) -> McpRequest {
         McpRequest {
             jsonrpc: "2.0".to_string(),
-            id: Value::Number(1.into()),
+            id: Some(Value::Number(1.into())),
             method: method.to_string(),
             params: None,
         }
@@ -669,16 +701,34 @@ mod tests {
         let info = ServerInfo::default();
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
-        assert!(
-            handle_request(
-                make_request("notifications/initialized"),
-                &filter,
-                &executor,
-                &info,
+        for method in [
+            "notifications/initialized",
+            "notifications/cancelled",
+            "unknown/notification",
+        ] {
+            let request = require_some!(
+                serde_json::from_value::<McpRequest>(json!({"jsonrpc":"2.0", "method":method}))
+                    .ok(),
+                "notification must deserialize without an id"
+            );
+            assert!(
+                handle_request(request, &filter, &executor, &info)
+                    .await
+                    .is_none()
+            );
+        }
+        let request = require_some!(
+            serde_json::from_value::<McpRequest>(
+                json!({"jsonrpc":"2.0", "id":null, "method":"tools/list"})
             )
-            .await
-            .is_none()
+            .ok(),
+            "explicit null id must deserialize"
         );
+        let response = require_some!(
+            handle_request(request, &filter, &executor, &info).await,
+            "an explicit null id is a request, not a notification"
+        );
+        assert_eq!(response.id, Value::Null);
     }
 
     #[tokio::test]
@@ -699,7 +749,7 @@ mod tests {
     fn make_tool_call(name: &str, arguments: Value) -> McpRequest {
         let request = McpRequest {
             jsonrpc: "2.0".to_string(),
-            id: Value::Number(1.into()),
+            id: Some(Value::Number(1.into())),
             method: "tools/call".to_string(),
             params: Some(json!({ "name": name, "arguments": arguments })),
         };
@@ -715,6 +765,7 @@ mod tests {
         ServerInfo {
             operation_index: Arc::new(vec![
                 OperationSchema {
+                    required_scopes: None,
                     id: "GetAllServers".to_string(),
                     kind: "query".to_string(),
                     description: Some("All servers".to_string()),
@@ -722,6 +773,7 @@ mod tests {
                     output_type: "Server[]".to_string(),
                 },
                 OperationSchema {
+                    required_scopes: None,
                     id: "DeleteServer".to_string(),
                     kind: "command".to_string(),
                     description: Some("Delete a server".to_string()),

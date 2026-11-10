@@ -1,0 +1,30 @@
+[package]
+name = "myko-auth"
+version = "6.11.6"
+edition = "2024"
+description = "Transport-independent authentication and local authorization for Myko"
+license = "AGPL-3.0-or-later"
+
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
+
+[lints]
+workspace = true
+
+[dependencies]
+inventory = "0.3.24"
+serde.workspace = true
+serde_json.workspace = true
+futures.workspace = true
+uuid.workspace = true
+url = "2"
+sha2 = "0.10"
+base64 = "0.22"
+ts-rs = { version = "12", optional = true, features = ["serde-compat", "no-serde-warnings"] }
+
+[features]
+ci = []
+codegen-ts = ["dep:ts-rs"]
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+uuid = { version = "1", features = ["js"] }
