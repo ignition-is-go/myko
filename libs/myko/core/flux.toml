@@ -27,3 +27,9 @@ root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "--lib
 
 [tasks.check-client-address-format]
 root = ["cargo", "fmt", "--", "--check"]
+
+[tasks.check-native-subscriptions]
+root = ["cargo", "clippy", "--jobs", "2", "--all-targets", "--features", "ci", "--", "-D", "warnings"]
+
+[tasks.test-native-subscriptions]
+root = ["cargo", "test", "--jobs", "2", "--features", "ci", "--lib", "--", "--test-threads=1"]
