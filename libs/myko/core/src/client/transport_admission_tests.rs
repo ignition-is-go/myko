@@ -63,6 +63,21 @@ impl SocketTransport for BoundedTransport {
     }
 }
 
+fn client_without_ping(
+    transport: &Arc<BoundedTransport>,
+    admission: super::SendAdmission,
+) -> MykoClient {
+    let transport: Arc<dyn SocketTransport> = transport.clone();
+    MykoClient::with_transport_and_options(
+        &transport,
+        super::MykoClientOptions {
+            app_ping: false,
+            ..Default::default()
+        },
+        admission,
+    )
+}
+
 fn event(value: u16) -> MEvent {
     let server = Server {
         id: "admission-fixture".into(),
@@ -93,13 +108,17 @@ fn transport_owned_disconnected_publications_are_rejected_without_replay() {
             .is_empty()
     );
     transport.connect();
-    assert!(transport.frames().is_empty());
+    assert!(transport.frames().iter().all(|frame| {
+        matches!(frame, WsFrame::Text(text) if matches!(
+            serde_json::from_str::<MykoMessage>(text), Ok(MykoMessage::Ping(_))
+        ))
+    }));
 }
 
 #[test]
 fn transport_owned_full_rejection_preserves_accepted_order() {
     let transport = BoundedTransport::new(2);
-    let client = MykoClient::with_transport_owned_admission(transport.clone());
+    let client = client_without_ping(&transport, super::SendAdmission::Transport);
     transport.connect();
     assert!(client.send_event(event(1)).is_ok());
     assert!(client.send_event_batch(vec![event(2)]).is_ok());
@@ -147,7 +166,7 @@ impl CommandId for AdmissionCommand {
 #[test]
 fn rejected_typed_and_raw_command_cells_resolve_and_remove_handlers() {
     let transport = BoundedTransport::new(0);
-    let client = MykoClient::with_transport_owned_admission(transport.clone());
+    let client = client_without_ping(&transport, super::SendAdmission::Transport);
     let typed = client.send_command::<_, Value>(&AdmissionCommand { value: 1 });
     assert_eq!(typed.get(), Some(Err("fixture disconnected".into())));
     assert!(
@@ -180,7 +199,7 @@ fn rejected_typed_and_raw_command_cells_resolve_and_remove_handlers() {
 #[test]
 fn legacy_transport_still_queues_disconnected_events_and_flushes_on_connect() {
     let transport = BoundedTransport::new(4);
-    let client = MykoClient::with_transport(transport.clone());
+    let client = client_without_ping(&transport, super::SendAdmission::MykoQueue);
     assert!(client.send_event(event(1)).is_ok());
     assert!(client.send_event_batch(vec![event(2)]).is_ok());
     assert_eq!(
@@ -211,7 +230,7 @@ fn rejected_cursor_controls_replay_the_latest_desired_window_on_reconnect() {
     use crate::entities::client::GetAllClients;
 
     let transport = BoundedTransport::new(2);
-    let client = MykoClient::with_transport_owned_admission(transport.clone());
+    let client = client_without_ping(&transport, super::SendAdmission::Transport);
     let watch = client.watch_query_windowed(
         GetAllClients {},
         QueryWindow {

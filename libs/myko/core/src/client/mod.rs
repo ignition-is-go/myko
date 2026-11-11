@@ -778,6 +778,7 @@ struct ClientMapWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
     map: WeakCellMap<Arc<str>, Arc<T>>,
     ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+    error: hyphae::cell::WeakCell<Option<String>, CellImmutable>,
     sampling: Option<Arc<view_map::ViewSamplingControl>>,
 }
 
@@ -786,21 +787,23 @@ impl<T: CellValue> ClientMapWatchCacheEntry<T> {
         tx: Arc<str>,
         map: &CellMap<Arc<str>, Arc<T>, CellImmutable>,
         ready: &Cell<bool, CellImmutable>,
+        error: &Cell<Option<String>, CellImmutable>,
         sampling: Option<Arc<view_map::ViewSamplingControl>>,
     ) -> Self {
         Self {
             tx,
             map: map.downgrade(),
             ready: ready.downgrade(),
+            error: error.downgrade(),
             sampling,
         }
     }
 
-    fn get(&self, error: Cell<Option<String>, CellImmutable>) -> Option<SharedMapWatchParts<T>> {
+    fn get(&self) -> Option<SharedMapWatchParts<T>> {
         Some((
             self.map.upgrade()?.lock(),
             self.ready.upgrade()?,
-            error,
+            self.error.upgrade()?,
             self.sampling.clone(),
         ))
     }
@@ -985,7 +988,7 @@ impl MykoClient {
         existing
             .as_any()
             .downcast_ref::<ClientMapWatchCacheEntry<T>>()?
-            .get(self.subscription_error(existing.tx()))
+            .get()
     }
 
     fn cache_map_watch<T: CellValue>(
@@ -996,9 +999,12 @@ impl MykoClient {
         ready: &Cell<bool, CellImmutable>,
         sampling: Option<Arc<view_map::ViewSamplingControl>>,
     ) {
+        let error = self.subscription_error(&tx);
         self.inner.map_watch_cache.insert(
             cache_key,
-            Box::new(ClientMapWatchCacheEntry::new(tx, map, ready, sampling)),
+            Box::new(ClientMapWatchCacheEntry::new(
+                tx, map, ready, &error, sampling,
+            )),
         );
     }
 
@@ -2972,11 +2978,15 @@ fn normalize_myko_address(addr: &str) -> Result<String, url::ParseError> {
 
 #[cfg(test)]
 mod report_dispatch_tests {
-    use super::{MykoClient, ReportHandler, dispatch_report_response};
+    use std::{
+        sync::{Arc, Barrier, mpsc},
+        time::Duration,
+    };
+
     use dashmap::DashMap;
     use serde_json::Value;
-    use std::sync::{Arc, Barrier, mpsc};
-    use std::time::Duration;
+
+    use super::{MykoClient, ReportHandler, dispatch_report_response};
 
     #[test]
     fn report_callback_can_cancel_itself_without_deadlocking_dispatch() {
@@ -3073,14 +3083,18 @@ mod report_dispatch_tests {
 
 #[cfg(test)]
 mod callback_dispatch_tests {
+    use std::{
+        sync::{Arc, Barrier, mpsc},
+        time::Duration,
+    };
+
+    use dashmap::DashMap;
+    use serde_json::Value;
+
     use super::{
         Cell, CellImmutable, CommandRequestHandler, CommandResponder, MykoClient, QueryHandler,
         dispatch_command_request, dispatch_query_response,
     };
-    use dashmap::DashMap;
-    use serde_json::Value;
-    use std::sync::{Arc, Barrier, mpsc};
-    use std::time::Duration;
 
     fn registered_query_tx(client: &MykoClient) -> Result<Arc<str>, &'static str> {
         client
@@ -3410,8 +3424,9 @@ mod send_admission_tests {
 #[cfg(test)]
 #[allow(clippy::panic_in_result_fn)]
 mod report_result_tests {
-    use super::*;
     use std::{sync::mpsc, time::Duration};
+
+    use super::*;
 
     struct FixtureTransport {
         status: Cell<ConnectionStatus, CellMutable>,
@@ -3450,6 +3465,7 @@ mod report_result_tests {
                 peer_failover: false,
                 app_ping: false,
             },
+            SendAdmission::MykoQueue,
         );
         (client, transport)
     }

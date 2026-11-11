@@ -992,3 +992,47 @@ fn ready_observer_disconnect_leaves_current_readiness_false() {
     ));
     drop(guard);
 }
+
+#[test]
+fn server_denials_are_observable_and_release_native_capacity() {
+    use futures::FutureExt as _;
+
+    let fixture = setup(4);
+    assert!(fixture.is_ok());
+    let Ok((transport, client, native)) = fixture else {
+        return;
+    };
+    transport.connected(true);
+    let query = native.try_watch_query_state(GetPeerServers {});
+    let view = native.try_watch_view_state(ConnectedClients {});
+    let map = native.try_watch_view_map_state(ConnectedClients {});
+    let initial = native.try_query_initial(GetPeerServers {});
+    assert!(query.is_ok() && view.is_ok() && map.is_ok() && initial.is_ok());
+    let (Ok(query), Ok(view), Ok(map), Ok(initial)) = (query, view, map, initial) else {
+        return;
+    };
+    assert_eq!(native.subscription_count(), 4);
+    for frame in transport.frames() {
+        MykoClient::handle_subscription_error(
+            &client.inner,
+            &serde_json::json!({
+                "tx": tx(&frame), "message": "permission denied"
+            }),
+        );
+    }
+    for error in [query.error(), view.error(), map.error(), &initial.error()] {
+        assert_eq!(error.get(), Some("permission denied".to_string()));
+    }
+    assert!(!query.ready().get() && !view.ready().get() && !map.ready().get());
+    assert!(matches!(
+        initial.recv().now_or_never(),
+        Some(Err(SubscriptionAdmissionError::ServerRejected))
+    ));
+    assert_eq!(native.subscription_count(), 0);
+    assert_eq!(native.retained_request_bytes(), 0);
+    assert!(client.inner.query_handlers.is_empty());
+    let cached = native.try_watch_view_map_state(ConnectedClients {});
+    assert!(cached.is_ok_and(|watch| watch.error().get() == Some("permission denied".to_string())));
+    drop((query, view, map, initial));
+    assert!(client.inner.subscription_errors.is_empty());
+}

@@ -7,7 +7,7 @@ use std::{
     },
 };
 
-use hyphae::{SubscriptionGuard, Watchable as _};
+use hyphae::{Mutable as _, SubscriptionGuard, Watchable as _};
 use serde_json::Value;
 
 use super::{ConnectionStatus, MykoClient, MykoClientInner};
@@ -39,6 +39,7 @@ pub enum SubscriptionAdmissionError {
     RequestTooLarge,
     Encoding,
     ClientClosed,
+    ServerRejected,
 }
 
 impl fmt::Display for SubscriptionAdmissionError {
@@ -50,6 +51,7 @@ impl fmt::Display for SubscriptionAdmissionError {
             Self::RequestTooLarge => "native subscription request exceeds its byte limit",
             Self::Encoding => "could not encode native subscription request",
             Self::ClientClosed => "subscription client has closed",
+            Self::ServerRejected => "server rejected the subscription",
         })
     }
 }
@@ -61,6 +63,8 @@ impl std::error::Error for SubscriptionAdmissionError {}
 /// Dropping an admitted startup retains capacity until its genuine initial response permits
 /// cancellation, or its actual connection closes. This supports servers whose pending factories
 /// cannot yet be cancelled. Result collections are not covered by the encoded request budget.
+/// Server denials and factory errors end the subscription, expose the rejection on
+/// its error cell, and release its reservation. Recreate a failed watch to try again.
 #[derive(Clone)]
 pub struct NativeSubscriptions {
     scheduler: Arc<Scheduler>,
@@ -151,6 +155,7 @@ struct LeaseState {
 }
 
 struct Lease {
+    error: hyphae::Cell<Option<String>, hyphae::CellMutable>,
     scheduler: Weak<Scheduler>,
     request: Request,
     state: Mutex<LeaseState>,
@@ -297,6 +302,7 @@ impl NativeSubscriptions {
         usage.bytes = next_bytes;
         drop(usage);
         let lease = Arc::new(Lease {
+            error: hyphae::Cell::new(None),
             scheduler: Arc::downgrade(&self.scheduler),
             request,
             state: Mutex::new(LeaseState {
@@ -542,6 +548,24 @@ impl Lease {
 
     fn response(self: &Arc<Self>, tx: &str, value: Value) {
         hyphae::batch(|| {
+            if let Some(message) = value.get("error").and_then(Value::as_str) {
+                let current = {
+                    let state = self
+                        .state
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    state.owner != Owner::Retired
+                        && state
+                            .attempt
+                            .as_ref()
+                            .is_some_and(|attempt| attempt.tx.as_ref() == tx)
+                };
+                if current {
+                    self.error.set(Some(message.to_string()));
+                    self.retire();
+                }
+                return;
+            }
             let Some(prepared) = self.prepare_response(tx, value) else {
                 return;
             };

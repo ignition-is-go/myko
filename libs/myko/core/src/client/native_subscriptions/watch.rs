@@ -1,18 +1,22 @@
-use super::super::{self as client, QueryWatch, ViewMapWatch, ViewWatch};
-use super::{Delivery, NativeSubscriptions, Request, SubscriptionAdmissionError};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::{Arc, Mutex},
+};
+
+use hyphae::{Cell, CellMap, CellMutable, Mutable as _, SubscriptionGuard};
+use serde::de::DeserializeOwned;
+
+use super::{
+    super::{self as client, QueryWatch, ViewMapWatch, ViewWatch},
+    Delivery, NativeSubscriptions, Request, SubscriptionAdmissionError,
+};
 use crate::{
     common::with_id::WithId,
     core::item::Eventable,
     query::{QueryParams, QueryRequest},
     view::{ViewParams, ViewRequest},
     wire::{WrappedQuery, wrap_view},
-};
-use hyphae::{Cell, CellMap, CellMutable, Mutable as _, SubscriptionGuard};
-use serde::de::DeserializeOwned;
-use std::{
-    collections::HashMap,
-    fmt,
-    sync::{Arc, Mutex},
 };
 
 impl NativeSubscriptions {
@@ -156,6 +160,7 @@ impl NativeSubscriptions {
         let watch = client::ListWatch {
             items: items.lock(),
             ready: ready.lock(),
+            error: lease.error.clone().lock(),
         };
         client.cache_list_watch(key, identity, &watch);
         drop(cache_guard);
@@ -189,8 +194,8 @@ impl NativeSubscriptions {
             .map_watch_cache_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some((map, ready, _)) = client.cached_map_watch(&key) {
-            return Ok(ViewMapWatch::native(map, ready));
+        if let Some((map, ready, error, _)) = client.cached_map_watch(&key) {
+            return Ok(ViewMapWatch::native(map, ready, error));
         }
         let mut wrapped = wrap_view(client::next_subscription_tx(), &supplied.view)
             .map_err(|_| SubscriptionAdmissionError::Encoding)?;
@@ -247,8 +252,17 @@ impl NativeSubscriptions {
             identity.clone(),
             client.inner.clone(),
         ));
-        let watch = ViewMapWatch::native(map.lock(), ready.lock());
-        client.cache_map_watch(key, identity, watch.map(), watch.ready(), None);
+        let watch = ViewMapWatch::native(map.lock(), ready.lock(), lease.error.clone().lock());
+        client.inner.map_watch_cache.insert(
+            key,
+            Box::new(client::ClientMapWatchCacheEntry::new(
+                identity,
+                watch.map(),
+                watch.ready(),
+                watch.error(),
+                None,
+            )),
+        );
         drop(cache_guard);
         lease.start();
         Ok(watch)

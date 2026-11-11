@@ -3,6 +3,7 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use hyphae::Gettable as _;
 use serde::de::DeserializeOwned;
 
 use super::{
@@ -38,6 +39,12 @@ pub struct NativeQueryInitial<T: Send + Sync> {
 }
 
 impl<T: Send + Sync> NativeQueryInitial<T> {
+    /// The server rejection that ended this subscription, if any.
+    #[must_use]
+    pub fn error(&self) -> hyphae::Cell<Option<String>, hyphae::CellImmutable> {
+        self.lease.error.clone().lock()
+    }
+
     /// Take a completed result from the current connection attempt, if available.
     #[must_use]
     pub fn try_snapshot(&self) -> Option<Vec<Arc<T>>> {
@@ -53,16 +60,19 @@ impl<T: Send + Sync> NativeQueryInitial<T> {
     /// Wait for a complete initial result. An authoritative empty vector completes normally.
     ///
     /// # Errors
-    /// Returns `ClientClosed` when the subscription retires before a result arrives.
+    /// Returns `ServerRejected` for a server denial or build failure, or `ClientClosed` when cancelled before a result arrives.
     pub async fn recv(&self) -> Result<Vec<Arc<T>>, SubscriptionAdmissionError> {
         loop {
             if let Some(items) = self.try_snapshot() {
                 return Ok(items);
             }
-            self.wake
-                .recv_async()
-                .await
-                .map_err(|_| SubscriptionAdmissionError::ClientClosed)?;
+            self.wake.recv_async().await.map_err(|_| {
+                if self.lease.error.get().is_some() {
+                    SubscriptionAdmissionError::ServerRejected
+                } else {
+                    SubscriptionAdmissionError::ClientClosed
+                }
+            })?;
         }
     }
 }
