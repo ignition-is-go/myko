@@ -3,7 +3,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU8, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
     },
 };
 
@@ -80,6 +80,7 @@ pub struct ListWatch<T: CellValue> {
     items: Cell<Vec<T>, CellImmutable>,
     ready: Cell<bool, CellImmutable>,
     error: Cell<Option<String>, CellImmutable>,
+    trace: Option<Cell<Option<QueryTrace>, CellImmutable>>,
 }
 
 impl<T: CellValue> ListWatch<T> {
@@ -99,9 +100,150 @@ impl<T: CellValue> ListWatch<T> {
         &self.ready
     }
 
+    /// Metadata for a query watch, when the watch was created by `watch_query_state`.
+    #[must_use]
+    pub const fn query_trace(&self) -> Option<&Cell<Option<QueryTrace>, CellImmutable>> {
+        self.trace.as_ref()
+    }
+
     #[must_use]
     pub fn into_items(self) -> Cell<Vec<T>, CellImmutable> {
         self.items
+    }
+}
+
+/// A bounded metadata observation from one query-watch transaction.
+///
+/// This type never retains a response payload or error string. A query watch
+/// replaces its current value at each diagnostic boundary.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct QueryTrace {
+    pub query_id: Arc<str>,
+    pub tx: Arc<str>,
+    pub epoch: u64,
+    pub phase: QueryTracePhase,
+    pub sequence: Option<u64>,
+    pub row_count: Option<usize>,
+    /// Milliseconds since this watch was created; it does not reset on reconnect.
+    pub watch_elapsed_ms: u64,
+    pub error_kind: Option<QueryTraceErrorKind>,
+}
+
+/// The last diagnostic boundary reached by a query-watch transaction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryTracePhase {
+    SendAccepted,
+    SendFailed,
+    ResponseReceived,
+    EnvelopeRejected,
+    ItemRejected,
+    SequenceRejected,
+    SnapshotInstalled,
+}
+
+/// A payload-free classification of a rejected query-watch response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueryTraceErrorKind {
+    Send,
+    Envelope,
+    Item,
+    Sequence,
+}
+
+#[derive(Clone)]
+struct QueryTraceEmitter {
+    trace: hyphae::cell::WeakCell<Option<QueryTrace>, CellMutable>,
+    query_id: Arc<str>,
+    tx: Arc<str>,
+    epoch: Arc<AtomicU64>,
+    seen_phases: Arc<Mutex<QueryTraceSeenPhases>>,
+    started_at_ms: i64,
+}
+
+#[derive(Default)]
+struct QueryTraceSeenPhases {
+    epoch: u64,
+    seen: u8,
+}
+
+impl QueryTraceEmitter {
+    const fn phase_bit(phase: QueryTracePhase) -> u8 {
+        match phase {
+            QueryTracePhase::SendAccepted => 1,
+            QueryTracePhase::SendFailed => 1 << 1,
+            QueryTracePhase::ResponseReceived => 1 << 2,
+            QueryTracePhase::EnvelopeRejected => 1 << 3,
+            QueryTracePhase::ItemRejected => 1 << 4,
+            QueryTracePhase::SequenceRejected => 1 << 5,
+            QueryTracePhase::SnapshotInstalled => 1 << 6,
+        }
+    }
+
+    fn reset_seen_phases(&self, epoch: u64) {
+        let mut seen_phases = self
+            .seen_phases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.epoch.load(Ordering::Relaxed) != epoch {
+            return;
+        }
+        seen_phases.epoch = epoch;
+        seen_phases.seen = 0;
+    }
+
+    fn emit_once(
+        &self,
+        epoch: u64,
+        phase: QueryTracePhase,
+        sequence: Option<u64>,
+        row_count: Option<usize>,
+        error_kind: Option<QueryTraceErrorKind>,
+    ) {
+        let bit = Self::phase_bit(phase);
+        {
+            let mut seen_phases = self
+                .seen_phases
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if seen_phases.epoch != epoch || seen_phases.seen & bit != 0 {
+                return;
+            }
+            seen_phases.seen |= bit;
+        }
+        self.emit_for_epoch(epoch, phase, sequence, row_count, error_kind);
+    }
+
+    fn emit_for_epoch(
+        &self,
+        epoch: u64,
+        phase: QueryTracePhase,
+        sequence: Option<u64>,
+        row_count: Option<usize>,
+        error_kind: Option<QueryTraceErrorKind>,
+    ) {
+        if self.epoch.load(Ordering::Relaxed) != epoch {
+            return;
+        }
+        let Some(trace) = self.trace.upgrade() else {
+            return;
+        };
+        let watch_elapsed_ms = chrono::Utc::now()
+            .timestamp_millis()
+            .saturating_sub(self.started_at_ms)
+            .try_into()
+            .unwrap_or_default();
+        trace.set(Some(QueryTrace {
+            query_id: self.query_id.clone(),
+            tx: self.tx.clone(),
+            epoch,
+            phase,
+            sequence,
+            row_count,
+            watch_elapsed_ms,
+            error_kind,
+        }));
     }
 }
 
@@ -680,6 +822,7 @@ struct ClientListWatchCacheEntry<T: CellValue> {
     items: hyphae::cell::WeakCell<Vec<T>, CellImmutable>,
     ready: hyphae::cell::WeakCell<bool, CellImmutable>,
     error: hyphae::cell::WeakCell<Option<String>, CellImmutable>,
+    trace: Option<hyphae::cell::WeakCell<Option<QueryTrace>, CellImmutable>>,
 }
 
 impl<T: CellValue> ClientListWatchCacheEntry<T> {
@@ -689,6 +832,7 @@ impl<T: CellValue> ClientListWatchCacheEntry<T> {
             items: watch.items.downgrade(),
             ready: watch.ready.downgrade(),
             error: watch.error.downgrade(),
+            trace: watch.trace.as_ref().map(Cell::downgrade),
         }
     }
 
@@ -697,6 +841,10 @@ impl<T: CellValue> ClientListWatchCacheEntry<T> {
             items: self.items.upgrade()?,
             ready: self.ready.upgrade()?,
             error: self.error.upgrade()?,
+            trace: match self.trace.as_ref() {
+                Some(trace) => Some(trace.upgrade()?),
+                None => None,
+            },
         })
     }
 }
@@ -1918,6 +2066,19 @@ impl MykoClient {
             Cell::<bool, CellMutable>::new(false).with_name(format!("query_ready:{query_id}"));
         let ready_weak = ready.downgrade();
         let ready_read = ready.clone().lock();
+        let trace = Cell::<Option<QueryTrace>, CellMutable>::new(None)
+            .with_name(format!("query_trace:{query_id}"))
+            .no_coalesce();
+        let trace_read = trace.clone().lock();
+        let epoch = Arc::new(AtomicU64::new(0));
+        let trace_emitter = QueryTraceEmitter {
+            trace: trace.downgrade(),
+            query_id: query_id.clone(),
+            tx: tx.clone(),
+            epoch: epoch.clone(),
+            seen_phases: Arc::new(Mutex::new(QueryTraceSeenPhases::default())),
+            started_at_ms: chrono::Utc::now().timestamp_millis(),
+        };
 
         let Ok(query_value) = serde_json::to_value(&query) else {
             error!("Could not serialize query request for {query_id}");
@@ -1925,6 +2086,7 @@ impl MykoClient {
                 items: cell.lock(),
                 ready: ready_read,
                 error: self.subscription_error(&tx),
+                trace: Some(trace_read),
             };
         };
 
@@ -1942,9 +2104,11 @@ impl MykoClient {
 
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
+        let trace_for_handler = trace_emitter.clone();
 
         // Register handler for query responses matching this tx
         let handler: QueryHandler = Arc::new(move |response_value: Value| {
+            let response_epoch = trace_for_handler.epoch.load(Ordering::Relaxed);
             let Some(cell_writer) = cell_weak.upgrade() else {
                 warn!(
                     "watch_query: weak cell dead for query={} tx={}",
@@ -1960,12 +2124,34 @@ impl MykoClient {
                         error!(
                             "Rejected query '{query_id_for_handler}' malformed response: {error}"
                         );
+                        trace_for_handler.emit_once(
+                            response_epoch,
+                            QueryTracePhase::EnvelopeRejected,
+                            None,
+                            None,
+                            Some(QueryTraceErrorKind::Envelope),
+                        );
                         return;
                     }
                 };
 
             if response.tx != tx_for_handler {
                 return;
+            }
+
+            if response.sequence == 0 {
+                trace_for_handler.emit_once(
+                    response_epoch,
+                    QueryTracePhase::ResponseReceived,
+                    Some(0),
+                    None,
+                    None,
+                );
+                // The direct trace callback may synchronously reconnect or cancel this
+                // watch. Never apply a response from the superseded attempt.
+                if trace_for_handler.epoch.load(Ordering::Relaxed) != response_epoch {
+                    return;
+                }
             }
 
             let upserts = match map_response::decode_map_upserts::<Q::Item, _>(
@@ -1980,6 +2166,13 @@ impl MykoClient {
                         std::any::type_name::<Q::Item>(),
                         error
                     );
+                    trace_for_handler.emit_once(
+                        response_epoch,
+                        QueryTracePhase::ItemRejected,
+                        Some(response.sequence),
+                        None,
+                        Some(QueryTraceErrorKind::Item),
+                    );
                     return;
                 }
             };
@@ -1987,6 +2180,13 @@ impl MykoClient {
                 error!(
                     "Rejected query '{}' out-of-order sequence {}",
                     query_id_for_handler, response.sequence
+                );
+                trace_for_handler.emit_once(
+                    response_epoch,
+                    QueryTracePhase::SequenceRejected,
+                    Some(response.sequence),
+                    None,
+                    Some(QueryTraceErrorKind::Sequence),
                 );
                 return;
             }
@@ -2008,10 +2208,18 @@ impl MykoClient {
                 state.insert(id, item);
             }
 
+            let row_count = state.len();
             cell_writer.set(state.values().cloned().collect());
             drop(state);
             if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
                 ready_writer.set(true);
+                trace_for_handler.emit_once(
+                    response_epoch,
+                    QueryTracePhase::SnapshotInstalled,
+                    Some(0),
+                    Some(row_count),
+                    None,
+                );
             }
         });
         if !self.try_register_query_handler(tx.clone(), handler) {
@@ -2020,6 +2228,7 @@ impl MykoClient {
                 items: cell.lock(),
                 ready: ready_read,
                 error: self.subscription_error(&tx),
+                trace: Some(trace_read),
             };
         }
 
@@ -2033,6 +2242,7 @@ impl MykoClient {
                 items: cell.lock(),
                 ready: ready_read,
                 error: self.subscription_error(&tx),
+                trace: Some(trace_read),
             };
         };
 
@@ -2040,19 +2250,45 @@ impl MykoClient {
         let socket = self.inner.socket.clone();
         let ready_for_status = ready.downgrade();
         let sequences_for_status = sequences;
+        let epoch_for_status = epoch;
+        let trace_for_status = trace_emitter;
         let status_cell = self.connection_status();
         let send_query_id = query_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
+                // A status delivery starts a distinct transport attempt even when it
+                // is a disconnect. This runs before either ready or trace callbacks.
+                let epoch = epoch_for_status
+                    .fetch_add(1, Ordering::Relaxed)
+                    .wrapping_add(1);
+                trace_for_status.reset_seen_phases(epoch);
                 sequences_for_status.reset_epoch();
                 if let Some(ready_writer) = ready_for_status.upgrade() {
                     ready_writer.set(false);
                 }
                 if let ConnectionStatus::Connected(_) = &**status {
                     match socket.send(frame_to_send.clone()) {
-                        Ok(()) => debug!("Watching query {send_query_id}"),
-                        Err(e) => error!("Could not send query: {e:?}"),
+                        Ok(()) => {
+                            debug!("Watching query {send_query_id}");
+                            trace_for_status.emit_once(
+                                epoch,
+                                QueryTracePhase::SendAccepted,
+                                None,
+                                None,
+                                None,
+                            );
+                        }
+                        Err(e) => {
+                            error!("Could not send query: {e:?}");
+                            trace_for_status.emit_once(
+                                epoch,
+                                QueryTracePhase::SendFailed,
+                                None,
+                                None,
+                                Some(QueryTraceErrorKind::Send),
+                            );
+                        }
                     }
                 } else {
                     debug!("Query {send_query_id} disconnected");
@@ -2063,6 +2299,7 @@ impl MykoClient {
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx.clone(), self.inner.clone()));
         cell.own(retain_cell_guard(ready_read.clone()));
+        cell.own(retain_cell_guard(trace_read.clone()));
         cell.own(list_watch_cache_guard(
             cache_key.clone(),
             tx.clone(),
@@ -2073,6 +2310,7 @@ impl MykoClient {
             items: cell.lock(),
             ready: ready_read,
             error: self.subscription_error(&tx),
+            trace: Some(trace_read),
         };
         self.cache_list_watch(cache_key, tx, &watch);
         watch
@@ -2336,6 +2574,7 @@ impl MykoClient {
                 items: cell.lock(),
                 ready: ready_read,
                 error: self.subscription_error(&tx),
+                trace: None,
             };
         };
 
@@ -2347,6 +2586,7 @@ impl MykoClient {
                 items: cell.lock(),
                 ready: ready_read,
                 error: self.subscription_error(&tx),
+                trace: None,
             };
         };
 
@@ -2431,6 +2671,7 @@ impl MykoClient {
                 items: cell.lock(),
                 ready: ready_read,
                 error: self.subscription_error(&tx),
+                trace: None,
             };
         }
 
@@ -2470,6 +2711,7 @@ impl MykoClient {
             items: cell.lock(),
             ready: ready_read,
             error: self.subscription_error(&tx),
+            trace: None,
         };
         self.cache_list_watch(cache_key, tx, &watch);
         watch
@@ -2610,6 +2852,7 @@ impl MykoClient {
                 items: Cell::new(Vec::<Value>::new()).lock(),
                 ready: Cell::new(false).lock(),
                 error: Cell::new(Some("request must be an object".into())).lock(),
+                trace: None,
             };
         };
         request.insert("tx".to_owned(), Value::String(tx.to_string()));
@@ -2629,6 +2872,7 @@ impl MykoClient {
                 items: cell.lock(),
                 ready: ready.lock(),
                 error: Cell::new(Some("could not encode request".into())).lock(),
+                trace: None,
             };
         };
 
@@ -2698,6 +2942,7 @@ impl MykoClient {
             items: cell.lock(),
             ready: ready.lock(),
             error: self.subscription_error(&tx),
+            trace: None,
         }
     }
 
@@ -2723,6 +2968,7 @@ impl MykoClient {
                 items: Cell::new(Vec::<Value>::new()).lock(),
                 ready: Cell::new(false).lock(),
                 error: Cell::new(Some("request must be an object".into())).lock(),
+                trace: None,
             };
         };
         request.insert("tx".to_owned(), Value::String(tx.to_string()));
@@ -2742,6 +2988,7 @@ impl MykoClient {
                 items: cell.lock(),
                 ready: ready.lock(),
                 error: Cell::new(Some("could not encode request".into())).lock(),
+                trace: None,
             };
         };
 
@@ -2811,6 +3058,7 @@ impl MykoClient {
             items: cell.lock(),
             ready: ready.lock(),
             error: self.subscription_error(&tx),
+            trace: None,
         }
     }
 
@@ -2912,6 +3160,489 @@ fn normalize_myko_address(addr: &str) -> Result<String, url::ParseError> {
     }
 
     Ok(parsed.to_string())
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod query_trace_tests {
+    use std::sync::{Arc, Mutex, atomic::AtomicU64};
+
+    use autosocket::{SocketConnectionStatus, SocketTransport, WsFrame};
+    use hyphae::{Cell, CellImmutable, CellMutable, Gettable, Mutable, Watchable};
+
+    use super::{
+        ConnectionStatus, MykoClient, QueryTrace, QueryTraceEmitter, QueryTraceErrorKind,
+        QueryTracePhase, QueryTraceSeenPhases, QueryWatch,
+    };
+    use crate::entities::client::{Client, GetAllClients};
+
+    struct MockTransport {
+        status: Cell<SocketConnectionStatus, CellMutable>,
+        sent: Mutex<Vec<WsFrame>>,
+        incoming_rx: flume::Receiver<WsFrame>,
+    }
+
+    impl MockTransport {
+        fn new() -> Self {
+            let (_incoming_tx, incoming_rx) = flume::unbounded();
+            Self {
+                status: Cell::new(SocketConnectionStatus::Idle),
+                sent: Mutex::new(Vec::new()),
+                incoming_rx,
+            }
+        }
+
+        fn connect(&self, address: &str) {
+            self.status
+                .set(SocketConnectionStatus::Connected(address.to_owned()));
+        }
+
+        fn query_send_count(&self) -> usize {
+            self.sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|frame| matches!(frame, WsFrame::Text(text) if text.contains("ws:m:query")))
+                .count()
+        }
+    }
+
+    impl SocketTransport for MockTransport {
+        fn set_addr(&self, _addr: Option<String>) {}
+
+        fn close(&self) {
+            self.status.set(SocketConnectionStatus::Idle);
+        }
+
+        fn intended_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+
+        fn actual_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+
+        fn send(&self, frame: WsFrame) -> Result<(), String> {
+            self.sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(frame);
+            Ok(())
+        }
+
+        fn read_rx(&self) -> flume::Receiver<WsFrame> {
+            self.incoming_rx.clone()
+        }
+    }
+
+    fn trace(watch: &QueryWatch<Client>) -> QueryTrace {
+        let Some(trace) = watch.query_trace().and_then(Gettable::get) else {
+            panic!("query watch exposes its latest trace");
+        };
+        trace
+    }
+
+    fn query_response(tx: &str, sequence: u64, upserts: &serde_json::Value) -> WsFrame {
+        WsFrame::Text(
+            serde_json::json!({
+                "event": "ws:m:query-response",
+                "data": {"tx": tx, "sequence": sequence, "deletes": [], "upserts": upserts}
+            })
+            .to_string(),
+        )
+    }
+
+    fn malformed_response(tx: &str) -> WsFrame {
+        WsFrame::Text(
+            serde_json::json!({
+                "event": "ws:m:query-response",
+                "data": {"tx": tx, "sequence": "not-a-number"}
+            })
+            .to_string(),
+        )
+    }
+
+    #[test]
+    fn cache_hit_and_reconnect_share_one_trace_transaction() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let first = client.watch_query_state(GetAllClients {});
+        let second = client.watch_query_state(GetAllClients {});
+
+        transport.connect("ws://first");
+        let first_trace = trace(&first);
+        assert_eq!(first_trace.phase, QueryTracePhase::SendAccepted);
+        assert_eq!(trace(&second), first_trace);
+        assert_eq!(transport.query_send_count(), 1);
+
+        transport.connect("ws://reconnected");
+        assert!(trace(&first).epoch > first_trace.epoch);
+        assert_eq!(trace(&second).tx, first_trace.tx);
+        assert_eq!(transport.query_send_count(), 2);
+    }
+
+    #[test]
+    fn rejected_responses_publish_metadata_without_payloads() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_state(GetAllClients {});
+        transport.connect("ws://test");
+        let tx = trace(&watch).tx;
+
+        let malformed = malformed_response(&tx);
+        MykoClient::handle_frame(&client.inner, &malformed);
+        assert_eq!(trace(&watch).phase, QueryTracePhase::EnvelopeRejected);
+        assert_eq!(
+            trace(&watch).error_kind,
+            Some(QueryTraceErrorKind::Envelope)
+        );
+
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(
+                &tx,
+                0,
+                &serde_json::json!([{"item": {"id": "missing-fields"}, "itemType": "client"}]),
+            ),
+        );
+        assert_eq!(trace(&watch).phase, QueryTracePhase::ItemRejected);
+        assert_eq!(trace(&watch).error_kind, Some(QueryTraceErrorKind::Item));
+
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(&tx, 0, &serde_json::json!([])),
+        );
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(&tx, 2, &serde_json::json!([])),
+        );
+        assert_eq!(trace(&watch).phase, QueryTracePhase::SequenceRejected);
+        assert_eq!(trace(&watch).sequence, Some(2));
+        assert_eq!(
+            trace(&watch).error_kind,
+            Some(QueryTraceErrorKind::Sequence)
+        );
+    }
+
+    #[test]
+    fn rejection_trace_emits_once_per_kind_and_attempt() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_state(GetAllClients {});
+        let Some(trace_cell) = watch.query_trace() else {
+            panic!("query trace cell");
+        };
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let emitted_for_callback = emitted.clone();
+        let _trace_guard = trace_cell.subscribe(move |signal| {
+            if let hyphae::Signal::Value(event) = signal
+                && let Some(event) = event.as_ref()
+            {
+                emitted_for_callback
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event.clone());
+            }
+        });
+
+        transport.connect("ws://first");
+        let tx = trace(&watch).tx;
+        for _ in 0..100 {
+            MykoClient::handle_frame(&client.inner, &malformed_response(&tx));
+            MykoClient::handle_frame(
+                &client.inner,
+                &query_response(
+                    &tx,
+                    0,
+                    &serde_json::json!([{"item": {"id": "missing-fields"}, "itemType": "client"}]),
+                ),
+            );
+        }
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(&tx, 0, &serde_json::json!([])),
+        );
+        for _ in 0..100 {
+            MykoClient::handle_frame(
+                &client.inner,
+                &query_response(&tx, 2, &serde_json::json!([])),
+            );
+        }
+
+        let count = |phase| {
+            emitted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|event| event.phase == phase)
+                .count()
+        };
+        assert_eq!(count(QueryTracePhase::EnvelopeRejected), 1);
+        assert_eq!(count(QueryTracePhase::ItemRejected), 1);
+        assert_eq!(count(QueryTracePhase::SequenceRejected), 1);
+        assert_eq!(count(QueryTracePhase::ResponseReceived), 1);
+        assert_eq!(count(QueryTracePhase::SnapshotInstalled), 1);
+
+        transport.connect("ws://reconnected");
+        MykoClient::handle_frame(&client.inner, &malformed_response(&tx));
+        assert_eq!(count(QueryTracePhase::EnvelopeRejected), 2);
+    }
+
+    #[test]
+    fn stale_epoch_reset_cannot_clear_the_current_phase_mask() {
+        let trace = Cell::<Option<QueryTrace>, CellMutable>::new(None);
+        let trace_read = trace.clone().lock();
+        let epoch = Arc::new(AtomicU64::new(3));
+        let seen_phases = Arc::new(Mutex::new(QueryTraceSeenPhases {
+            epoch: 3,
+            seen: QueryTraceEmitter::phase_bit(QueryTracePhase::ResponseReceived),
+        }));
+        let emitter = QueryTraceEmitter {
+            trace: trace.downgrade(),
+            query_id: "catalogue".into(),
+            tx: "transaction".into(),
+            epoch,
+            seen_phases: seen_phases.clone(),
+            started_at_ms: chrono::Utc::now().timestamp_millis(),
+        };
+
+        emitter.reset_seen_phases(2);
+        let state = seen_phases
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(state.epoch, 3);
+        assert_eq!(
+            state.seen,
+            QueryTraceEmitter::phase_bit(QueryTracePhase::ResponseReceived)
+        );
+        drop(state);
+
+        emitter.emit_once(
+            3,
+            QueryTracePhase::SnapshotInstalled,
+            Some(0),
+            Some(0),
+            None,
+        );
+        let Some(event) = trace_read.get() else {
+            panic!("an unseen current-epoch phase emits");
+        };
+        assert_eq!(event.phase, QueryTracePhase::SnapshotInstalled);
+    }
+
+    #[test]
+    fn initial_snapshot_is_traced_once_and_healthy_diffs_do_not_replace_it() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_state(GetAllClients {});
+        transport.connect("ws://test");
+        let tx = trace(&watch).tx;
+
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(&tx, 0, &serde_json::json!([])),
+        );
+        let snapshot = trace(&watch);
+        assert_eq!(snapshot.phase, QueryTracePhase::SnapshotInstalled);
+        assert_eq!(snapshot.sequence, Some(0));
+        assert_eq!(snapshot.row_count, Some(0));
+        assert!(watch.ready().get());
+
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(&tx, 1, &serde_json::json!([])),
+        );
+        assert_eq!(trace(&watch), snapshot);
+    }
+
+    #[test]
+    fn trace_callback_reconnect_does_not_relabel_an_old_snapshot() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_state(GetAllClients {});
+        let Some(trace_cell) = watch.query_trace() else {
+            panic!("query trace cell");
+        };
+        let reconnect_transport = transport.clone();
+        let _trace_guard = trace_cell.subscribe(move |signal| {
+            if let hyphae::Signal::Value(event) = signal
+                && let Some(event) = event.as_ref()
+                && event.phase == QueryTracePhase::ResponseReceived
+            {
+                reconnect_transport.connect("ws://reconnected");
+            }
+        });
+
+        transport.connect("ws://first");
+        let tx = trace(&watch).tx;
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(&tx, 0, &serde_json::json!([])),
+        );
+
+        let current = trace(&watch);
+        assert_eq!(current.phase, QueryTracePhase::SendAccepted);
+        assert!(current.epoch > 0);
+        assert_eq!(transport.query_send_count(), 2);
+        assert!(!watch.ready().get());
+        assert!(watch.items().get().is_empty());
+    }
+
+    #[test]
+    fn trace_callback_disconnect_does_not_install_an_old_snapshot() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_state(GetAllClients {});
+        let Some(trace_cell) = watch.query_trace() else {
+            panic!("query trace cell");
+        };
+        let disconnect_transport = transport.clone();
+        let _trace_guard = trace_cell.subscribe(move |signal| {
+            if let hyphae::Signal::Value(event) = signal
+                && let Some(event) = event.as_ref()
+                && event.phase == QueryTracePhase::ResponseReceived
+            {
+                disconnect_transport.close();
+            }
+        });
+        transport.connect("ws://first");
+        let tx = trace(&watch).tx;
+        let attempt = trace(&watch).epoch;
+
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(
+                &tx,
+                0,
+                &serde_json::json!([{
+                    "item": {
+                        "id": "client-from-old-attempt",
+                        "serverId": "server-1",
+                        "address": null,
+                        "windback": null
+                    },
+                    "itemType": "client"
+                }]),
+            ),
+        );
+
+        assert!(!watch.ready().get());
+        assert!(watch.items().get().is_empty());
+        assert_eq!(trace(&watch).phase, QueryTracePhase::ResponseReceived);
+        assert_eq!(trace(&watch).epoch, attempt);
+        assert!(!matches!(
+            client.connection_status_sync(),
+            ConnectionStatus::Connected(_)
+        ));
+    }
+
+    #[test]
+    fn snapshot_trace_preserves_each_boundary_inside_a_batch() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_state(GetAllClients {});
+        transport.connect("ws://first");
+        let tx = trace(&watch).tx;
+        let emitted = Arc::new(Mutex::new(Vec::new()));
+        let observed = emitted.clone();
+        let guard = watch
+            .query_trace()
+            .expect("query trace")
+            .subscribe(move |signal| {
+                if let hyphae::Signal::Value(value) = signal
+                    && let Some(event) = value.as_ref()
+                {
+                    observed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .push(event.phase);
+                }
+            });
+        emitted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+        hyphae::batch(|| {
+            MykoClient::handle_frame(
+                &client.inner,
+                &query_response(&tx, 0, &serde_json::json!([])),
+            );
+        });
+        assert_eq!(
+            *emitted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![
+                QueryTracePhase::ResponseReceived,
+                QueryTracePhase::SnapshotInstalled
+            ]
+        );
+        drop(guard);
+    }
+
+    #[test]
+    fn denied_query_error_clears_on_reconnect_with_trace_alive() {
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let watch = client.watch_query_state(GetAllClients {});
+        let cached = client.watch_query_state(GetAllClients {});
+        transport.connect("ws://first");
+        let sent = trace(&watch);
+        let frame = serde_json::json!({
+            "event": "ws:m:query-error",
+            "data": {"tx": sent.tx, "queryId": "GetAllClients", "message": "permission denied"}
+        });
+        MykoClient::handle_frame(&client.inner, &WsFrame::Text(frame.to_string()));
+        assert_eq!(watch.error().get().as_deref(), Some("permission denied"));
+        assert_eq!(cached.error().get(), watch.error().get());
+        assert!(!watch.ready().get());
+        assert!(watch.items().get().is_empty());
+        assert_eq!(trace(&watch), sent);
+
+        transport.close();
+        assert_eq!(watch.error().get(), None);
+        transport.connect("ws://second");
+        assert_eq!(cached.error().get(), None);
+        assert!(!watch.ready().get());
+        let retry = trace(&watch);
+        assert!(retry.epoch > sent.epoch);
+        assert_eq!(retry.tx, sent.tx);
+        assert_eq!(retry.phase, QueryTracePhase::SendAccepted);
+        assert_eq!(transport.query_send_count(), 2);
+        MykoClient::handle_frame(
+            &client.inner,
+            &query_response(&retry.tx, 0, &serde_json::json!([])),
+        );
+        assert!(watch.ready().get());
+        assert!(cached.ready().get());
+        assert_eq!(trace(&watch).phase, QueryTracePhase::SnapshotInstalled);
+        assert_eq!(watch.error().get(), None);
+    }
+
+    #[test]
+    fn serialized_trace_contains_metadata_only() {
+        let Ok(value) = serde_json::to_value(QueryTrace {
+            query_id: "catalogue".into(),
+            tx: "transaction".into(),
+            epoch: 1,
+            phase: QueryTracePhase::SnapshotInstalled,
+            sequence: Some(0),
+            row_count: Some(0),
+            watch_elapsed_ms: 7,
+            error_kind: None,
+        }) else {
+            panic!("trace serializes");
+        };
+        assert_eq!(
+            value.as_object().map(serde_json::Map::len),
+            Some(8),
+            "trace serialization does not add a payload or error message"
+        );
+        assert_eq!(
+            value.get("phase"),
+            Some(&serde_json::json!("snapshot_installed"))
+        );
+    }
 }
 
 #[cfg(test)]

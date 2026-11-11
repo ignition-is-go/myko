@@ -223,7 +223,196 @@ where
         + Sync
         + 'static,
 {
-    use myko::client::MykoClient;
+    live_query_state_inner(query, None)
+}
+
+/// Like [`live_query_loaded`], and calls `on_trace` at each query metadata boundary.
+///
+/// The callback receives metadata from the same cached query watch as the returned
+/// rows and readiness signal. It never creates another query subscription.
+pub fn live_query_loaded_with_trace<Q>(
+    query: impl Fn() -> Q + Send + Sync + 'static,
+    on_trace: impl Fn(myko::client::QueryTrace) + Send + Sync + 'static,
+) -> LiveQuerySignals<Q::Item>
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
+    let (data, loaded, _error) = live_query_state_inner(query, Some(Arc::new(on_trace)));
+    (data, loaded)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used, clippy::panic)]
+mod trace_bridge_tests {
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
+    use std::time::{Duration, Instant};
+
+    use autosocket::{SocketConnectionStatus, SocketTransport, WsFrame};
+    use leptos::prelude::{Owner, provide_context};
+    use myko::{
+        client::MykoClient,
+        entities::client::GetAllClients,
+        hyphae::{Cell, CellImmutable, CellMutable, Gettable, Mutable},
+    };
+
+    use super::live_query_loaded_with_trace;
+
+    struct MockTransport {
+        status: Cell<SocketConnectionStatus, CellMutable>,
+        sent: Mutex<Vec<WsFrame>>,
+        incoming_tx: flume::Sender<WsFrame>,
+        incoming_rx: flume::Receiver<WsFrame>,
+    }
+
+    impl MockTransport {
+        fn new() -> Self {
+            let (incoming_tx, incoming_rx) = flume::unbounded();
+            Self {
+                status: Cell::new(SocketConnectionStatus::Idle),
+                sent: Mutex::new(Vec::new()),
+                incoming_tx,
+                incoming_rx,
+            }
+        }
+
+        fn connect(&self) {
+            self.status
+                .set(SocketConnectionStatus::Connected("ws://test".to_owned()));
+        }
+
+        fn wait_until(predicate: impl Fn() -> bool) {
+            let Some(deadline) = Instant::now().checked_add(Duration::from_secs(1)) else {
+                panic!("test deadline is representable");
+            };
+            while !predicate() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            assert!(predicate(), "condition did not become true before deadline");
+        }
+    }
+
+    impl SocketTransport for MockTransport {
+        fn set_addr(&self, _addr: Option<String>) {}
+
+        fn close(&self) {
+            self.status.set(SocketConnectionStatus::Idle);
+        }
+
+        fn intended_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+
+        fn actual_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+
+        fn send(&self, frame: WsFrame) -> Result<(), String> {
+            self.sent
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(frame);
+            Ok(())
+        }
+
+        fn read_rx(&self) -> flume::Receiver<WsFrame> {
+            self.incoming_rx.clone()
+        }
+    }
+
+    #[test]
+    fn trace_callback_stops_when_owner_drops_while_cached_watch_lives() {
+        let _ = any_spawner::Executor::init_futures_executor();
+        let transport = Arc::new(MockTransport::new());
+        let client = MykoClient::with_transport(transport.clone());
+        let retained = client.watch_query_state(GetAllClients {});
+        let callbacks = Arc::new(AtomicUsize::new(0));
+        let owner = Owner::new();
+
+        owner.with(|| {
+            provide_context(client.clone());
+            let callback_count = callbacks.clone();
+            let _signals = live_query_loaded_with_trace(
+                || GetAllClients {},
+                move |_| {
+                    callback_count.fetch_add(1, Ordering::Relaxed);
+                },
+            );
+            any_spawner::Executor::poll_local();
+            transport.connect();
+        });
+        MockTransport::wait_until(|| callbacks.load(Ordering::Relaxed) > 0);
+        let before_cleanup = callbacks.load(Ordering::Relaxed);
+
+        owner.cleanup();
+        transport.connect();
+        std::thread::sleep(Duration::from_millis(20));
+        assert_eq!(callbacks.load(Ordering::Relaxed), before_cleanup);
+
+        let Some(trace) = retained.query_trace().and_then(myko::hyphae::Gettable::get) else {
+            panic!("cached query trace");
+        };
+        let tx = trace.tx;
+        let sent = transport.incoming_tx.send(WsFrame::Text(
+            serde_json::json!({
+                "event": "ws:m:query-response",
+                "data": {
+                    "tx": tx,
+                    "sequence": 0,
+                    "deletes": [],
+                    "upserts": [{
+                        "item": {
+                            "id": "client-after-owner-drop",
+                            "serverId": "server-1",
+                            "address": null,
+                            "windback": null
+                        },
+                        "itemType": "client"
+                    }]
+                }
+            })
+            .to_string(),
+        ));
+        assert!(sent.is_ok(), "mock reader is alive");
+        MockTransport::wait_until(|| retained.items().get().len() == 1);
+        assert_eq!(callbacks.load(Ordering::Relaxed), before_cleanup);
+        let items = retained.items().get();
+        let Some(client) = items.first() else {
+            panic!("cached query received one item");
+        };
+        assert_eq!(client.id.to_string(), "client-after-owner-drop");
+    }
+}
+
+fn live_query_state_inner<Q>(
+    query: impl Fn() -> Q + Send + Sync + 'static,
+    on_trace: Option<Arc<dyn Fn(myko::client::QueryTrace) + Send + Sync>>,
+) -> LiveQueryStateSignals<Q::Item>
+where
+    Q: myko::query::QueryParams + Clone + Send + Sync + 'static,
+    Q::Item: myko::core::item::Eventable
+        + myko::common::with_id::WithId
+        + serde::de::DeserializeOwned
+        + Clone
+        + std::fmt::Debug
+        + Send
+        + Sync
+        + 'static,
+{
+    use myko::{
+        client::MykoClient,
+        hyphae::{Signal, Watchable},
+    };
 
     let (read, write) = signal(vec![]);
     let (loaded, set_loaded) = signal(false);
@@ -235,8 +424,12 @@ where
     // would retain the cells and disposed Leptos writers in a cycle.
     let prev_watch = StoredValue::new(None);
     let current = RwSignal::new(Arc::new(()));
+    let prev_trace_guard: StoredValue<Option<myko::hyphae::SubscriptionGuard>> =
+        StoredValue::new(None);
+    on_cleanup(move || prev_trace_guard.set_value(None));
 
     Effect::new(move || {
+        prev_trace_guard.set_value(None);
         let token = Arc::new(());
         current.set(token.clone());
         let q = query(); // tracks signals read inside the closure
@@ -253,6 +446,21 @@ where
         );
         let error_guard =
             scoped_cell_subscription(watch.error(), set_error, current.read_only(), token);
+
+        let trace_guard = watch
+            .query_trace()
+            .zip(on_trace.as_ref())
+            .map(|(trace, callback)| {
+                let callback = Arc::clone(callback);
+                trace.subscribe(move |signal| {
+                    if let Signal::Value(event) = signal
+                        && let Some(event) = event.as_ref()
+                    {
+                        callback(event.clone());
+                    }
+                })
+            });
+        prev_trace_guard.set_value(trace_guard);
 
         // Drop the previous watch (unsubscribes) and hold the new one.
         prev_watch.set_value(Some((watch, items_guard, ready_guard, error_guard)));
