@@ -58,6 +58,8 @@ opentelemetry = "0.32.0"
 myko-telemetry = { version = "6.15.1", path = "../telemetry" }
 
 [dev-dependencies]
+prost = "0.14"
+opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics"] }
 # Demo entities belong to examples, not the published server runtime.
 myko = { workspace = true, features = ["demo"] }
 # Loopback integration test only — no TLS toolchain needed.
