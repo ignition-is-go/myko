@@ -1,0 +1,30 @@
+[package]
+name = "myko-auth0"
+version = "6.12.1"
+edition = "2024"
+description = "Auth0 authentication and machine credentials for Myko"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish"]
+
+[dependencies]
+myko-auth.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1", features = ["sync"] }
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[dev-dependencies]
+jsonwebtoken = { version = "10.3", default-features = false, features = ["rust_crypto", "use_pem"] }
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util"] }
+
+[features]
+default = []
+client-credentials = []
+ci = ["client-credentials"]

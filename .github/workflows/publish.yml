@@ -1,11 +1,16 @@
 name: Publish
 
 on:
+  workflow_dispatch:
   release:
     types: [published]
 
 env:
   CARGO_TERM_COLOR: always
+
+concurrency:
+  group: myko-publish
+  cancel-in-progress: false
 
 jobs:
   publish:
@@ -48,7 +53,7 @@ jobs:
         with:
           version: "1.21.1"
       - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --no-confirm --force
+        run: cargo binstall cargo-flux --version 0.11.5 --no-confirm --force
       - run: cargo flux run publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

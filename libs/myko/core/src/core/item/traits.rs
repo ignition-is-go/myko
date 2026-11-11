@@ -142,6 +142,9 @@ pub trait Eventable:
     /// Static entity type name (use `entity_type()` from `AnyItem` for instance access).
     const ENTITY_NAME_STATIC: &'static str;
 
+    /// Whether this item owns entity permission scopes. Computed view rows opt out.
+    const HAS_ENTITY_PERMISSIONS: bool = true;
+
     /// Back-compat helper for generic call sites that still expect a function.
     #[must_use]
     fn entity_name_static() -> &'static str {

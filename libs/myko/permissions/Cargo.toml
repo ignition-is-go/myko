@@ -1,0 +1,64 @@
+[package]
+name = "myko-permissions"
+version = "6.12.1"
+edition = "2024"
+description = "Persisted permission entities, local policy, and operator recovery for Myko"
+license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[package.metadata.flux]
+tasks = ["check", "build", "test", "lint", "publish"]
+
+[dependencies]
+myko.workspace = true
+myko-auth.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+uuid.workspace = true
+hyphae.workspace = true
+inventory = "0.3.24"
+tracing.workspace = true
+
+[dev-dependencies]
+ciborium.workspace = true
+myko-server.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+tokio-tungstenite.workspace = true
+tempfile = "3"
+
+[features]
+default = ["server"]
+server = []
+ci = []
+
+[[bin]]
+name = "myko-permissions"
+path = "src/bin/myko-permissions.rs"
+required-features = ["server"]
+
+[[test]]
+name = "administration"
+required-features = ["server"]
+
+[[test]]
+name = "client_mutations"
+required-features = ["server"]
+
+[[test]]
+name = "initialization"
+required-features = ["server"]
+
+[[test]]
+name = "inspection"
+required-features = ["server"]
+
+[[test]]
+name = "operator_cli"
+required-features = ["server"]
+
+[[test]]
+name = "host_setup"
+required-features = ["server"]

@@ -132,7 +132,16 @@ fn install_myko_bindings(
 ) -> rquickjs::Result<()> {
     let describe_filter = filter.clone();
     let describe_index = index.clone();
+    let describe_executor = executor.clone();
     let describe = Function::new(ctx.clone(), move |kind: String, id: String| {
+        let visible = if matches!(kind.as_str(), "entity" | "relationship" | "guide") {
+            matches!(describe_executor.as_ref(), Executor::InProcess(_))
+        } else {
+            describe_executor.can_discover(&kind, &id)
+        };
+        if !visible {
+            return json_error(format!("Unknown operation: {kind}_{id}"));
+        }
         super::contract::describe(&describe_index, &describe_filter, &kind, &id)
             .map_or_else(json_error, |value| {
                 serde_json::json!({"value": value}).to_string()

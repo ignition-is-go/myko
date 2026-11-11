@@ -1,0 +1,2 @@
+[tasks.test-ws-attribution]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "--lib", "websocket_metrics::tests", "--", "--test-threads=1"]

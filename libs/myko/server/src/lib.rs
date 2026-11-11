@@ -10,9 +10,13 @@
 //! Tokio-free server types (`MykoServerContext`, `HandlerRegistry`, etc.) live in `myko::server`.
 
 mod blocking_work;
+mod delivery_diagnostics;
+mod gateway_access;
+mod subscription_authorization;
 mod view_sampling;
 
 pub mod mcp;
+mod oauth_http;
 pub mod peer_persister;
 pub mod peer_registry;
 pub mod postgres;
@@ -34,6 +38,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
+pub use gateway_access::GatewayAccess;
 pub use myko::server::*;
 use myko::{
     client::MykoClient, command::CommandContext, request::RequestContext, saga::SagaRegistration,
@@ -86,7 +91,10 @@ pub struct MykoServerConfig {
 /// Builder for creating a `MykoServer`.
 #[derive(Default)]
 pub struct MykoServerBuilder {
+    auth_provider: Option<Arc<myko_auth::MykoAuthProvider>>,
     bind_addr: Option<SocketAddr>,
+    websocket_path: Option<String>,
+    mcp_path: Option<String>,
     tcp_nodelay: Option<bool>,
     host_id: Option<Uuid>,
     postgres: Option<PostgresConfig>,
@@ -104,7 +112,8 @@ pub struct MykoServerBuilder {
     server_info: Option<mcp::dispatch::ServerInfo>,
 }
 
-type AfterInitCallback = Box<dyn FnOnce(&MykoServer) + Send>;
+type AfterInitCallback =
+    Box<dyn FnOnce(&MykoServer) -> Result<(), Box<dyn std::error::Error + Send + Sync>> + Send>;
 
 impl MykoServerBuilder {
     /// Create a new server builder.
@@ -113,10 +122,47 @@ impl MykoServerBuilder {
         Self::default()
     }
 
+    /// Apply app-owned authentication and authorization to every external transport.
+    /// Accepts a provider or an optional provider for conditional configuration.
+    #[must_use]
+    pub fn with_auth_provider(
+        mut self,
+        provider: impl Into<Option<Arc<myko_auth::MykoAuthProvider>>>,
+    ) -> Self {
+        self.auth_provider = provider.into();
+        self
+    }
+
     /// Set the WebSocket bind address.
     #[must_use]
     pub const fn with_bind_addr(mut self, addr: SocketAddr) -> Self {
         self.bind_addr = Some(addr);
+        self
+    }
+
+    /// Set the Myko WebSocket URL path, overriding `MYKO_WS_PATH`.
+    /// Without either override, defaults to `/myko`.
+    /// Paths must start with a single `/` and contain no query, fragment, or whitespace.
+    /// Invalid or colliding paths return an error when starting the server.
+    ///
+    /// ```no_run
+    /// let server = myko_server::MykoServer::builder()
+    ///     .with_websocket_path("/control/ws")
+    ///     .with_mcp_path("/control/mcp")
+    ///     .build();
+    /// ```
+    #[must_use]
+    pub fn with_websocket_path(mut self, path: impl Into<String>) -> Self {
+        self.websocket_path = Some(path.into());
+        self
+    }
+
+    /// Set the MCP URL path for POST, WebSocket, SSE, and status requests.
+    /// Overrides `MYKO_MCP_PATH`. Without either override, defaults to `/myko/mcp`.
+    /// Must differ from the Myko WebSocket path.
+    #[must_use]
+    pub fn with_mcp_path(mut self, path: impl Into<String>) -> Self {
+        self.mcp_path = Some(path.into());
         self
     }
 
@@ -189,7 +235,22 @@ impl MykoServerBuilder {
     /// that need entity data (e.g., scene engine).
     #[must_use]
     pub fn after_init(mut self, f: impl FnOnce(&MykoServer) + Send + 'static) -> Self {
-        self.after_init = Some(Box::new(f));
+        self.after_init = Some(Box::new(move |server| {
+            f(server);
+            Ok(())
+        }));
+        self
+    }
+
+    /// Register initialization that must succeed before the listener opens.
+    #[must_use]
+    pub fn try_after_init(
+        mut self,
+        callback: impl FnOnce(&MykoServer) -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+        + Send
+        + 'static,
+    ) -> Self {
+        self.after_init = Some(Box::new(callback));
         self
     }
 
@@ -223,6 +284,9 @@ impl MykoServerBuilder {
         });
         server.after_init = std::sync::Mutex::new(self.after_init);
         server.server_info = server_info;
+        server.auth_provider = self.auth_provider;
+        server.websocket_path = self.websocket_path.unwrap_or(server.websocket_path);
+        server.mcp_path = self.mcp_path.unwrap_or(server.mcp_path);
         server
     }
 }
@@ -231,6 +295,7 @@ impl MykoServerBuilder {
 ///
 /// Uses hyphae cells for reactive queries and reports instead of actors.
 pub struct MykoServer {
+    auth_provider: Option<Arc<myko_auth::MykoAuthProvider>>,
     /// Central entity store registry
     pub registry: Arc<StoreRegistry>,
     /// Handler registry for items, queries, and reports
@@ -247,6 +312,8 @@ pub struct MykoServer {
     pub host_id: Uuid,
     /// Server configuration
     config: MykoServerConfig,
+    websocket_path: String,
+    mcp_path: String,
     /// Postgres producer (kept alive)
     _postgres_producer_owner: Option<PostgresProducer>,
     /// Postgres consumer (kept alive)
@@ -361,6 +428,7 @@ impl MykoServer {
             .unwrap_or_else(|| Arc::new(dashmap::DashMap::new()));
 
         Self {
+            auth_provider: None,
             registry,
             handler_registry,
             relationship_manager,
@@ -377,6 +445,8 @@ impl MykoServer {
             peer_clients,
             after_init: std::sync::Mutex::new(None),
             server_info: Arc::new(mcp::dispatch::ServerInfo::default()),
+            websocket_path: std::env::var("MYKO_WS_PATH").unwrap_or_else(|_| "/myko".into()),
+            mcp_path: std::env::var("MYKO_MCP_PATH").unwrap_or_else(|_| "/myko/mcp".into()),
             saga_event_tx,
             saga_event_rx: std::sync::Mutex::new(Some(saga_event_rx)),
             saga_tasks: std::sync::Mutex::new(Vec::new()),
@@ -449,7 +519,9 @@ impl MykoServer {
                     self.search_index.clone(),
                     myko::server::MykoServerRuntime {
                         peer_clients: self.peer_clients.clone(),
-                        event_sink: Some(self.saga_event_tx.clone()),
+                        event_sink: inventory::iter::<SagaRegistration>()
+                            .next()
+                            .map(|_| self.saga_event_tx.clone()),
                         history_replay,
                     },
                 )
@@ -638,6 +710,8 @@ impl MykoServer {
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
+        self.validate_endpoint_paths()?;
+
         // Persisters can veto startup via startup healthchecks.
         let entity_types: Vec<&str> = self
             .handler_registry
@@ -707,7 +781,7 @@ impl MykoServer {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(hook) = hook {
-            hook(self);
+            hook(self)?;
         }
 
         self.start_saga_runtime();
@@ -746,8 +820,10 @@ impl MykoServer {
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         tracing::info!("MykoServer listening on {}", self.config.bind_addr);
         tracing::info!(
-            "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
-            self.config.bind_addr
+            "Myko gateway: ws://{}{} | MCP: {} (POST + WS + SSE)",
+            self.config.bind_addr,
+            self.websocket_path,
+            self.mcp_path
         );
 
         // Start peer registry if configured
@@ -766,13 +842,39 @@ impl MykoServer {
     pub async fn run_ws_loop(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
 
+        self.validate_endpoint_paths()?;
         let listener = TcpListener::bind(&self.config.bind_addr).await?;
         tracing::info!("MykoServer listening on {}", self.config.bind_addr);
         tracing::info!(
-            "Myko gateway: ws://{}/myko | MCP: /myko/mcp (POST + WS + SSE)",
-            self.config.bind_addr
+            "Myko gateway: ws://{}{} | MCP: {} (POST + WS + SSE)",
+            self.config.bind_addr,
+            self.websocket_path,
+            self.mcp_path
         );
         self.run_ws_accept_loop(listener).await
+    }
+
+    fn validate_endpoint_paths(&self) -> std::io::Result<()> {
+        for path in [&self.websocket_path, &self.mcp_path] {
+            if !path.starts_with('/')
+                || path.starts_with("//")
+                || path
+                    .chars()
+                    .any(|c| c.is_whitespace() || c.is_control() || matches!(c, '?' | '#'))
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("invalid endpoint path: {path:?}"),
+                ));
+            }
+        }
+        if self.websocket_path == self.mcp_path {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "WebSocket and MCP paths must differ",
+            ));
+        }
+        Ok(())
     }
 
     async fn run_ws_accept_loop(
@@ -830,9 +932,23 @@ impl MykoServer {
 
             let ctx = Arc::new(self.ctx());
             let server_info = self.server_info.clone();
+            let websocket_path = self.websocket_path.clone();
+            let mcp_path = self.mcp_path.clone();
+            let auth_provider = self.auth_provider.clone();
 
             tokio::spawn(async move {
-                if let Err(e) = router::route_connection(stream, addr, ctx, server_info).await {
+                if let Err(e) = router::route_connection_with_paths_and_auth(
+                    stream,
+                    addr,
+                    ctx,
+                    server_info,
+                    &websocket_path,
+                    &mcp_path,
+                    GatewayAccess::Full,
+                    auth_provider,
+                )
+                .await
+                {
                     tracing::error!("Connection error from {}: {}", addr, e);
                 }
             });
@@ -843,6 +959,144 @@ impl MykoServer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use myko::entities::demo::{DemoStatus, DemoStatusId, GetDemoStatuses};
+
+    #[test]
+    fn no_default_persister_and_no_sagas_do_not_retain_same_id_updates()
+    -> Result<(), Box<dyn std::error::Error>> {
+        if inventory::iter::<SagaRegistration>().next().is_some() {
+            return Err("test binary unexpectedly registers a saga".into());
+        }
+        let server = MykoServer::builder().build();
+        if server.persisters.resolve("DemoStatus").is_some() {
+            return Err("default-none fixture unexpectedly has a persister".into());
+        }
+        server.start_saga_runtime();
+        let ctx = server.ctx();
+        let id = DemoStatusId::from("stable-live-status");
+        let payload = "x".repeat(4096);
+        for update in 0..1000 {
+            ctx.set(&DemoStatus {
+                id: id.clone(),
+                name: update.to_string(),
+                color: payload.clone(),
+                emoji: String::new(),
+            })?;
+        }
+        let latest = ctx.query_snapshot(
+            GetDemoStatuses {},
+            Arc::new(RequestContext::internal(
+                "no-saga-retention-test".into(),
+                server.host_id,
+                "test",
+            )),
+        );
+        if !matches!(latest.as_slice(), [status] if status.id == id && status.name == "999") {
+            return Err(format!("expected one latest status 999, got {latest:?}").into());
+        }
+        let (queued, retained_payload_bytes) = {
+            let receiver = server
+                .saga_event_rx
+                .lock()
+                .map_err(|_| "saga queue lock poisoned")?;
+            receiver.as_ref().map_or((0, 0), |receiver| {
+                let queued = receiver.len();
+                let retained_payload_bytes: usize = receiver
+                    .try_iter()
+                    .map(|event| {
+                        event
+                            .item
+                            .get("color")
+                            .and_then(serde_json::Value::as_str)
+                            .map_or(0, str::len)
+                    })
+                    .sum();
+                (queued, retained_payload_bytes)
+            })
+        };
+        eprintln!(
+            "latest_items={} queued_events={queued} retained_payload_bytes={retained_payload_bytes}",
+            latest.len()
+        );
+        if queued != 0 {
+            return Err(format!("default-none server with no sagas retained {queued} historical events containing {retained_payload_bytes} payload bytes").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn no_sagas_do_not_retain_same_entity_updates() -> Result<(), Box<dyn std::error::Error>> {
+        if inventory::iter::<SagaRegistration>().next().is_some() {
+            return Err("test binary unexpectedly registers a saga".into());
+        }
+        let server = MykoServer::builder()
+            .with_default_persister(Arc::new(NullPersister))
+            .build();
+        server.start_saga_runtime();
+        let ctx = server.ctx();
+        let id = DemoStatusId::from("stable-status");
+        for update in 0..1000 {
+            ctx.set(&DemoStatus {
+                id: id.clone(),
+                name: update.to_string(),
+                color: String::new(),
+                emoji: String::new(),
+            })?;
+        }
+        let latest = ctx
+            .entity_snapshot::<DemoStatus>(&id)
+            .ok_or("status missing")?;
+        if latest.name != "999" {
+            return Err(format!("expected latest status 999, got {}", latest.name).into());
+        }
+        let queued = server
+            .saga_event_rx
+            .lock()
+            .map_err(|_| "saga queue lock poisoned")?
+            .as_ref()
+            .map_or(0, flume::Receiver::len);
+        if queued != 0 {
+            return Err(format!("a server without sagas retained {queued} events").into());
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn transient_updates_do_not_enter_saga_queue() -> Result<(), Box<dyn std::error::Error>> {
+        if inventory::iter::<SagaRegistration>().next().is_some() {
+            return Err("test binary unexpectedly registers a saga".into());
+        }
+        let server = MykoServer::builder()
+            .with_default_persister(Arc::new(NullPersister))
+            .build();
+        server.start_saga_runtime();
+        let ctx = server.ctx();
+        let id = DemoStatusId::from("transient-status");
+        for update in 0..1000 {
+            ctx.set_transient(&DemoStatus {
+                id: id.clone(),
+                name: update.to_string(),
+                color: String::new(),
+                emoji: String::new(),
+            })?;
+        }
+        let latest = ctx
+            .entity_snapshot::<DemoStatus>(&id)
+            .ok_or("status missing")?;
+        if latest.name != "999" {
+            return Err(format!("expected latest status 999, got {}", latest.name).into());
+        }
+        let queued = server
+            .saga_event_rx
+            .lock()
+            .map_err(|_| "saga queue lock poisoned")?
+            .as_ref()
+            .map_or(0, flume::Receiver::len);
+        if queued != 0 {
+            return Err(format!("transient updates retained {queued} saga events").into());
+        }
+        Ok(())
+    }
 
     #[test]
     fn test_server_creation() {

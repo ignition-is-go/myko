@@ -5562,6 +5562,70 @@ mod tests {
     use restricted_edge::{RestrictedTagAssignment, RestrictedTagAssignmentId};
     use retained_edge::{RetainedTagAssignment, RetainedTagAssignmentId};
 
+    #[test]
+    fn generated_graph_operations_publish_scope_requirements_without_weakening_endpoint_reads() {
+        use myko_auth::{EntityAction, OperationKind, PermissionCatalog};
+        let catalog = PermissionCatalog::registered();
+        let scopes = |kind, operation| {
+            catalog.requirements(kind, operation).map(|requirements| {
+                requirements
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert_eq!(
+            scopes(OperationKind::Command, "ConnectTagAssignment"),
+            Some(vec!["TagAssignment:write".into()])
+        );
+        assert_eq!(
+            scopes(OperationKind::Command, "SyncTagAssignmentsFrom"),
+            Some(vec![
+                "TagAssignment:write".into(),
+                "TagAssignment:delete".into()
+            ])
+        );
+        assert_eq!(
+            scopes(OperationKind::Command, "DeleteTagAssignment"),
+            Some(vec!["TagAssignment:delete".into()])
+        );
+        assert_eq!(
+            scopes(OperationKind::Query, "TagAssignmentGraphFrom"),
+            Some(vec!["TagAssignment:read".into()])
+        );
+        assert_eq!(
+            scopes(OperationKind::Report, "TagAssignmentGraphCountFrom"),
+            Some(vec!["TagAssignment:read".into()])
+        );
+        assert_eq!(
+            scopes(OperationKind::Query, "ScopedTagAssignmentGraphTargetsFrom"),
+            Some(vec![
+                "Article:read".into(),
+                "ScopedTagAssignment:read".into()
+            ])
+        );
+        assert_eq!(
+            scopes(
+                OperationKind::Report,
+                "ScopedTagAssignmentGraphTraverseFrom"
+            ),
+            Some(vec![
+                "Article:read".into(),
+                "ScopedTagAssignment:read".into(),
+                "Tag:read".into()
+            ])
+        );
+        assert_eq!(
+            scopes(OperationKind::Report, "TagAssignmentGraphTraverseFrom"),
+            None
+        );
+        assert!(
+            catalog
+                .entity_scope("TagAssignment", EntityAction::Read)
+                .is_some()
+        );
+    }
+
     fn context() -> crate::server::MykoServerContext {
         crate::server::MykoServerContext::new(
             Uuid::new_v4(),

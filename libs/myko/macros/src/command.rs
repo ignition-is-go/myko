@@ -49,7 +49,12 @@ fn make_args_struct(
 }
 
 /// Generates command trait implementations and registers the command handler.
+#[allow(clippy::too_many_lines)]
 pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) -> TokenStream {
+    let (scopes, public) = match crate::public_access::take_operation_access(&mut input_struct) {
+        Ok(access) => access,
+        Err(error) => return error.to_compile_error(),
+    };
     let CommandOptions {
         result_type,
         custom_serialize,
@@ -58,6 +63,14 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let args_struct_name = format_ident!("{}Args", struct_name);
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
+    let scope_registration = crate::public_access::registration(
+        &syn::parse_quote!(Command),
+        struct_name,
+        &scopes,
+        public,
+        krate,
+    );
+
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = crate::operation_contract::serde_rename_attr(&ctx, &input_struct.attrs);
 
@@ -119,6 +132,7 @@ pub fn myko_command_impl(options: CommandOptions, mut input_struct: ItemStruct) 
     let expanded = quote! {
         #derives
         #input_struct
+        #scope_registration
 
         #args_struct
 

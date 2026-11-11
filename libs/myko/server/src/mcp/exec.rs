@@ -23,6 +23,7 @@ use myko::{
     view::ViewRegistration,
     wire::{WrappedCommand, WrappedQuery, WrappedReport, WrappedView},
 };
+use myko_auth::{AuthError, AuthSession, AuthorizationRequest, OperationKind};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use uuid::Uuid;
@@ -46,9 +47,72 @@ pub enum Executor {
     Client(Arc<MykoClient>),
     /// Talk to a server hosted in the same process via its `MykoServerContext`.
     InProcess(Arc<MykoServerContext>),
+    /// External MCP execution with authenticated or anonymous local authority.
+    External {
+        ctx: Arc<MykoServerContext>,
+        session: AuthSession,
+    },
+}
+
+fn operation_auth_error(error: AuthError, kind: &str, operation: &str) -> String {
+    format!("{error} for {kind} {operation}")
 }
 
 impl Executor {
+    pub(crate) fn in_process(ctx: Arc<MykoServerContext>, auth: Option<AuthSession>) -> Self {
+        match auth {
+            Some(session) => Self::External { ctx, session },
+            None => Self::InProcess(ctx),
+        }
+    }
+
+    pub(crate) fn check(&self) -> Result<(), String> {
+        if let Self::External { session, .. } = self {
+            session.check().map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn can_discover(&self, kind: &str, operation: &str) -> bool {
+        let Self::External { session, .. } = self else {
+            return true;
+        };
+        let kind = match kind {
+            "query" => OperationKind::Query,
+            "view" => OperationKind::View,
+            "report" => OperationKind::Report,
+            "command" => OperationKind::Command,
+            _ => return false,
+        };
+        session
+            .authorize(AuthorizationRequest::Discover { kind, operation })
+            .is_ok()
+    }
+
+    /// An advisory preflight, never an execution grant. Actual arguments are checked at dispatch.
+    pub(crate) fn permission_snapshot(&self, kind: &str, operation: &str) -> Value {
+        let Self::External { session, .. } = self else {
+            return json!({"status": "unknown", "reason": "No local caller policy is available"});
+        };
+        let kind = match kind {
+            "query" => OperationKind::Query,
+            "view" => OperationKind::View,
+            "report" => OperationKind::Report,
+            "command" => OperationKind::Command,
+            _ => return json!({"status": "unknown"}),
+        };
+        match session.authorize(AuthorizationRequest::Execute {
+            kind,
+            operation,
+            arguments: &json!({}),
+        }) {
+            Ok(()) => json!({"status": "allowed", "basis": "empty-argument preflight"}),
+            Err(error) => {
+                json!({"status": "denied", "reason": error.to_string(), "basis": "empty-argument preflight"})
+            }
+        }
+    }
+
     /// Execute a query and return its current items as JSON.
     /// # Errors
     ///
@@ -56,7 +120,26 @@ impl Executor {
     pub async fn execute_query(&self, query_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Self::Client(client) => client_execute_query(client.clone(), query_id, args).await,
-            Self::InProcess(ctx) => in_process_execute_query(ctx.clone(), query_id, args),
+            Self::InProcess(ctx) => in_process_execute_query(ctx.clone(), query_id, args, None),
+            Self::External { ctx, session } => {
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::Query,
+                        operation: query_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| operation_auth_error(error, "query", query_id))?;
+                let result =
+                    in_process_execute_query(ctx.clone(), query_id, args.clone(), Some(session));
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::Query,
+                        operation: query_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| operation_auth_error(error, "query", query_id))?;
+                result
+            }
         }
     }
 
@@ -67,7 +150,29 @@ impl Executor {
     pub async fn execute_report(&self, report_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Self::Client(client) => client_execute_report(client.clone(), report_id, args).await,
-            Self::InProcess(ctx) => in_process_execute_report(ctx.clone(), report_id, args).await,
+            Self::InProcess(ctx) => {
+                in_process_execute_report(ctx.clone(), report_id, args, None).await
+            }
+            Self::External { ctx, session } => {
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::Report,
+                        operation: report_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| operation_auth_error(error, "report", report_id))?;
+                let result =
+                    in_process_execute_report(ctx.clone(), report_id, args.clone(), Some(session))
+                        .await;
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::Report,
+                        operation: report_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| operation_auth_error(error, "report", report_id))?;
+                result
+            }
         }
     }
 
@@ -78,7 +183,26 @@ impl Executor {
     pub async fn execute_view(&self, view_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Self::Client(client) => client_execute_view(client.clone(), view_id, args).await,
-            Self::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args),
+            Self::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args, None),
+            Self::External { ctx, session } => {
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::View,
+                        operation: view_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| operation_auth_error(error, "view", view_id))?;
+                let result =
+                    in_process_execute_view(ctx.clone(), view_id, args.clone(), Some(session));
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::View,
+                        operation: view_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| operation_auth_error(error, "view", view_id))?;
+                result
+            }
         }
     }
 
@@ -89,7 +213,22 @@ impl Executor {
     pub async fn execute_command(&self, command_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Self::Client(client) => client_execute_command(client.clone(), command_id, args).await,
-            Self::InProcess(ctx) => in_process_execute_command(ctx.clone(), command_id, args),
+            Self::InProcess(ctx) => in_process_execute_command(ctx.clone(), command_id, args, None),
+            Self::External { ctx, session } => {
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::Command,
+                        operation: command_id,
+                        arguments: &args,
+                    })
+                    .map_err(|error| operation_auth_error(error, "command", command_id))?;
+                let result =
+                    in_process_execute_command(ctx.clone(), command_id, args, Some(session));
+                session
+                    .check()
+                    .map_err(|error| operation_auth_error(error, "command", command_id))?;
+                result
+            }
         }
     }
 
@@ -110,6 +249,17 @@ impl Executor {
                 };
                 json!({ "status": text, "name": info.name, "version": info.version })
             }
+            Self::External { ctx, session } => json!({
+                "status": if session.check().is_err() { "invalidated" } else if session.identity().is_some() { "authenticated" } else { "anonymous" },
+                "name": info.name,
+                "version": info.version,
+                "hostId": ctx.host_id,
+                "sessionId": session.id(),
+                "principal": session.identity().map(|identity| &identity.principal),
+                "credentialScopes": session.identity().map(|identity| &identity.scopes),
+                "delegation": session.identity().map(|identity| &identity.delegation),
+                "expiresAt": session.identity().and_then(|identity| identity.expires_at.duration_since(std::time::UNIX_EPOCH).ok()).map(|duration| duration.as_secs()),
+            }),
             Self::InProcess(ctx) => json!({
                 "status": "In-process (always connected)",
                 "name": info.name,
@@ -364,6 +514,7 @@ fn in_process_execute_query(
     ctx: Arc<MykoServerContext>,
     query_id: &str,
     arguments: Value,
+    session: Option<&AuthSession>,
 ) -> Result<Value, String> {
     let registration = inventory::iter::<QueryRegistration>
         .into_iter()
@@ -388,7 +539,7 @@ fn in_process_execute_query(
     let parsed = (query_data.parse)(query_json)
         .map_err(|e| format!("Failed to parse query {query_id}: {e}"))?;
 
-    let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
+    let request_context = mcp_request_context(tx, ctx.host_id, session);
 
     let cellmap = (query_data.cell_factory)(
         parsed,
@@ -416,6 +567,7 @@ fn in_process_execute_view(
     ctx: Arc<MykoServerContext>,
     view_id: &str,
     arguments: Value,
+    session: Option<&AuthSession>,
 ) -> Result<Value, String> {
     let registration = inventory::iter::<ViewRegistration>
         .into_iter()
@@ -440,7 +592,7 @@ fn in_process_execute_view(
     let parsed =
         (view_data.parse)(view_json).map_err(|e| format!("Failed to parse view {view_id}: {e}"))?;
 
-    let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
+    let request_context = mcp_request_context(tx, ctx.host_id, session);
 
     let cellmap =
         (view_data.cell_factory)(parsed, ctx.registry.clone(), request_context, ctx.clone())
@@ -464,6 +616,7 @@ async fn in_process_execute_report(
     ctx: Arc<MykoServerContext>,
     report_id: &str,
     arguments: Value,
+    session: Option<&AuthSession>,
 ) -> Result<Value, String> {
     let registration = inventory::iter::<ReportRegistration>
         .into_iter()
@@ -484,7 +637,7 @@ async fn in_process_execute_report(
     let parsed = (report_data.parse)(report_json)
         .map_err(|e| format!("Failed to parse report {report_id}: {e}"))?;
 
-    let request_context = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
+    let request_context = mcp_request_context(tx, ctx.host_id, session);
 
     let cell = (report_data.cell_factory)(parsed, request_context, ctx)
         .map_err(|e| format!("Failed to build report cell: {e}"))?;
@@ -516,6 +669,7 @@ fn in_process_execute_command(
     ctx: Arc<MykoServerContext>,
     command_id: &str,
     arguments: Value,
+    session: Option<&AuthSession>,
 ) -> Result<Value, String> {
     let mut command_json = arguments_object(arguments);
     let tx: Arc<str> = Uuid::new_v4().to_string().into();
@@ -526,10 +680,18 @@ fn in_process_execute_command(
     for registration in inventory::iter::<CommandHandlerRegistration> {
         if registration.command_id == command_id {
             let executor = (registration.factory)();
-            let req = Arc::new(RequestContext::internal(tx, ctx.host_id, "mcp"));
+            let req = mcp_request_context(tx, ctx.host_id, session);
             let cmd_id: Arc<str> = Arc::from(command_id);
             let cmd_ctx = CommandContext::new(cmd_id, req, ctx);
-
+            if let Some(session) = session {
+                session
+                    .authorize(AuthorizationRequest::Execute {
+                        kind: OperationKind::Command,
+                        operation: command_id,
+                        arguments: &command_json,
+                    })
+                    .map_err(|error| error.to_string())?;
+            }
             return match executor.execute_from_value(command_json, cmd_ctx) {
                 Ok(result) => {
                     Ok(myko::operation_index::COMMAND_RESULT.wrap(command_id, "", result))
@@ -545,6 +707,19 @@ fn in_process_execute_command(
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+fn mcp_request_context(
+    tx: Arc<str>,
+    host_id: Uuid,
+    session: Option<&AuthSession>,
+) -> Arc<RequestContext> {
+    let mut request = match session {
+        Some(session) => RequestContext::from_client(tx, Arc::from(session.id()), host_id),
+        None => RequestContext::internal(tx, host_id, "mcp"),
+    };
+    request.auth = session.cloned();
+    Arc::new(request)
+}
 
 fn arguments_object(arguments: Value) -> Value {
     if arguments.is_object() {

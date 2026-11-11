@@ -1,133 +1,150 @@
 # Myko
 
-**Event-sourcing CQRS framework with reactive queries.** Define entities once in Rust; get commands, events, queries, real-time subscriptions, and cross-language bindings automatically.
+**Rust-first state, reactive queries, and live clients.** Myko is an event-sourcing
+and CQRS framework for applications that need authoritative server state and
+clients that stay synchronized as that state changes.
 
-License: MIT OR Apache-2.0 · Workspace version: see `Cargo.toml`
+Define domain entities and operations in Rust. Myko supplies typed IDs, generated
+queries and commands, reactive reports and views, graph relationships, persistence,
+WebSocket subscriptions, and generated cross-language contracts. The reactive
+engine is [Hyphae](https://github.com/ignition-is-go/hyphae).
 
----
+## How it fits together
 
-## Core concept
-
-```
-Command ──▶ Handler ──▶ Event ──▶ Store ──▶ Reactive Query ──▶ Client
-   │                       │
-   │                       └──▶ Saga ──▶ Command
-   └── validation
-```
-
-- **Commands** mutate state. Synchronous validation, then events.
-- **Events** are persisted (Postgres) and replicated.
-- **Stores** hold current state, derived from events.
-- **Queries** and **reports** are reactive views of stores.
-- **Sagas** subscribe to events and emit follow-up commands.
-- **Clients** subscribe to queries/reports over WebSocket and receive live diffs.
-
-The framework handles persistence, real-time sync, federation between server peers, and type generation across language bindings.
-
----
-
-## Workspace layout
-
-```
-libs/
-├── myko/
-│   ├── core/         Canonical Rust framework (entities, queries, commands, sagas, stores)
-│   ├── macros/       #[myko_item] proc macro + relationship attributes
-│   ├── server/       Tokio-based server runtime: WS gateway, Postgres backend,
-│   │                 peer federation, MCP endpoint
-│   ├── leptos/       Leptos integration (web UI)
-│   ├── ts/           TypeScript port + generated bindings
-│   ├── py/, python/  Python bindings
-│   ├── cpp/          C++ bindings
-│   ├── csharp/       C# bindings
-│   ├── ui-svelte/    Svelte UI integration
-│   ├── ui-vue/       Vue UI integration
-│   └── debug/        Diagnostic tooling
-└── autosocket/       Auto-reconnecting WebSocket transport (native + WASM)
-
-docs/superpowers/specs/   Design specs for in-flight features
+```text
+Client command → handler → entity events → canonical stores
+                                  ├→ persistence and replication
+                                  └→ reactive queries, views and reports → client diffs
 ```
 
-**External dependency:** [hyphae](https://github.com/ignition-is-go/hyphae) (reactive dataflow). Consumed from crates.io (`^0.5.1`).
+- **Items** are current entity state with typed identity. SET and DEL events
+  update their stores; persistence supports replay and history.
+- **Commands** validate application intent and emit mutations. Relationship
+  effects can produce additional mutations, with causal work limits and loop
+  suppression in the server pipeline.
+- **Queries** select entities; **views** can produce computed rows; **reports**
+  compute reactive results. Clients subscribe instead of polling for each change.
+- **Relationships** express ownership, lifecycle dependencies and graph edges.
+- **Clients** receive initial state followed by live changes, and resubscribe
+  after reconnecting.
 
----
+Postgres durability, peer federation, authentication, and graph projections are
+configured by the host application. Myko does not require a separate graph database.
 
-## Quick start
+## Start with an entity
 
-Prerequisites: **Rust** (edition 2024), **Bun** (1.3+), **Postgres** if running the server with durability.
-
-```bash
-# Install JS deps (used for type generation, formatting, UI bindings)
-bun install
-
-# Type-check the whole workspace
-cargo flux run check
-
-# Run all tests
-cargo flux run test
-
-# Lint (cargo clippy + biome)
-cargo flux run lint
-
-# Regenerate TS bindings from Rust types
-cargo flux run gen
-```
-
-[`cargo flux`](https://github.com/ignition-is-go/cargo-flux) orchestrates the polyglot workspace. Tasks are defined in `flux.toml`.
-
----
-
-## Defining entities
+Add `myko` to your application. Add `myko-server` and Tokio when hosting a server;
+use `myko-leptos` or `myko-gpui` for the corresponding Rust UI integration.
+Package versions live in the individual crate manifests and npm package manifests;
+the root workspace version is not the release version of every package.
 
 ```rust
-use myko_macros::myko_item;
+use myko::prelude::*;
 
 #[myko_item]
-pub struct Target {
+pub struct Camera {
+    #[searchable]
+    #[myko_rename]
+    pub name: String,
+}
+
+let camera = Camera {
+    id: CameraId::from("camera-1"),
+    name: "Front of house".into(),
+};
+```
+
+`#[myko_item]` adds an `id: CameraId` field and generates the `CameraId` string
+newtype. IDs serialize as strings; the macro does not add a public `hash` field.
+The declaration also registers serialization, reflection and type-generation
+metadata, plus these operations:
+
+| Generated API                      | Purpose                                        |
+| ---------------------------------- | ---------------------------------------------- |
+| `GetAllCameras`                    | Query all cameras                              |
+| `GetCamerasByIds`                  | Query a set of typed IDs                       |
+| `CameraQuery`, `GetCamerasByQuery` | Typed filters and filtered query               |
+| `GetCameraById`                    | Report returning an optional camera            |
+| `CountAllCameras`                  | Count report                                   |
+| `DeleteCamera`, `DeleteCameras`    | Delete commands                                |
+| `RenameCamera`                     | Rename command, opted in with `#[myko_rename]` |
+
+Use `#[myko_command]`, `#[myko_query]`, `#[myko_view]` and `#[myko_report]` for
+application operations. Handlers use a request context to read state and emit
+changes. Keep domain types in Rust and generate their client contracts.
+
+### Ownership and lifecycle
+
+Relationship fields use the referenced entity's typed ID:
+
+```rust
+use myko::prelude::*;
+
+#[myko_item]
+pub struct Project {
+    pub name: String,
+}
+
+#[myko_item]
+pub struct Device {
+    #[belongs_to(Project)]
+    pub project_id: ProjectId,
     pub name: String,
 }
 ```
 
-Auto-generated for every `myko_item`:
+Deleting the project cascades to its devices. `#[owns_many(...)]` describes owned
+collections, and `#[ensure_for(...)]` creates dependent entities as prerequisites
+appear. `#[myko_setter]` opts fields into generated setter commands;
+`#[searchable]` opts supported fields into search indexing.
 
-| Item                | Purpose                                |
-| ------------------- | -------------------------------------- |
-| `id: Arc<str>`      | Stable entity identity (UUID)          |
-| `hash: Arc<str>`    | Content hash for change detection      |
-| `GetAllTargets`     | Query — every target                   |
-| `GetTargetsByIds`   | Query — by id set                      |
-| `GetTargetsByQuery` | Query — filtered                       |
-| `GetTargetById`     | Query — single                         |
-| `CountAllTargets`   | Report — count                         |
-| `DeleteTarget`      | Command — delete one                   |
-| `DeleteTargets`     | Command — delete many                  |
-| `TargetQuery`       | Filter type for query parameters       |
+### Graph edges
 
-### Relationship attributes
+An ordinary item can also be a typed edge. Its existing ID, fields and events
+remain its canonical storage representation:
 
 ```rust
+use myko::prelude::*;
+
 #[myko_item]
-pub struct BindingNode {
-    #[belongs_to(Scene)]            // cascade delete: parent DEL → child DEL
-    pub scene_id: Arc<str>,
+pub struct Vertex {
+    pub name: String,
+}
 
-    #[owns_many(BindingEdge)]       // parent DEL → children DEL; child DEL → parent UPDATE
-    pub edges: Vec<Arc<str>>,
+#[myko_item]
+pub struct Link {
+    pub from_id: VertexId,
+    pub to_id: VertexId,
+}
 
-    #[ensure_for(Project)]          // auto-create one per Project
-    pub project_id: Arc<str>,
+#[myko_edge]
+impl GraphEdge for Link {
+    type Ends = Directed<ConcreteEndpoint<Vertex>, ConcreteEndpoint<Vertex>>;
 
-    #[searchable]                   // index for full-text search
-    pub label: String,
+    fn ends(&self) -> (VertexId, VertexId) {
+        (self.from_id.clone(), self.to_id.clone())
+    }
 
-    #[myko_client_id]               // auto-populate with connecting WS client id
-    pub created_by: Arc<str>,
+    const PAIR_POLICY: PairPolicy = PairPolicy::Unique;
+    const PAIR_PROJECTION: PairProjectionPolicy = PairProjectionPolicy::Eager;
 }
 ```
 
----
+Graph macros generate endpoint and exact-pair queries, connect/ensure/disconnect
+commands, synchronization helpers and client metadata. Categories
+(`#[myko_category]`, `#[myko_in(...)]`) let endpoints accept an open set of entity
+types. Policies control uniqueness, scope, self-loops and endpoint deletion.
+Adjacency is demand-driven by default; eager indexes are opt-in, including
+per-endpoint projection. Observational validation can introduce graph metadata to
+existing items while retaining invalid history and recording diagnostics.
 
-## Running a server
+See the [graph architecture and benchmark reference](docs/superpowers/specs/2026-08-13-graph-edges-and-entity-categories-design.md)
+for policies, generated APIs, traversal and projection tradeoffs.
+
+## Run a server
+
+This starts a server with in-memory state when no Postgres URL is supplied and
+uses Postgres when `MYKO_POSTGRES_URL` is set:
 
 ```rust
 use myko_server::{MykoServer, postgres::PostgresConfig};
@@ -135,331 +152,186 @@ use myko_server::{MykoServer, postgres::PostgresConfig};
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let _telemetry = myko_server::telemetry::init_from_env();
+    let mut builder = MykoServer::builder()
+        .with_bind_addr("127.0.0.1:5155".parse()?);
 
-    let server = MykoServer::builder()
-        .with_bind_addr("0.0.0.0:5155".parse()?)
-        .with_postgres(PostgresConfig::from_env()?)   // durable event log + LISTEN/NOTIFY
-        .build();
+    if let Some(postgres) = PostgresConfig::try_from_env()? {
+        builder = builder.with_postgres(postgres);
+    }
 
-    server.run().await
+    builder.build().run().await
 }
 ```
 
-On startup the server logs:
+Link your application's entity and operation crates into the host so their
+inventory registrations are included. Use `after_init` for services that need the
+initialized context, or `try_after_init` for fallible initialization that must
+abort startup on failure.
 
-```
-Myko gateway: ws://0.0.0.0:5155/myko | MCP: /myko/mcp (POST + WS + SSE)
-```
+| Endpoint    | Transport                               |
+| ----------- | --------------------------------------- |
+| `/myko`     | Myko WebSocket gateway                  |
+| `/myko/mcp` | MCP Streamable HTTP, WebSocket, and SSE |
 
-### Endpoints
+The server shares one TCP listener across these routes. Rust and TypeScript
+clients default to JSON and can opt into CBOR. The server accepts both formats.
+Autosocket supplies reconnecting native and WASM transport.
 
-| Path        | Method                              | Purpose                                       |
-| ----------- | ----------------------------------- | --------------------------------------------- |
-| `/myko`     | `GET` + WS upgrade                  | Main Myko gateway (clients, federation peers) |
-| `/myko/mcp` | `POST`                              | MCP JSON-RPC (Streamable HTTP)                |
-| `/myko/mcp` | `GET` + WS upgrade                  | MCP over WebSocket (subprotocol `mcp`)        |
-| `/myko/mcp` | `GET` + `Accept: text/event-stream` | MCP SSE stream (keepalive in v1)              |
+### Authentication and permissions
 
-All endpoints share a single TCP listener; the front-door router peeks at the HTTP request line + headers and dispatches.
+Myko 6.12 adds app-owned authentication and local operation authorization:
 
-### Environment
+| Package                   | Responsibility                                                           |
+| ------------------------- | ------------------------------------------------------------------------ |
+| `myko-auth`               | Authenticator/authorizer contracts, sessions, operation scopes           |
+| `myko-auth0`              | Auth0 authentication and machine credential support                      |
+| `myko-permissions`        | Persisted principals, groups, roles, grants and protected administration |
+| `myko-permissions-leptos` | Leptos permission administration UI                                      |
 
-| Variable                         | Default               | Description                                |
-| -------------------------------- | --------------------- | ------------------------------------------ |
-| `MYKO_ADDRESS`                   | `ws://localhost:5155` | Used by the stdio MCP binary and clients   |
-| `MYKO_POSTGRES_URL`              | —                     | Postgres connection string                 |
-| `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` | `300`             | Maximum startup snapshot/catch-up wait before the server exits; `0` disables the limit |
-| `MYKO_PORT`                      | `5155`                | Server bind port (when wired through env)  |
-| `MYKO_TRACING_ENDPOINT`          | —                     | Fallback OTLP/HTTP base endpoint for logs, traces, and metrics (see `myko_server::telemetry::init_from_env`); unset = local console logging only |
-| `MYKO_CCMD_MONITOR`              | `0`                   | Set `1` to log command timing              |
-| `MYKO_CCMD_TIMEOUT_MS`           | —                     | Slow-command threshold for warn logs       |
-| `MYKO_MEM_PROFILE_INTERVAL_SECS` | `60`                  | Metrics export interval (seconds); applies when OTLP export is configured |
-| `MYKO_MALLOC_TRIM_INTERVAL_SECS` | —                     | Periodic `malloc_trim(0)` probe: logs RSS before/after returning free glibc arena pages (distinguishes allocator page retention from real retention). Unset/0 = off; glibc-only. Measures glibc arenas only — meaningless if the host binary sets a non-glibc `#[global_allocator]` (e.g. jemalloc); use that allocator's own stats instead |
+Configure a `MykoAuthProvider` with `MykoServer::builder().with_auth_provider(...)`.
+`ScopedAuthorizer` resolves generated entity read/write/delete requirements and
+ownership inheritance against local policy. Custom commands and reports declare
+requirements with `#[myko_scope(...)]`; unmapped operations are denied by that
+authorizer. These permissions apply to entity types and operations, not individual
+project instances or query rows.
 
----
-
-## Cross-language bindings
-
-> **Rule:** Logic lives in Rust. Cross-language types are *generated*, not duplicated by hand. If a binding needs a type, add it to the Rust side and re-run `cargo flux run gen`.
-
-| Language   | Path                       | Notes                                     |
-| ---------- | -------------------------- | ----------------------------------------- |
-| TypeScript | `libs/myko/ts/`            | Generated by `cargo flux run gen` (ts-rs) |
-| Python     | `libs/myko/py/`, `python/` | pyproject-based                           |
-| C++        | `libs/myko/cpp/`           |                                           |
-| C#         | `libs/myko/csharp/`        |                                           |
-| Leptos     | `libs/myko/leptos/`        | Rust web client integration               |
-| Svelte     | `libs/myko/ui-svelte/`     | Wraps the TS client                       |
-| Vue        | `libs/myko/ui-vue/`        | Wraps the TS client                       |
-
----
-
-## Development workflow
-
-### Iteration loop
-
-```bash
-# Fast check during edits (preferred over cargo build)
-cargo check
-
-# Tests
-cargo test -p myko-server
-
-# Single test
-cargo test -p myko my_test_name -- --exact --nocapture
-
-# Lint as CI would (strict)
-cargo clippy --all-targets --all-features -- -D warnings
-
-# Format
-cargo fmt --all          # Rust
-bun run format:all       # JS/TS via Prettier
-```
-
-Respect the checkout’s configured Cargo target directory. Managed workspaces isolate build output without per-agent overrides.
-
-### Bacon (background type checker)
-
-`bacon.toml` is configured. `.bacon-locations` is updated by bacon — **check it before running clippy/check** to fix errors in order, since later errors often resolve when the first is fixed.
-
-### Hot reload
-
-Assume the user is running entities and codegen in hot-reload mode. **Do not** start dev servers, run `cargo flux run gen`, or kick off long-running tasks yourself unless explicitly asked.
-
-### Type generation
-
-Whenever a type that crosses the Rust↔TS boundary changes, run:
-
-```bash
-cargo flux run gen
-```
-
-This regenerates `libs/myko/ts/src/generated/`. Never hand-edit generated files.
-
-### Conventional commits
-
-```
-feat(scope): add new feature
-fix(scope):  fix a bug
-chore(scope): tooling, dependencies, release plumbing
-docs(scope): documentation only
-refactor(scope): no behavior change
-perf(scope): performance work
-test(scope): tests only
-```
-
-Scopes match crate or area: `myko`, `myko-server`, `mcp`, `autosocket`, `ts`, `leptos`, `ws`, etc.
-
-### Release
-
-Automated. Pushing to `main` or `dev` stamps a version, tags, creates a GitHub Release, and publishes to crates.io and npm. Canary versions ship from `dev`, stable from `main`.
-
----
-
-## Performance
-
-See [`libs/myko/core/OPTIMIZATION.md`](libs/myko/core/OPTIMIZATION.md) for strategies, benchmarks, and the rationale behind the cell-based hot path.
-
-Diagnostic features (memory profiles, ingest stats, command timing) are opt-in via env vars and have near-zero overhead when disabled.
-
----
-
-## MCP — Model Context Protocol
-
-Myko ships an MCP endpoint so AI agents can call your queries / reports / commands as tools. Two modes:
-
-1. **In-server HTTP/WS/SSE** at `/myko/mcp` on the same port as the Myko gateway. Auto-discovered tools, per-client filtering via headers. See [Endpoints](#endpoints) above.
-2. **Stdio binary** (`myko::mcp::McpServer::run_stdio`) for editor integrations that prefer stdio MCP. Connects to a running Myko server via `MYKO_ADDRESS`.
-
-### Discover and execute
-
-The MCP tools are `search`, `execute`, and `connection_status`. `search`
-returns compact entries for registered queries, views, reports, and commands.
-Request `{"query": "GetAllServers", "kind": "query", "details": true}` to
-include wire argument names, aliases, Rust/TypeScript types, defaulted fields,
-the exact result wrapper, and a small validated example.
-
-`execute` accepts a JavaScript async function body:
-
-```javascript
-const servers = await myko.query('GetAllServers', {})
-return { count: servers.items.length }
-```
-
-Query/view results contain `items` and `count`; report/command payloads are in
-`result`. Use `Promise.all` for independent calls and JavaScript collections to
-join, deduplicate, filter, and aggregate their payloads. Return the calculated
-answer so raw data and arithmetic do not need another model round trip.
-
-Every `myko.*` call inside a script checks visibility, argument constraints,
-and reflected structural input constraints before local dispatch. The authoritative
-Serde parser runs once at the execution boundary. Diagnostics
-identify the operation and failing field path, including nested fields. Errors
-can be caught within the script, so one rejected call need not discard the
-other calls in a batch.
-
-Wire metadata comes from Serde's attribute parser, and wrapper descriptions
-share their definition with result serialization. Primitive/container inputs
-get examples automatically. For custom types, the application can register
-example arguments without adding domain concepts to Myko:
+**Raw client SET/DEL events require explicit entity opt-in**, even without an
+auth provider:
 
 ```rust
-myko::register_operation_example!("command", MyCommand, serde_json::json!({
-    "input": { "mode": "example" }
-}));
-```
+use myko::prelude::*;
 
-Examples are checked against known structural constraints without invoking custom
-deserializers. Application rules and live resource validity remain the handler’s
-responsibility. Nested types can opt into JSON Schema with `myko::schemars::JsonSchema`;
-unsupported and custom representations remain explicitly opaque. TypeScript hints
-are descriptive; the sandbox does not run a TypeScript compiler.
-
-Entity and field Rust doc comments are available through `search` with
-`kind: "entity"`. Use `kind: "relationship"` for the registered relationship map,
-and `myko::register_domain_guide!` to add application vocabulary and workflows.
-Detailed entries are also available through `myko.describe(kind, id)` and
-`myko://domain/<kind>/<id>` resources. See [the MCP guide](docs/mcp-code-mode.md).
-
-Schema resources remain available at `myko://schema/<kind>/<id>`; use detailed
-`search` for the execution contract and examples.
-
-### Per-client filtering
-
-Lock down what an MCP-client config can call without trusting the client itself. Two filter layers, both **client-configured**, composed AND. Both follow an Allow/Deny header pair with the same precedence (deny wins).
-
-**1. Tool visibility** — glob allow/deny over tool names. A hidden tool is omitted from `tools/list` and a `tools/call` against it returns the MCP **Protocol Error** (`-32602`, `"Unknown tool: …"`) — indistinguishable from a tool that doesn't exist.
-
-```
-X-Myko-Tool-Visibility-Allow: query:*,report:*
-X-Myko-Tool-Visibility-Deny:  command:Delete*
-```
-
-Patterns: `*`, `prefix*`, `*suffix`, exact.
-
-**2. Tool callability** — per-tool, per-arg JSON value lists. Failure surfaces as an MCP **Tool Execution Error** (`isError: true` content) — the spec's "Invalid input data" category, distinct from a Protocol Error.
-
-```
-X-Myko-Tool-Callable-Allow: {"command:RunPlaybook":{"playbook_id":["site","deploy"]}}
-X-Myko-Tool-Callable-Deny:  {"command:Tag":{"namespace":["prod"]}}
-```
-
-JSON shape per header: `{ "<tool_name>": { "<arg_path>": [values] } }`. Allow is positive (the arg must be present and its value must be in the list). Deny excludes (the arg's value must not be in the list).
-
-**Stdio transport** has no headers; the same four knobs come from env vars:
-- `MYKO_MCP_TOOL_VISIBILITY_ALLOW`
-- `MYKO_MCP_TOOL_VISIBILITY_DENY`
-- `MYKO_MCP_TOOL_CALLABLE_ALLOW` (JSON)
-- `MYKO_MCP_TOOL_CALLABLE_DENY` (JSON)
-
-Visibility applies to `tools/list`, `tools/call`, `resources/list`, `resources/read`. Callability applies only to `tools/call`.
-
-### Connecting a client
-
-**curl sanity check:**
-
-```bash
-curl -sS -X POST http://localhost:5155/myko/mcp \
-  -H 'Content-Type: application/json' \
-  -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}' | jq
-```
-
-**Claude Code (project `.mcp.json`)** — name filter only:
-
-```json
-{
-  "mcpServers": {
-    "myko": {
-      "type": "http",
-      "url": "http://localhost:5155/myko/mcp",
-      "headers": {
-        "X-Myko-Tool-Visibility-Allow": "query:*,report:*"
-      }
-    }
-  }
+#[myko_item]
+#[myko_external(SET)]
+pub struct Observation {
+    pub value: String,
 }
 ```
 
-**With argument allowlist** (e.g. only let the agent run two specific playbooks):
+Use `#[myko_external(SET, DEL)]` when both are intended. This schema declaration
+does not bypass authorization. Authorized command handlers can still perform
+server-side mutations without enabling raw events. Without an auth provider,
+commands, queries, views and reports retain their existing trusted-entry behavior.
 
-```json
-{
-  "mcpServers": {
-    "myko-restricted": {
-      "type": "http",
-      "url": "http://localhost:5155/myko/mcp",
-      "headers": {
-        "X-Myko-Tool-Visibility-Allow": "query:*,report:*,command:RunPlaybook",
-        "X-Myko-Tool-Callable-Allow": "{\"command:RunPlaybook\":{\"playbook_id\":[\"site\",\"deploy\"]}}"
-      }
-    }
-  }
-}
+Start with [authentication and authorization](docs/auth/design.md),
+[persisted permissions and bootstrap](docs/auth/permissions.md), and
+[Leptos permission administration](docs/auth/leptos-permissions.md).
+
+## Live clients and UI integration
+
+The Rust client exposes list and fine-grained map watches for queries and views.
+`watch_query_state` and `watch_view_state` distinguish waiting for an initial
+response from a successful empty result. Readiness resets for a new reconnect
+epoch. Identical Rust query/view watches share subscriptions and decoded state
+until their final consumer drops.
+
+| Integration  | Location and role                                                                                                |
+| ------------ | ---------------------------------------------------------------------------------------------------------------- |
+| Rust client  | `myko`, native and WASM                                                                                          |
+| Leptos       | `myko-leptos`: live queries, views, reports and fine-grained stores                                              |
+| GPUI         | [`myko-gpui`](libs/myko/gpui/README.md): foreground-thread state updates, observation and command state          |
+| TypeScript   | `@myko/core`, in `libs/myko/ts`: client plus generated contracts                                                 |
+| Svelte / Vue | [`ui-svelte`](libs/myko/ui-svelte/README.md), [`ui-vue`](libs/myko/ui-vue/README.md): TypeScript client adapters |
+| Python       | [`py`](libs/myko/py/README.md), [`python`](libs/myko/python/README.md)                                           |
+| C++ / C#     | [`cpp`](libs/myko/cpp/README.md), [`csharp`](libs/myko/csharp/README.md)                                         |
+
+The Python, C++ and C# integrations have their own build instructions and release
+state; they are not members of the root Rust workspace. Do not assume all
+bindings expose every Rust API or share its package version.
+
+## MCP for application operations
+
+The server exposes `search`, `execute` and `connection_status` tools. Search
+registered queries, views, reports and commands; request `details: true` for wire
+arguments, result wrappers and validated examples. Execute a JavaScript async
+function body to combine operations:
+
+```javascript
+const cameras = await myko.query("GetAllCameras", {});
+return { count: cameras.items.length };
 ```
 
-**Claude Desktop / Inspector:** point them at the same URL with the same headers.
+Query/view results contain `items` and `count`; command/report payloads are in
+`result`. Each call validates arguments against the operation's compiled
+serialization contract. Schema resources are available at
+`myko://schema/<kind>/<id>`.
 
-Behind a TLS-terminating reverse proxy the public URL is `https://<host>/myko/mcp`.
+Connect an MCP HTTP client to `http://localhost:5155/myko/mcp`. The stdio bridge is
+also available through `myko::mcp::McpServer::run_stdio`, using `MYKO_ADDRESS` to
+reach a running server.
 
----
+Clients can narrow discovery and execution with
+`X-Myko-Tool-Visibility-Allow` / `-Deny` name patterns and
+`X-Myko-Tool-Callable-Allow` / `-Deny` argument constraints. Stdio equivalents are
+`MYKO_MCP_TOOL_VISIBILITY_ALLOW`, `MYKO_MCP_TOOL_VISIBILITY_DENY`,
+`MYKO_MCP_TOOL_CALLABLE_ALLOW`, and `MYKO_MCP_TOOL_CALLABLE_DENY`.
+These client-selected restrictions narrow access; configure server authentication
+and authorization to establish the caller's authority. See the
+[MCP Code Mode guide](docs/mcp-code-mode.md) for input contracts, output schemas,
+and domain discovery.
 
-## AI agents
+## Persistence, telemetry and diagnostics
 
-This repo is set up for AI-assisted development with both [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) and other agents.
+The Postgres persister supplies durable events, startup hydration and catch-up.
+`PostgresConfig::try_from_env()` loads `MYKO_POSTGRES_URL`, optional
+`MYKO_POSTGRES_TABLE` (default `myko_events`) and `MYKO_POSTGRES_CHANNEL` (default
+`myko_events_notify`). `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` bounds startup wait
+(default 300 seconds; 0 disables the limit).
 
-- [`CLAUDE.md`](CLAUDE.md) — project-specific instructions Claude Code loads automatically.
-- [`AGENTS.md`](AGENTS.md) — generic agent guidance (toolchain commands, formatting, conventions).
+`myko-telemetry` is independently usable by applications and SDK hosts; the server
+re-exports it. Initialize once and retain the guard through shutdown. It provides
+console logging and optional OpenTelemetry logs, traces and metrics over OTLP
+HTTP/protobuf:
 
-### The short version for agents
+```sh
+OTEL_SERVICE_NAME=my-application
+OTEL_EXPORTER_OTLP_ENDPOINT=https://collector.example.com
+RUST_LOG=info
+```
 
-1. **Rust first.** New logic goes in Rust unless you're explicitly working on a legacy TS path. Generate bindings; never duplicate types by hand.
-2. **`cargo check`, not `cargo build`.** Respect the checkout’s configured target directory.
-3. **Check `.bacon-locations`** before running clippy/check. Fix errors in order.
-4. **Don't run `cargo flux run gen` or start dev servers yourself** — assume the user has hot reload running.
-5. **No hardcoded field/type name strings.** Use macros and type constructors.
-6. **Use real entities in tests.** Don't construct JSON manually.
-7. **Comments explain *why*, not *what*.** Initials and tags: `// TODO(ts): ...`, `// NOTE(ts): ...`.
-8. **Conventional commits** with scope; never bundle unrelated changes.
+Without an exporter endpoint, logging stays local. Per-signal OTel endpoint
+variables override the base endpoint; `MYKO_TRACING_ENDPOINT` is a legacy fallback.
+Client delivery diagnostics are opt-in: see the
+[delivery metrics guide](docs/observability/client-delivery.md).
+For view sampling behavior, see [view sampling](docs/view-sampling.md); graph
+benchmarks are recorded in the graph architecture reference linked above.
 
-### Specs and design docs
+## Develop this repository
 
-Every non-trivial change starts with a spec under `docs/superpowers/specs/<date>-<topic>-design.md`. The spec is the source of truth; implementation plans and PRs reference it.
+Use the pinned toolchain in [`rust-toolchain.toml`](rust-toolchain.toml), Bun, and
+[Cargo Flux](https://github.com/ignition-is-go/cargo-flux) (CI installs 0.11.5).
+Native GPUI checks need platform libraries; the
+[quality-gate workflow](.github/workflows/quality-gates.yml) lists the Linux packages.
+Postgres is needed for durable server use, not every unit test.
 
----
+```sh
+bun install --frozen-lockfile
+cargo flux run check                       # includes generation prerequisites
+cargo flux run lint
+RUST_TEST_THREADS=1 cargo flux run test
+cargo flux run check-wasm
+cargo flux run check-auth-format            # Rust formatting check
+cargo flux run format-rust                  # apply Rust formatting
+```
 
-## Architecture references
+Hyphae's reactive scheduler is process-global, so Rust tests run serially within
+each test binary. Check `.bacon-locations` before duplicating background checks.
+Focused tasks, including auth, permissions, Postgres and MCP checks, are defined
+in [`flux.toml`](flux.toml). Contributor and agent conventions live in
+[`AGENTS.md`](AGENTS.md).
 
-| Topic                     | Where                                                                                                                          |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| Optimization & benchmarks | [`libs/myko/core/OPTIMIZATION.md`](libs/myko/core/OPTIMIZATION.md)                                                             |
-| MCP endpoint spec         | [`docs/superpowers/specs/2026-05-20-mcp-http-endpoint-design.md`](docs/superpowers/specs/2026-05-20-mcp-http-endpoint-design.md) |
-| Agent instructions        | [`CLAUDE.md`](CLAUDE.md), [`AGENTS.md`](AGENTS.md)                                                                             |
+For exported Rust contract changes, run `cargo flux run gen` from the appropriate
+package. Do not hand-edit generated TypeScript. Coordinate generation with any
+active watcher rather than running a second generator against the same files.
 
----
+Releases use the [release](.github/workflows/release.yml) and
+[publish](.github/workflows/publish.yml) workflows: `main` is the production
+channel and `dev` is canary. Rust and npm packages are published in dependency
+order; publication can resume after a partial release.
 
 ## License
 
-MIT OR Apache-2.0 for the framework crates (`myko`, `myko-macros`, `autosocket`).
-The server runtime (`myko-server`) is AGPL-3.0-or-later. See individual crate `Cargo.toml` for specifics.
-
-### Shared application telemetry
-
-Rust applications and SDK hosts can depend on `myko-telemetry` without the server runtime. Initialize once before constructing clients, and hold the guard until process shutdown:
-
-```rust,no_run
-let _telemetry = myko_telemetry::init_from_env();
-```
-
-This installs console logging, bridges existing `log` macros into `tracing`, and optionally exports logs, traces, and metrics over OTLP HTTP/protobuf. Remove an earlier `env_logger::init()` call. Hosts with custom subscribers can compose `myko_telemetry::otel_layer_from_env()` instead; the server module re-exports both entry points.
-
-```sh
-OTEL_EXPORTER_OTLP_ENDPOINT=http://telemetry-01.lucid.host:4318
-OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
-OTEL_SERVICE_NAME=phosphor
-OTEL_RESOURCE_ATTRIBUTES=host.name=phosphor-01,deployment.environment.name=hrlv
-RUST_LOG=info,phosphor=debug,rship_sdk=debug
-```
-
-The base endpoint receives `/v1/logs`, `/v1/traces`, and `/v1/metrics` requests. Standard `OTEL_EXPORTER_OTLP_{LOGS,TRACES,METRICS}_ENDPOINT` overrides are complete per-signal URLs, including their path. They take precedence over `OTEL_EXPORTER_OTLP_ENDPOINT`, which takes precedence over the legacy `MYKO_TRACING_ENDPOINT` base URL. Exporter headers and timeouts use the standard OTel variables. Only HTTP/protobuf is supported; gRPC and HTTP/JSON protocol settings are rejected with a stderr diagnostic. Without any endpoint, logging stays local.
-
-`OTEL_SERVICE_NAME` overrides a `service.name` in `OTEL_RESOURCE_ATTRIBUTES`; otherwise the default is `myko-server`. Give each host application its own service name. Log batches use the SDK's bounded queue and are flushed when the guard drops. Exporter diagnostics remain local to prevent recursive log export.
+Check each package's manifest. The current framework, server, auth, UI bridge and
+Autosocket Rust crates declare **AGPL-3.0-or-later**. `myko-telemetry` declares
+**MIT OR Apache-2.0**. JavaScript packages and other bindings carry their own
+license declarations.

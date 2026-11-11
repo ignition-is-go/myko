@@ -2,7 +2,9 @@
 
 use std::{sync::Arc, time::Duration};
 
+use base64::{Engine, engine::general_purpose::STANDARD};
 use myko::server::MykoServerContext;
+use myko_auth::{AuthError, AuthSession, MykoAuthProvider};
 use serde_json::Value;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -17,7 +19,7 @@ use super::{
         CALLABLE_ALLOW_HEADER, CALLABLE_DENY_HEADER, ClientFilters, VISIBILITY_ALLOW_HEADER,
         VISIBILITY_DENY_HEADER,
     },
-    types::{McpError, McpRequest, McpResponse},
+    types::{LEGACY_PROTOCOL_VERSION, McpError, McpRequest, McpResponse, PROTOCOL_VERSION},
 };
 use crate::router::{HttpRequestHead, shutdown_cleanly, write_full, write_status};
 
@@ -32,11 +34,112 @@ const SSE_KEEPALIVE: Duration = Duration::from_secs(15);
 ///
 /// Returns an error when the HTTP request cannot be read or its response cannot be written.
 pub async fn handle_post(
-    mut stream: TcpStream,
+    stream: TcpStream,
     ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_post_with_auth(stream, ctx, server_info, head, None).await
+}
+
+/// Handle an MCP POST with verified caller authority.
+/// # Errors
+/// Returns an error when transport handling fails or authority expires.
+pub async fn handle_post_with_auth(
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    auth: Option<AuthSession>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    tokio::select! {
+        result = run_post(stream, ctx, server_info, head, auth.clone(), None) => result,
+        () = super::invalidated(auth.as_ref()) => Ok(()),
+    }
+}
+
+/// Admit MCP bootstrap publicly and authenticate every application request.
+/// # Errors
+/// Returns errors reading or writing the bounded HTTP exchange.
+pub async fn handle_post_with_provider(
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    provider: Arc<MykoAuthProvider>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    run_post(stream, ctx, server_info, head, None, Some(provider)).await
+}
+
+async fn authenticate_post(
+    provider: &MykoAuthProvider,
+    head: &HttpRequestHead,
+    public: bool,
+) -> Result<Option<AuthSession>, AuthError> {
+    let credentials = crate::router::credentials_from_head(head)?;
+    if credentials.bearer.is_none() && public {
+        return Ok(None);
+    }
+    tokio::time::timeout(Duration::from_secs(10), async {
+        if let Some(server) = provider.oauth_server() {
+            credentials
+                .bearer
+                .as_deref()
+                .ok_or(AuthError::Unauthenticated)
+                .and_then(|token| server.authenticate(token))
+        } else if provider.mcp_oauth().is_some() {
+            provider.authenticate(credentials).await
+        } else {
+            provider.admit(credentials).await
+        }
+    })
+    .await
+    .unwrap_or(Err(AuthError::Unavailable))
+    .map(Some)
+}
+
+const fn auth_error_status(error: AuthError) -> (u16, &'static str, &'static str) {
+    match error {
+        AuthError::Forbidden => (403, "Forbidden", "permission_denied"),
+        AuthError::Unavailable => (503, "Service Unavailable", "authentication_unavailable"),
+        AuthError::Expired => (401, "Unauthorized", "credential_expired"),
+        AuthError::Revoked => (401, "Unauthorized", "session_revoked"),
+        AuthError::Unauthenticated => (401, "Unauthorized", "authentication_required"),
+    }
+}
+
+async fn write_auth_error(
+    mut stream: TcpStream,
+    provider: &MykoAuthProvider,
+    error: AuthError,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let (status, reason, code) = auth_error_status(error);
+    let challenge = provider
+        .mcp_oauth()
+        .map_or_else(|| "Bearer".to_string(), myko_auth::OAuthResource::challenge);
+    let mut headers = vec![("Content-Type", "application/json")];
+    if status == 401 {
+        headers.push(("WWW-Authenticate", &challenge));
+    }
+    let body = serde_json::to_vec(&serde_json::json!({
+        "error": code, "error_description": error.to_string()
+    }))?;
+    write_full(&mut stream, status, reason, &headers, &body).await?;
+    shutdown_cleanly(stream).await;
+    Ok(())
+}
+
+async fn run_post(
+    mut stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    head: HttpRequestHead,
+    mut auth: Option<AuthSession>,
+    provider: Option<Arc<MykoAuthProvider>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(session) = &auth {
+        session.check()?;
+    }
     let content_length: usize = head
         .header("Content-Length")
         .and_then(|v| v.parse().ok())
@@ -58,25 +161,100 @@ pub async fn handle_post(
         }
     };
 
-    let filter = filter_from_head(&head);
-    let executor = Executor::InProcess(ctx);
-
-    let response: McpResponse = match serde_json::from_slice::<McpRequest>(&body) {
-        Ok(req) => {
-            // Notifications (no id, no response expected) get an empty 204
-            // body anyway — MCP HTTP keeps the request/response shape.
-            dispatch::handle_request(req, &filter, &executor, &server_info)
-                .await
-                .unwrap_or_else(|| McpResponse::success(Value::Null, Value::Null))
+    let request = serde_json::from_slice::<McpRequest>(&body);
+    if let Some(provider) = &provider {
+        match authenticate_post(
+            provider,
+            &head,
+            request.as_ref().is_ok_and(McpRequest::is_public_bootstrap),
+        )
+        .await
+        {
+            Ok(session) => auth = session,
+            Err(error) => return write_auth_error(stream, provider, error).await,
         }
-        Err(e) => McpResponse::error(Value::Null, McpError::parse_error(e.to_string())),
+    }
+    let mut modern = false;
+    let mut cacheable = false;
+    if let Ok(request) = &request {
+        match validate_post_protocol(&head, request) {
+            Ok(is_modern) => modern = is_modern,
+            Err(error) => {
+                let response = McpResponse::error(request.id.clone().unwrap_or(Value::Null), error);
+                return write_rpc_response(stream, 400, "Bad Request", &response).await;
+            }
+        }
+        cacheable = matches!(
+            request.method.as_str(),
+            "tools/list" | "resources/list" | "resources/read"
+        );
+    }
+    let filter = filter_from_head(&head);
+    let executor = Executor::in_process(ctx, auth.clone());
+    let response = match request {
+        Ok(req) => tokio::select! {
+            response = dispatch::handle_request(req, &filter, &executor, &server_info) => response,
+            () = super::invalidated(auth.as_ref()) => {
+                if let Some(provider) = &provider {return write_auth_error(stream, provider, AuthError::Unauthenticated).await;}
+                return Ok(());
+            }
+        },
+        Err(e) => Some(McpResponse::error(
+            Value::Null,
+            McpError::parse_error(e.to_string()),
+        )),
     };
 
-    let body = serde_json::to_vec(&response).unwrap_or_else(|_| b"{}".to_vec());
+    if let Some(session) = &auth
+        && let Err(error) = session.check()
+    {
+        if let Some(provider) = &provider {
+            return write_auth_error(stream, provider, error).await;
+        }
+        return Err(error.into());
+    }
+    let Some(mut response) = response else {
+        write_status(&mut stream, 202, "Accepted").await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    };
+    if modern {
+        decorate_modern_response(&mut response, cacheable);
+        if response
+            .error
+            .as_ref()
+            .is_some_and(|error| error.code == McpError::METHOD_NOT_FOUND)
+        {
+            return write_rpc_response(stream, 404, "Not Found", &response).await;
+        }
+    }
+    write_rpc_response(stream, 200, "OK", &response).await
+}
+
+fn decorate_modern_response(response: &mut McpResponse, cacheable: bool) {
+    if let Some(Value::Object(result)) = &mut response.result {
+        result
+            .entry("resultType")
+            .or_insert_with(|| Value::from("complete"));
+        if cacheable {
+            // Lists and resources can vary with filters and caller authority.
+            result.insert("ttlMs".into(), Value::from(0));
+            result.insert("cacheScope".into(), Value::from("private"));
+        }
+    }
+}
+
+async fn write_rpc_response(
+    mut stream: TcpStream,
+    status: u16,
+    reason: &str,
+    response: &McpResponse,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let body = serde_json::to_vec(response)?;
     let write_result = write_full(
         &mut stream,
-        200,
-        "OK",
+        status,
+        reason,
         &[("Content-Type", "application/json")],
         &body,
     )
@@ -84,6 +262,80 @@ pub async fn handle_post(
     shutdown_cleanly(stream).await;
     write_result?;
     Ok(())
+}
+
+fn validate_post_protocol(head: &HttpRequestHead, request: &McpRequest) -> Result<bool, McpError> {
+    let mismatch = |message: &str| McpError {
+        code: -32020,
+        message: message.into(),
+        data: None,
+    };
+    for name in ["MCP-Protocol-Version", "Mcp-Method", "Mcp-Name"] {
+        if head
+            .headers
+            .iter()
+            .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+            .nth(1)
+            .is_some()
+        {
+            return Err(mismatch("Duplicate MCP routing header"));
+        }
+    }
+
+    let header = head.header("MCP-Protocol-Version");
+    let metadata = request.protocol_version();
+    if metadata.is_none()
+        && matches!(
+            header,
+            None | Some(LEGACY_PROTOCOL_VERSION | "2025-03-26" | "2025-06-18" | "2025-11-25")
+        )
+        && request.method != "server/discover"
+        && head.header("Mcp-Method").is_none()
+        && head.header("Mcp-Name").is_none()
+    {
+        return Ok(false);
+    }
+
+    let version = header
+        .filter(|version| metadata.and_then(Value::as_str) == Some(*version))
+        .ok_or_else(|| mismatch("MCP-Protocol-Version must match request metadata"))?;
+    if version != PROTOCOL_VERSION {
+        return Err(McpError {
+            code: -32022,
+            message: "Unsupported protocol version".into(),
+            data: Some(serde_json::json!({
+                "supported": [PROTOCOL_VERSION, LEGACY_PROTOCOL_VERSION],
+                "requested": version
+            })),
+        });
+    }
+    if head.header("Mcp-Method") != Some(request.method.as_str()) {
+        return Err(mismatch("Mcp-Method must match the request method"));
+    }
+    let name_key = match request.method.as_str() {
+        "tools/call" | "prompts/get" => "name",
+        "resources/read" => "uri",
+        _ => return Ok(true),
+    };
+    let name = request
+        .params
+        .as_ref()
+        .and_then(|params| params.get(name_key))
+        .and_then(Value::as_str);
+    let header_name = head.header("Mcp-Name");
+    let matches =
+        match header_name.and_then(|value| value.strip_prefix("=?base64?")?.strip_suffix("?=")) {
+            Some(encoded) => STANDARD
+                .decode(encoded)
+                .ok()
+                .zip(name)
+                .is_some_and(|(bytes, name)| bytes == name.as_bytes()),
+            None => name.is_some() && header_name == name,
+        };
+    if !matches {
+        return Err(mismatch("Mcp-Name must match the request target"));
+    }
+    Ok(true)
 }
 
 /// Handle `GET /myko/mcp` with `Accept: text/event-stream`.
@@ -95,10 +347,48 @@ pub async fn handle_post(
 ///
 /// Returns an error when the SSE response cannot be written.
 pub async fn handle_sse(
-    mut stream: TcpStream,
-    _ctx: Arc<MykoServerContext>,
-    _head: HttpRequestHead,
+    stream: TcpStream,
+    ctx: Arc<MykoServerContext>,
+    head: HttpRequestHead,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    handle_sse_with_auth(stream, ctx, head, None).await
+}
+
+/// Handle an SSE connection until its authenticated session ends.
+/// # Errors
+/// Returns an error when transport handling fails or authority expires.
+pub async fn handle_sse_with_auth(
+    stream: TcpStream,
+    _ctx: Arc<MykoServerContext>,
+    head: HttpRequestHead,
+    auth: Option<AuthSession>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if head.header("MCP-Protocol-Version") == Some(PROTOCOL_VERSION) {
+        let mut stream = stream;
+        write_full(
+            &mut stream,
+            405,
+            "Method Not Allowed",
+            &[("Allow", "POST")],
+            &[],
+        )
+        .await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    }
+    tokio::select! {
+        result = run_sse(stream, auth.clone()) => result,
+        () = super::invalidated(auth.as_ref()) => Ok(()),
+    }
+}
+
+async fn run_sse(
+    mut stream: TcpStream,
+    auth: Option<AuthSession>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(session) = &auth {
+        session.check()?;
+    }
     let head = "HTTP/1.1 200 OK\r\n\
                 Content-Type: text/event-stream\r\n\
                 Cache-Control: no-cache\r\n\
@@ -110,6 +400,9 @@ pub async fn handle_sse(
 
     loop {
         sleep(SSE_KEEPALIVE).await;
+        if let Some(session) = &auth {
+            session.check()?;
+        }
         if stream.write_all(b": keepalive\n\n").await.is_err() {
             break;
         }
@@ -168,6 +461,22 @@ async fn read_body(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn permission_denial_is_not_an_authentication_challenge() {
+        assert_eq!(
+            auth_error_status(AuthError::Forbidden),
+            (403, "Forbidden", "permission_denied")
+        );
+        for error in [
+            AuthError::Unauthenticated,
+            AuthError::Expired,
+            AuthError::Revoked,
+        ] {
+            assert_eq!(auth_error_status(error).0, 401);
+        }
+        assert_eq!(auth_error_status(AuthError::Unavailable).0, 503);
+    }
 
     fn head_with(headers: Vec<(&str, &str)>) -> HttpRequestHead {
         HttpRequestHead {

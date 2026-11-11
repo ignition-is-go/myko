@@ -46,11 +46,24 @@ pub fn myko_query_impl(
     include_in_typegen: bool,
     mut input_struct: ItemStruct,
 ) -> TokenStream {
+    let (extra_scopes, public) =
+        match crate::public_access::take_operation_access(&mut input_struct) {
+            Ok(access) => access,
+            Err(error) => return error.to_compile_error(),
+        };
     let manual_cache_key = crate::take_manual_cache_key_attr(&mut input_struct);
     let non_hash_cache_key = crate::take_non_hash_cache_key_attr(&mut input_struct);
     let struct_name = &input_struct.ident;
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
+    let scope_registration = crate::public_access::read_registration(
+        &syn::parse_quote!(Query),
+        struct_name,
+        query_item_type,
+        extra_scopes,
+        public,
+        krate,
+    );
 
     // Reflection metadata for the MCP `search()` operation index — captured
     // here from the struct's own fields/doc comment before any further
@@ -122,6 +135,7 @@ pub fn myko_query_impl(
     quote! {
         #derives
         #input_struct
+        #scope_registration
 
         // Registration is server-only (requires QueryFactory which depends on hyphae/store)
         #[cfg(not(target_arch = "wasm32"))]

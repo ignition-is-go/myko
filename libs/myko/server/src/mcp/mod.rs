@@ -35,7 +35,8 @@
 //!
 //! ## Protocol
 //!
-//! Implements MCP 2024-11-05 JSON-RPC (compatible with the 2025-06-18
+//! The HTTP POST endpoint also supports stateless MCP 2026-07-28 requests.
+//! Legacy MCP 2024-11-05 JSON-RPC remains available (compatible with the 2025-06-18
 //! error-handling conventions).
 //!
 //! ## Legacy stdio
@@ -58,3 +59,16 @@ pub mod ws;
 
 pub use server::McpServer;
 pub use types::*;
+
+async fn invalidated(auth: Option<&myko_auth::AuthSession>) {
+    let Some(session) = auth else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    loop {
+        if session.check().is_err() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}

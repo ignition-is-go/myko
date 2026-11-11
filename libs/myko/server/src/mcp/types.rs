@@ -3,14 +3,44 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub(super) const PROTOCOL_VERSION: &str = "2026-07-28";
+pub(super) const LEGACY_PROTOCOL_VERSION: &str = "2024-11-05";
+pub(super) const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+
 /// MCP JSON-RPC request.
 #[derive(Debug, Deserialize)]
 pub struct McpRequest {
     pub jsonrpc: String,
-    pub id: Value,
+    #[serde(default, deserialize_with = "request_id")]
+    pub id: Option<Value>,
     pub method: String,
     #[serde(default)]
     pub params: Option<Value>,
+}
+
+impl McpRequest {
+    pub(super) fn protocol_version(&self) -> Option<&Value> {
+        self.params
+            .as_ref()?
+            .get("_meta")?
+            .get(META_PROTOCOL_VERSION)
+    }
+
+    /// Bootstrap exposes static capabilities, never application operations or data.
+    #[must_use]
+    pub fn is_public_bootstrap(&self) -> bool {
+        matches!(
+            self.method.as_str(),
+            "initialize" | "server/discover" | "tools/list" | "notifications/initialized"
+        )
+    }
+}
+
+// A present null ID still identifies a request; only an omitted ID is a notification.
+fn request_id<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
 }
 
 /// MCP JSON-RPC response.

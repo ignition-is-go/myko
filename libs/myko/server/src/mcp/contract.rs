@@ -92,6 +92,7 @@ mod tests {
     fn suppresses_registered_examples_that_fail_structural_constraints() {
         let index = vec![OperationSchema {
             id: "BadExample".into(),
+            required_scopes: None,
             kind: "command".into(),
             description: None,
             output_type: "number".into(),

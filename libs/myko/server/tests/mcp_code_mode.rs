@@ -474,10 +474,19 @@ async fn assert_operation_contracts(client: &reqwest::Client, url: &str) {
             .and_then(serde_json::Value::as_str),
         "contract text"
     );
-    let contract = require_some!(
+    let discovery = require_some!(
         serde_json::from_str::<serde_json::Value>(text).ok(),
         "contract JSON"
     );
+    let mut contract = require_some!(
+        discovery
+            .pointer("/operations/0")
+            .and_then(serde_json::Value::as_object)
+            .cloned(),
+        "operation contract"
+    );
+    assert!(contract.remove("authorization").is_some());
+    let contract = serde_json::Value::Object(contract);
     assert_contract_shape(&contract);
     assert_generated_input_schema(&contract);
     assert_eq!(DESERIALIZER_CALLS.load(Ordering::SeqCst), 0);

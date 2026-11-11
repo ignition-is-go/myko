@@ -857,10 +857,12 @@ fn load_consumer_snapshot(
         .query_one(&high_water_sql, &[])
         .map_err(|error| format_pg_error("query(high_water)", Some(&config.url), &error))?;
     let high_water: i64 = high_water_row.get(0);
+    // NOTE(ts): Keep latest-ID selection covered by the item_latest index; inspect
+    // change_type only after selecting each entity's latest event, including deletes.
     let snapshot_sql = format!(
         "
         WITH latest AS (
-            SELECT DISTINCT ON (item_type, item_id) id, change_type
+            SELECT DISTINCT ON (item_type, item_id) id
             FROM {table}
             WHERE id <= $1
             ORDER BY item_type, item_id, id DESC
@@ -868,7 +870,7 @@ fn load_consumer_snapshot(
         SELECT e.id, e.event::text
         FROM latest
         JOIN {table} e ON e.id = latest.id
-        WHERE latest.change_type = 'SET'
+        WHERE e.change_type = 'SET'
         ORDER BY e.id ASC
         "
     );

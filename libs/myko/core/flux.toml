@@ -18,3 +18,12 @@ root = ["cargo", "test", "--jobs", "4", "--lib", "--features", "codegen-ts", "co
 
 [tasks.test-core-ci]
 root = ["cargo", "test", "--jobs", "4", "--features", "ci", "--", "--test-threads=1"]
+
+[tasks.test-client-address]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "--lib", "client::address_tests", "--", "--test-threads=1"]
+
+[tasks.check-client-address]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.check-client-address-format]
+root = ["cargo", "fmt", "--", "--check"]

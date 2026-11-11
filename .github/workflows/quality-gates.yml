@@ -20,6 +20,8 @@ jobs:
       group: ci-untrusted
       labels: [self-hosted, Linux, X64, ram-ge-16g, disk-ge-100g]
     timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "4"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -54,7 +56,9 @@ jobs:
         with:
           version: "1.21.1"
       - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --no-confirm --force
+        run: cargo binstall cargo-flux --version 0.11.5 --no-confirm --force
+      - name: Verify publication ordering and recovery
+        run: cargo flux run test-publish
       - name: Check Rust formatting
         run: cargo fmt --all -- --check
       - name: Check Rust and generated TypeScript
@@ -122,7 +126,7 @@ jobs:
         with:
           version: "1.21.1"
       - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --no-confirm --force
+        run: cargo binstall cargo-flux --version 0.11.5 --no-confirm --force
       - name: Check WebAssembly targets
         run: cargo flux run check-wasm
         env:

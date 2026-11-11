@@ -86,6 +86,8 @@ pub mod codegen;
 pub mod codegen_types;
 pub mod core;
 pub mod entities;
+pub mod identity;
+pub mod oauth_flow;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod operation_index;
 pub mod search;
@@ -113,12 +115,13 @@ pub use core::{
     command, common, graph, item, query, reflection, relationship, report, request, view,
 };
 
-pub use erased_serde; // For AnyItem::erased_serialize in generated code
+pub use erased_serde;
 // Re-export crates for use in macros
 pub use futures; // For proc macro generated stream adapters in typed sagas
 pub use hyphae; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko::submit! macro
+pub use myko_auth as auth; // For AnyItem::erased_serialize in generated code
 // `myko::TS` resolves to the TypeScript adapter's derive+trait when
 // `codegen-ts` is enabled on Myko, and to a no-op helper derive otherwise.
 // Macro expansion can therefore keep a stable path without requiring entity

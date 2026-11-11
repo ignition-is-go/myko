@@ -1,4 +1,7 @@
-use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+use opentelemetry_proto::tonic::{
+    collector::{logs::v1::ExportLogsServiceRequest, metrics::v1::ExportMetricsServiceRequest},
+    metrics::v1::metric,
+};
 use prost::Message;
 use std::{
     io::{Read, Write},
@@ -28,7 +31,94 @@ fn child_emits() {
         tracing::debug!("filtered delivery");
     }
     drop(span);
+    myko_telemetry::websocket_metrics::client_connected("export-test");
+    for id in 0..2100 {
+        myko_telemetry::websocket_metrics::record(
+            "export-test",
+            "out",
+            "QueryResponse",
+            Some(&format!("query-{id}")),
+            Some(10),
+        );
+    }
+    myko_telemetry::websocket_metrics::client_disconnected("export-test");
     drop(guard);
+}
+
+fn contains_client_metrics(request: &ExportMetricsServiceRequest) -> bool {
+    [
+                    ("myko.ws.message.count", 1),
+                    ("myko.ws.operation.message.count", 2100),
+                    ("myko.ws.operation.message.bytes", 2100),
+                ].iter().all(|(name, count)| request.resource_metrics.iter()
+                    .flat_map(|resource| &resource.scope_metrics).flat_map(|scope| &scope.metrics)
+                    .any(|metric| metric.name == *name && matches!(metric.data.as_ref(), Some(metric::Data::Sum(sum)) if sum.data_points.len() == *count)))
+}
+
+fn collect(
+    listener: &TcpListener,
+    override_logs: bool,
+) -> std::io::Result<Vec<ExportLogsServiceRequest>> {
+    let started = Instant::now();
+    let mut logs = Vec::new();
+    let mut metrics_seen = false;
+    while started.elapsed() < Duration::from_secs(15) {
+        let (mut stream, _) = match listener.accept() {
+            Ok(connection) => connection,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                if !logs.is_empty() && metrics_seen {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        stream.set_read_timeout(Some(Duration::from_secs(3)))?;
+        let mut reader = std::io::BufReader::new(&mut stream);
+        let mut headers = String::new();
+        loop {
+            let mut line = String::new();
+            std::io::BufRead::read_line(&mut reader, &mut line)?;
+            if line == "\r\n" {
+                break;
+            }
+            headers.push_str(&line);
+        }
+        let length = headers
+            .lines()
+            .find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            })
+            .ok_or_else(|| std::io::Error::other("missing content length"))?;
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body)?;
+        if headers.starts_with("POST /v1/logs ") || headers.starts_with("POST /custom/logs ") {
+            let expected_path = if override_logs {
+                "POST /custom/logs "
+            } else {
+                "POST /v1/logs "
+            };
+            if !headers.starts_with(expected_path) {
+                return Err(std::io::Error::other("wrong signal endpoint"));
+            }
+            logs.push(ExportLogsServiceRequest::decode(body.as_slice())?);
+        }
+        if headers.starts_with("POST /v1/metrics ") {
+            let request = ExportMetricsServiceRequest::decode(body.as_slice())?;
+            metrics_seen = contains_client_metrics(&request);
+        }
+        stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
+    }
+    if !metrics_seen {
+        return Err(std::io::Error::other(
+            "final client metrics missing or cardinality limited",
+        ));
+    }
+    Ok(logs)
 }
 
 fn exported_logs(
@@ -38,58 +128,8 @@ fn exported_logs(
     let listener = TcpListener::bind("127.0.0.1:0")?;
     listener.set_nonblocking(true)?;
     let endpoint = format!("http://{}", listener.local_addr()?);
-    let collector = thread::spawn(move || -> std::io::Result<Vec<ExportLogsServiceRequest>> {
-        let started = Instant::now();
-        let mut logs = Vec::new();
-        while started.elapsed() < Duration::from_secs(15) {
-            let (mut stream, _) = match listener.accept() {
-                Ok(connection) => connection,
-                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                    if !logs.is_empty() {
-                        break;
-                    }
-                    thread::sleep(Duration::from_millis(10));
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            stream.set_read_timeout(Some(Duration::from_secs(3)))?;
-            let mut reader = std::io::BufReader::new(&mut stream);
-            let mut headers = String::new();
-            loop {
-                let mut line = String::new();
-                std::io::BufRead::read_line(&mut reader, &mut line)?;
-                if line == "\r\n" {
-                    break;
-                }
-                headers.push_str(&line);
-            }
-            let length = headers
-                .lines()
-                .find_map(|line| {
-                    let (name, value) = line.split_once(':')?;
-                    name.eq_ignore_ascii_case("content-length")
-                        .then(|| value.trim().parse::<usize>().ok())
-                        .flatten()
-                })
-                .ok_or_else(|| std::io::Error::other("missing content length"))?;
-            let mut body = vec![0; length];
-            reader.read_exact(&mut body)?;
-            if headers.starts_with("POST /v1/logs ") || headers.starts_with("POST /custom/logs ") {
-                let expected_path = if override_logs {
-                    "POST /custom/logs "
-                } else {
-                    "POST /v1/logs "
-                };
-                if !headers.starts_with(expected_path) {
-                    return Err(std::io::Error::other("wrong signal endpoint"));
-                }
-                logs.push(ExportLogsServiceRequest::decode(body.as_slice())?);
-            }
-            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")?;
-        }
-        Ok(logs)
-    });
+    let collector = thread::spawn(move || collect(&listener, override_logs));
+
     let mut child = Command::new(std::env::current_exe()?);
     // Environment lives in the child, so these tests never mutate global state.
     child

@@ -80,6 +80,17 @@ impl Drop for CallbackGuard {
 /// Implemented by `AutoReconnectSocket` (native) and `WasmSocket` (browser).
 /// Object-safe: uses callback-based subscriptions instead of channel returns.
 pub trait SocketTransport: Send + Sync + 'static {
+    /// Replace credentials and reconnect. Unsupported transports reject configuration.
+    ///
+    /// # Errors
+    /// Returns an error when the transport cannot authenticate connections.
+    fn set_credential_provider(
+        &self,
+        _provider: Option<Arc<dyn myko_auth::CredentialProvider>>,
+    ) -> Result<(), String> {
+        Err("transport does not support connection credentials".into())
+    }
+
     /// Set the remote address. `None` disconnects.
     fn set_addr(&self, addr: Option<String>);
 
@@ -108,5 +119,69 @@ pub trait SocketTransport: Send + Sync + 'static {
     /// this so WebSocket events do not cross a shared-memory channel first.
     fn set_frame_callback(&self, _callback: FrameCallback) -> Option<CallbackGuard> {
         None
+    }
+}
+
+/// A fixed bearer token for clients whose application manages token renewal.
+pub struct StaticCredentialProvider {
+    bearer: String,
+}
+
+impl StaticCredentialProvider {
+    #[must_use]
+    pub const fn new(bearer: String) -> Self {
+        Self { bearer }
+    }
+}
+
+impl myko_auth::CredentialProvider for StaticCredentialProvider {
+    fn credentials(
+        &self,
+    ) -> futures::future::BoxFuture<'_, Result<myko_auth::Credentials, myko_auth::AuthError>> {
+        Box::pin(async {
+            Ok(myko_auth::Credentials {
+                bearer: Some(self.bearer.clone()),
+            })
+        })
+    }
+}
+
+pub(crate) fn connection_bearer(credentials: myko_auth::Credentials) -> Result<String, String> {
+    let bearer = credentials
+        .bearer
+        .ok_or("credential provider returned no bearer token")?;
+    if bearer.is_empty()
+        || bearer.len() > 4096
+        || !bearer.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err("credential provider returned an invalid bearer token".into());
+    }
+    Ok(bearer)
+}
+
+#[cfg(test)]
+mod credential_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_bearer_cannot_become_a_handshake_header() {
+        for token in ["", "token\r\nX-Injected: yes", "token with spaces"] {
+            assert_eq!(
+                connection_bearer(myko_auth::Credentials {
+                    bearer: Some(token.into())
+                }),
+                Err("credential provider returned an invalid bearer token".into())
+            );
+        }
+        assert_eq!(
+            connection_bearer(myko_auth::Credentials { bearer: None }),
+            Err("credential provider returned no bearer token".into())
+        );
+        assert_eq!(
+            connection_bearer(myko_auth::Credentials {
+                bearer: Some("signed.token".into())
+            }),
+            Ok("signed.token".into())
+        );
     }
 }

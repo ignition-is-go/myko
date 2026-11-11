@@ -9,7 +9,7 @@ use hyphae::{Cell, CellImmutable, CellMutable, Gettable, Mutable};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
-use tungstenite::{Message, protocol::WebSocketConfig};
+use tungstenite::{Message, client::IntoClientRequest, protocol::WebSocketConfig};
 use url::Url;
 
 use crate::{SocketConnectionStatus, SocketTransport, WsFrame};
@@ -34,12 +34,14 @@ struct DesiredConnection {
     generation: u64,
     addr: Option<String>,
     outgoing_rx: Option<flume::Receiver<WsFrame>>,
+    credentials: Option<Arc<dyn myko_auth::CredentialProvider>>,
 }
 
 struct ConnectionControl {
     generation: u64,
     addr: Option<String>,
     outgoing: OutgoingQueue,
+    credentials: Option<Arc<dyn myko_auth::CredentialProvider>>,
 }
 
 enum DelayOutcome {
@@ -71,6 +73,23 @@ fn frame_to_message(frame: WsFrame) -> Message {
 }
 
 impl SocketTransport for AutoReconnectSocket {
+    fn set_credential_provider(
+        &self,
+        provider: Option<Arc<dyn myko_auth::CredentialProvider>>,
+    ) -> Result<(), String> {
+        let addr = {
+            let mut control = self
+                .control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            control.credentials = provider;
+            control.addr.clone()
+        };
+        self.set_addr(None);
+        self.set_addr(addr);
+        Ok(())
+    }
+
     fn set_addr(&self, addr: Option<String>) {
         self.set_addr(addr);
     }
@@ -125,6 +144,7 @@ impl AutoReconnectSocket {
             generation: 0,
             addr: None,
             outgoing_rx: None,
+            credentials: None,
         };
         let (desired_tx, desired_rx) = watch::channel(initial);
         let (incoming_tx, incoming_rx) = flume::unbounded();
@@ -136,6 +156,7 @@ impl AutoReconnectSocket {
             generation: 0,
             addr: None,
             outgoing,
+            credentials: None,
         }));
 
         Self::start_driver(
@@ -188,6 +209,7 @@ impl AutoReconnectSocket {
                 generation: control.generation,
                 addr: addr.clone(),
                 outgoing_rx: addr.as_ref().map(|_| control.outgoing.rx.clone()),
+                credentials: control.credentials.clone(),
             });
             control.generation
         };
@@ -322,31 +344,45 @@ impl AutoReconnectSocket {
                     return Self::wait_for_change(desired_rx).await;
                 }
             };
-            let mut config = WebSocketConfig::default();
-            config.max_message_size = Some(max_message_size_bytes);
-            config.max_frame_size = Some(max_frame_size_bytes);
-            let connect =
-                tokio_tungstenite::connect_async_with_config(url.as_str(), Some(config), true);
+            let connect = async {
+                let mut request = url.as_str().into_client_request().map_err(|_| ())?;
+                if let Some(provider) = &desired.credentials {
+                    let credentials = provider.credentials().await.map_err(|_| ())?;
+                    let bearer = crate::connection_bearer(credentials).map_err(|_| ())?;
+                    let mut header =
+                        tungstenite::http::HeaderValue::from_str(&format!("Bearer {bearer}"))
+                            .map_err(|_| ())?;
+                    header.set_sensitive(true);
+                    request
+                        .headers_mut()
+                        .insert(tungstenite::http::header::AUTHORIZATION, header);
+                }
+                let mut config = WebSocketConfig::default();
+                config.max_message_size = Some(max_message_size_bytes);
+                config.max_frame_size = Some(max_frame_size_bytes);
+                tokio_tungstenite::connect_async_with_config(request, Some(config), true)
+                    .await
+                    .map_err(|_| ())
+            };
             let websocket = tokio::select! {
                 biased;
                 changed = desired_rx.changed() => {
                     return changed.is_err();
                 }
-                result = connect => match result {
-                    Ok((websocket, _)) => websocket,
-                    Err(error) => {
-                        error!("Failed to connect to {url} (attempt {attempt}): {error}");
-                        actual_status.set(SocketConnectionStatus::Disconnected);
-                        if !auto_reconnect {
-                            return Self::wait_for_change(desired_rx).await;
-                        }
-                        match Self::wait_for_change_or_delay(desired_rx).await {
-                            DelayOutcome::Changed => return false,
-                            DelayOutcome::Closed => return true,
-                            DelayOutcome::Elapsed => {}
-                        }
-                        continue;
+                result = connect => if let Ok((websocket, _)) = result {
+                    websocket
+                } else {
+                    error!("Failed to establish WebSocket connection to {url} (attempt {attempt})");
+                    actual_status.set(SocketConnectionStatus::Disconnected);
+                    if !auto_reconnect {
+                        return Self::wait_for_change(desired_rx).await;
                     }
+                    match Self::wait_for_change_or_delay(desired_rx).await {
+                        DelayOutcome::Changed => return false,
+                        DelayOutcome::Closed => return true,
+                        DelayOutcome::Elapsed => {}
+                    }
+                    continue;
                 }
             };
 
@@ -622,6 +658,178 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
         false
+    }
+
+    struct RotatingCredentials(std::sync::atomic::AtomicUsize);
+
+    impl myko_auth::CredentialProvider for RotatingCredentials {
+        fn credentials(
+            &self,
+        ) -> futures::future::BoxFuture<'_, Result<myko_auth::Credentials, myko_auth::AuthError>>
+        {
+            let attempt = self
+                .0
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                .saturating_add(1);
+            Box::pin(async move {
+                Ok(myko_auth::Credentials {
+                    bearer: Some(format!("token-{attempt}")),
+                })
+            })
+        }
+    }
+
+    #[test]
+    fn reconnect_obtains_credentials_before_each_authenticated_upgrade()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let addr = format!("ws://{}/myko", listener.local_addr()?);
+        let (headers_tx, headers_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut authorization = String::new();
+                let mut socket = tungstenite::accept_hdr(
+                    stream,
+                    #[allow(clippy::result_large_err)]
+                    |request: &tungstenite::handshake::server::Request, response| {
+                        authorization = request
+                            .headers()
+                            .get("Authorization")
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or("")
+                            .to_owned();
+                        Ok(response)
+                    },
+                )
+                .unwrap();
+                socket.close(None).unwrap();
+                headers_tx.send(authorization).unwrap();
+            }
+        });
+        let socket = AutoReconnectSocket::new();
+        SocketTransport::set_credential_provider(
+            &socket,
+            Some(Arc::new(RotatingCredentials(
+                std::sync::atomic::AtomicUsize::new(0),
+            ))),
+        )?;
+        socket.set_addr(Some(addr));
+        assert_eq!(
+            headers_rx.recv_timeout(Duration::from_secs(4))?,
+            "Bearer token-1"
+        );
+        assert_eq!(
+            headers_rx.recv_timeout(Duration::from_secs(4))?,
+            "Bearer token-2"
+        );
+        socket.close();
+        server.join().unwrap();
+        Ok(())
+    }
+
+    struct FailedCredentials;
+
+    impl myko_auth::CredentialProvider for FailedCredentials {
+        fn credentials(
+            &self,
+        ) -> futures::future::BoxFuture<'_, Result<myko_auth::Credentials, myko_auth::AuthError>>
+        {
+            Box::pin(async { Err(myko_auth::AuthError::Unavailable) })
+        }
+    }
+
+    #[test]
+    fn credential_failure_never_opens_an_unauthenticated_connection()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let socket = AutoReconnectSocket::with_auto_reconnect(false);
+        SocketTransport::set_credential_provider(&socket, Some(Arc::new(FailedCredentials)))?;
+        socket.set_addr(Some(format!("ws://{}/myko", listener.local_addr()?)));
+        let started = Instant::now();
+        while socket.get_status() != SocketConnectionStatus::Disconnected
+            && started.elapsed() < Duration::from_secs(2)
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(socket.get_status(), SocketConnectionStatus::Disconnected);
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        socket.close();
+        Ok(())
+    }
+
+    struct PendingCredentials {
+        entered: Arc<std::sync::atomic::AtomicBool>,
+        cancelled: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    struct CredentialAttemptGuard(Arc<std::sync::atomic::AtomicBool>);
+
+    impl Drop for CredentialAttemptGuard {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    impl myko_auth::CredentialProvider for PendingCredentials {
+        fn credentials(
+            &self,
+        ) -> futures::future::BoxFuture<'_, Result<myko_auth::Credentials, myko_auth::AuthError>>
+        {
+            self.entered
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            let guard = CredentialAttemptGuard(self.cancelled.clone());
+            Box::pin(async move {
+                let _guard = guard;
+                std::future::pending().await
+            })
+        }
+    }
+
+    #[test]
+    fn disconnect_cancels_pending_credential_acquisition() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancelled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let socket = AutoReconnectSocket::with_auto_reconnect(false);
+        SocketTransport::set_credential_provider(
+            &socket,
+            Some(Arc::new(PendingCredentials {
+                entered: entered.clone(),
+                cancelled: cancelled.clone(),
+            })),
+        )?;
+        socket.set_addr(Some(format!("ws://{}/myko", listener.local_addr()?)));
+        let started = Instant::now();
+        while !entered.load(std::sync::atomic::Ordering::SeqCst)
+            && started.elapsed() < Duration::from_secs(2)
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
+        socket.close();
+        let started = Instant::now();
+        while socket.get_status() != SocketConnectionStatus::Idle
+            && started.elapsed() < Duration::from_secs(2)
+        {
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(socket.get_status(), SocketConnectionStatus::Idle);
+        assert!(cancelled.load(std::sync::atomic::Ordering::SeqCst));
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+        Ok(())
     }
 
     #[test]

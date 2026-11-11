@@ -183,7 +183,11 @@ Domain visibility uses the existing filters with names `entity_<type>` and
 `guide_<id>`. Relationship entries are omitted when a referenced entity type is
 hidden. Graph category constraints are only exposed when all member types are
 visible. An operation-only allowlist must explicitly include the domain kinds
-it wants to expose. No new permissions or execution path are introduced.
+it wants to expose. Domain metadata is available through an in-process MCP
+executor without an external authorization session. Authenticated gateways and
+remote bridges withhold it until the authorization model can express access to
+entities, relationships, and guides. Detailed operation discovery continues to
+use the gateway's operation discovery policy.
 
 ## Design references and boundaries
 
