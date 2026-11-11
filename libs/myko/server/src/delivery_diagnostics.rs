@@ -10,10 +10,8 @@ use std::{
 };
 
 use myko::wire::{MykoMessage, QueryChange, QueryResponse};
-use opentelemetry::{
-    KeyValue,
-    metrics::{Counter, Gauge, Histogram, UpDownCounter},
-};
+use myko_telemetry::websocket_metrics::delivery::{Connection, Counter, Gauge, Histogram};
+use opentelemetry::KeyValue;
 use serde_json::Value;
 
 const MAX_INSPECTED_ID_BYTES: usize = 1024;
@@ -100,144 +98,13 @@ pub struct DeliveryDiagnostics {
     client_id: String,
     peer: SocketAddr,
     state: Option<Mutex<State>>,
-}
-
-struct Metrics {
-    connections: UpDownCounter<i64>,
-    opened: Counter<u64>,
-    closed: Counter<u64>,
-    pending: Gauge<u64>,
-    untracked: Counter<u64>,
-    failures: Counter<u64>,
-    upserts: Counter<u64>,
-    deletes: Counter<u64>,
-    inspection: Histogram<f64>,
-    active: Gauge<u64>,
-    equivalent: Gauge<u64>,
-    queue_peak: Gauge<u64>,
-    produced: Counter<u64>,
-    enqueue_failed: Counter<u64>,
-    messages: Counter<u64>,
-    bytes: Counter<u64>,
-    unchanged: Counter<u64>,
-    properties: Counter<u64>,
-    changed: Counter<u64>,
-    removed: Counter<u64>,
-    incomplete: Counter<u64>,
-    queue_wait: Histogram<f64>,
-    materialize: Histogram<f64>,
-    serialize: Histogram<f64>,
-    send: Histogram<f64>,
-    produced_gap: Histogram<f64>,
-    gap: Histogram<f64>,
-    setup: Histogram<f64>,
+    metrics: Connection,
 }
 
 fn logs_enabled() -> bool {
     static ENABLED: OnceLock<bool> = OnceLock::new();
     *ENABLED
         .get_or_init(|| std::env::var("MYKO_WS_DIAGNOSTICS_LOGS").is_ok_and(|value| value == "1"))
-}
-
-fn metrics() -> &'static Metrics {
-    static METRICS: OnceLock<Metrics> = OnceLock::new();
-    METRICS.get_or_init(|| {
-        let meter = opentelemetry::global::meter("myko-server");
-        Metrics {
-            connections: meter
-                .i64_up_down_counter("myko.ws.delivery.connections")
-                .build(),
-            opened: meter
-                .u64_counter("myko.ws.delivery.connections.opened")
-                .build(),
-            closed: meter
-                .u64_counter("myko.ws.delivery.connections.closed")
-                .build(),
-            pending: meter
-                .u64_gauge("myko.ws.delivery.subscriptions.not_ready")
-                .build(),
-            untracked: meter.u64_counter("myko.ws.delivery.untracked").build(),
-            failures: meter.u64_counter("myko.ws.delivery.failures").build(),
-            upserts: meter.u64_counter("myko.ws.delivery.upserts").build(),
-            deletes: meter.u64_counter("myko.ws.delivery.deletes").build(),
-            inspection: meter
-                .f64_histogram("myko.ws.delivery.inspection")
-                .with_unit("s")
-                .with_boundaries(vec![
-                    0.0001, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-                ])
-                .build(),
-            active: meter.u64_gauge("myko.ws.delivery.subscriptions").build(),
-            equivalent: meter
-                .u64_gauge("myko.ws.delivery.subscriptions.equivalent")
-                .build(),
-            queue_peak: meter.u64_gauge("myko.ws.delivery.queue_peak").build(),
-            produced: meter.u64_counter("myko.ws.delivery.produced").build(),
-            enqueue_failed: meter.u64_counter("myko.ws.delivery.enqueue_failed").build(),
-            messages: meter.u64_counter("myko.ws.delivery.messages").build(),
-            bytes: meter.u64_counter("myko.ws.delivery.bytes").build(),
-            unchanged: meter.u64_counter("myko.ws.delivery.unchanged").build(),
-            properties: meter.u64_counter("myko.ws.delivery.properties").build(),
-            changed: meter
-                .u64_counter("myko.ws.delivery.properties.changed")
-                .build(),
-            removed: meter
-                .u64_counter("myko.ws.delivery.properties.removed")
-                .build(),
-            incomplete: meter
-                .u64_counter("myko.ws.delivery.inspection.incomplete")
-                .build(),
-            queue_wait: meter
-                .f64_histogram("myko.ws.delivery.queue_wait")
-                .with_unit("s")
-                .with_boundaries(vec![
-                    0.0001, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-                ])
-                .build(),
-            materialize: meter
-                .f64_histogram("myko.ws.delivery.materialize")
-                .with_unit("s")
-                .with_boundaries(vec![
-                    0.0001, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-                ])
-                .build(),
-            serialize: meter
-                .f64_histogram("myko.ws.delivery.serialize")
-                .with_unit("s")
-                .with_boundaries(vec![
-                    0.0001, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-                ])
-                .build(),
-            send: meter
-                .f64_histogram("myko.ws.delivery.send")
-                .with_unit("s")
-                .with_boundaries(vec![
-                    0.0001, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-                ])
-                .build(),
-            produced_gap: meter
-                .f64_histogram("myko.ws.delivery.produced_gap")
-                .with_unit("s")
-                .with_boundaries(vec![
-                    0.0001, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-                ])
-                .build(),
-            gap: meter
-                .f64_histogram("myko.ws.delivery.gap")
-                .with_unit("s")
-                .with_boundaries(vec![
-                    0.0001, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-                ])
-                .build(),
-            setup: meter
-                .f64_histogram("myko.ws.delivery.subscription_setup")
-                .with_unit("s")
-                .with_boundaries(vec![
-                    0.0001, 0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0,
-                ])
-                .build(),
-        }
-    })
 }
 
 impl DeliveryDiagnostics {
@@ -252,6 +119,11 @@ impl DeliveryDiagnostics {
         let diagnostics = Self {
             client_id: client_id.into(),
             peer,
+            metrics: if enabled {
+                Connection::new(client_id)
+            } else {
+                Connection::default()
+            },
             state: enabled.then(|| {
                 Mutex::new(State {
                     subscriptions: HashMap::new(),
@@ -271,8 +143,12 @@ impl DeliveryDiagnostics {
             }),
         };
         if enabled {
-            metrics().connections.add(1, &diagnostics.attributes());
-            metrics().opened.add(1, &diagnostics.attributes());
+            diagnostics
+                .metrics
+                .gauge(Gauge::Connections, 1, &diagnostics.attributes());
+            diagnostics
+                .metrics
+                .counter(Counter::Opened, 1, &diagnostics.attributes());
         }
         diagnostics
     }
@@ -391,9 +267,8 @@ impl DeliveryDiagnostics {
                 subscription.operation.id.clone(),
             ));
             attrs.push(KeyValue::new("kind", subscription.operation.kind));
-            metrics()
-                .setup
-                .record(subscription.requested.elapsed().as_secs_f64(), &attrs);
+            self.metrics
+                .histogram(Histogram::Setup, subscription.requested.elapsed(), &attrs);
         }
     }
 
@@ -415,7 +290,7 @@ impl DeliveryDiagnostics {
                     subscription.operation.id.clone(),
                 ));
             }
-            metrics().queue_wait.record(wait.as_secs_f64(), &attrs);
+            self.metrics.histogram(Histogram::QueueWait, wait, &attrs);
         }
     }
 
@@ -435,7 +310,8 @@ impl DeliveryDiagnostics {
             ));
             attrs.push(KeyValue::new("kind", subscription.operation.kind));
         }
-        metrics().materialize.record(duration.as_secs_f64(), &attrs);
+        self.metrics
+            .histogram(Histogram::Materialize, duration, &attrs);
     }
 
     pub fn produced(&self, tx: &str, depth: usize, success: bool) {
@@ -462,7 +338,7 @@ impl DeliveryDiagnostics {
             let mut attrs = self.attributes().to_vec();
             attrs.push(KeyValue::new("kind", operation.kind));
             attrs.push(KeyValue::new("operation", operation.id.clone()));
-            metrics().produced_gap.record(gap.as_secs_f64(), &attrs);
+            self.metrics.histogram(Histogram::ProducedGap, gap, &attrs);
         }
         let counts = state.counts.entry(operation).or_default();
         if let Some(gap) = gap {
@@ -581,10 +457,11 @@ impl DeliveryDiagnostics {
             let mut attrs = self.attributes().to_vec();
             attrs.push(KeyValue::new("kind", operation.kind));
             attrs.push(KeyValue::new("operation", operation.id));
-            metrics().gap.record(gap.as_secs_f64(), &attrs);
+            self.metrics.histogram(Histogram::Gap, gap, &attrs);
         }
-        metrics().inspection.record(
-            inspection_started.elapsed().as_secs_f64(),
+        self.metrics.histogram(
+            Histogram::Inspection,
+            inspection_started.elapsed(),
             &self.attributes(),
         );
     }
@@ -640,8 +517,9 @@ impl DeliveryDiagnostics {
             attrs.push(KeyValue::new("operation", command_id.to_string()));
             attrs.push(KeyValue::new("kind", "Command"));
         }
-        metrics().serialize.record(serialize.as_secs_f64(), &attrs);
-        metrics().send.record(send.as_secs_f64(), &attrs);
+        self.metrics
+            .histogram(Histogram::Serialize, serialize, &attrs);
+        self.metrics.histogram(Histogram::Send, send, &attrs);
     }
 
     pub fn flush(&self, force: bool) {
@@ -680,15 +558,20 @@ impl DeliveryDiagnostics {
             "client delivery summary");
         }
         let attrs = self.attributes();
-        metrics().pending.record(
+        self.metrics.gauge(
+            Gauge::Pending,
             count(state.subscriptions.len().saturating_sub(active)),
             &attrs,
         );
-        metrics().untracked.add(state.untracked, &attrs);
-        metrics().failures.add(state.failures, &attrs);
-        metrics().active.record(count(active), &attrs);
-        metrics().equivalent.record(count(duplicates), &attrs);
-        metrics().queue_peak.record(count(state.queue_peak), &attrs);
+        self.metrics
+            .counter(Counter::Untracked, state.untracked, &attrs);
+        self.metrics
+            .counter(Counter::Failures, state.failures, &attrs);
+        self.metrics.gauge(Gauge::Active, count(active), &attrs);
+        self.metrics
+            .gauge(Gauge::Equivalent, count(duplicates), &attrs);
+        self.metrics
+            .gauge(Gauge::QueuePeak, count(state.queue_peak), &attrs);
         let mut operations: Vec<_> = state.counts.drain().collect();
         operations.sort_unstable_by_key(|(_, counts)| std::cmp::Reverse(counts.bytes));
         for (rank, (operation, counts)) in operations.into_iter().enumerate() {
@@ -699,18 +582,18 @@ impl DeliveryDiagnostics {
             let mut attrs = self.attributes().to_vec();
             attrs.push(KeyValue::new("kind", operation.kind));
             attrs.push(KeyValue::new("operation", operation.id.clone()));
-            let metrics = metrics();
-            metrics.produced.add(counts.produced, &attrs);
-            metrics.enqueue_failed.add(counts.enqueue_failed, &attrs);
-            metrics.upserts.add(counts.upserts, &attrs);
-            metrics.deletes.add(counts.deletes, &attrs);
-            metrics.messages.add(counts.messages, &attrs);
-            metrics.bytes.add(counts.bytes, &attrs);
-            metrics.unchanged.add(counts.unchanged, &attrs);
-            metrics.properties.add(counts.properties, &attrs);
-            metrics.changed.add(counts.changed, &attrs);
-            metrics.removed.add(counts.removed, &attrs);
-            metrics.incomplete.add(counts.incomplete, &attrs);
+            let metrics = &self.metrics;
+            metrics.counter(Counter::Produced, counts.produced, &attrs);
+            metrics.counter(Counter::EnqueueFailed, counts.enqueue_failed, &attrs);
+            metrics.counter(Counter::Upserts, counts.upserts, &attrs);
+            metrics.counter(Counter::Deletes, counts.deletes, &attrs);
+            metrics.counter(Counter::Messages, counts.messages, &attrs);
+            metrics.counter(Counter::Bytes, counts.bytes, &attrs);
+            metrics.counter(Counter::Unchanged, counts.unchanged, &attrs);
+            metrics.counter(Counter::Properties, counts.properties, &attrs);
+            metrics.counter(Counter::Changed, counts.changed, &attrs);
+            metrics.counter(Counter::Removed, counts.removed, &attrs);
+            metrics.counter(Counter::Incomplete, counts.incomplete, &attrs);
             if logs_enabled() && rank < 5 {
                 tracing::debug!(target: "myko_server::delivery", client_id = %self.client_id, peer = %self.peer,
                 kind = operation.kind, operation = %operation.id, window_s = elapsed.as_secs_f64(),
@@ -739,12 +622,13 @@ impl Drop for DeliveryDiagnostics {
     fn drop(&mut self) {
         if self.state.is_some() {
             self.flush(true);
-            metrics().pending.record(0, &self.attributes());
-            metrics().active.record(0, &self.attributes());
-            metrics().equivalent.record(0, &self.attributes());
-            metrics().queue_peak.record(0, &self.attributes());
-            metrics().connections.add(-1, &self.attributes());
-            metrics().closed.add(1, &self.attributes());
+            self.metrics.gauge(Gauge::Pending, 0, &self.attributes());
+            self.metrics.gauge(Gauge::Active, 0, &self.attributes());
+            self.metrics.gauge(Gauge::Equivalent, 0, &self.attributes());
+            self.metrics.gauge(Gauge::QueuePeak, 0, &self.attributes());
+            self.metrics
+                .gauge(Gauge::Connections, 0, &self.attributes());
+            self.metrics.counter(Counter::Closed, 1, &self.attributes());
         }
     }
 }
@@ -1330,3 +1214,6 @@ mod tests {
         assert!(state.counts.values().any(|c| c.incomplete > 0));
     }
 }
+
+#[cfg(test)]
+mod export_tests;

@@ -114,7 +114,14 @@ mod tests {
         let registry = Arc::new(Registry::default());
         registry.open("client");
         registry.record("client", "out", "QueryResponse", Some("query"), Some(123));
+        let writer = super::super::delivery::Connection::attach(registry.clone(), "client");
+        writer.histogram(
+            super::super::delivery::Histogram::Send,
+            Duration::from_millis(1),
+            &[opentelemetry::KeyValue::new("client_id", "client")],
+        );
         registry.close("client");
+        drop(writer);
         registry
     }
 
@@ -124,6 +131,13 @@ mod tests {
         Gzip,
         CollectorFailure,
         Partial,
+    }
+
+    fn has_final_diagnostic(request: &ExportMetricsServiceRequest) -> bool {
+        request.resource_metrics.iter().flat_map(|r| &r.scope_metrics).flat_map(|s| &s.metrics).any(|m| {
+            if m.name != "myko.ws.delivery.send" { return false; }
+            matches!(&m.data, Some(opentelemetry_proto::tonic::metrics::v1::metric::Data::Histogram(h)) if h.data_points.first().is_some_and(|point| point.count == 1))
+        })
     }
 
     fn export_case(case: Case) -> Result<(u64, u64), HttpError> {
@@ -190,15 +204,15 @@ mod tests {
                 .flat_map(|resource| &resource.scope_metrics)
                 .flat_map(|scope| &scope.metrics)
                 .count();
-            assert_eq!(count, 3);
+            assert_eq!(count, 4);
+            assert!(has_final_diagnostic(&request));
             let content_type = "application/x-protobuf";
-            let response_body = exporter_response;
             write!(
                 stream,
                 "HTTP/1.1 {status} Test\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                response_body.len()
+                exporter_response.len()
             )?;
-            stream.write_all(&response_body)?;
+            stream.write_all(&exporter_response)?;
             Ok(())
         });
         let client = Client {
@@ -220,6 +234,13 @@ mod tests {
         collector
             .join()
             .map_err(|_| "collector thread panicked")??;
+        if matches!(case, Case::CollectorFailure | Case::Partial) {
+            let mut retry = ExportMetricsServiceRequest {
+                resource_metrics: vec![ResourceMetrics::default()],
+            };
+            assert!(registry.snapshot().append(&mut retry));
+            assert!(has_final_diagnostic(&retry));
+        }
         Ok(registry.retained())
     }
 
