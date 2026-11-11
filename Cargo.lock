@@ -4913,10 +4913,14 @@ dependencies = [
 name = "myko-leptos"
 version = "6.13.0"
 dependencies = [
+ "any_spawner",
+ "autosocket",
+ "flume 0.11.1",
  "hyphae-leptos",
  "leptos",
  "myko",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
