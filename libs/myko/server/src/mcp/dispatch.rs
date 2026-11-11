@@ -123,6 +123,8 @@ pub async fn handle_request(
     }
     match request.method.as_str() {
         "initialize" => Some(handle_initialize(id, info)),
+        "server/discover" => Some(handle_discover(id, info)),
+        "ping" => Some(McpResponse::success(id, json!({}))),
         "notifications/initialized" | "notifications/cancelled" => None,
         "tools/list" => Some(handle_tools_list(id, filter)),
         "tools/call" => Some(handle_tools_call(id, request.params, filter, executor, info).await),
@@ -135,9 +137,28 @@ pub async fn handle_request(
     }
 }
 
+fn handle_discover(id: Value, info: &ServerInfo) -> McpResponse {
+    let mut payload = json!({
+        "resultType": "complete",
+        "supportedVersions": [super::types::PROTOCOL_VERSION, super::types::LEGACY_PROTOCOL_VERSION],
+        "capabilities": { "tools": {}, "resources": {} },
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": { "name": info.name, "version": info.version }
+        },
+        "ttlMs": 0,
+        "cacheScope": "private"
+    });
+    if let Some(text) = &info.instructions
+        && let Value::Object(object) = &mut payload
+    {
+        object.insert("instructions".to_string(), Value::String(text.clone()));
+    }
+    McpResponse::success(id, payload)
+}
+
 fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
     let mut payload = json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": super::types::LEGACY_PROTOCOL_VERSION,
         "capabilities": {
             "tools": {},
             "resources": {}

@@ -3,6 +3,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub(super) const PROTOCOL_VERSION: &str = "2026-07-28";
+pub(super) const LEGACY_PROTOCOL_VERSION: &str = "2024-11-05";
+pub(super) const META_PROTOCOL_VERSION: &str = "io.modelcontextprotocol/protocolVersion";
+
 /// MCP JSON-RPC request.
 #[derive(Debug, Deserialize)]
 pub struct McpRequest {
@@ -15,12 +19,19 @@ pub struct McpRequest {
 }
 
 impl McpRequest {
+    pub(super) fn protocol_version(&self) -> Option<&Value> {
+        self.params
+            .as_ref()?
+            .get("_meta")?
+            .get(META_PROTOCOL_VERSION)
+    }
+
     /// Bootstrap exposes static capabilities, never application operations or data.
     #[must_use]
     pub fn is_public_bootstrap(&self) -> bool {
         matches!(
             self.method.as_str(),
-            "initialize" | "tools/list" | "notifications/initialized"
+            "initialize" | "server/discover" | "tools/list" | "notifications/initialized"
         )
     }
 }

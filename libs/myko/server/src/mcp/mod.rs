@@ -32,7 +32,8 @@
 //!
 //! ## Protocol
 //!
-//! Implements MCP 2024-11-05 JSON-RPC (compatible with the 2025-06-18
+//! The HTTP POST endpoint also supports stateless MCP 2026-07-28 requests.
+//! Legacy MCP 2024-11-05 JSON-RPC remains available (compatible with the 2025-06-18
 //! error-handling conventions).
 //!
 //! ## Legacy stdio

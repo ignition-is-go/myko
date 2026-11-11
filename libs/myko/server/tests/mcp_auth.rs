@@ -168,6 +168,70 @@ fn content(response: &Value) -> TestResult<Value> {
 }
 
 #[tokio::test]
+async fn modern_http_discovery_and_routing_use_the_authenticated_transport() -> TestResult {
+    let f = fixture(session(Duration::from_secs(30))).await?;
+    let client = reqwest::Client::new();
+    let post = |method: &str, version: &str, params: Value| {
+        let mut params = params.as_object().cloned().unwrap_or_default();
+        params.insert(
+            "_meta".into(),
+            json!({
+                "io.modelcontextprotocol/protocolVersion": version,
+                "io.modelcontextprotocol/clientInfo": {"name": "myko-test", "version": "1"},
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }),
+        );
+        client
+            .post(format!("http://{}/myko/mcp", f.addr))
+            .header("MCP-Protocol-Version", version)
+            .header("Mcp-Method", method)
+            .json(&json!({"jsonrpc":"2.0", "id":1, "method":method, "params":params}))
+    };
+    let response = post("server/discover", "2026-07-28", json!({}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let discovery: Value = response.json().await?;
+    assert_eq!(
+        discovery.pointer("/result/resultType"),
+        Some(&json!("complete"))
+    );
+    assert_eq!(
+        discovery.pointer("/result/supportedVersions/0"),
+        Some(&json!("2026-07-28"))
+    );
+
+    let response = post("server/discover", "1900-01-01", json!({}))
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let error: Value = response.json().await?;
+    assert_eq!(error.pointer("/error/code"), Some(&json!(-32022)));
+
+    let params = json!({"name":"execute", "arguments":{"code":"return await myko.command('ForbiddenMutation', {});"}});
+    let response = post("tools/call", "2026-07-28", params.clone())
+        .header("Mcp-Name", "search")
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+    let error: Value = response.json().await?;
+    assert_eq!(error.pointer("/error/code"), Some(&json!(-32020)));
+
+    let response = post("tools/call", "2026-07-28", params)
+        .header("Mcp-Name", "=?base64?ZXhlY3V0ZQ==?=")
+        .send()
+        .await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
+    let denied: Value = response.json().await?;
+    assert_eq!(denied.pointer("/result/isError"), Some(&json!(true)));
+    assert_eq!(
+        denied.pointer("/result/resultType"),
+        Some(&json!("complete"))
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_notifications_are_accepted_without_json_rpc_responses() -> TestResult {
     let f = fixture(session(Duration::from_secs(30))).await?;
     for method in [
