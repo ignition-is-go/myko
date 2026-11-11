@@ -18,52 +18,63 @@ pub struct OperationArgField {
     pub name: &'static str,
     /// Rust type as written on the field (e.g. `"Option<String>"`).
     pub rust_type: &'static str,
-    /// Whether Serde permits this field to be omitted.
-    pub optional: bool,
     pub aliases: &'static [&'static str],
-    /// The field is spread into the input object by Serde.
+    pub description: Option<&'static str>,
     pub flattened: bool,
+    pub custom_deserializer: bool,
+    pub presence: OperationArgPresence,
+    pub input_schema: fn() -> serde_json::Value,
 }
 
-/// The compiled Serde input contract for an operation. Kept separately from
-/// handler registration so remote MCP clients can validate before dispatch.
-pub struct OperationInputContract {
-    pub kind: &'static str,
-    pub id: &'static str,
-    pub validate: fn(&serde_json::Value) -> Result<(), String>,
+/// How Serde handles an omitted argument.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OperationArgPresence {
+    Required,
+    Optional,
+    Defaulted,
 }
 
-inventory::collect!(OperationInputContract);
-
-/// Validate using the same deserializer as execution, including nested types,
-/// custom deserializers, aliases, defaults, and unknown-field policies.
+/// Deserialize operation input with a field path in the error diagnostic.
 /// # Errors
-/// Returns the failing field path and Serde's diagnostic.
-pub fn validate_input<T: serde::de::DeserializeOwned>(
-    input: &serde_json::Value,
-) -> Result<(), String> {
-    if !input.is_object() {
-        return Err("$: expected an argument object".into());
+///
+/// Returns the field path and Serde diagnostic for invalid input.
+pub fn deserialize_operation<T: serde::de::DeserializeOwned>(
+    value: serde_json::Value,
+) -> Result<T, serde_path_to_error::Error<serde_json::Error>> {
+    serde_path_to_error::deserialize(value)
+}
+
+/// Reflect supported field types without requiring every downstream type to implement `JsonSchema`.
+pub struct InputSchema<T>(std::marker::PhantomData<T>);
+
+impl<T> Default for InputSchema<T> {
+    fn default() -> Self {
+        Self(std::marker::PhantomData)
     }
-    serde_path_to_error::deserialize::<_, T>(input)
-        .map(|_| ())
-        .map_err(|error| format!("{}: {}", error.path(), error.inner()))
 }
 
-/// Resolve the input contract without contacting a server or running a handler.
-/// # Errors
-/// Returns a diagnostic for an unknown operation or malformed arguments.
-pub fn validate_operation_input(
-    kind: &str,
-    id: &str,
-    input: &serde_json::Value,
-) -> Result<(), String> {
-    let contract = inventory::iter::<OperationInputContract>
-        .into_iter()
-        .find(|contract| contract.kind == kind && contract.id == id)
-        .ok_or_else(|| format!("Unknown operation: {kind}_{id}"))?;
-    (contract.validate)(input)
-        .map_err(|message| format!("Invalid arguments for {kind}_{id}: {message}"))
+/// Field-schema discovery. Unsupported types remain unconstrained.
+///
+/// Macros use a double reference to a concrete field type. Autoderef selects
+/// the fallback when that type has no `JsonSchema` implementation.
+pub trait ReflectInputSchema {
+    fn input_schema(self) -> serde_json::Value;
+}
+
+impl<T> ReflectInputSchema for &InputSchema<T> {
+    fn input_schema(self) -> serde_json::Value {
+        serde_json::json!({"x-myko-opaque": true, "x-rust-type": std::any::type_name::<T>()})
+    }
+}
+
+impl<T: schemars::JsonSchema> ReflectInputSchema for &&InputSchema<T> {
+    fn input_schema(self) -> serde_json::Value {
+        schemars::generate::SchemaSettings::default()
+            .for_deserialize()
+            .into_generator()
+            .into_root_schema_for::<T>()
+            .to_value()
+    }
 }
 
 /// A downstream example for arguments whose valid values cannot be inferred
@@ -76,8 +87,8 @@ pub struct OperationExample {
 
 inventory::collect!(OperationExample);
 
-/// Register example arguments; discovery checks them against Serde before
-/// publishing them. The expression must return a `serde_json::Value`.
+/// Register example arguments; MCP discovery checks structural constraints before
+/// publishing them; Serde remains authoritative during execution. The expression must return a `serde_json::Value`.
 #[macro_export]
 macro_rules! register_operation_example {
     ($kind:literal, $operation:ident, $example:expr) => {
@@ -87,6 +98,45 @@ macro_rules! register_operation_example {
                 kind: $kind,
                 id: stringify!($operation),
                 example: || $example,
+            }
+        }
+    };
+}
+
+/// Serialized entity fields and documentation captured from the Rust definition.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EntityField {
+    pub name: &'static str,
+    pub rust_type: &'static str,
+    pub description: Option<&'static str>,
+    pub flattened: bool,
+}
+
+pub struct EntityDescription {
+    pub entity_type: &'static str,
+    pub description: Option<&'static str>,
+    pub fields: &'static [EntityField],
+}
+inventory::collect!(EntityDescription);
+
+/// Application-owned vocabulary, invariants, or workflow guidance. Static documentation only.
+pub struct DomainGuide {
+    pub id: &'static str,
+    pub title: &'static str,
+    pub description: &'static str,
+    pub content: &'static str,
+}
+inventory::collect!(DomainGuide);
+
+/// Register application domain documentation for on-demand discovery.
+#[macro_export]
+macro_rules! register_domain_guide {
+    ($id:literal, $title:literal, $description:literal, $content:expr) => {
+        #[cfg(not(target_arch = "wasm32"))]
+        $crate::inventory::submit! {
+            $crate::reflection::DomainGuide {
+                id: $id, title: $title, description: $description, content: $content,
             }
         }
     };

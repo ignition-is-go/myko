@@ -266,7 +266,9 @@ Clients can narrow discovery and execution with
 `MYKO_MCP_TOOL_VISIBILITY_ALLOW`, `MYKO_MCP_TOOL_VISIBILITY_DENY`,
 `MYKO_MCP_TOOL_CALLABLE_ALLOW`, and `MYKO_MCP_TOOL_CALLABLE_DENY`.
 These client-selected restrictions narrow access; configure server authentication
-and authorization to establish the caller's authority.
+and authorization to establish the caller's authority. See the
+[MCP Code Mode guide](docs/mcp-code-mode.md) for input contracts, output schemas,
+and domain discovery.
 
 ## Persistence, telemetry and diagnostics
 

@@ -116,12 +116,12 @@ pub use core::{
 };
 
 pub use erased_serde;
-pub use myko_auth as auth; // For AnyItem::erased_serialize in generated code
 // Re-export crates for use in macros
 pub use futures; // For proc macro generated stream adapters in typed sagas
 pub use hyphae; // For cell-based queries/reports in #[myko_item]
 pub use inventory;
 pub use inventory::submit; // For myko::submit! macro
+pub use myko_auth as auth; // For AnyItem::erased_serialize in generated code
 // `myko::TS` resolves to the TypeScript adapter's derive+trait when
 // `codegen-ts` is enabled on Myko, and to a no-op helper derive otherwise.
 // Macro expansion can therefore keep a stable path without requiring entity
@@ -132,6 +132,7 @@ pub use myko_macros::TsNoop as TS;
 // as `myko::myko_item`, `myko::myko_subtype`, etc. without adding a separate
 // `myko-macros` dependency.
 pub use myko_macros::*;
+pub use schemars;
 pub use serde; // For #[derive(serde::Serialize, serde::Deserialize)] in #[myko_item]
 pub use serde_json; // For proc macro generated serde_json::from_value in typed sagas
 pub use tracing; // For proc macro generated tracing::debug!/warn! in typed sagas

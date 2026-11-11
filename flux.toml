@@ -94,6 +94,17 @@ root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--lib", "operation_index"
 [tasks.lint-mcp-contract]
 root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
 
+[tasks.test-operation-contracts]
+root = ["cargo", "test", "-p", "myko-macros", "operation_contract"]
+
+[tasks.test-mcp]
+depends_on = ["test-mcp-unit"]
+
+[tasks.check-operation-contracts]
+root = ["cargo", "clippy", "-p", "myko-macros", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.lint-mcp-ci]
+root = ["cargo", "clippy", "--jobs", "4", "-p", "myko-server", "-p", "myko-macros", "--all-targets", "--features", "myko/ci", "--no-deps", "--", "-D", "warnings"]
 [tasks.test-auth]
 root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-auth", "-p", "myko-auth0", "--all-features"]
 

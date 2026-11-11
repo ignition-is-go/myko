@@ -777,6 +777,8 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
     } = input;
     let krate = &ctx.krate;
     let id_type = generate_id_type(&name, &id_type_ident, &ctx);
+    let entity_description =
+        crate::operation_contract::entity_description_tokens(&input_struct, krate);
     quote! {
         use #krate::prelude::Query;
         use #krate::hyphae::MapExt as _HyphaMapExt;
@@ -811,6 +813,7 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
         }
         #(#foreign_key_impls)*
         #(#generated_items)*
+        #entity_description
     }
 }
 

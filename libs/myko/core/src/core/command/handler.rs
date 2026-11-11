@@ -1,5 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -227,8 +229,10 @@ impl CommandContext {
         E: crate::graph::GraphEdge + Clone + PartialEq,
         E::Ends: crate::graph::TypedEdgeEnds,
     {
-        use crate::core::item::{AnyItem, downcast_any_item_arc};
-        use crate::graph::{EdgeEnds, EdgeScope};
+        use crate::{
+            core::item::{AnyItem, downcast_any_item_arc},
+            graph::{EdgeEnds, EdgeScope},
+        };
 
         let graph = self
             .server_ctx
@@ -471,7 +475,7 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
         }
 
         // Deserialize the command
-        let cmd: C = serde_json::from_value(command).map_err(|e| {
+        let cmd: C = crate::reflection::deserialize_operation(command).map_err(|e| {
             CommandError::new(
                 ctx.tx(),
                 C::command_id_static(),

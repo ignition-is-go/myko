@@ -1368,7 +1368,7 @@ where
         Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
 {
     fn parse(value: Value) -> Result<Arc<dyn AnyQuery>, anyhow::Error> {
-        let query = serde_json::from_value::<QueryRequest<Q>>(value)?;
+        let query = crate::reflection::deserialize_operation::<QueryRequest<Q>>(value)?;
         Ok(Arc::new(query))
     }
 

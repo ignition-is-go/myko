@@ -232,6 +232,44 @@ async fn modern_http_discovery_and_routing_use_the_authenticated_transport() -> 
 }
 
 #[tokio::test]
+async fn mcp_contract_discovery_respects_gateway_policy() -> TestResult {
+    let f = fixture(session(Duration::from_secs(30))).await?;
+    let response = post(
+        &f,
+        "tools/call",
+        json!({
+            "name": "search",
+            "arguments": {"kind":"command", "id":"ForbiddenMutation", "details":true}
+        }),
+    )
+    .await?;
+    assert_eq!(content(&response)?.get("operations"), Some(&json!([])));
+
+    let response = post(
+        &f,
+        "tools/call",
+        json!({
+            "name":"execute",
+            "arguments":{"code":"return myko.describe('command', 'ForbiddenMutation');"}
+        }),
+    )
+    .await?;
+    assert_eq!(response.pointer("/result/isError"), Some(&json!(true)));
+
+    let response = post(
+        &f,
+        "tools/call",
+        json!({
+            "name":"search",
+            "arguments":{"kind":"guide"}
+        }),
+    )
+    .await?;
+    assert_eq!(response.pointer("/result/isError"), Some(&json!(true)));
+    Ok(())
+}
+
+#[tokio::test]
 async fn http_notifications_are_accepted_without_json_rpc_responses() -> TestResult {
     let f = fixture(session(Duration::from_secs(30))).await?;
     for method in [

@@ -17,7 +17,6 @@ struct ViewExpansion<'a> {
     struct_name: &'a syn::Ident,
     item_type: &'a Path,
     cache_key_impl: &'a TokenStream,
-    input_contract: &'a TokenStream,
     scope_registration: &'a TokenStream,
 }
 
@@ -30,14 +29,12 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
         struct_name,
         item_type,
         cache_key_impl,
-        input_contract,
         scope_registration,
     } = expansion;
     let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
     quote! {
         #derives
         #input_struct
-        #input_contract
         #scope_registration
 
         #[cfg(not(target_arch = "wasm32"))]
@@ -92,7 +89,7 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let serde_rename_attr = crate::operation_contract::serde_rename_attr(&ctx, &input_struct.attrs);
 
     crate::gate_ts_attrs(&mut input_struct.attrs);
     for field in &mut input_struct.fields {
@@ -170,12 +167,11 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     );
 
     let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+    let serde_rename_attr = crate::operation_contract::serde_rename_attr(&ctx, &input_struct.attrs);
 
     // Reflection metadata for the MCP `search()` operation index — see
     // `myko::reflection` and the matching comment in `query.rs`.
     let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
-    let input_contract = crate::input_contract_tokens(&input_struct, "view", krate);
 
     crate::gate_ts_attrs(&mut input_struct.attrs);
     crate::gate_field_ts_attrs(&mut input_struct.fields);
@@ -253,7 +249,6 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
         struct_name,
         item_type: &item_type,
         cache_key_impl: &cache_key_impl,
-        input_contract: &input_contract,
         scope_registration: &scope_registration,
     })
 }
