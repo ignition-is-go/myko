@@ -207,7 +207,13 @@ impl SocketTransport for WasmSocket {
         let ws = inner.ws.as_ref().ok_or("WebSocket not connected")?;
         match frame {
             WsFrame::Text(s) => ws.send_with_str(&s).map_err(|e| format!("{e:?}")),
-            WsFrame::Binary(b) => ws.send_with_u8_array(&b).map_err(|e| format!("{e:?}")),
+            WsFrame::Binary(b) => {
+                #[cfg(target_feature = "atomics")]
+                let result = ws.send_with_js_u8_array(&js_sys::Uint8Array::from(b.as_slice()));
+                #[cfg(not(target_feature = "atomics"))]
+                let result = ws.send_with_u8_array(&b);
+                result.map_err(|e| format!("{e:?}"))
+            }
         }
     }
 
