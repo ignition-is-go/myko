@@ -2,11 +2,6 @@
 //!
 //! Handles WebSocket connections using `ClientSession` for subscription management.
 
-use crate::GatewayAccess;
-use crate::delivery_diagnostics::DeliveryDiagnostics;
-use crate::subscription_authorization::{Delivery, SubscriptionAuthorization};
-use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
-use myko_auth::{AuthSession, AuthorizationRequest, EventChange, OperationKind};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -42,6 +37,7 @@ use myko::{
         ViewError, ViewWindowUpdate, WrappedQuery, WrappedView,
     },
 };
+use myko_auth::{AuthSession, AuthorizationRequest, EventChange, OperationKind};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, watch},
@@ -55,7 +51,13 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-use crate::blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING};
+use crate::{
+    GatewayAccess,
+    blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING},
+    delivery_diagnostics::DeliveryDiagnostics,
+    subscription_authorization::{Delivery, SubscriptionAuthorization},
+    view_sampling::{ViewDelivery, ViewDeliveryControl},
+};
 
 mod subscription_builds;
 use subscription_builds::{SubscriptionBuilds, SubscriptionBuilt};
@@ -818,15 +820,7 @@ impl WsHandler {
                 }
                 // Completed subscription builds — register with session
                 Some(built) = subscribe_rx.recv() => {
-                    if let Some((tx, ready)) = Self::complete_subscription(
-                        &state.subscription_builds, built, &state.priority_tx, &state.drop_logger,
-                    ) {
-                        if let Some(ready) = ready {
-                            if !Self::register_ready_subscription(session, ready, &state) { break; }
-                        } else if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
-                            map.remove(&tx);
-                        }
-                    }
+                    if !Self::register_built_subscription(session, built, &state) { break; }
                 }
                 // NOTE(ts): Sweep outbound command entries older than 10s.
                 // Responses normally arrive quickly; stale entries are from
@@ -1728,6 +1722,28 @@ impl WsHandler {
         }
     }
 
+    fn register_built_subscription<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        built: SubscriptionBuilt,
+        state: &ReadLoopState,
+    ) -> bool {
+        let Some((tx, ready)) = Self::complete_subscription(
+            &state.subscription_builds,
+            built,
+            &state.priority_tx,
+            &state.drop_logger,
+        ) else {
+            return true;
+        };
+        if let Some(ready) = ready {
+            return Self::register_ready_subscription(session, ready, state);
+        }
+        if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
+            map.remove(&tx);
+        }
+        true
+    }
+
     fn complete_subscription(
         builds: &SubscriptionBuilds,
         built: SubscriptionBuilt,
@@ -2261,6 +2277,7 @@ mod tests {
         action: impl FnOnce(&MessageContext<'_>) -> R,
     ) -> R {
         let context = MessageContext {
+            auth: &None,
             priority_tx: &mpsc::channel(1).0,
             drop_logger: &Arc::new(DropLogger::new("test".into(), watch::channel(false).0)),
             query_ids_by_tx: &Arc::default(),
@@ -2287,7 +2304,10 @@ mod tests {
         });
     }
 
-    fn install_test_subscription<W: WsWriter>(session: &mut ClientSession<W>, ready: SubscriptionReady) {
+    fn install_test_subscription<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        ready: SubscriptionReady,
+    ) {
         match ready {
             SubscriptionReady::Report {
                 tx_id,
@@ -2322,7 +2342,9 @@ mod tests {
         logger: &DropLogger,
     ) -> Option<Arc<str>> {
         let (tx, ready) = WsHandler::complete_subscription(builds, built, priority, logger)?;
-        if let Some(ready) = ready { install_test_subscription(session, ready); }
+        if let Some(ready) = ready {
+            install_test_subscription(session, ready);
+        }
         Some(tx)
     }
 
@@ -2493,8 +2515,7 @@ mod tests {
             ))),
         };
         assert!(
-            complete_test_subscription(&mut session, &builds, stale, &priority, &logger)
-                .is_none()
+            complete_test_subscription(&mut session, &builds, stale, &priority, &logger).is_none()
         );
         assert!(errors.try_recv().is_err());
         let current = SubscriptionBuilt {
@@ -2600,8 +2621,7 @@ mod tests {
             ))),
         };
         assert!(
-            complete_test_subscription(&mut session, &builds, failed, &priority, &logger)
-                .is_some()
+            complete_test_subscription(&mut session, &builds, failed, &priority, &logger).is_some()
         );
         assert!(matches!(errors.try_recv(), Ok(MykoMessage::ViewError(_))));
         assert!(retained.upgrade().is_none());
