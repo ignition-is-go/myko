@@ -110,15 +110,15 @@ gpui = { package = "gpui-unofficial", version = "=1.16.1" }
 gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.16.1" }
 
 # Internal crates
-myko-auth = { version = "6.13.0", path = "libs/myko/auth" }
-myko-permissions = { version = "6.13.0", path = "libs/myko/permissions", default-features = false }
-myko-permissions-leptos = { path = "libs/myko/permissions-leptos", version = "6.13.0" }
-autosocket = { version = "6.13.0", path = "libs/autosocket" }
-myko-gpui = { version = "6.13.0", path = "libs/myko/gpui" }
-myko-leptos = { version = "6.13.0", path = "libs/myko/leptos" }
-myko-macros = { version = "6.13.0", path = "libs/myko/macros" }
-myko = { version = "6.13.0", path = "libs/myko/core" }
-myko-server = { version = "6.13.0", path = "libs/myko/server" }
+myko-auth = { version = "6.14.0", path = "libs/myko/auth" }
+myko-permissions = { version = "6.14.0", path = "libs/myko/permissions", default-features = false }
+myko-permissions-leptos = { path = "libs/myko/permissions-leptos", version = "6.14.0" }
+autosocket = { version = "6.14.0", path = "libs/autosocket" }
+myko-gpui = { version = "6.14.0", path = "libs/myko/gpui" }
+myko-leptos = { version = "6.14.0", path = "libs/myko/leptos" }
+myko-macros = { version = "6.14.0", path = "libs/myko/macros" }
+myko = { version = "6.14.0", path = "libs/myko/core" }
+myko-server = { version = "6.14.0", path = "libs/myko/server" }
 
 [patch.crates-io]
 # Test the Git-distributed GPUI bridge against this workspace's Myko core.

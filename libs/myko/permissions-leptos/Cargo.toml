@@ -1,6 +1,6 @@
 [package]
 name = "myko-permissions-leptos"
-version = "6.13.0"
+version = "6.14.0"
 edition = "2024"
 description = "Server-discovered permission components for Leptos"
 license = "AGPL-3.0-or-later"
@@ -15,7 +15,7 @@ tasks = ["check", "build", "test", "lint", "publish", "check-wasm"]
 leptos = { version = "0.8" }
 myko.workspace = true
 myko-leptos.workspace = true
-myko-permissions = { path = "../permissions", version = "6.13.0", default-features = false }
+myko-permissions = { path = "../permissions", version = "6.14.0", default-features = false }
 serde.workspace = true
 uuid.workspace = true
 
