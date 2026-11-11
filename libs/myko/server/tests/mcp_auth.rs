@@ -172,12 +172,15 @@ async fn modern_http_discovery_and_routing_use_the_authenticated_transport() -> 
     let f = fixture(session(Duration::from_secs(30))).await?;
     let client = reqwest::Client::new();
     let post = |method: &str, version: &str, params: Value| {
-        let mut params = params;
-        params["_meta"] = json!({
-            "io.modelcontextprotocol/protocolVersion": version,
-            "io.modelcontextprotocol/clientInfo": {"name": "myko-test", "version": "1"},
-            "io.modelcontextprotocol/clientCapabilities": {}
-        });
+        let mut params = params.as_object().cloned().unwrap_or_default();
+        params.insert(
+            "_meta".into(),
+            json!({
+                "io.modelcontextprotocol/protocolVersion": version,
+                "io.modelcontextprotocol/clientInfo": {"name": "myko-test", "version": "1"},
+                "io.modelcontextprotocol/clientCapabilities": {}
+            }),
+        );
         client
             .post(format!("http://{}/myko/mcp", f.addr))
             .header("MCP-Protocol-Version", version)
