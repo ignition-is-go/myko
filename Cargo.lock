@@ -601,6 +601,7 @@ dependencies = [
  "flume 0.11.1",
  "futures",
  "futures-util",
+ "gloo-timers",
  "hyphae",
  "js-sys",
  "myko-auth",
