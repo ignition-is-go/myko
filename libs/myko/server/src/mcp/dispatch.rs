@@ -117,25 +117,48 @@ pub async fn handle_request(
     executor: &Executor,
     info: &ServerInfo,
 ) -> Option<McpResponse> {
+    let id = request.id?;
+    if let Err(message) = executor.check() {
+        return Some(McpResponse::error(id, McpError::invalid_params(message)));
+    }
     match request.method.as_str() {
-        "initialize" => Some(handle_initialize(request.id, info)),
+        "initialize" => Some(handle_initialize(id, info)),
+        "server/discover" => Some(handle_discover(id, info)),
+        "ping" => Some(McpResponse::success(id, json!({}))),
         "notifications/initialized" | "notifications/cancelled" => None,
-        "tools/list" => Some(handle_tools_list(request.id, filter)),
-        "tools/call" => {
-            Some(handle_tools_call(request.id, request.params, filter, executor, info).await)
-        }
-        "resources/list" => Some(handle_resources_list(request.id, filter)),
-        "resources/read" => Some(handle_resources_read(request.id, request.params, filter)),
+        "tools/list" => Some(handle_tools_list(id, filter)),
+        "tools/call" => Some(handle_tools_call(id, request.params, filter, executor, info).await),
+        "resources/list" => Some(handle_resources_list(id, filter, executor)),
+        "resources/read" => Some(handle_resources_read(id, request.params, filter, executor)),
         _ => Some(McpResponse::error(
-            request.id,
+            id,
             McpError::method_not_found(&request.method),
         )),
     }
 }
 
+fn handle_discover(id: Value, info: &ServerInfo) -> McpResponse {
+    let mut payload = json!({
+        "resultType": "complete",
+        "supportedVersions": [super::types::PROTOCOL_VERSION, super::types::LEGACY_PROTOCOL_VERSION],
+        "capabilities": { "tools": {}, "resources": {} },
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": { "name": info.name, "version": info.version }
+        },
+        "ttlMs": 0,
+        "cacheScope": "private"
+    });
+    if let Some(text) = &info.instructions
+        && let Value::Object(object) = &mut payload
+    {
+        object.insert("instructions".to_string(), Value::String(text.clone()));
+    }
+    McpResponse::success(id, payload)
+}
+
 fn handle_initialize(id: Value, info: &ServerInfo) -> McpResponse {
     let mut payload = json!({
-        "protocolVersion": "2024-11-05",
+        "protocolVersion": super::types::LEGACY_PROTOCOL_VERSION,
         "capabilities": {
             "tools": {},
             "resources": {}
@@ -171,10 +194,12 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
     if filter.meta_tool_visible(SEARCH_TOOL) {
         tools.push(McpTool {
             name: SEARCH_TOOL.to_string(),
-            description: "Search the index of available Myko queries/views/reports/commands. \
+            description: "Search Myko operations or domain metadata. Use kind entity for entity and field documentation, relationship for the relationship map, or guide for application domain guides. \
                 Returns compact {id, kind, args, outputType} entries — call this before \
                 `execute` to find operation ids and argument shapes. Set `details: true` to \
-                get wire argument names, input/output types, result wrappers, and a validated example."
+                get wire argument names, input/output types, result wrappers, and a validated example. \
+                Permission annotations are advisory preflight snapshots: live permissions and arguments \
+                can change the decision. Do not retain old permission conclusions; every call is reauthorized."
                 .to_string(),
             input_schema: json!({
                 "type": "object",
@@ -183,13 +208,17 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
                         "type": "string",
                         "description": "Case-insensitive substring match against operation id/description."
                     },
+                    "id": {
+                        "type": "string",
+                        "description": "Exact operation ID; use with kind and details for one contract."
+                    },
                     "details": {
                         "type": "boolean",
-                        "description": "Include exact wire arguments, result wrapper types, and a validated example for each matching operation."
+                        "description": "Return one contract, call signature, example when available, and wrapper shape. Requires id and kind."
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["query", "view", "report", "command"],
+                        "enum": ["query", "view", "report", "command", "entity", "relationship", "guide"],
                         "description": "Restrict results to one operation kind."
                     }
                 },
@@ -204,10 +233,10 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
             description: "Run JavaScript against the Myko API. The code runs as an async \
                 function body — use `await myko.query(id, args)`, `myko.view(id, args)`, \
                 `myko.report(id, args)`, or `myko.command(id, args)` (ids/args from `search`), \
-                and optionally `return` a JSON-serializable value. Chain multiple calls in one \
-                script instead of one `execute` call per operation. Use Promise.all for independent calls; \
-                join, filter, aggregate, and count the returned data in JavaScript, then return a compact \
-                answer rather than raw datasets for the model to calculate. Each call resolves to a \
+                and `myko.describe(kind, id)` for one operation's argument contract, \
+                call example, and result wrapper. Optionally `return` a JSON-serializable value. \
+                Chain multiple calls in one \
+                script instead of one `execute` call per operation. Each call resolves to a \
                 wrapper object, not the raw payload directly: query/view resolve to \
                 {query_id|view_id, item_type, count, items} (items is the payload); \
                 report resolves to {report_id, output_type, result} (result is the payload); \
@@ -217,6 +246,10 @@ fn handle_tools_list(id: Value, filter: &ClientFilters) -> McpResponse {
             input_schema: json!({
                 "type": "object",
                 "properties": {
+                    "outputSchema": {
+                        "description": "JSON Schema for the final returned value. Validated after computation. Use code to join/filter/count, and return a compact summary. Earlier operations are not rolled back if output validation fails.",
+                        "anyOf": [{"type": "object"}, {"type": "boolean"}]
+                    },
                     "code": {
                         "type": "string",
                         "description": "JavaScript function body to run."
@@ -272,7 +305,7 @@ async fn handle_tools_call(
 
     // MCP Tool Execution Error ("Invalid input data" category): result is a
     // successful JSON-RPC response carrying `isError: true` content with the
-    // descriptive constraint message verbatim — distinct from the protocol
+    // descriptive constraint message — distinct from the protocol
     // error path above.
     if let Err(message) = filter.tool_callable(&tool_name, &arguments) {
         return McpResponse::success(
@@ -280,14 +313,22 @@ async fn handle_tools_call(
             json!({
                 "content": [{
                     "type": "text",
-                    "text": message,
+                    "text": super::schema::bounded_error(message),
                 }],
                 "isError": true,
             }),
         );
     }
 
-    let result = execute_tool(executor, info, filter, &tool_name, arguments).await;
+    let result = execute_tool(executor, info, filter, &tool_name, arguments)
+        .await
+        .and_then(|value| {
+            if tool_name == EXECUTE_TOOL {
+                super::schema::serialize_result(&value)
+            } else {
+                serde_json::to_string(&value).map_err(|error| error.to_string())
+            }
+        });
 
     match result {
         Ok(data) => McpResponse::success(
@@ -295,7 +336,7 @@ async fn handle_tools_call(
             json!({
                 "content": [{
                     "type": "text",
-                    "text": serde_json::to_string_pretty(&data).unwrap_or_default()
+                    "text": data
                 }]
             }),
         ),
@@ -304,7 +345,7 @@ async fn handle_tools_call(
             json!({
                 "content": [{
                     "type": "text",
-                    "text": format!("Error: {}", message)
+                    "text": super::schema::bounded_error(format!("Error: {message}"))
                 }],
                 "isError": true,
             }),
@@ -321,8 +362,8 @@ async fn execute_tool(
 ) -> Result<Value, String> {
     match tool_name {
         CONNECTION_STATUS_TOOL => Ok(executor.connection_status(info)),
-        SEARCH_TOOL => Ok(handle_search(&args, filter, &info.operation_index)),
-        EXECUTE_TOOL => handle_execute(&args, executor, filter).await,
+        SEARCH_TOOL => handle_search(&args, filter, &info.operation_index, executor),
+        EXECUTE_TOOL => handle_execute(&args, executor, filter, info.operation_index.clone()).await,
         // Most commonly hit by a client with a cached pre-Code-Mode tool
         // name (e.g. `report_ServerStats`) from before this server
         // collapsed to search/execute — point it at the fix directly
@@ -334,17 +375,45 @@ async fn execute_tool(
     }
 }
 
-fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]) -> Value {
+fn handle_search(
+    args: &Value,
+    filter: &ClientFilters,
+    index: &[OperationSchema],
+    executor: &Executor,
+) -> Result<Value, String> {
+    if let Some(kind @ ("entity" | "relationship" | "guide")) =
+        args.get("kind").and_then(Value::as_str)
+    {
+        if !matches!(executor, Executor::InProcess(_)) {
+            return Err("Domain metadata is unavailable through this gateway".into());
+        }
+        return super::domain::search(
+            kind,
+            args.get("query").and_then(Value::as_str),
+            args.get("id").and_then(Value::as_str),
+            args.get("details")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+            filter,
+        );
+    }
+    let id = args.get("id").and_then(Value::as_str);
     let query = args
         .get("query")
         .and_then(|v| v.as_str())
         .map(str::to_lowercase);
     let kind = args.get("kind").and_then(|v| v.as_str());
 
-    let operations: Vec<&OperationSchema> = index
+    let details = args
+        .get("details")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let operations = index
         .iter()
         .filter(|op| filter.tool_visible(&format!("{}_{}", op.kind, op.id)))
+        .filter(|op| executor.can_discover(&op.kind, &op.id))
         .filter(|op| kind.is_none_or(|k| op.kind == k))
+        .filter(|op| id.is_none_or(|id| op.id == id))
         .filter(|op| {
             query.as_deref().is_none_or(|q| {
                 op.id.to_lowercase().contains(q)
@@ -354,36 +423,55 @@ fn handle_search(args: &Value, filter: &ClientFilters, index: &[OperationSchema]
                         .is_some_and(|d| d.to_lowercase().contains(q))
             })
         })
-        .collect();
-
-    if args
-        .get("details")
-        .and_then(Value::as_bool)
-        .unwrap_or(false)
-    {
-        json!({ "operations": operations.iter().map(|op| op.describe()).collect::<Vec<_>>() })
-    } else {
-        json!({ "operations": operations })
-    }
+        .map(|op| {
+            let mut entry = if details {
+                super::contract::describe(index, filter, &op.kind, &op.id)
+                    .unwrap_or_else(|_| op.describe())
+            } else {
+                json!(op)
+            };
+            if let Value::Object(fields) = &mut entry {
+                fields.insert(
+                    "authorization".into(),
+                    executor.permission_snapshot(&op.kind, &op.id),
+                );
+            }
+            entry
+        })
+        .collect::<Vec<_>>();
+    Ok(json!({
+        "operations": operations,
+        "permissionNotice": "Advisory snapshot only. Permissions change live; do not rely on previously gathered permission information. Preflight uses empty arguments; actual arguments may change authorization. Every execution checks current permissions. Refresh search after a denial. Discovery restrictions may hide operations."
+    }))
 }
 
 async fn handle_execute(
     args: &Value,
     executor: &Executor,
     filter: &ClientFilters,
+    index: Arc<Vec<OperationSchema>>,
 ) -> Result<Value, String> {
     let Some(code) = args.get("code").and_then(|v| v.as_str()) else {
         return Err("Missing required `code` argument".to_string());
     };
-    sandbox::execute(code, Arc::new(executor.clone()), filter.clone()).await
+    let output_schema = args
+        .get("outputSchema")
+        .map(super::schema::compile)
+        .transpose()?;
+    let value = sandbox::execute(code, Arc::new(executor.clone()), filter.clone(), index).await?;
+    if let Some(schema) = output_schema {
+        super::schema::validate(&schema, &value)
+            .map_err(|error| format!("Returned value does not match outputSchema: {error}"))?;
+    }
+    Ok(value)
 }
 
-fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_list(id: Value, filter: &ClientFilters, executor: &Executor) -> McpResponse {
     let mut resources: Vec<McpResource> = Vec::new();
 
     for reg in inventory::iter::<QueryRegistration> {
         let tool_name = format!("query_{}", reg.query_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("query", reg.query_id) {
             continue;
         }
         resources.push(McpResource {
@@ -396,7 +484,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ViewRegistration> {
         let tool_name = format!("view_{}", reg.view_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("view", reg.view_id) {
             continue;
         }
         resources.push(McpResource {
@@ -409,7 +497,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<ReportRegistration> {
         let tool_name = format!("report_{}", reg.report_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("report", reg.report_id) {
             continue;
         }
         resources.push(McpResource {
@@ -422,7 +510,7 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
 
     for reg in inventory::iter::<CommandRegistration> {
         let tool_name = format!("command_{}", reg.command_id);
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover("command", reg.command_id) {
             continue;
         }
         resources.push(McpResource {
@@ -433,10 +521,38 @@ fn handle_resources_list(id: Value, filter: &ClientFilters) -> McpResponse {
         });
     }
 
+    for kind in ["entity", "relationship", "guide"]
+        .into_iter()
+        .filter(|_| matches!(executor, Executor::InProcess(_)))
+    {
+        if let Ok(entries) = super::domain::search(kind, None, None, false, filter)
+            && let Some(entries) = entries.get("entries").and_then(Value::as_array)
+        {
+            for entry in entries {
+                if let Some(name) = entry.get("id").and_then(Value::as_str) {
+                    resources.push(McpResource {
+                        uri: format!("myko://domain/{kind}/{name}"),
+                        name: format!("{kind}: {name}"),
+                        description: entry
+                            .get("description")
+                            .and_then(Value::as_str)
+                            .map(str::to_string),
+                        mime_type: Some("application/json".to_string()),
+                    });
+                }
+            }
+        }
+    }
+
     McpResponse::success(id, json!({ "resources": resources }))
 }
 
-fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilters) -> McpResponse {
+fn handle_resources_read(
+    id: Value,
+    params: Option<Value>,
+    filter: &ClientFilters,
+    executor: &Executor,
+) -> McpResponse {
     let Some(params) = params else {
         return McpResponse::error(id, McpError::invalid_params("Missing params"));
     };
@@ -444,11 +560,28 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
         return McpResponse::error(id, McpError::invalid_params("Missing uri"));
     };
 
+    if let Some(path) = uri.strip_prefix("myko://domain/")
+        && let Some((kind, name)) = path.split_once('/')
+    {
+        if !matches!(executor, Executor::InProcess(_)) {
+            return McpResponse::error(id, McpError::invalid_params("Resource not accessible"));
+        }
+        return match super::domain::search(kind, None, Some(name), true, filter)
+            .and_then(|value| super::schema::serialize_result(&value))
+        {
+            Ok(text) => McpResponse::success(
+                id,
+                json!({"contents":[{"uri":uri,"mimeType":"application/json","text":text}]}),
+            ),
+            Err(message) => McpResponse::error(id, McpError::invalid_params(message)),
+        };
+    }
+
     if let Some(path) = uri.strip_prefix("myko://schema/")
         && let Some((schema_type, schema_id)) = path.split_once('/')
     {
         let tool_name = format!("{schema_type}:{schema_id}");
-        if !filter.tool_visible(&tool_name) {
+        if !filter.tool_visible(&tool_name) || !executor.can_discover(schema_type, schema_id) {
             return McpResponse::error(
                 id,
                 McpError {
@@ -459,10 +592,10 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
             );
         }
         let content = match schema_type {
-            "query" => get_query_schema(schema_id),
-            "view" => get_view_schema(schema_id),
-            "report" => get_report_schema(schema_id),
-            "command" => get_command_schema(schema_id),
+            "query" => get_operation_schema("query", schema_id),
+            "view" => get_operation_schema("view", schema_id),
+            "report" => get_operation_schema("report", schema_id),
+            "command" => get_operation_schema("command", schema_id),
             _ => None,
         };
         if let Some(content) = content {
@@ -489,68 +622,11 @@ fn handle_resources_read(id: Value, params: Option<Value>, filter: &ClientFilter
     )
 }
 
-fn get_query_schema(query_id: &str) -> Option<String> {
-    for reg in inventory::iter::<QueryRegistration> {
-        if reg.query_id == query_id {
-            let schema = json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
-                "title": reg.query_id,
-                "description": format!("Query returning {} entities", reg.query_item_type),
-                "type": "object",
-                "additionalProperties": true,
-            });
-            return Some(serde_json::to_string_pretty(&schema).unwrap_or_default());
-        }
-    }
-    None
-}
-
-fn get_view_schema(view_id: &str) -> Option<String> {
-    for reg in inventory::iter::<ViewRegistration> {
-        if reg.view_id == view_id {
-            let schema = json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
-                "title": reg.view_id,
-                "description": format!("View returning a list of {}", reg.view_item_type),
-                "type": "object",
-                "additionalProperties": true,
-            });
-            return Some(serde_json::to_string_pretty(&schema).unwrap_or_default());
-        }
-    }
-    None
-}
-
-fn get_report_schema(report_id: &str) -> Option<String> {
-    for reg in inventory::iter::<ReportRegistration> {
-        if reg.report_id == report_id {
-            let schema = json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
-                "title": reg.report_id,
-                "description": format!("Report returning {}", reg.output_type),
-                "type": "object",
-                "additionalProperties": true,
-            });
-            return Some(serde_json::to_string_pretty(&schema).unwrap_or_default());
-        }
-    }
-    None
-}
-
-fn get_command_schema(command_id: &str) -> Option<String> {
-    for reg in inventory::iter::<CommandRegistration> {
-        if reg.command_id == command_id {
-            let schema = json!({
-                "$schema": "http://json-schema.org/draft-07/schema#",
-                "title": reg.command_id,
-                "description": format!("Command returning {}", reg.result_type),
-                "type": "object",
-                "additionalProperties": true,
-            });
-            return Some(serde_json::to_string_pretty(&schema).unwrap_or_default());
-        }
-    }
-    None
+fn get_operation_schema(kind: &str, id: &str) -> Option<String> {
+    myko::operation_index::build_operation_index()
+        .into_iter()
+        .find(|operation| operation.kind == kind && operation.id == id)
+        .and_then(|operation| serde_json::to_string(&operation.input_schema()).ok())
 }
 
 #[cfg(test)]
@@ -574,7 +650,7 @@ mod tests {
     fn make_request(method: &str) -> McpRequest {
         McpRequest {
             jsonrpc: "2.0".to_string(),
-            id: Value::Number(1.into()),
+            id: Some(Value::Number(1.into())),
             method: method.to_string(),
             params: None,
         }
@@ -669,16 +745,34 @@ mod tests {
         let info = ServerInfo::default();
         let client = std::sync::Arc::new(myko::client::MykoClient::new());
         let executor = Executor::Client(client);
-        assert!(
-            handle_request(
-                make_request("notifications/initialized"),
-                &filter,
-                &executor,
-                &info,
+        for method in [
+            "notifications/initialized",
+            "notifications/cancelled",
+            "unknown/notification",
+        ] {
+            let request = require_some!(
+                serde_json::from_value::<McpRequest>(json!({"jsonrpc":"2.0", "method":method}))
+                    .ok(),
+                "notification must deserialize without an id"
+            );
+            assert!(
+                handle_request(request, &filter, &executor, &info)
+                    .await
+                    .is_none()
+            );
+        }
+        let request = require_some!(
+            serde_json::from_value::<McpRequest>(
+                json!({"jsonrpc":"2.0", "id":null, "method":"tools/list"})
             )
-            .await
-            .is_none()
+            .ok(),
+            "explicit null id must deserialize"
         );
+        let response = require_some!(
+            handle_request(request, &filter, &executor, &info).await,
+            "an explicit null id is a request, not a notification"
+        );
+        assert_eq!(response.id, Value::Null);
     }
 
     #[tokio::test]
@@ -699,7 +793,7 @@ mod tests {
     fn make_tool_call(name: &str, arguments: Value) -> McpRequest {
         let request = McpRequest {
             jsonrpc: "2.0".to_string(),
-            id: Value::Number(1.into()),
+            id: Some(Value::Number(1.into())),
             method: "tools/call".to_string(),
             params: Some(json!({ "name": name, "arguments": arguments })),
         };
@@ -715,6 +809,7 @@ mod tests {
         ServerInfo {
             operation_index: Arc::new(vec![
                 OperationSchema {
+                    required_scopes: None,
                     id: "GetAllServers".to_string(),
                     kind: "query".to_string(),
                     description: Some("All servers".to_string()),
@@ -722,6 +817,7 @@ mod tests {
                     output_type: "Server[]".to_string(),
                 },
                 OperationSchema {
+                    required_scopes: None,
                     id: "DeleteServer".to_string(),
                     kind: "command".to_string(),
                     description: Some("Delete a server".to_string()),
@@ -994,6 +1090,69 @@ mod tests {
         assert_eq!(
             message.trim(),
             "\"Unknown operation: command_DeleteServer\""
+        );
+    }
+}
+
+#[cfg(test)]
+mod structured_output_tests {
+    use super::*;
+
+    fn client_executor() -> Executor {
+        Executor::Client(Arc::new(myko::client::MykoClient::new()))
+    }
+
+    #[tokio::test]
+    async fn validates_returned_value_against_output_schema() {
+        let args = json!({"code":"return {count: 'wrong'};", "outputSchema":{
+            "type":"object", "properties":{"count":{"type":"integer"}}, "required":["count"]
+        }});
+        let result = handle_execute(
+            &args,
+            &client_executor(),
+            &ClientFilters::allow_all(),
+            Arc::new(vec![]),
+        )
+        .await;
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.contains("outputSchema") && error.contains("/count"))
+        );
+    }
+
+    #[tokio::test]
+    async fn rejects_invalid_output_schema_before_running_code() {
+        let args =
+            json!({"code":"throw new Error('script ran');", "outputSchema":{"type":"invalid"}});
+        let result = handle_execute(
+            &args,
+            &client_executor(),
+            &ClientFilters::allow_all(),
+            Arc::new(vec![]),
+        )
+        .await;
+        assert!(result.as_ref().err().is_some_and(
+            |error| error.contains("Invalid JSON Schema") && !error.contains("script ran")
+        ));
+    }
+
+    #[tokio::test]
+    async fn rejects_large_results_instead_of_returning_raw_rows() {
+        let args = json!({"code":"return 'x'.repeat(65537);"});
+        let result = handle_execute(
+            &args,
+            &client_executor(),
+            &ClientFilters::allow_all(),
+            Arc::new(vec![]),
+        )
+        .await;
+        assert!(
+            result
+                .as_ref()
+                .err()
+                .is_some_and(|error| error.contains("exceeds 65536 bytes"))
         );
     }
 }

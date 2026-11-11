@@ -54,6 +54,8 @@ pub enum RequestCacheScope {
 /// command execution, query subscriptions, and report generation.
 #[derive(Clone, Debug)]
 pub struct RequestContext {
+    /// External authenticated or anonymous authority. Internal requests have no external session.
+    pub auth: Option<myko_auth::AuthSession>,
     /// Transaction ID - same across all operations in one request.
     /// Used to correlate logs, events, and responses.
     pub tx: Arc<str>,
@@ -80,6 +82,28 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
+    /// Resolve the authenticated application user supplied by the host.
+    /// # Errors
+    /// Rejects missing, expired or revoked authority and identities without a user.
+    pub fn user_id(&self) -> Result<&crate::identity::UserId, myko_auth::AuthError> {
+        let session = self
+            .auth
+            .as_ref()
+            .ok_or(myko_auth::AuthError::Unauthenticated)?;
+        session.check()?;
+        session
+            .identity()
+            .and_then(|identity| identity.user_id.as_ref())
+            .filter(|id| !id.as_ref().is_empty())
+            .ok_or(myko_auth::AuthError::Unauthenticated)
+    }
+
+    #[must_use]
+    pub fn with_auth(mut self, auth: Option<myko_auth::AuthSession>) -> Self {
+        self.auth = auth;
+        self
+    }
+
     /// Create a new `RequestContext` with explicit values.
     pub fn new(
         tx: Arc<str>,
@@ -89,6 +113,7 @@ impl RequestContext {
         created_at: String,
     ) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: client_id.map(Into::into),
             lineage,
@@ -105,6 +130,7 @@ impl RequestContext {
     #[must_use]
     pub fn from_client(tx: Arc<str>, client_id: Arc<str>, host_id: Uuid) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: Some(client_id.into()),
             lineage: vec![Arc::from("client")],
@@ -125,6 +151,7 @@ impl RequestContext {
         windback: Option<Arc<str>>,
     ) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: Some(client_id.into()),
             lineage: vec![Arc::from("client")],
@@ -140,6 +167,7 @@ impl RequestContext {
     #[must_use]
     pub fn internal(tx: Arc<str>, host_id: Uuid, origin: &str) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: None,
             lineage: vec![Arc::from(origin)],
@@ -175,6 +203,7 @@ impl RequestContext {
         let mut lineage = self.lineage.clone();
         lineage.push(Arc::from(operation));
         Self {
+            auth: self.auth.clone(),
             tx: self.tx.clone(),
             client_id: self.client_id.clone(),
             lineage,

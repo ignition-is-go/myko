@@ -4,6 +4,7 @@ use crate::prelude::*;
 /// A small canonical entity used by client integration demos.
 #[myko_item]
 #[derive(Eq)]
+#[myko_external(SET, DEL)]
 pub struct DemoTask {
     pub title: String,
     pub completed: bool,

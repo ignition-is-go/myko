@@ -1,0 +1,936 @@
+#![allow(clippy::panic_in_result_fn)]
+use futures_util::{SinkExt, StreamExt, future::BoxFuture};
+use myko::common::to_value::ToValue;
+use myko::prelude::{EventPublishing, Querying, RegistryScoped, RequestScoped};
+use myko::{
+    entities::demo::{DemoStatusId, DemoTask, DemoTaskId},
+    server::{PersistError, Persister},
+    wire::{MEvent, MEventType, MykoMessage, message::PingData, query::WrappedQuery},
+};
+use myko_auth::{
+    AuthError, AuthenticatedIdentity, Authenticator, AuthorizationRequest, Authorizer, Credentials,
+    MykoAuthProvider, Principal, PrincipalKind,
+};
+use myko_server::{GatewayAccess, MykoServer, router::route_connection_with_auth};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+    time::{Duration, SystemTime},
+};
+use tokio::{
+    net::{TcpListener, TcpStream},
+    time::timeout,
+};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream,
+    tungstenite::{Message, client::IntoClientRequest},
+};
+type TestResult<T = ()> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
+type Socket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+struct Identity(Arc<AtomicUsize>);
+impl Authenticator for Identity {
+    fn authenticate(
+        &self,
+        credentials: Credentials,
+    ) -> BoxFuture<'_, std::result::Result<AuthenticatedIdentity, AuthError>> {
+        Box::pin(async move {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            let subject = credentials
+                .bearer
+                .filter(|token| token == "user" || token == "service")
+                .ok_or(AuthError::Unauthenticated)?;
+            Ok(AuthenticatedIdentity {
+                user_id: None,
+                principal: Principal {
+                    issuer: "fixture".into(),
+                    kind: if subject == "user" {
+                        PrincipalKind::User
+                    } else {
+                        PrincipalKind::Service
+                    },
+                    subject,
+                },
+                client_id: None,
+                scopes: vec![],
+                delegation: vec![],
+                claims: serde_json::Value::Null,
+                expires_at: SystemTime::now()
+                    .checked_add(Duration::from_mins(1))
+                    .ok_or(AuthError::Unavailable)?,
+            })
+        })
+    }
+}
+struct Policy(AtomicU64);
+impl Authorizer for Policy {
+    fn revision(&self) -> u64 {
+        self.0.load(Ordering::SeqCst)
+    }
+    fn authorize(
+        &self,
+        _: &AuthenticatedIdentity,
+        request: AuthorizationRequest<'_>,
+    ) -> std::result::Result<(), AuthError> {
+        match request {
+            AuthorizationRequest::Execute {
+                kind: myko_auth::OperationKind::Query,
+                operation,
+                ..
+            } if operation != "GetDemoTasks"
+                || self.0.load(Ordering::Acquire).is_multiple_of(2) =>
+            {
+                Ok(())
+            }
+            AuthorizationRequest::ClientEvent {
+                entity_type: "DemoTask",
+                change: myko_auth::EventChange::Set,
+                proposed,
+            } if proposed.get("id").and_then(serde_json::Value::as_str) == Some("allowed") => {
+                Ok(())
+            }
+            _ => Err(AuthError::Forbidden),
+        }
+    }
+}
+#[derive(Default)]
+struct Journal(Mutex<Vec<MEvent>>);
+impl Persister for Journal {
+    fn persist(&self, event: MEvent) -> std::result::Result<(), PersistError> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(event);
+        Ok(())
+    }
+}
+struct Fixture {
+    server: Arc<MykoServer>,
+    addr: std::net::SocketAddr,
+    task: tokio::task::JoinHandle<()>,
+    policy: Arc<Policy>,
+    authenticated: Arc<AtomicUsize>,
+    journal: Arc<Journal>,
+}
+impl Drop for Fixture {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+async fn fixture(access: GatewayAccess) -> TestResult<Fixture> {
+    fixture_mode(access, false).await
+}
+async fn fixture_mode(access: GatewayAccess, live: bool) -> TestResult<Fixture> {
+    let journal = Arc::new(Journal::default());
+    let server = Arc::new(
+        MykoServer::builder()
+            .with_default_persister(journal.clone())
+            .build(),
+    );
+    let policy = Arc::new(Policy(AtomicU64::new(0)));
+    let authenticated = Arc::new(AtomicUsize::new(0));
+    let mut provider =
+        MykoAuthProvider::new(Arc::new(Identity(authenticated.clone())), policy.clone());
+    if live {
+        provider = provider.with_live_permissions();
+    }
+    let provider = Arc::new(provider);
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let runtime = server.clone();
+    let task = tokio::spawn(async move {
+        while let Ok((stream, peer)) = listener.accept().await {
+            let ctx = Arc::new(runtime.ctx());
+            let info = runtime.server_info();
+            let provider = provider.clone();
+            tokio::spawn(async move {
+                route_connection_with_auth(stream, peer, ctx, info, access, provider).await
+            });
+        }
+    });
+    Ok(Fixture {
+        server,
+        addr,
+        task,
+        policy,
+        authenticated,
+        journal,
+    })
+}
+async fn connect(fixture: &Fixture) -> TestResult<Socket> {
+    let mut request = format!("ws://{}/myko", fixture.addr).into_client_request()?;
+    request
+        .headers_mut()
+        .insert("Authorization", "Bearer service".parse()?);
+    Ok(tokio_tungstenite::connect_async(request).await?.0)
+}
+fn event(id: &str) -> MEvent {
+    MEvent::from_item(
+        &DemoTask {
+            id: DemoTaskId::from(id),
+            title: id.into(),
+            completed: false,
+            status_id: DemoStatusId::from("todo"),
+        },
+        MEventType::SET,
+        "untrusted",
+    )
+}
+async fn send(socket: &mut Socket, message: &MykoMessage, binary: bool) -> TestResult {
+    let frame = if binary {
+        let mut bytes = vec![];
+        ciborium::ser::into_writer(message, &mut bytes)?;
+        Message::Binary(bytes.into())
+    } else {
+        Message::Text(serde_json::to_string(message)?.into())
+    };
+    socket.send(frame).await?;
+    Ok(())
+}
+async fn closed(socket: &mut Socket) -> TestResult {
+    match timeout(Duration::from_secs(3), socket.next()).await? {
+        None | Some(Err(_) | Ok(Message::Close(_))) => Ok(()),
+        other => Err(format!("expected close, got {other:?}").into()),
+    }
+}
+#[tokio::test]
+async fn missing_credentials_rejected_before_upgrade_for_native_and_mcp() -> TestResult {
+    let f = fixture(GatewayAccess::Full).await?;
+    for path in ["/myko", "/myko/mcp"] {
+        match tokio_tungstenite::connect_async(format!("ws://{}{path}", f.addr)).await {
+            Err(tokio_tungstenite::tungstenite::Error::Http(response)) => {
+                assert_eq!(response.status(), 401);
+            }
+            other => return Err(format!("unexpected handshake {other:?}").into()),
+        }
+    }
+    assert!(
+        f.server
+            .registry
+            .get_or_create("Client")
+            .snapshot()
+            .is_empty()
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn rejected_event_batch_has_no_store_or_journal_effect_in_json_and_cbor() -> TestResult {
+    let f = fixture(GatewayAccess::Full).await?;
+    for binary in [false, true] {
+        let mut socket = connect(&f).await?;
+        send(
+            &mut socket,
+            &MykoMessage::EventBatch(vec![event("allowed"), event("denied")]),
+            binary,
+        )
+        .await?;
+        send(
+            &mut socket,
+            &MykoMessage::Ping(PingData {
+                id: "after-denial".into(),
+                timestamp: 0,
+            }),
+            binary,
+        )
+        .await?;
+        assert!(
+            timeout(Duration::from_secs(3), socket.next())
+                .await?
+                .is_some_and(|frame| matches!(frame, Ok(Message::Text(_) | Message::Binary(_))))
+        );
+        assert_eq!(
+            f.server.registry.get_or_create("DemoTask").snapshot().len(),
+            0
+        );
+        assert_eq!(
+            f.journal
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .filter(|event| event.item_type.as_ref() == "DemoTask")
+                .count(),
+            0
+        );
+    }
+    let mut socket = connect(&f).await?;
+    send(&mut socket, &MykoMessage::Event(event("allowed")), false).await?;
+    timeout(Duration::from_secs(3), async {
+        while f.server.registry.get_or_create("DemoTask").snapshot().len() != 1 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    send(
+        &mut socket,
+        &MykoMessage::Ping(PingData {
+            id: "barrier".into(),
+            timestamp: 0,
+        }),
+        false,
+    )
+    .await?;
+    assert!(
+        timeout(Duration::from_secs(3), socket.next())
+            .await?
+            .is_some()
+    );
+    assert_eq!(f.authenticated.load(Ordering::SeqCst), 3);
+    Ok(())
+}
+#[tokio::test]
+async fn read_only_ceiling_cannot_be_overridden_by_policy() -> TestResult {
+    let f = fixture(GatewayAccess::ReadOnly).await?;
+    let mut socket = connect(&f).await?;
+    send(&mut socket, &MykoMessage::Event(event("allowed")), false).await?;
+    send(
+        &mut socket,
+        &MykoMessage::Ping(PingData {
+            id: "read-only-alive".into(),
+            timestamp: 0,
+        }),
+        false,
+    )
+    .await?;
+    assert!(
+        timeout(Duration::from_secs(3), socket.next())
+            .await?
+            .is_some_and(|frame| matches!(frame, Ok(Message::Text(_) | Message::Binary(_))))
+    );
+    assert_eq!(
+        f.server.registry.get_or_create("DemoTask").snapshot().len(),
+        0
+    );
+    Ok(())
+}
+#[tokio::test]
+async fn policy_change_closes_subscription_without_another_identity_provider_call() -> TestResult {
+    let f = fixture(GatewayAccess::Full).await?;
+    let mut socket = connect(&f).await?;
+    send(
+        &mut socket,
+        &MykoMessage::Query(WrappedQuery {
+            query: serde_json::json!({"tx":"live"}),
+            query_id: "GetDemoTasks".into(),
+            query_item_type: "DemoTask".into(),
+            window: None,
+        }),
+        false,
+    )
+    .await?;
+    assert!(
+        timeout(Duration::from_secs(3), socket.next())
+            .await?
+            .is_some()
+    );
+    f.policy.0.fetch_add(1, Ordering::SeqCst);
+    closed(&mut socket).await?;
+    assert_eq!(f.authenticated.load(Ordering::SeqCst), 1);
+    timeout(Duration::from_secs(3), async {
+        while !f
+            .server
+            .registry
+            .get_or_create("Client")
+            .snapshot()
+            .is_empty()
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    Ok(())
+}
+
+#[myko::myko_query(DemoTask)]
+struct CallerTasks {}
+impl myko::query::QueryHandler for CallerTasks {
+    fn test_entity(ctx: myko::query::QueryTestContext<Self>) -> bool {
+        ctx.query_context
+            .req
+            .auth
+            .as_ref()
+            .and_then(myko_auth::AuthSession::identity)
+            .is_some_and(|identity| identity.principal.subject == ctx.item.id.to_string())
+    }
+}
+
+async fn scoped_snapshot(f: &Fixture, token: &str) -> TestResult<Vec<serde_json::Value>> {
+    let mut request = format!("ws://{}/myko", f.addr).into_client_request()?;
+    request
+        .headers_mut()
+        .insert("Authorization", format!("Bearer {token}").parse()?);
+    let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+    send(
+        &mut socket,
+        &MykoMessage::Query(WrappedQuery {
+            query: serde_json::json!({"tx":"same"}),
+            query_id: "CallerTasks".into(),
+            query_item_type: "DemoTask".into(),
+            window: None,
+        }),
+        false,
+    )
+    .await?;
+    let frame = timeout(Duration::from_secs(3), socket.next())
+        .await?
+        .ok_or("closed")??;
+    let Message::Text(text) = frame else {
+        return Err("expected text".into());
+    };
+    let MykoMessage::QueryResponse(response) = serde_json::from_str(&text)? else {
+        return Err("expected query response".into());
+    };
+    Ok(response
+        .upserts
+        .into_iter()
+        .map(|wrapped| wrapped.item.to_value())
+        .collect())
+}
+
+#[tokio::test]
+async fn authenticated_query_cache_does_not_share_caller_sensitive_results() -> TestResult {
+    let f = fixture(GatewayAccess::Full).await?;
+    f.server.ctx().apply_event(event("user"))?;
+    f.server.ctx().apply_event(event("service"))?;
+    let user = scoped_snapshot(&f, "user").await?;
+    let service = scoped_snapshot(&f, "service").await?;
+    assert_eq!(user.len(), 1);
+    assert_eq!(service.len(), 1);
+    assert_eq!(
+        user.first()
+            .and_then(|item| item.get("id"))
+            .and_then(serde_json::Value::as_str),
+        Some("user")
+    );
+    assert_eq!(
+        service
+            .first()
+            .and_then(|item| item.get("id"))
+            .and_then(serde_json::Value::as_str),
+        Some("service")
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn browser_handshake_selects_public_protocol_without_echoing_credentials() -> TestResult {
+    use base64::Engine as _;
+    let f = fixture(GatewayAccess::Full).await?;
+    let mut request = format!("ws://{}/myko", f.addr).into_client_request()?;
+    let credential = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode("service");
+    request.headers_mut().insert(
+        "Sec-WebSocket-Protocol",
+        format!("myko, myko.bearer.{credential}").parse()?,
+    );
+    let (mut socket, response) = tokio_tungstenite::connect_async(request).await?;
+    assert_eq!(
+        response
+            .headers()
+            .get("Sec-WebSocket-Protocol")
+            .and_then(|value| value.to_str().ok()),
+        Some("myko")
+    );
+    socket.close(None).await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn typed_client_authenticates_before_subscribing() -> TestResult {
+    use myko::hyphae::Gettable;
+    let f = fixture(GatewayAccess::Full).await?;
+    f.server.ctx().apply_event(event("service"))?;
+    let client = myko::client::MykoClient::new_with_auto_reconnect(false);
+    client.set_bearer_token("service".into())?;
+    client.set_address(Some(format!("ws://{}/myko", f.addr)));
+    let watch = client.watch_query_state(CallerTasks {});
+    timeout(Duration::from_secs(3), async {
+        while !watch.ready().get() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await?;
+    assert_eq!(watch.items().get().len(), 1);
+    assert_eq!(f.authenticated.load(Ordering::SeqCst), 1);
+    client.close();
+    Ok(())
+}
+
+async fn next_message(socket: &mut Socket) -> TestResult<MykoMessage> {
+    match timeout(Duration::from_secs(3), socket.next())
+        .await?
+        .ok_or("socket closed")??
+    {
+        Message::Text(text) => Ok(serde_json::from_str(&text)?),
+        Message::Binary(bytes) => Ok(ciborium::de::from_reader(bytes.as_ref())?),
+        other => Err(format!("unexpected frame {other:?}").into()),
+    }
+}
+fn live_query(tx: &str, operation: &str) -> MykoMessage {
+    MykoMessage::Query(WrappedQuery {
+        query: serde_json::json!({"tx":tx}),
+        query_id: operation.into(),
+        query_item_type: "DemoTask".into(),
+        window: None,
+    })
+}
+
+#[tokio::test]
+async fn live_permission_edits_stop_denied_data_but_keep_socket_and_other_subscriptions()
+-> TestResult {
+    for binary in [false, true] {
+        let f = fixture_mode(GatewayAccess::Full, true).await?;
+        let mut socket = connect(&f).await?;
+        send(
+            &mut socket,
+            &live_query("restricted", "GetDemoTasks"),
+            binary,
+        )
+        .await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "restricted")
+        );
+        send(&mut socket, &live_query("unaffected", "OtherTasks"), binary).await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "unaffected")
+        );
+        f.policy.0.store(1, Ordering::Release);
+        // No incoming request or new data is required to notify a denied subscriber.
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryError(error) if error.tx == "restricted" && error.message == "permission denied")
+        );
+        f.server.ctx().apply_event(event("service"))?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "unaffected")
+        );
+        send(
+            &mut socket,
+            &live_query("still-denied", "GetDemoTasks"),
+            binary,
+        )
+        .await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryError(error) if error.tx == "still-denied")
+        );
+        send(
+            &mut socket,
+            &MykoMessage::Ping(PingData {
+                id: "alive".into(),
+                timestamp: 0,
+            }),
+            binary,
+        )
+        .await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::Ping(ping) if ping.id == "alive")
+        );
+        f.policy.0.store(2, Ordering::Release);
+        send(&mut socket, &live_query("restored", "GetDemoTasks"), binary).await?;
+        assert!(
+            matches!(next_message(&mut socket).await?, MykoMessage::QueryResponse(response) if response.tx.as_ref() == "restored" && response.upserts.len() == 1)
+        );
+        assert_eq!(f.authenticated.load(Ordering::Acquire), 1);
+    }
+    Ok(())
+}
+
+#[myko::prelude::myko_item]
+pub struct InternalFixture {
+    value: i32,
+}
+struct AllowAll;
+impl Authorizer for AllowAll {
+    fn authorize(
+        &self,
+        _: &AuthenticatedIdentity,
+        _: AuthorizationRequest<'_>,
+    ) -> Result<(), AuthError> {
+        Ok(())
+    }
+}
+async fn internal_fixture(
+    authenticated: bool,
+) -> TestResult<(
+    Arc<MykoServer>,
+    std::net::SocketAddr,
+    tokio::task::JoinHandle<()>,
+)> {
+    let server = Arc::new(MykoServer::builder().build());
+    let kept = InternalFixture {
+        id: "kept".into(),
+        value: 1,
+    };
+    server.ctx().set(&kept)?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let runtime = server.clone();
+    let provider = Arc::new(MykoAuthProvider::new(
+        Arc::new(Identity(Arc::new(AtomicUsize::new(0)))),
+        Arc::new(AllowAll),
+    ));
+    let task = tokio::spawn(async move {
+        while let Ok((stream, peer)) = listener.accept().await {
+            let server = runtime.clone();
+            let provider = provider.clone();
+            tokio::spawn(async move {
+                if authenticated {
+                    myko_server::router::route_connection_with_auth(
+                        stream,
+                        peer,
+                        Arc::new(server.ctx()),
+                        server.server_info(),
+                        GatewayAccess::Full,
+                        provider,
+                    )
+                    .await
+                } else {
+                    myko_server::router::route_connection(
+                        stream,
+                        peer,
+                        Arc::new(server.ctx()),
+                        server.server_info(),
+                    )
+                    .await
+                }
+            });
+        }
+    });
+    Ok((server, addr, task))
+}
+#[tokio::test]
+async fn undeclared_entities_reject_raw_events_without_auth_and_with_permissive_policy()
+-> TestResult {
+    for authenticated in [false, true] {
+        let (server, addr, task) = internal_fixture(authenticated).await?;
+        for binary in [false, true] {
+            let mut request = format!("ws://{addr}/myko").into_client_request()?;
+            if authenticated {
+                request
+                    .headers_mut()
+                    .insert("authorization", "Bearer user".parse()?);
+            }
+            let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+            for change in [MEventType::SET, MEventType::DEL] {
+                let mut attack = MEvent::from_item(
+                    &InternalFixture {
+                        id: "kept".into(),
+                        value: 99,
+                    },
+                    change,
+                    "untrusted",
+                );
+                // Normalization must not permit bypassing the declaration.
+                attack.item_type = "Internal\0Fixture".into();
+                for message in [
+                    MykoMessage::Event(attack.clone()),
+                    MykoMessage::EventBatch(vec![event("allowed"), attack.clone()]),
+                ] {
+                    send(&mut socket, &message, binary).await?;
+                    send(
+                        &mut socket,
+                        &MykoMessage::Ping(PingData {
+                            id: "barrier".into(),
+                            timestamp: 0,
+                        }),
+                        binary,
+                    )
+                    .await?;
+                    loop {
+                        let frame = timeout(Duration::from_secs(3), socket.next())
+                            .await?
+                            .ok_or("connection closed")??;
+                        let response: MykoMessage = match frame {
+                            Message::Text(value) => serde_json::from_str(&value)?,
+                            Message::Binary(value) => ciborium::de::from_reader(value.as_ref())?,
+                            _ => continue,
+                        };
+                        if matches!(response, MykoMessage::Ping(_)) {
+                            break;
+                        }
+                    }
+                    assert_eq!(
+                        server
+                            .registry
+                            .get_or_create("InternalFixture")
+                            .snapshot()
+                            .len(),
+                        1
+                    );
+                    assert!(
+                        server
+                            .registry
+                            .get_or_create("DemoTask")
+                            .snapshot()
+                            .is_empty()
+                    );
+                }
+            }
+            socket.close(None).await?;
+        }
+        let stored = server.registry.get_or_create("InternalFixture").snapshot();
+        assert!(stored.iter().all(|(_, item)| {
+            item.as_any()
+                .downcast_ref::<InternalFixture>()
+                .is_some_and(|item| item.value == 1)
+        }));
+        task.abort();
+    }
+    Ok(())
+}
+
+mod external_fixture {
+    #[allow(clippy::wildcard_imports)]
+    use myko::prelude::*;
+    #[myko::prelude::myko_item(post_deserialize = hydrate)]
+    #[myko::myko_external(SET, DEL)]
+    pub struct ExternalFixture {
+        pub value: i32,
+    }
+    fn hydrate(row: &mut ExternalFixture) {
+        row.value = row.value.max(0);
+    }
+}
+use external_fixture::ExternalFixture;
+
+#[tokio::test]
+async fn external_ownership_enables_set_and_delete_with_and_without_auth() -> TestResult {
+    for authenticated in [false, true] {
+        let (server, addr, task) = internal_fixture(authenticated).await?;
+        for binary in [false, true] {
+            let mut request = format!("ws://{addr}/myko").into_client_request()?;
+            if authenticated {
+                request
+                    .headers_mut()
+                    .insert("authorization", "Bearer user".parse()?);
+            }
+            let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+            for change in [MEventType::SET, MEventType::DEL] {
+                send(
+                    &mut socket,
+                    &MykoMessage::Event(MEvent::from_item(
+                        &ExternalFixture {
+                            id: "external".into(),
+                            value: 42,
+                        },
+                        change,
+                        "fixture",
+                    )),
+                    binary,
+                )
+                .await?;
+                send(
+                    &mut socket,
+                    &MykoMessage::Ping(PingData {
+                        id: "barrier".into(),
+                        timestamp: 0,
+                    }),
+                    binary,
+                )
+                .await?;
+                while !matches!(next_message(&mut socket).await?, MykoMessage::Ping(_)) {}
+                let rows = server.registry.get_or_create("ExternalFixture").snapshot();
+                assert_eq!(rows.len(), usize::from(change == MEventType::SET));
+            }
+            socket.close(None).await?;
+        }
+        task.abort();
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn commands_can_mutate_entities_without_external_ownership() -> TestResult {
+    for authenticated in [false, true] {
+        let (server, addr, task) = internal_fixture(authenticated).await?;
+        let mut request = format!("ws://{addr}/myko").into_client_request()?;
+        if authenticated {
+            request
+                .headers_mut()
+                .insert("authorization", "Bearer user".parse()?);
+        }
+        let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+        send(
+            &mut socket,
+            &MykoMessage::Command(myko::wire::command::WrappedCommand {
+                command_id: "DeleteInternalFixture".into(),
+                command: serde_json::json!({"tx":"trusted-command","id":"kept"}),
+            }),
+            false,
+        )
+        .await?;
+        assert!(matches!(
+            next_message(&mut socket).await?,
+            MykoMessage::CommandResponse(_)
+        ));
+        assert_eq!(
+            server
+                .registry
+                .get_or_create("InternalFixture")
+                .snapshot()
+                .len(),
+            0
+        );
+        socket.close(None).await?;
+        task.abort();
+    }
+    Ok(())
+}
+
+mod set_only_fixture {
+    #[allow(clippy::wildcard_imports)]
+    use myko::prelude::*;
+    #[myko::myko_item]
+    #[myko::myko_external(SET)]
+    pub struct SetOnlyFixture {
+        pub value: i32,
+    }
+}
+mod delete_only_fixture {
+    #[allow(clippy::wildcard_imports)]
+    use myko::prelude::*;
+    #[myko::myko_external(DEL)]
+    #[myko::myko_item]
+    pub struct DeleteOnlyFixture {
+        pub value: i32,
+    }
+}
+
+fn external_operation_cases() -> [(MEvent, &'static str, usize); 4] {
+    use delete_only_fixture::DeleteOnlyFixture;
+    use set_only_fixture::SetOnlyFixture;
+    [
+        (
+            MEvent::from_item(
+                &SetOnlyFixture {
+                    id: "accepted".into(),
+                    value: 2,
+                },
+                MEventType::SET,
+                "client",
+            ),
+            "SetOnlyFixture",
+            1,
+        ),
+        (
+            MEvent::from_item(
+                &SetOnlyFixture {
+                    id: "accepted".into(),
+                    value: 2,
+                },
+                MEventType::DEL,
+                "client",
+            ),
+            "SetOnlyFixture",
+            1,
+        ),
+        (
+            MEvent::from_item(
+                &DeleteOnlyFixture {
+                    id: "rejected".into(),
+                    value: 9,
+                },
+                MEventType::SET,
+                "client",
+            ),
+            "DeleteOnlyFixture",
+            1,
+        ),
+        (
+            MEvent::from_item(
+                &DeleteOnlyFixture {
+                    id: "kept".into(),
+                    value: 1,
+                },
+                MEventType::DEL,
+                "client",
+            ),
+            "DeleteOnlyFixture",
+            0,
+        ),
+    ]
+}
+
+#[tokio::test]
+async fn declared_external_operations_cannot_be_expanded_by_permissive_policy() -> TestResult {
+    use delete_only_fixture::DeleteOnlyFixture;
+    use set_only_fixture::SetOnlyFixture;
+    async fn apply(socket: &mut Socket, message: MykoMessage, binary: bool) -> TestResult {
+        send(socket, &message, binary).await?;
+        send(
+            socket,
+            &MykoMessage::Ping(PingData {
+                id: "barrier".into(),
+                timestamp: 0,
+            }),
+            binary,
+        )
+        .await?;
+        while !matches!(next_message(socket).await?, MykoMessage::Ping(_)) {}
+        Ok(())
+    }
+    for authenticated in [false, true] {
+        let (server, addr, task) = internal_fixture(authenticated).await?;
+        for binary in [false, true] {
+            server.ctx().set(&DeleteOnlyFixture {
+                id: "kept".into(),
+                value: 1,
+            })?;
+            let mut request = format!("ws://{addr}/myko").into_client_request()?;
+            if authenticated {
+                request
+                    .headers_mut()
+                    .insert("authorization", "Bearer user".parse()?);
+            }
+            let (mut socket, _) = tokio_tungstenite::connect_async(request).await?;
+            for (event, kind, count) in external_operation_cases() {
+                apply(&mut socket, MykoMessage::Event(event), binary).await?;
+                assert_eq!(
+                    server.registry.get_or_create(kind).snapshot().len(),
+                    count,
+                    "{kind}"
+                );
+            }
+            apply(
+                &mut socket,
+                MykoMessage::EventBatch(vec![
+                    MEvent::from_item(
+                        &ExternalFixture {
+                            id: "batch".into(),
+                            value: 1,
+                        },
+                        MEventType::SET,
+                        "client",
+                    ),
+                    MEvent::from_item(
+                        &SetOnlyFixture {
+                            id: "accepted".into(),
+                            value: 2,
+                        },
+                        MEventType::DEL,
+                        "client",
+                    ),
+                ]),
+                binary,
+            )
+            .await?;
+            assert!(
+                server
+                    .registry
+                    .get_or_create("ExternalFixture")
+                    .snapshot()
+                    .is_empty()
+            );
+            assert_eq!(
+                server
+                    .registry
+                    .get_or_create("SetOnlyFixture")
+                    .snapshot()
+                    .len(),
+                1
+            );
+            socket.close(None).await?;
+        }
+        task.abort();
+    }
+    Ok(())
+}

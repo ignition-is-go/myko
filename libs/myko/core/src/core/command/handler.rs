@@ -1,5 +1,7 @@
-use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -51,6 +53,19 @@ impl CommandContext {
             command_id: self.command_id.clone(),
             lineage: self.req.lineage.clone(),
         }
+    }
+
+    /// Resolve the authenticated application user from this request.
+    /// # Errors
+    /// Returns a command error if no live authenticated user is available.
+    pub fn user_id(&self) -> Result<&crate::identity::UserId, CommandError> {
+        self.req.user_id().map_err(|error| {
+            CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                error.to_string(),
+            )
+        })
     }
 
     /// Create a new `CommandContext`.
@@ -241,8 +256,10 @@ impl CommandContext {
         E: crate::graph::GraphEdge + Clone + PartialEq,
         E::Ends: crate::graph::TypedEdgeEnds,
     {
-        use crate::core::item::{AnyItem, downcast_any_item_arc};
-        use crate::graph::{EdgeEnds, EdgeScope};
+        use crate::{
+            core::item::{AnyItem, downcast_any_item_arc},
+            graph::{EdgeEnds, EdgeScope},
+        };
         let _operation = self.server_ctx.operation_scope(self.operation_provenance());
 
         let graph = self
@@ -489,7 +506,7 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
         }
 
         // Deserialize the command
-        let cmd: C = serde_json::from_value(command).map_err(|e| {
+        let cmd: C = crate::reflection::deserialize_operation(command).map_err(|e| {
             CommandError::new(
                 ctx.tx(),
                 C::command_id_static(),

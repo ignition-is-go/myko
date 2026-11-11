@@ -86,7 +86,7 @@ restore before user-scoped or subtree undo can be advertised.
 
 Run `cargo flux run test-operation-provenance` and
 `cargo flux run check-operation-provenance` with `RUST_TEST_THREADS=1`.
-The opt-in real PostgreSQL test uses an isolated disposable database:
-`MYKO_PROVENANCE_TEST_POSTGRES=<connection string> cargo flux run test-postgres-provenance`.
-The integration test truncates only its dedicated `provenance_test_events` table;
-never point it at a shared or production database.
+Run `cargo flux run test-postgres-provenance` for the PostgreSQL regression.
+The task starts a disposable local PostgreSQL cluster on a private Unix socket,
+runs the persistence test, and removes the database when it exits. PostgreSQL
+server tools must be installed. The same task runs in the native CI quality gate.

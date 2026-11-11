@@ -10,16 +10,32 @@ use syn::{
     spanned::Spanned,
 };
 
+mod client_events;
 mod command;
 mod graph;
 mod item;
 mod message_events;
+mod operation_contract;
+mod permission;
+mod public_access;
 mod query;
 mod relationship;
 mod report;
 mod saga;
 mod setter;
 mod view;
+
+/// Permit explicitly selected raw client entity events: SET, DEL, or both.
+///
+/// Raw client events are denied by default. Application authorization still applies.
+/// Command handlers and other server-side mutations are unaffected.
+#[proc_macro_attribute]
+pub fn myko_external(attr: TokenStream, input: TokenStream) -> TokenStream {
+    let changes = parse_macro_input!(attr as client_events::Changes);
+    let input = parse_macro_input!(input as syn::ItemStruct);
+    let registration = client_events::registration(&input.ident, &myko_path(), changes);
+    quote!(#input #registration).into()
+}
 
 /// Declare an open, downstream-defined Myko entity category.
 #[proc_macro_attribute]
@@ -288,93 +304,18 @@ pub(crate) fn extract_doc_comment(attrs: &[syn::Attribute]) -> Option<String> {
     (!lines.is_empty()).then(|| lines.join(" "))
 }
 
-/// Capture descriptions and input fields through Serde's attribute parser,
-/// without depending on generated bindings or interpreting wire names twice.
 pub(crate) fn operation_metadata_tokens(
     input: &syn::ItemStruct,
     krate: &syn::Path,
 ) -> (proc_macro2::TokenStream, proc_macro2::TokenStream) {
-    use serde_derive_internals::{Ctxt, Derive, ast};
-
     let description = extract_doc_comment(&input.attrs);
     let description = description
         .as_ref()
         .map_or_else(|| quote!(None), |value| quote!(Some(#value)));
-    // Parse exactly the attributes Serde receives after Myko's expansion.
-    let mut definition: syn::DeriveInput = syn::parse_quote!(#input);
-    definition
-        .attrs
-        .push(syn::parse_quote!(#[serde(rename_all = "camelCase")]));
-    let context = Ctxt::new();
-    let container = ast::Container::from_ast(&context, &definition, Derive::Deserialize);
-    let entries = container
-        .as_ref()
-        .map(|container| {
-            let ast::Data::Struct(_, fields) = &container.data else {
-                return Vec::new();
-            };
-            fields
-                .iter()
-                .filter(|field| !field.attrs.skip_deserializing())
-                .map(|field| {
-                    let name = field.attrs.name().deserialize_name();
-                    let ty = field.ty;
-                    let rust_type = quote!(#ty).to_string();
-                    let optional = (is_option_type(ty) && field.attrs.deserialize_with().is_none())
-                        || !field.attrs.default().is_none()
-                        || !container.attrs.default().is_none();
-                    let aliases: Vec<_> = field
-                        .attrs
-                        .aliases()
-                        .iter()
-                        .filter(|alias| *alias != name)
-                        .collect();
-                    let flattened = field.attrs.flatten();
-                    let conditions: Vec<_> = field
-                        .original
-                        .attrs
-                        .iter()
-                        .filter(|attr| {
-                            attr.path().is_ident("cfg") || attr.path().is_ident("cfg_attr")
-                        })
-                        .collect();
-                    quote! {
-                        #(#conditions)*
-                        #krate::reflection::OperationArgField {
-                            name: #name,
-                            rust_type: #rust_type,
-                            optional: #optional,
-                            aliases: &[#(#aliases),*],
-                            flattened: #flattened,
-                        }
-                    }
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let args = match context.check() {
-        Ok(()) => quote! { &[#(#entries),*] },
-        Err(error) => error.into_compile_error(),
-    };
-    (description, args)
-}
-
-pub(crate) fn input_contract_tokens(
-    input: &syn::ItemStruct,
-    kind: &str,
-    krate: &syn::Path,
-) -> proc_macro2::TokenStream {
-    let name = &input.ident;
-    quote! {
-        #[cfg(not(target_arch = "wasm32"))]
-        #krate::submit! {
-            #krate::reflection::OperationInputContract {
-                kind: #kind,
-                id: stringify!(#name),
-                validate: #krate::reflection::validate_input::<#name>,
-            }
-        }
-    }
+    (
+        description,
+        operation_contract::field_metadata_tokens(input, krate),
+    )
 }
 
 pub(crate) fn gate_field_ts_attrs(fields: &mut syn::Fields) {
