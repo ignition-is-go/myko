@@ -94,3 +94,6 @@ root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--lib", "operation_index"
 
 [tasks.lint-mcp-contract]
 root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-history-feed]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--target-dir", "target/agent", "--lib", "postgres::history_feed::tests", "--", "--include-ignored", "--test-threads=1"]
