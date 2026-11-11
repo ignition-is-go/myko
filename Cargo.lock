@@ -4969,6 +4969,7 @@ dependencies = [
 name = "myko-server"
 version = "6.14.0"
 dependencies = [
+ "anyhow",
  "base64",
  "chrono",
  "ciborium",

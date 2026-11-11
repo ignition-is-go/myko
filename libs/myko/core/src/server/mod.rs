@@ -41,6 +41,8 @@ pub mod entity_set_stats;
 mod handler_registry;
 pub mod history_replay;
 pub mod persister;
+mod provenance;
+pub use provenance::{EventRecord, OperationProvenance};
 mod protocol;
 mod relationship_manager;
 pub mod report_cache_stats;
