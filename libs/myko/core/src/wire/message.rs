@@ -3,9 +3,9 @@ use serde::{Deserialize, Serialize};
 use super::{
     command::{CommandError, CommandResponse, WrappedCommand},
     event::MEvent,
-    query::{QueryError, QueryResponse, QueryWindowUpdate, WrappedQuery},
+    query::{QueryCursorWindowUpdate, QueryError, QueryResponse, QueryWindowUpdate, WrappedQuery},
     report::{ReportError, ReportResponse, WrappedReport},
-    view::{ViewError, ViewResponse, ViewWindowUpdate, WrappedView},
+    view::{ViewError, ViewResponse, ViewSampleRateUpdate, ViewWindowUpdate, WrappedView},
 };
 
 pub const WS_EVENT_COMMAND: &str = "ws:m:command";
@@ -48,6 +48,8 @@ pub enum MykoMessage {
     QueryCancel(CancelSubscription),
     #[serde(rename = "ws:m:query-window")]
     QueryWindow(QueryWindowUpdate),
+    #[serde(rename = "ws:m:query-cursor-window")]
+    QueryCursorWindow(QueryCursorWindowUpdate),
     #[serde(rename = "ws:m:view")]
     View(WrappedView),
     #[serde(rename = "ws:m:view-response")]
@@ -56,6 +58,8 @@ pub enum MykoMessage {
     ViewCancel(CancelSubscription),
     #[serde(rename = "ws:m:view-window")]
     ViewWindow(ViewWindowUpdate),
+    #[serde(rename = "ws:m:view-sample-rate")]
+    ViewSampleRate(ViewSampleRateUpdate),
     #[serde(rename = "ws:m:report")]
     Report(WrappedReport),
     #[serde(rename = "ws:m:report-response")]

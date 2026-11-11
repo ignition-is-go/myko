@@ -42,7 +42,7 @@ client.ConnectionStatusChanged += (sender, status) => {
 
 ## Documentation
 
-For more detailed documentation and examples, visit the [Rship documentation](https://github.com/rship/rship).
+For more detailed documentation and examples, visit the [myko repository](https://github.com/ignition-is-go/myko).
 
 ## License
 

@@ -14,14 +14,18 @@ pnpm add @myko/ui-vue
 
 ```vue
 <script setup>
-import { useQuery, useReport, useConnection } from '@myko/ui-vue'
-import { queries, reports } from '@rship/entities'
+import { useQuery, useQueryState, useReport, useConnection } from '@myko/ui-vue'
+import { queries, reports } from '@your-app/entities'
 
 // Connection management
 const { status, isConnected, connect, disconnect } = useConnection()
 
 // Query data with automatic cleanup
 const { items, itemsArray, resolved } = useQuery(queries.GetAllTargets({}))
+
+// Large keyed results can also expose lifecycle and incremental changes
+const targets = useQueryState(queries.GetAllTargets({}))
+// targets.status, targets.error, targets.revision, targets.changes
 
 // Report data with automatic cleanup
 const { value: count } = useReport(reports.CountAllTargets({}))
@@ -46,7 +50,7 @@ connect('ws://localhost:5155')
 <script setup>
 import { onUnmounted } from 'vue'
 import { getMykoClient } from '@myko/ui-vue'
-import { queries, commands } from '@rship/entities'
+import { queries, commands } from '@your-app/entities'
 
 const client = getMykoClient()
 
@@ -66,6 +70,7 @@ async function deleteTarget(id: string) {
 ### Composables
 
 - `useQuery(queryFactory)` - Watch a query with reactive Map updates
+- `useQueryState(queryFactory)` - Add lifecycle, error, revision, and latest-diff state
 - `useReport(reportFactory)` - Watch a report with reactive value
 - `useConnection()` - Manage connection status
 
@@ -74,14 +79,17 @@ async function deleteTarget(id: string) {
 - `getMykoClient()` - Get the global singleton client
 - `createMykoClient()` - Create a new client instance
 - `myko` - Direct access to the global client
+- `queryState(queryFactory)` - Ref-counted keyed query state without full-array rebuilds
 
 ## Types
 
 ```typescript
 import type {
   ReactiveQuery,
+  ReactiveQueryState,
   ReactiveReport,
   UseQueryReturn,
+  UseQueryStateReturn,
   UseReportReturn,
   UseConnectionReturn
 } from '@myko/ui-vue'

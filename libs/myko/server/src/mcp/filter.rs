@@ -40,7 +40,7 @@
 //!
 //! Legacy `command:RunPlaybook` / `query:*` syntax in configs is accepted
 //! transparently — see [`normalize_tool_name`]. New configs should use the
-//! `_` form, which matches the OpenAI tool-name regex `[a-zA-Z0-9_-]+` and
+//! `_` form, which matches the `OpenAI` tool-name regex `[a-zA-Z0-9_-]+` and
 //! avoids tool-call-serializer bugs in some LLMs.
 //!
 //! Semantics, per tool/arg:
@@ -96,29 +96,33 @@ impl Pattern {
     /// `kind_` so legacy configs (e.g. `command:Run*`) keep matching after
     /// myko's MCP wire switched to the underscore form. See
     /// [`normalize_tool_name`].
+    #[must_use]
     pub fn parse(s: &str) -> Option<Self> {
         let s = normalize_tool_name(s.trim());
         if s.is_empty() {
             return None;
         }
         if s == "*" {
-            return Some(Pattern::Any);
+            return Some(Self::Any);
         }
         match (s.starts_with('*'), s.ends_with('*')) {
-            (true, true) if s.len() == 2 => Some(Pattern::Any),
-            (false, true) => Some(Pattern::Prefix(s[..s.len() - 1].to_string())),
-            (true, false) => Some(Pattern::Suffix(s[1..].to_string())),
-            _ => Some(Pattern::Exact(s)),
+            (true, true) if s.len() == 2 => Some(Self::Any),
+            (false, true) => s
+                .get(..s.len().saturating_sub(1))
+                .map(|value| Self::Prefix(value.to_string())),
+            (true, false) => s.get(1..).map(|value| Self::Suffix(value.to_string())),
+            _ => Some(Self::Exact(s)),
         }
     }
 
     /// Test whether `name` matches this pattern.
+    #[must_use]
     pub fn matches(&self, name: &str) -> bool {
         match self {
-            Pattern::Any => true,
-            Pattern::Prefix(p) => name.starts_with(p),
-            Pattern::Suffix(s) => name.ends_with(s),
-            Pattern::Exact(e) => name == e,
+            Self::Any => true,
+            Self::Prefix(p) => name.starts_with(p),
+            Self::Suffix(s) => name.ends_with(s),
+            Self::Exact(e) => name == e,
         }
     }
 }
@@ -149,6 +153,7 @@ pub struct ClientFilters {
 
 impl ClientFilters {
     /// A filter that permits everything (no headers / no env vars set).
+    #[must_use]
     pub fn allow_all() -> Self {
         Self::default()
     }
@@ -156,6 +161,7 @@ impl ClientFilters {
     /// Build from raw strings. Callability inputs are JSON; malformed JSON
     /// is treated as no constraints (logged at WARN) — bricking a request
     /// on bad filter config would be a footgun for ops.
+    #[must_use]
     pub fn from_strings(
         visibility_allow: Option<&str>,
         visibility_deny: Option<&str>,
@@ -176,6 +182,7 @@ impl ClientFilters {
     /// MCP **Protocol Error** (`-32602`, "Unknown tool: …") and the tool is
     /// omitted from `tools/list` / `resources/list`. Deny wins; an empty
     /// allow list means "visible unless explicitly denied".
+    #[must_use]
     pub fn tool_visible(&self, name: &str) -> bool {
         // Normalize at the boundary so legacy `kind:Id` and canonical
         // `kind_Id` produce the same visibility decision.
@@ -190,6 +197,28 @@ impl ClientFilters {
         self.visibility_allow.iter().any(|p| p.matches(name))
     }
 
+    /// `true` if the top-level `search`/`execute`/`connection_status` tools
+    /// are visible to this client — unlike [`tool_visible`](Self::tool_visible),
+    /// only `deny` applies; a non-empty `allow` list does *not* hide these.
+    ///
+    /// These three are entry points, not operations: an operator's allow
+    /// list is written in terms of operation names (`report:Foo`,
+    /// `command:Bar`) to scope *which operations* a client can reach — that
+    /// scoping is enforced separately, per call, inside `search`'s index
+    /// filtering and `execute`'s sandbox (both still call `tool_visible` on
+    /// the operation's own `{kind}_{id}` name). If `search`/`execute`
+    /// themselves were gated by the same allow list, an operation-scoped
+    /// allow list with no explicit `search`/`execute` entry would hide both
+    /// tools entirely — making the server unreachable despite the
+    /// operator's intent being to scope operations, not remove entry
+    /// points. Explicit `deny` still works normally for operators who want
+    /// to lock a client out of a tool entirely.
+    #[must_use]
+    pub fn meta_tool_visible(&self, name: &str) -> bool {
+        let name = normalize_tool_name(name);
+        !self.visibility_deny.iter().any(|p| p.matches(&name))
+    }
+
     /// Check whether a `tools/call` is callable for this client given its
     /// JSON `arguments`.
     ///
@@ -200,6 +229,9 @@ impl ClientFilters {
     ///
     /// Visibility is *not* re-checked here; callers run
     /// [`tool_visible`](Self::tool_visible) first.
+    /// # Errors
+    ///
+    /// Returns an error when the tool or its arguments are denied by the filter.
     pub fn tool_callable(&self, tool_name: &str, arguments: &Value) -> Result<(), String> {
         // Normalize at the boundary so legacy `kind:Id` configs match the
         // canonical `kind_Id` we use as the map key.
@@ -215,7 +247,7 @@ impl ClientFilters {
                     continue;
                 };
                 if denied_values.contains(value) {
-                    return Err(format!("argument `{}` value not allowed", arg_name));
+                    return Err(format!("argument `{arg_name}` value not allowed"));
                 }
             }
         }
@@ -228,10 +260,10 @@ impl ClientFilters {
                 match value {
                     Some(v) if allowed_values.contains(v) => {}
                     Some(_) => {
-                        return Err(format!("argument `{}` value not in allowlist", arg_name));
+                        return Err(format!("argument `{arg_name}` value not in allowlist"));
                     }
                     None => {
-                        return Err(format!("argument `{}` is required by filter", arg_name));
+                        return Err(format!("argument `{arg_name}` is required by filter"));
                     }
                 }
             }
@@ -262,37 +294,39 @@ fn parse_callability(raw: Option<&str>, label: &str) -> CallabilityMap {
             .map(|(k, v)| (normalize_tool_name(&k), v))
             .collect(),
         Err(e) => {
-            log::warn!("[mcp] ignoring malformed tool-{} spec: {}", label, e);
+            tracing::warn!("[mcp] ignoring malformed tool-{} spec: {}", label, e);
             CallabilityMap::new()
         }
     }
 }
 
 /// Convert a leading `kind:` separator to `kind_`. Entity ids never contain
-/// `:` (PascalCase from `#[myko_item]`), so the first colon is unambiguous.
+/// `:` (`PascalCase` from `#[myko_item]`), so the first colon is unambiguous.
 ///
 /// Lets legacy callers continue using configs / patterns / tool-call names
 /// written as `command:RunPlaybook` while the MCP wire advertises the
 /// underscore form `command_RunPlaybook` (required because some LLM
 /// tool-call serializers — confirmed against gpt-oss-20b on 2026-06-02 —
 /// drop the `arguments` field when names contain `:`). The underscore form
-/// also matches the OpenAI tool-name regex `[a-zA-Z0-9_-]+`.
+/// also matches the `OpenAI` tool-name regex `[a-zA-Z0-9_-]+`.
 fn normalize_tool_name(name: &str) -> String {
-    if let Some(pos) = name.find(':') {
-        let mut out = String::with_capacity(name.len());
-        out.push_str(&name[..pos]);
-        out.push('_');
-        out.push_str(&name[pos + 1..]);
-        out
-    } else {
-        name.to_string()
-    }
+    name.find(':').map_or_else(
+        || name.to_string(),
+        |pos| {
+            let mut out = String::with_capacity(name.len());
+            out.push_str(name.get(..pos).unwrap_or_default());
+            out.push('_');
+            out.push_str(name.get(pos.saturating_add(1)..).unwrap_or_default());
+            out
+        },
+    )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use serde_json::json;
+
+    use super::*;
 
     // ─── Visibility ────────────────────────────────────────────────────────
 
@@ -384,9 +418,9 @@ mod tests {
     #[test]
     fn allow_list_rejects_non_matching_arg() {
         let f = ClientFilters::from_strings(None, None, Some(run_playbook_allow()), None);
-        let err = f
-            .tool_callable("command:RunPlaybook", &json!({"playbook_id": "danger"}))
-            .unwrap_err();
+        let result = f.tool_callable("command:RunPlaybook", &json!({"playbook_id": "danger"}));
+        assert!(result.is_err());
+        let Err(err) = result else { return };
         assert!(err.contains("playbook_id"));
         assert!(err.contains("allowlist"));
     }
@@ -394,9 +428,9 @@ mod tests {
     #[test]
     fn allow_list_rejects_missing_arg() {
         let f = ClientFilters::from_strings(None, None, Some(run_playbook_allow()), None);
-        let err = f
-            .tool_callable("command:RunPlaybook", &json!({}))
-            .unwrap_err();
+        let result = f.tool_callable("command:RunPlaybook", &json!({}));
+        assert!(result.is_err());
+        let Err(err) = result else { return };
         assert!(err.contains("required"));
     }
 
@@ -412,9 +446,9 @@ mod tests {
             f.tool_callable("command:Tag", &json!({"namespace": "staging"}))
                 .is_ok()
         );
-        let err = f
-            .tool_callable("command:Tag", &json!({"namespace": "prod"}))
-            .unwrap_err();
+        let result = f.tool_callable("command:Tag", &json!({"namespace": "prod"}));
+        assert!(result.is_err());
+        let Err(err) = result else { return };
         assert!(err.contains("namespace"));
     }
 
@@ -473,9 +507,9 @@ mod tests {
             f.tool_callable("command_RunPlaybook", &json!({"playbook_id": "site"}))
                 .is_ok()
         );
-        let err = f
-            .tool_callable("command_RunPlaybook", &json!({"playbook_id": "danger"}))
-            .unwrap_err();
+        let result = f.tool_callable("command_RunPlaybook", &json!({"playbook_id": "danger"}));
+        assert!(result.is_err());
+        let Err(err) = result else { return };
         assert!(err.contains("allowlist"));
     }
 
@@ -486,5 +520,45 @@ mod tests {
         assert_eq!(normalize_tool_name("plain"), "plain");
         // Only the first separator is replaced; ids never contain `:` anyway.
         assert_eq!(normalize_tool_name("a:b:c"), "a_b:c");
+    }
+
+    // ─── meta_tool_visible ─────────────────────────────────────────────────
+
+    #[test]
+    fn meta_tool_visible_ignores_op_level_allow_list() {
+        // Reproduces the pulse-ctx upgrade scenario: an operation-scoped
+        // allow list (written for the old one-tool-per-operation wire
+        // shape) must not hide search/execute/connection_status, which
+        // carry no capability of their own — capability is enforced
+        // per-operation inside search/execute instead.
+        let f = ClientFilters::from_strings(
+            Some("report:GetContextRecordsByAttribute,command:WriteContextRecord"),
+            None,
+            None,
+            None,
+        );
+        assert!(f.meta_tool_visible("search"));
+        assert!(f.meta_tool_visible("execute"));
+        assert!(f.meta_tool_visible("connection_status"));
+        // The op-level allow list still fully applies to `tool_visible`,
+        // which is what search/execute use internally per operation.
+        assert!(f.tool_visible("report_GetContextRecordsByAttribute"));
+        assert!(!f.tool_visible("command_DeleteEverything"));
+    }
+
+    #[test]
+    fn meta_tool_visible_still_respects_explicit_deny() {
+        let f = ClientFilters::from_strings(None, Some("execute"), None, None);
+        assert!(!f.meta_tool_visible("execute"));
+        assert!(f.meta_tool_visible("search"));
+        assert!(f.meta_tool_visible("connection_status"));
+    }
+
+    #[test]
+    fn meta_tool_visible_allows_everything_by_default() {
+        let f = ClientFilters::allow_all();
+        assert!(f.meta_tool_visible("search"));
+        assert!(f.meta_tool_visible("execute"));
+        assert!(f.meta_tool_visible("connection_status"));
     }
 }

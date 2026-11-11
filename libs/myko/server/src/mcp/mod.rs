@@ -32,14 +32,9 @@
 //!
 //! ## Protocol
 //!
-//! Implements MCP **2026-07-28** (SEP-2575 et al.). Handshake-free —
-//! protocol version, client info, and client capabilities travel in
-//! `_meta` on every request; the `server/discover` RPC advertises
-//! server identity, capabilities, and instructions on demand.
-//!
-//! For the transition window the dispatcher also accepts `initialize`
-//! as a backwards-compat shim returning the same payload, so
-//! 2024-11-05 clients keep working until they migrate.
+//! The HTTP POST endpoint also supports stateless MCP 2026-07-28 requests.
+//! Legacy MCP 2024-11-05 JSON-RPC remains available (compatible with the 2025-06-18
+//! error-handling conventions).
 //!
 //! ## Legacy stdio
 //!
@@ -51,9 +46,23 @@ pub mod dispatch;
 pub mod exec;
 pub mod filter;
 pub mod http;
+pub mod sandbox;
 mod server;
 mod types;
 pub mod ws;
 
 pub use server::McpServer;
 pub use types::*;
+
+async fn invalidated(auth: Option<&myko_auth::AuthSession>) {
+    let Some(session) = auth else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    loop {
+        if session.check().is_err() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+}

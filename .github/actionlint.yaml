@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - disk-ge-100g
+    - ram-ge-16g

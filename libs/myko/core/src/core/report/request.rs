@@ -1,4 +1,4 @@
-//! ReportRequest wrapper type.
+//! `ReportRequest` wrapper type.
 
 use std::{fmt::Debug, sync::Arc};
 
@@ -56,7 +56,7 @@ impl<R> ReportRequest<R> {
 
     /// Create a new report request with a specific tx.
     /// Used when composing reports from within another reactive context.
-    pub fn with_tx(report: R, tx: Arc<str>) -> Self {
+    pub const fn with_tx(report: R, tx: Arc<str>) -> Self {
         Self { tx, report }
     }
 }
@@ -67,18 +67,18 @@ impl<R: Default> Default for ReportRequest<R> {
     }
 }
 
-/// Convert report params directly into a ReportRequest.
-/// This only works for types that implement ReportParams (actual report param structs),
-/// not for ReportRequest itself, which avoids ambiguity with From<&ReportRequest<R>>.
+/// Convert report params directly into a `ReportRequest`.
+/// This only works for types that implement `ReportParams` (actual report param structs),
+/// not for `ReportRequest` itself, which avoids ambiguity with From<&`ReportRequest`<R>>.
 impl<R: ReportParams> From<R> for ReportRequest<R> {
     fn from(report: R) -> Self {
         Self::new(report)
     }
 }
 
-/// Convert a reference to a ReportRequest into an owned ReportRequest by cloning.
-impl<R: Clone> From<&ReportRequest<R>> for ReportRequest<R> {
-    fn from(request: &ReportRequest<R>) -> Self {
+/// Convert a reference to a `ReportRequest` into an owned `ReportRequest` by cloning.
+impl<R: Clone> From<&Self> for ReportRequest<R> {
+    fn from(request: &Self) -> Self {
         request.clone()
     }
 }
@@ -107,6 +107,6 @@ impl<R: ReportOutputType> ReportOutputType for ReportRequest<R> {
 
 impl<R: ReportId + Serialize + Debug + Send + Sync + 'static> AnyReport for ReportRequest<R> {
     fn to_value(&self) -> Value {
-        serde_json::to_value(self).expect("ReportRequest should serialize to JSON")
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
 }

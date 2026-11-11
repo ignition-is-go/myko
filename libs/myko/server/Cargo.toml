@@ -1,14 +1,21 @@
 [package]
 name = "myko-server"
-version = "4.14.0"
+version = "6.12.1"
 edition = "2024"
 description = "Myko server runtime — WebSocket, peer federation"
 license = "AGPL-3.0-or-later"
+
+[lints]
+workspace = true
 
 [package.metadata.flux]
 tasks = ["check", "build", "test", "lint", "publish"]
 
 [dependencies]
+myko-auth.workspace = true
+url = "2"
+base64 = "0.22"
+num-traits.workspace = true
 # Internal
 # myko-server instantiates `SearchIndex::new()` unconditionally, so it needs
 # the real (tantivy-backed) implementation. Consumers that only use myko
@@ -21,7 +28,7 @@ tokio-tungstenite.workspace = true
 tungstenite.workspace = true
 tokio-util.workspace = true
 
-postgres = "0.19.13"
+postgres = { version = "0.19.13", features = ["with-chrono-0_4"] }
 
 # Async utilities
 futures-util.workspace = true
@@ -30,11 +37,12 @@ futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 ciborium.workspace = true
+confique.workspace = true
 
 # Misc
 uuid.workspace = true
 chrono.workspace = true
-log.workspace = true
+tracing.workspace = true
 hyphae.workspace = true
 inventory = "0.3.24"
 dashmap.workspace = true
@@ -43,11 +51,34 @@ flume.workspace = true
 # HTTP request-line parsing for the MCP front-door router
 httparse = "1.9"
 
+# Sandboxed JS execution for MCP "Code Mode" (execute() tool)
+rquickjs = { version = "0.12", features = ["full-async", "parallel", "macro"] }
+opentelemetry = "0.32.0"
+myko-telemetry = { version = "6.12.1", path = "../telemetry" }
+
 [dev-dependencies]
+# Demo entities belong to examples, not the published server runtime.
+myko = { workspace = true, features = ["demo"] }
 # Loopback integration test only — no TLS toolchain needed.
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 
 [features]
 default = []
-inspector = ["hyphae/inspector"]
-trace = ['hyphae/trace']
+# Instrument the reactive hot path for external profilers (forwards to
+# myko-core, which forwards hyphae's `profiling`). Opt-in, never on by
+# default: it adds `#[inline(never)]` boundaries and a per-fanout span, which
+# is exactly what a sampler wants and exactly what a release build shouldn't
+# pay. It used to be forced on at the workspace `hyphae` dependency, so every
+# release build paid for it regardless.
+profiling = ["myko/profiling"]
+
+# NOTE(ts): no `trace` or `inspector` feature. Both named hyphae features
+# that no longer exist: hyphae 2.0 collapsed its observability surface to the
+# single `profiling` feature above, deleting the per-cell trace registry and
+# the in-process inspector web server outright. Neither gated any myko source
+# — they were pure forwarding aliases. For attribution, attach an external
+# profiler (cell type parameters resolve from the symbols) or a heap profiler
+# (jemalloc/jeprof sees CellInner allocation sites directly).
+
+# Umbrella for CI's `cargo test`/`clippy` runs (see flux.toml's `test` task).
+ci = ["profiling"]

@@ -17,7 +17,7 @@ export class WindbackState {
 
 	constructor() {
 		client.watchReport(new WindbackStatus({})).subscribe((result: WindbackStatusOutput) => {
-			this.#liveWindbackTime = result.windback;
+			this.#liveWindbackTime = result.windback ?? null;
 			this.#localWindbackTime = result.windback ? DateTime.fromISO(result.windback) : undefined;
 		});
 	}

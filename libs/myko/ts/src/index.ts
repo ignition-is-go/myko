@@ -5,12 +5,30 @@
  * plus Rust-generated type bindings.
  */
 
-import type { ID, MEvent, WrappedItem, ItemStub, LogLevel } from './generated'
+import type { ID, ItemStub, LogLevel, MEvent, WrappedItem } from './generated'
 
 // Re-export all Rust-generated types from ./generated
 // This includes the ID type alias (ID = string)
 export * from './generated'
+export {
+  type BoundGraph,
+  bindGraph,
+  type GraphDescriptorSchema,
+  type GraphQueryPlan,
+  type WindowedGraphQuery,
+} from './graph-client.js'
 
+export {
+  applyCollectionDiff,
+  type CollectionChanges,
+  type CollectionDiff,
+  type Identified,
+  LiveCollection,
+  type LiveCollectionStatus,
+  LiveIndex,
+  type LiveIndexChanges,
+  type MutableKeyedCollection,
+} from './live-collection.js'
 // Explicitly re-export type-only exports that don't come through `export *`
 export type { LogLevel }
 
@@ -73,26 +91,30 @@ export const LOG_RANK = [
 
 // Export the client
 export {
-  ConnectionStatus,
-  MykoClient,
-  MykoProtocol,
   type ClientStats,
   type Command,
+  type CommandOptions,
   type CommandResult,
+  ConnectionStatus,
+  MykoClient,
   type MykoError,
   type MykoErrorEvent,
+  MykoProtocol,
   type Query,
   type QueryDiff,
   type QueryItem,
+  type QueryResult,
+  type QuerySelectionOptions,
   type QueryWatchOptions,
   type QueryWindow,
   type QueryWindowInfo,
-  type QueryResult,
+  type QueryCursorWindow,
+  type QueryCursorPageInfo,
+  type Report,
+  type ReportResult,
   type View,
   type ViewItem,
   type ViewResult,
-  type Report,
-  type ReportResult,
 } from './client.js'
 
 // ─────────────────────────────────────────────────────────────────────────────

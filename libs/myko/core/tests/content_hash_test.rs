@@ -35,14 +35,29 @@ fn different_field_values_are_not_equal() {
 #[test]
 fn round_trip_serialization_preserves_equality() {
     let original = make_item("item-1", "Widget", "tools", 42);
-    let json = serde_json::to_value(&original).unwrap();
-    let deserialized: BenchItem = serde_json::from_value(json).unwrap();
+    let json = serde_json::to_value(&original);
+    assert!(json.is_ok(), "serialize item");
+    let Ok(json) = json else {
+        return;
+    };
+    let deserialized = serde_json::from_value::<BenchItem>(json);
+    assert!(deserialized.is_ok(), "deserialize item");
+    let Ok(deserialized) = deserialized else {
+        return;
+    };
     assert_eq!(deserialized, original);
 }
 
 #[test]
 fn id_is_wire_visible() {
     let item = make_item("item-1", "Widget", "tools", 42);
-    let json: serde_json::Value = serde_json::to_value(&item).unwrap();
-    assert_eq!(json["id"].as_str(), Some("item-1"));
+    let json = serde_json::to_value(&item);
+    assert!(json.is_ok(), "serialize item");
+    let Ok(json) = json else {
+        return;
+    };
+    assert_eq!(
+        json.get("id").and_then(serde_json::Value::as_str),
+        Some("item-1")
+    );
 }

@@ -9,6 +9,77 @@ pub struct ViewArgs {
     pub item_type: Path,
 }
 
+struct ViewExpansion<'a> {
+    derives: &'a TokenStream,
+    input_struct: &'a ItemStruct,
+    krate: &'a Path,
+    registration: &'a TokenStream,
+    struct_name: &'a syn::Ident,
+    item_type: &'a Path,
+    cache_key_impl: &'a TokenStream,
+    input_contract: &'a TokenStream,
+    scope_registration: &'a TokenStream,
+}
+
+fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
+    let ViewExpansion {
+        derives,
+        input_struct,
+        krate,
+        registration,
+        struct_name,
+        item_type,
+        cache_key_impl,
+        input_contract,
+        scope_registration,
+    } = expansion;
+    let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
+    quote! {
+        #derives
+        #input_struct
+        #input_contract
+        #scope_registration
+
+        #[cfg(not(target_arch = "wasm32"))]
+        #krate::submit! {
+            #registration
+        }
+
+        #krate::register_typegen_type!(#struct_name);
+
+        impl #krate::prelude::ViewId for #struct_name {
+            fn view_id(&self) -> std::sync::Arc<str> {
+                stringify!(#struct_name).into()
+            }
+        }
+
+        impl #krate::prelude::ViewIdStatic for #struct_name {
+            fn view_id_static() -> std::sync::Arc<str> {
+                stringify!(#struct_name).into()
+            }
+        }
+
+        impl #krate::prelude::ViewItemType for #struct_name {
+            type Item = #item_type;
+
+            fn view_item_type(&self) -> std::sync::Arc<str> {
+                Self::view_item_type_static()
+            }
+
+            fn view_item_type_static() -> std::sync::Arc<str> {
+                stringify!(#item_type_name).into()
+            }
+        }
+
+        const _: fn() = || {
+            fn assert_with_typed_id<T: #krate::common::with_id::WithTypedId>() {}
+            assert_with_typed_id::<#item_type>();
+        };
+
+        #cache_key_impl
+    }
+}
+
 impl Parse for ViewArgs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let item_type: Path = input.parse()?;
@@ -21,20 +92,22 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
+    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
 
     crate::gate_ts_attrs(&mut input_struct.attrs);
-    for field in input_struct.fields.iter_mut() {
-        crate::gate_ts_attrs(&mut field.attrs);
+    for field in &mut input_struct.fields {
+        crate::prepare_typegen_field(field);
     }
 
     quote! {
         #[derive(Debug, Clone, PartialEq, #serde_path::Serialize, #serde_path::Deserialize)]
-        #[cfg_attr(feature = "ts-export", derive(#krate::TS))]
+        #[derive(#krate::TS)]
+        #[ts(crate = "myko::ts_rs")]
         #serde_rename_attr
         #input_struct
 
-        #krate::register_ts_export!(#name);
+        #krate::register_typegen_type!(#name);
+
 
         impl #krate::prelude::WithId for #name {
             fn id(&self) -> std::sync::Arc<str> {
@@ -70,29 +143,47 @@ pub fn myko_view_item_impl(mut input_struct: ItemStruct) -> TokenStream {
 
         impl #krate::prelude::Eventable for #name {
             const ENTITY_NAME_STATIC: &'static str = stringify!(#name);
+            const HAS_ENTITY_PERMISSIONS: bool = false;
         }
     }
 }
 
 pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStream {
+    let (extra_scopes, public) =
+        match crate::public_access::take_operation_access(&mut input_struct) {
+            Ok(access) => access,
+            Err(error) => return error.to_compile_error(),
+        };
     let manual_cache_key = crate::take_manual_cache_key_attr(&mut input_struct);
     let non_hash_cache_key = crate::take_non_hash_cache_key_attr(&mut input_struct);
     let struct_name = &input_struct.ident;
     let item_type = args.item_type;
+    let item_type_name = item_type.segments.last().map(|segment| &segment.ident);
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
+    let scope_registration = crate::public_access::view_read_registration(
+        struct_name,
+        &item_type,
+        &extra_scopes,
+        public,
+        krate,
+    );
+
     let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
+    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+
+    // Reflection metadata for the MCP `search()` operation index — see
+    // `myko::reflection` and the matching comment in `query.rs`.
+    let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
+    let input_contract = crate::input_contract_tokens(&input_struct, "view", krate);
 
     crate::gate_ts_attrs(&mut input_struct.attrs);
-    for field in input_struct.fields.iter_mut() {
-        crate::gate_ts_attrs(&mut field.attrs);
-    }
+    crate::gate_field_ts_attrs(&mut input_struct.fields);
 
     let is_empty = matches!(&input_struct.fields, syn::Fields::Named(f) if f.named.is_empty())
         || matches!(&input_struct.fields, syn::Fields::Unit);
 
-    let ts_cfg_derive = quote!(#[cfg_attr(feature = "ts-export", derive(#krate::TS))]);
+    let ts_cfg_derive = quote!(#[derive(#krate::TS)] #[ts(crate = "myko::ts_rs")]);
 
     let derives = if is_empty {
         if non_hash_cache_key {
@@ -125,10 +216,12 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
     let view_registration = quote! {
         #krate::prelude::ViewRegistration {
             view_id: stringify!(#struct_name),
-            view_item_type: stringify!(#item_type),
+            view_item_type: stringify!(#item_type_name),
             crate_name: module_path!(),
             parse: <#struct_name as #krate::view::ViewFactory>::parse,
             cell_factory: <#struct_name as #krate::view::ViewFactory>::cell_factory,
+            args: #args_tokens,
+            description: #description_tokens,
         }
     };
 
@@ -152,47 +245,44 @@ pub fn myko_view_impl(args: ViewArgs, mut input_struct: ItemStruct) -> TokenStre
         }
     };
 
-    quote! {
-        #derives
-        #input_struct
+    expand_view(&ViewExpansion {
+        derives: &derives,
+        input_struct: &input_struct,
+        krate,
+        registration: &view_registration,
+        struct_name,
+        item_type: &item_type,
+        cache_key_impl: &cache_key_impl,
+        input_contract: &input_contract,
+        scope_registration: &scope_registration,
+    })
+}
 
-        #[cfg(not(target_arch = "wasm32"))]
-        #krate::submit! {
-            #view_registration
-        }
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn computed_view_items_do_not_register_entity_scopes() {
+        let expanded = super::myko_view_item_impl(syn::parse_quote! {
+            pub struct DerivedRow { pub id: std::sync::Arc<str> }
+        })
+        .to_string();
+        assert!(!expanded.contains("EntityScopeRegistration"));
+        assert!(expanded.contains("register_typegen_type"));
+    }
 
-        #krate::register_ts_export!(#struct_name);
-
-        impl #krate::prelude::ViewId for #struct_name {
-            fn view_id(&self) -> std::sync::Arc<str> {
-                stringify!(#struct_name).into()
-            }
-        }
-
-        impl #krate::prelude::ViewIdStatic for #struct_name {
-            fn view_id_static() -> std::sync::Arc<str> {
-                stringify!(#struct_name).into()
-            }
-        }
-
-        impl #krate::prelude::ViewItemType for #struct_name {
-            type Item = #item_type;
-
-            fn view_item_type(&self) -> std::sync::Arc<str> {
-                Self::view_item_type_static()
-            }
-
-            fn view_item_type_static() -> std::sync::Arc<str> {
-                stringify!(#item_type).into()
-            }
-        }
-
-        const _: fn() = || {
-            fn assert_with_typed_id<T: #krate::common::with_id::WithTypedId>() {}
-            assert_with_typed_id::<#item_type>();
-        };
-
-        #cache_key_impl
-
+    #[test]
+    fn computed_views_map_to_explicit_source_entities() {
+        let expanded = super::myko_view_impl(
+            super::ViewArgs {
+                item_type: syn::parse_quote!(DerivedRow),
+            },
+            syn::parse_quote! {
+                #[myko_scope(SourceEntity, read)]
+                pub struct DerivedView {}
+            },
+        )
+        .to_string();
+        assert!(expanded.contains("< SourceEntity as"));
+        assert!(expanded.contains("HAS_ENTITY_PERMISSIONS"));
     }
 }

@@ -1,7 +1,7 @@
 //! Client session management for WebSocket connections
 //!
-//! Each WebSocket connection gets a ClientSession that manages:
-//! - Active subscriptions via SubscriptionGuards
+//! Each WebSocket connection gets a `ClientSession` that manages:
+//! - Active subscriptions via `SubscriptionGuards`
 //! - Message sending to the client
 //! - Automatic cleanup on disconnect
 
@@ -16,10 +16,11 @@ use hyphae::{Cell, CellImmutable, Signal, SubscriptionGuard, Watchable};
 use crate::{
     client::MykoProtocol,
     core::item::AnyItem,
+    query::{WindowedQuerySnapshot, WindowedQuerySource},
     report::AnyOutput,
     wire::{
-        EncodedCommandMessage, ErasedWrappedItem, MykoMessage, QueryChange, QueryResponse,
-        QueryWindow, ReportError, ReportResponse,
+        EncodedCommandMessage, ErasedWrappedItem, MykoMessage, QueryChange, QueryCursorWindow,
+        QueryResponse, QueryWindow, ReportError, ReportResponse,
     },
 };
 
@@ -77,25 +78,24 @@ pub struct PendingQueryResponse {
 }
 
 impl PendingQueryResponse {
+    #[must_use]
     pub fn into_wire(self) -> QueryResponse {
         let upserts: Vec<ErasedWrappedItem> = self
             .upsert_items
             .iter()
             .map(|item| ErasedWrappedItem {
                 item: item.clone(),
-                item_type: item.entity_type().into(),
+                item_type: crate::wire::intern_entity_type(item.entity_type()),
             })
             .collect();
 
-        let mut changes: Vec<QueryChange> = Vec::with_capacity(
-            upserts.len() + self.deletes.len() + usize::from(self.window_order_ids.is_some()),
-        );
-        for item in &upserts {
-            changes.push(QueryChange::Upsert { item: item.clone() });
-        }
-        for id in &self.deletes {
-            changes.push(QueryChange::Delete { id: id.clone() });
-        }
+        // `changes` carries ONLY the WindowOrder entry. Every client (TS,
+        // Rust, and the other ports) reads item content from
+        // `upserts`/`deletes` and consults `changes` solely to find
+        // `windowOrder` — mirroring upserts/deletes into `changes` used to
+        // serialize every item twice on the wire for nothing.
+        let mut changes: Vec<QueryChange> =
+            Vec::with_capacity(usize::from(self.window_order_ids.is_some()));
         if let Some(ids) = self.window_order_ids {
             changes.push(QueryChange::WindowOrder {
                 ids,
@@ -136,8 +136,13 @@ enum SubscriptionEntry {
 
 struct QuerySubscription {
     _guard: SubscriptionGuard,
-    state: Arc<Mutex<QuerySubscriptionState>>,
+    control: QueryWindowControl,
     kind: QuerySubscriptionKind,
+}
+
+enum QueryWindowControl {
+    Materialized(Arc<Mutex<QuerySubscriptionState>>),
+    Pushed(WindowedQuerySource),
 }
 
 #[derive(Clone, Copy)]
@@ -150,7 +155,16 @@ enum QuerySubscriptionKind {
 struct QuerySubscriptionState {
     sequence: u64,
     window: Option<QueryWindow>,
+    cursor_window: Option<QueryCursorWindow>,
     all_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
+    visible_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
+}
+
+#[derive(Default)]
+struct PushedQuerySubscriptionState {
+    sequence: u64,
+    window: Option<QueryWindow>,
+    visible_ids: Vec<Arc<str>>,
     visible_items: HashMap<Arc<str>, Arc<dyn AnyItem>>,
 }
 
@@ -164,18 +178,19 @@ impl<W: WsWriter> ClientSession<W> {
         }
     }
 
-    /// Subscribe to a CellMap from a query cell factory.
+    /// Subscribe to a `CellMap` from a query cell factory.
     ///
-    /// This is used by WsHandler when the query registration provides a cell factory.
+    /// This is used by `WsHandler` when the query registration provides a cell factory.
     pub fn subscribe_query(
         &mut self,
         tx: Arc<str>,
+        query_id: Arc<str>,
         cell: hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
         window: Option<QueryWindow>,
     ) {
         let had_existing = self.subscriptions.contains_key(&tx);
         if had_existing {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} replacing existing query subscription tx={} (active_before={})",
                 self.client_id,
                 tx,
@@ -186,6 +201,7 @@ impl<W: WsWriter> ClientSession<W> {
         let writer = self.writer.clone();
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();
+        let query_id_for_diffs = query_id;
         let state = Arc::new(Mutex::new(QuerySubscriptionState {
             window,
             ..Default::default()
@@ -194,36 +210,37 @@ impl<W: WsWriter> ClientSession<W> {
 
         // subscribe_diffs sends Initial first, then subsequent diffs
         let guard = cell.subscribe_diffs(move |diff| {
-            let response = match state_for_diffs.lock() {
-                Ok(mut state) => state.apply_source_diff(diff, tx_clone.clone()),
-                Err(_) => {
-                    log::error!("Query subscription state poisoned for tx={}", tx_clone);
-                    return;
-                }
+            let response = if let Ok(mut state) = state_for_diffs.lock() {
+                state.apply_source_diff(diff, tx_clone.clone())
+            } else {
+                tracing::error!("Query subscription state poisoned for tx={}", tx_clone);
+                return;
             };
             if let Some(response) = response {
+                crate::server::dispatch_metrics::record_query_response(&query_id_for_diffs);
                 writer.send_query_response(response, false);
             }
         });
+        drop(cell);
 
         self.subscriptions.insert(
             tx,
             SubscriptionEntry::Query(QuerySubscription {
                 _guard: guard,
-                state,
+                control: QueryWindowControl::Materialized(state),
                 kind: QuerySubscriptionKind::Query,
             }),
         );
 
         let active = self.subscriptions.len();
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} subscribed query tx={} active_subscriptions={}",
             self.client_id,
             tx_for_log,
             active
         );
         if active >= 100 && active.is_multiple_of(100) {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} high subscription count: {} (most recent tx={})",
                 self.client_id,
                 active,
@@ -232,7 +249,47 @@ impl<W: WsWriter> ClientSession<W> {
         }
     }
 
-    /// Subscribe to a CellMap from a view cell factory.
+    /// Subscribe to an authoritative server-side bounded query source.
+    pub fn subscribe_windowed_query(
+        &mut self,
+        tx: Arc<str>,
+        query_id: Arc<str>,
+        source: WindowedQuerySource,
+    ) {
+        let writer = self.writer.clone();
+        let tx_for_diffs = tx.clone();
+        let state = Arc::new(Mutex::new(PushedQuerySubscriptionState::default()));
+        let state_for_diffs = state;
+        let snapshots = source.snapshots().clone();
+        let guard = snapshots.subscribe(move |signal| {
+            let Signal::Value(snapshot) = signal else {
+                return;
+            };
+            let response = if let Ok(mut state) = state_for_diffs.lock() {
+                state.apply_snapshot(snapshot, tx_for_diffs.clone())
+            } else {
+                tracing::error!(
+                    "Pushed query subscription state poisoned for tx={}",
+                    tx_for_diffs
+                );
+                return;
+            };
+            crate::server::dispatch_metrics::record_query_response(&query_id);
+            writer.send_query_response(response, false);
+        });
+        drop(snapshots);
+
+        self.subscriptions.insert(
+            tx,
+            SubscriptionEntry::Query(QuerySubscription {
+                _guard: guard,
+                control: QueryWindowControl::Pushed(source),
+                kind: QuerySubscriptionKind::Query,
+            }),
+        );
+    }
+
+    /// Subscribe to a `CellMap` from a view cell factory.
     pub fn subscribe_view(
         &mut self,
         tx: Arc<str>,
@@ -242,7 +299,7 @@ impl<W: WsWriter> ClientSession<W> {
         self.subscribe_view_with_id(tx, "unknown".into(), cell, window);
     }
 
-    /// Subscribe to a CellMap from a view cell factory with explicit view id for perf logging.
+    /// Subscribe to a `CellMap` from a view cell factory with explicit view id for perf logging.
     pub fn subscribe_view_with_id(
         &mut self,
         tx: Arc<str>,
@@ -255,6 +312,7 @@ impl<W: WsWriter> ClientSession<W> {
         let tx_for_log = tx_clone.clone();
         let client_id_for_log = self.client_id.clone();
         let view_id_for_log = view_id.clone();
+        let view_id_for_metrics = view_id.clone();
         let subscribed_at = Instant::now();
         let state = Arc::new(Mutex::new(QuerySubscriptionState {
             window,
@@ -263,32 +321,31 @@ impl<W: WsWriter> ClientSession<W> {
         let state_for_diffs = state.clone();
 
         let guard = cell.subscribe_diffs(move |diff| {
-            let response = match state_for_diffs.lock() {
-                Ok(mut state) => state.apply_source_diff(diff, tx_clone.clone()),
-                Err(_) => {
-                    log::error!("View subscription state poisoned for tx={}", tx_clone);
-                    return;
-                }
+            let response = if let Ok(mut state) = state_for_diffs.lock() { state.apply_source_diff(diff, tx_clone.clone()) } else {
+                tracing::error!("View subscription state poisoned for tx={}", tx_clone);
+                return;
             };
             let Some(response) = response else {
                 return;
             };
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} view tx={} seq={} upserts={} deletes={} changes={} window={:?} total_count={:?}",
                 client_id_for_log,
                 tx_clone,
                 response.sequence,
                 response.upsert_items.len(),
                 response.deletes.len(),
-                response.upsert_items.len()
-                    + response.deletes.len()
-                    + usize::from(response.window_order_ids.is_some()),
+                response
+                    .upsert_items
+                    .len()
+                    .saturating_add(response.deletes.len())
+                    .saturating_add(usize::from(response.window_order_ids.is_some())),
                 response.window,
                 response.total_count
             );
             if response.sequence == 0 {
                 let first_emit_ms = subscribed_at.elapsed().as_millis();
-                log::trace!(
+                tracing::trace!(
                     target: "myko::server::view_perf",
                     "view_perf client={} view_id={} tx={} first_emit_ms={} initial_rows={} total_count={:?} window={:?}",
                     client_id_for_log,
@@ -300,25 +357,28 @@ impl<W: WsWriter> ClientSession<W> {
                     response.window
                 );
             }
+            crate::server::dispatch_metrics::record_view_response(&view_id_for_metrics);
             writer.send_query_response(response, true);
         });
+        drop(cell);
 
         self.subscriptions.insert(
             tx,
             SubscriptionEntry::Query(QuerySubscription {
                 _guard: guard,
-                state,
+                control: QueryWindowControl::Materialized(state),
                 kind: QuerySubscriptionKind::View,
             }),
         );
 
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} subscribed view view_id={} tx={} active_subscriptions={}",
             self.client_id,
             view_id,
             tx_for_log,
             self.subscriptions.len()
         );
+        drop(view_id);
     }
 
     /// Subscribe to a report cell.
@@ -330,7 +390,7 @@ impl<W: WsWriter> ClientSession<W> {
     ) {
         let had_existing = self.subscriptions.contains_key(&tx);
         if had_existing {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} replacing existing report subscription tx={} report_id={} (active_before={})",
                 self.client_id,
                 tx,
@@ -343,26 +403,29 @@ impl<W: WsWriter> ClientSession<W> {
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();
         let report_id_for_log = report_id.clone();
+        let report_id_for_metrics = report_id.clone();
 
         let guard = cell.subscribe(move |signal| match &signal {
             Signal::Value(output) => {
+                crate::server::dispatch_metrics::record_report_response(&report_id_for_metrics);
                 writer.send_report_response(tx_clone.clone(), Arc::clone(output.as_ref()));
             }
             Signal::Complete => {}
             Signal::Error(e) => {
-                writer.send(MykoMessage::ReportError(ReportError {
-                    tx: tx_clone.to_string(),
-                    report_id: report_id.to_string(),
-                    message: e.to_string(),
-                }));
+                writer.send(MykoMessage::ReportError(ReportError::new(
+                    tx_clone.to_string(),
+                    report_id.to_string(),
+                    e.to_string(),
+                )));
             }
         });
+        drop(cell);
 
         self.subscriptions
             .insert(tx, SubscriptionEntry::Guard { _guard: guard });
 
         let active = self.subscriptions.len();
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} subscribed report tx={} report_id={} active_subscriptions={}",
             self.client_id,
             tx_for_log,
@@ -370,7 +433,7 @@ impl<W: WsWriter> ClientSession<W> {
             active
         );
         if active >= 100 && active.is_multiple_of(100) {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} high subscription count: {} (most recent report tx={}, id={})",
                 self.client_id,
                 active,
@@ -382,52 +445,115 @@ impl<W: WsWriter> ClientSession<W> {
 
     /// Update window for an active query subscription.
     pub fn update_query_window(&mut self, tx: &Arc<str>, window: Option<QueryWindow>) {
+        if let Some((source, window)) = self.prepare_query_window_update(tx, window) {
+            source.set_window(window);
+        }
+    }
+
+    /// Apply an in-memory window update immediately, or return pushed-source
+    /// work for the server runtime to dispatch on its blocking executor.
+    ///
+    /// Pushed sources may perform durable backend reads. Separating their
+    /// callback from session bookkeeping lets async servers preserve request
+    /// ordering without invoking blocking providers on runtime workers.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn prepare_query_window_update(
+        &mut self,
+        tx: &Arc<str>,
+        window: Option<QueryWindow>,
+    ) -> Option<(WindowedQuerySource, Option<QueryWindow>)> {
         let Some(SubscriptionEntry::Query(sub)) = self.subscriptions.get(tx) else {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} window update for unknown tx={} (active_subscriptions={})",
                 self.client_id,
                 tx,
                 self.subscriptions.len()
             );
-            return;
+            return None;
         };
 
-        let response = match sub.state.lock() {
-            Ok(mut state) => state.apply_window_update(window, tx.clone()),
-            Err(_) => {
-                log::error!(
-                    "Query subscription state poisoned on window update for tx={}",
-                    tx
+        let response = match &sub.control {
+            QueryWindowControl::Materialized(state) => {
+                if let Ok(mut state) = state.lock() {
+                    state.apply_window_update(window, tx.clone())
+                } else {
+                    tracing::error!(
+                        "Query subscription state poisoned on window update for tx={}",
+                        tx
+                    );
+                    return None;
+                }
+            }
+            QueryWindowControl::Pushed(source) => {
+                tracing::trace!(
+                    "ClientSession {} pushed query window tx={} (active_subscriptions={})",
+                    self.client_id,
+                    tx,
+                    self.subscriptions.len()
                 );
-                return;
+                return Some((source.clone(), window));
             }
         };
 
         let Some(response) = response else {
-            log::trace!(
+            tracing::trace!(
                 "ClientSession {} ignored no-op window update tx={} (active_subscriptions={})",
                 self.client_id,
                 tx,
                 self.subscriptions.len()
             );
-            return;
+            return None;
         };
 
         match sub.kind {
             QuerySubscriptionKind::Query => self.writer.send_query_response(response, false),
             QuerySubscriptionKind::View => self.writer.send_query_response(response, true),
         }
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} updated query window tx={} (active_subscriptions={})",
             self.client_id,
             tx,
             self.subscriptions.len()
         );
+        None
+    }
+
+    /// Move an active query to an exclusive ID-keyset page.
+    pub fn update_query_cursor_window(&mut self, tx: &Arc<str>, window: QueryCursorWindow) {
+        if window.validate().is_err() {
+            tracing::warn!(tx = %tx, "rejected invalid query cursor window");
+            return;
+        }
+        let Some(SubscriptionEntry::Query(sub)) = self.subscriptions.get(tx) else {
+            return;
+        };
+        let response = match &sub.control {
+            QueryWindowControl::Materialized(state) => {
+                let Ok(mut state) = state.lock() else {
+                    tracing::error!(tx = %tx, "query cursor state poisoned");
+                    return;
+                };
+                state.window = None;
+                state.apply_cursor_window_update(window, tx.clone())
+            }
+            QueryWindowControl::Pushed(source) => {
+                source.set_cursor_window(window);
+                return;
+            }
+        };
+        let Some(response) = response else {
+            return;
+        };
+        match sub.kind {
+            QuerySubscriptionKind::Query => self.writer.send_query_response(response, false),
+            QuerySubscriptionKind::View => self.writer.send_query_response(response, true),
+        }
     }
 
     /// Update window for an active view subscription.
     pub fn update_view_window(&mut self, tx: &Arc<str>, window: Option<QueryWindow>) {
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} requested view window update tx={} window={:?}",
             self.client_id,
             tx,
@@ -439,7 +565,7 @@ impl<W: WsWriter> ClientSession<W> {
     /// Cancel a subscription by transaction ID.
     pub fn cancel(&mut self, tx: &Arc<str>) {
         let removed = self.subscriptions.remove(tx).is_some();
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} cancel tx={} removed={} active_subscriptions={}",
             self.client_id,
             tx,
@@ -452,7 +578,7 @@ impl<W: WsWriter> ClientSession<W> {
     pub fn cancel_all(&mut self) {
         let before = self.subscriptions.len();
         self.subscriptions.clear();
-        log::trace!(
+        tracing::trace!(
             "ClientSession {} cancel_all removed_subscriptions={}",
             self.client_id,
             before
@@ -460,13 +586,60 @@ impl<W: WsWriter> ClientSession<W> {
     }
 
     /// Get the number of active subscriptions.
+    #[must_use]
     pub fn subscription_count(&self) -> usize {
         self.subscriptions.len()
     }
 
     /// Check if a subscription exists.
+    #[must_use]
     pub fn has_subscription(&self, tx: &Arc<str>) -> bool {
         self.subscriptions.contains_key(tx)
+    }
+}
+
+impl PushedQuerySubscriptionState {
+    fn apply_snapshot(
+        &mut self,
+        snapshot: &WindowedQuerySnapshot,
+        tx: Arc<str>,
+    ) -> PendingQueryResponse {
+        if self.window.is_some() && snapshot.window.is_none() {
+            self.sequence = 0;
+        }
+
+        let next_ids: Vec<_> = snapshot.entries.iter().map(|(id, _)| id.clone()).collect();
+        let next_items: HashMap<_, _> = snapshot.entries.iter().cloned().collect();
+        let mut deletes: Vec<_> = self
+            .visible_ids
+            .iter()
+            .filter(|id| !next_items.contains_key(id.as_ref()))
+            .cloned()
+            .collect();
+        deletes.sort_unstable();
+        let upsert_items = snapshot
+            .entries
+            .iter()
+            .filter(|(id, item)| {
+                self.sequence == 0 || self.visible_items.get(id.as_ref()) != Some(item)
+            })
+            .map(|(_, item)| item.clone())
+            .collect();
+        let sequence = self.sequence;
+        self.sequence = self.sequence.saturating_add(1);
+        self.window.clone_from(&snapshot.window);
+        self.visible_ids.clone_from(&next_ids);
+        self.visible_items = next_items;
+
+        PendingQueryResponse {
+            tx,
+            sequence,
+            upsert_items,
+            deletes,
+            total_count: snapshot.total_count,
+            window: snapshot.window.clone(),
+            window_order_ids: snapshot.window.as_ref().map(|_| next_ids),
+        }
     }
 }
 
@@ -476,73 +649,14 @@ impl QuerySubscriptionState {
         diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
         tx: Arc<str>,
     ) -> Option<PendingQueryResponse> {
-        if self.window.is_none() {
+        if self.window.is_none() && self.cursor_window.is_none() {
             return self.apply_source_diff_unwindowed(diff, tx);
         }
 
         let previous_total_count = self.all_items.len();
-        let mut changed_ids: HashSet<Arc<str>> = HashSet::new();
-        let mut removed_ids: HashSet<Arc<str>> = HashSet::new();
+        let mut affected_ids = HashSet::new();
         let mut is_initial = false;
-
-        match diff {
-            hyphae::MapDiff::Initial { entries } => {
-                is_initial = true;
-                self.all_items.clear();
-                for (id, item) in entries {
-                    self.all_items.insert(id.clone(), item.clone());
-                    changed_ids.insert(id.clone());
-                }
-            }
-            hyphae::MapDiff::Insert { key, value } => {
-                self.all_items.insert(key.clone(), value.clone());
-                changed_ids.insert(key.clone());
-            }
-            hyphae::MapDiff::Update { key, new_value, .. } => {
-                self.all_items.insert(key.clone(), new_value.clone());
-                changed_ids.insert(key.clone());
-            }
-            hyphae::MapDiff::Remove { key, .. } => {
-                self.all_items.remove(key);
-                removed_ids.insert(key.clone());
-            }
-            hyphae::MapDiff::Batch { changes } => {
-                let batch_size = changes.len();
-                for change in changes {
-                    match change {
-                        hyphae::MapDiff::Initial { entries } => {
-                            is_initial = true;
-                            self.all_items.clear();
-                            for (id, item) in entries {
-                                self.all_items.insert(id.clone(), item.clone());
-                                changed_ids.insert(id.clone());
-                            }
-                        }
-                        hyphae::MapDiff::Insert { key, value } => {
-                            self.all_items.insert(key.clone(), value.clone());
-                            changed_ids.insert(key.clone());
-                        }
-                        hyphae::MapDiff::Update { key, new_value, .. } => {
-                            self.all_items.insert(key.clone(), new_value.clone());
-                            changed_ids.insert(key.clone());
-                        }
-                        hyphae::MapDiff::Remove { key, .. } => {
-                            self.all_items.remove(key);
-                            removed_ids.insert(key.clone());
-                        }
-                        hyphae::MapDiff::Batch { .. } => {}
-                    }
-                }
-                if batch_size >= 64 {
-                    log::trace!(
-                        "ClientSession tx={} apply_source_diff batch_size={} all_items={}",
-                        tx,
-                        batch_size,
-                        self.all_items.len()
-                    );
-                }
-            }
-        }
+        self.apply_source_changes(diff, &mut affected_ids, &mut is_initial);
 
         // NOTE(ts): MapDiff::Initial = full state replacement — reset sequence
         // so the client performs replace_all instead of incremental update.
@@ -550,7 +664,49 @@ impl QuerySubscriptionState {
             self.sequence = 0;
         }
 
-        self.compute_windowed_response(tx, &changed_ids, &removed_ids, previous_total_count, false)
+        self.compute_windowed_response(
+            tx,
+            &affected_ids,
+            &affected_ids,
+            previous_total_count,
+            false,
+        )
+    }
+
+    fn apply_source_changes(
+        &mut self,
+        diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+        affected_ids: &mut HashSet<Arc<str>>,
+        is_initial: &mut bool,
+    ) {
+        match diff {
+            hyphae::MapDiff::Initial { entries } => {
+                *is_initial = true;
+                affected_ids.extend(self.all_items.keys().cloned());
+                self.all_items.clear();
+                for (id, item) in entries {
+                    affected_ids.insert(id.clone());
+                    self.all_items.insert(id.clone(), item.clone());
+                }
+            }
+            hyphae::MapDiff::Insert { key, value } => {
+                affected_ids.insert(key.clone());
+                self.all_items.insert(key.clone(), value.clone());
+            }
+            hyphae::MapDiff::Update { key, new_value, .. } => {
+                affected_ids.insert(key.clone());
+                self.all_items.insert(key.clone(), new_value.clone());
+            }
+            hyphae::MapDiff::Remove { key, .. } => {
+                affected_ids.insert(key.clone());
+                self.all_items.remove(key);
+            }
+            hyphae::MapDiff::Batch { changes } => {
+                for change in changes {
+                    self.apply_source_changes(change, affected_ids, is_initial);
+                }
+            }
+        }
     }
 
     fn apply_source_diff_unwindowed(
@@ -559,70 +715,31 @@ impl QuerySubscriptionState {
         tx: Arc<str>,
     ) -> Option<PendingQueryResponse> {
         let previous_total_count = self.all_items.len();
-        let mut upsert_items: Vec<Arc<dyn AnyItem>> = Vec::new();
-        let mut deletes: Vec<Arc<str>> = Vec::new();
+        let mut affected_ids = HashSet::new();
+        let mut is_initial = false;
+        self.apply_source_changes(diff, &mut affected_ids, &mut is_initial);
 
         // NOTE(ts): MapDiff::Initial means "here is the complete new state" —
         // reset sequence to 0 so the client performs a full replace_all instead
-        // of an incremental update. Without this, a full-clear Initial (empty
-        // entries) sends an empty diff that the client ignores, leaving stale
-        // items in the UI.
-        let mut is_initial = false;
-
-        match diff {
-            hyphae::MapDiff::Initial { entries } => {
-                is_initial = true;
-                self.all_items.clear();
-                for (id, item) in entries {
-                    self.all_items.insert(id.clone(), item.clone());
-                    upsert_items.push(item.clone());
-                }
-            }
-            hyphae::MapDiff::Insert { key, value } => {
-                self.all_items.insert(key.clone(), value.clone());
-                upsert_items.push(value.clone());
-            }
-            hyphae::MapDiff::Update { key, new_value, .. } => {
-                self.all_items.insert(key.clone(), new_value.clone());
-                upsert_items.push(new_value.clone());
-            }
-            hyphae::MapDiff::Remove { key, .. } => {
-                if self.all_items.remove(key).is_some() {
-                    deletes.push(key.clone());
-                }
-            }
-            hyphae::MapDiff::Batch { changes } => {
-                for change in changes {
-                    match change {
-                        hyphae::MapDiff::Initial { entries } => {
-                            is_initial = true;
-                            self.all_items.clear();
-                            for (id, item) in entries {
-                                self.all_items.insert(id.clone(), item.clone());
-                                upsert_items.push(item.clone());
-                            }
-                        }
-                        hyphae::MapDiff::Insert { key, value } => {
-                            self.all_items.insert(key.clone(), value.clone());
-                            upsert_items.push(value.clone());
-                        }
-                        hyphae::MapDiff::Update { key, new_value, .. } => {
-                            self.all_items.insert(key.clone(), new_value.clone());
-                            upsert_items.push(new_value.clone());
-                        }
-                        hyphae::MapDiff::Remove { key, .. } => {
-                            if self.all_items.remove(key).is_some() {
-                                deletes.push(key.clone());
-                            }
-                        }
-                        hyphae::MapDiff::Batch { .. } => {}
-                    }
-                }
-            }
-        }
-
+        // of an incremental update.
         if is_initial {
             self.sequence = 0;
+        }
+
+        let mut response_ids: Vec<_> = if is_initial {
+            self.all_items.keys().cloned().collect()
+        } else {
+            affected_ids.into_iter().collect()
+        };
+        response_ids.sort_unstable();
+        let mut upsert_items = Vec::new();
+        let mut deletes = Vec::new();
+        for id in response_ids {
+            if let Some(item) = self.all_items.get(id.as_ref()) {
+                upsert_items.push(item.clone());
+            } else {
+                deletes.push(id);
+            }
         }
 
         let total_count = self.all_items.len();
@@ -630,11 +747,11 @@ impl QuerySubscriptionState {
         let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
         let should_emit = self.sequence == 0 || visible_changed || total_count_changed;
 
-        log::trace!(
+        tracing::trace!(
             "ClientSession tx={} window_decision force_emit=false seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed=false total_count_changed={} should_emit={} total_count={} window=None",
             tx,
             self.sequence,
-            upsert_items.len(),
+            upsert_items.len().saturating_add(deletes.len()),
             upsert_items.len(),
             deletes.len(),
             visible_changed,
@@ -677,13 +794,43 @@ impl QuerySubscriptionState {
             return None;
         }
 
+        let was_windowed = self.window.is_some() || self.cursor_window.is_some();
+        self.cursor_window = None;
         self.window = window;
+
+        // Leaving windowed mode must replace the client's partial page with
+        // the complete source state. Sequence zero gives every client the
+        // same full-snapshot semantics as an Initial diff.
+        if was_windowed && self.window.is_none() {
+            self.sequence = 0;
+        }
+
+        // A changed window is observable even when it happens to select the
+        // same IDs (for example, increasing a limit beyond the row count).
         self.compute_windowed_response(
             tx,
             &HashSet::new(),
             &HashSet::new(),
             self.all_items.len(),
-            false,
+            true,
+        )
+    }
+
+    fn apply_cursor_window_update(
+        &mut self,
+        window: QueryCursorWindow,
+        tx: Arc<str>,
+    ) -> Option<PendingQueryResponse> {
+        if self.cursor_window.as_ref() == Some(&window) {
+            return None;
+        }
+        self.cursor_window = Some(window);
+        self.compute_windowed_response(
+            tx,
+            &HashSet::new(),
+            &HashSet::new(),
+            self.all_items.len(),
+            true,
         )
     }
 
@@ -695,97 +842,130 @@ impl QuerySubscriptionState {
         previous_total_count: usize,
         force_emit: bool,
     ) -> Option<PendingQueryResponse> {
-        if self.window.is_none() {
-            if self.sequence == 0 {
-                self.visible_items = self.all_items.clone();
-            } else {
-                for id in removed_ids {
-                    self.visible_items.remove(id);
-                }
-                for id in changed_ids {
-                    if let Some(item) = self.all_items.get(id.as_ref()) {
-                        self.visible_items.insert(id.clone(), item.clone());
-                    }
-                }
-            }
-
-            let mut deletes: Vec<Arc<str>> = removed_ids
-                .iter()
-                .filter(|id| !self.all_items.contains_key(id.as_ref()))
-                .cloned()
-                .collect();
-            deletes.sort_unstable();
-
-            let mut upsert_items: Vec<Arc<dyn AnyItem>> = Vec::new();
-            if self.sequence == 0 {
-                let mut ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
-                ids.sort_unstable();
-                for id in ids {
-                    if let Some(item) = self.all_items.get(id.as_ref()) {
-                        upsert_items.push(item.clone());
-                    }
-                }
-            } else {
-                let mut ids: Vec<Arc<str>> = changed_ids.iter().cloned().collect();
-                ids.sort_unstable();
-                for id in ids {
-                    if let Some(item) = self.all_items.get(id.as_ref()) {
-                        upsert_items.push(item.clone());
-                    }
-                }
-            }
-
-            let total_count = self.all_items.len();
-            let window_order_changed = false;
-            let total_count_changed = previous_total_count != total_count;
-            let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
-            let should_emit =
-                force_emit || self.sequence == 0 || visible_changed || total_count_changed;
-
-            log::trace!(
-                "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed={} total_count_changed={} should_emit={} total_count={} window={:?}",
+        if self.window.is_none() && self.cursor_window.is_none() {
+            return self.compute_unwindowed_response(
                 tx,
+                changed_ids,
+                removed_ids,
+                previous_total_count,
                 force_emit,
-                self.sequence,
-                changed_ids.len(),
-                upsert_items.len(),
-                deletes.len(),
-                visible_changed,
-                window_order_changed,
-                total_count_changed,
-                should_emit,
-                total_count,
-                self.window
             );
-
-            if !should_emit {
-                return None;
-            }
-
-            let seq = self.sequence;
-            self.sequence = self.sequence.saturating_add(1);
-
-            return Some(PendingQueryResponse {
-                tx,
-                sequence: seq,
-                upsert_items,
-                deletes,
-                total_count,
-                window: None,
-                window_order_ids: None,
-            });
         }
 
+        self.compute_bounded_window_response(tx, changed_ids, previous_total_count, force_emit)
+    }
+
+    fn compute_unwindowed_response(
+        &mut self,
+        tx: Arc<str>,
+        changed_ids: &HashSet<Arc<str>>,
+        removed_ids: &HashSet<Arc<str>>,
+        previous_total_count: usize,
+        force_emit: bool,
+    ) -> Option<PendingQueryResponse> {
+        if self.sequence == 0 {
+            self.visible_items = self.all_items.clone();
+        } else {
+            for id in removed_ids {
+                self.visible_items.remove(id);
+            }
+            for id in changed_ids {
+                if let Some(item) = self.all_items.get(id.as_ref()) {
+                    self.visible_items.insert(id.clone(), item.clone());
+                }
+            }
+        }
+
+        let mut deletes: Vec<Arc<str>> = removed_ids
+            .iter()
+            .filter(|id| !self.all_items.contains_key(id.as_ref()))
+            .cloned()
+            .collect();
+        deletes.sort_unstable();
+        let source_ids: Vec<Arc<str>> = if self.sequence == 0 {
+            self.all_items.keys().cloned().collect()
+        } else {
+            changed_ids.iter().cloned().collect()
+        };
+        let mut source_ids = source_ids;
+        source_ids.sort_unstable();
+        let upsert_items: Vec<Arc<dyn AnyItem>> = source_ids
+            .into_iter()
+            .filter_map(|id| self.all_items.get(id.as_ref()).cloned())
+            .collect();
+        let total_count = self.all_items.len();
+        let total_count_changed = previous_total_count != total_count;
+        let visible_changed = !upsert_items.is_empty() || !deletes.is_empty();
+        let should_emit =
+            force_emit || self.sequence == 0 || visible_changed || total_count_changed;
+
+        tracing::trace!(
+            "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed=false total_count_changed={} should_emit={} total_count={} window={:?}",
+            tx,
+            force_emit,
+            self.sequence,
+            changed_ids.len(),
+            upsert_items.len(),
+            deletes.len(),
+            visible_changed,
+            total_count_changed,
+            should_emit,
+            total_count,
+            self.window
+        );
+        if !should_emit {
+            return None;
+        }
+        let sequence = self.sequence;
+        self.sequence = self.sequence.saturating_add(1);
+        Some(PendingQueryResponse {
+            tx,
+            sequence,
+            upsert_items,
+            deletes,
+            total_count,
+            window: None,
+            window_order_ids: None,
+        })
+    }
+
+    fn compute_bounded_window_response(
+        &mut self,
+        tx: Arc<str>,
+        changed_ids: &HashSet<Arc<str>>,
+        previous_total_count: usize,
+        force_emit: bool,
+    ) -> Option<PendingQueryResponse> {
         let mut ordered_ids: Vec<Arc<str>> = self.all_items.keys().cloned().collect();
         ordered_ids.sort_unstable();
 
-        let visible_ids: Vec<Arc<str>> = if let Some(window) = &self.window {
+        let visible_ids: Vec<Arc<str>> = if let Some(cursor) = &self.cursor_window {
+            let (start, end) = cursor.after.as_ref().map_or_else(
+                || {
+                    cursor.before.as_ref().map_or_else(
+                        || (0, cursor.limit.min(ordered_ids.len())),
+                        |before| {
+                            let end = ordered_ids.partition_point(|id| id < before);
+                            (end.saturating_sub(cursor.limit), end)
+                        },
+                    )
+                },
+                |after| {
+                    let start = ordered_ids.partition_point(|id| id <= after);
+                    (
+                        start,
+                        start.saturating_add(cursor.limit).min(ordered_ids.len()),
+                    )
+                },
+            );
+            ordered_ids.get(start..end).unwrap_or_default().to_vec()
+        } else if let Some(window) = &self.window {
             if window.limit == 0 {
                 Vec::new()
             } else {
                 let start = window.offset.min(ordered_ids.len());
                 let end = start.saturating_add(window.limit).min(ordered_ids.len());
-                ordered_ids[start..end].to_vec()
+                ordered_ids.get(start..end).unwrap_or_default().to_vec()
             }
         } else {
             ordered_ids
@@ -830,7 +1010,7 @@ impl QuerySubscriptionState {
             || window_order_changed
             || total_count_changed;
 
-        log::trace!(
+        tracing::trace!(
             "ClientSession tx={} window_decision force_emit={} seq={} changed_ids={} upserts={} deletes={} visible_changed={} window_order_changed={} total_count_changed={} should_emit={} total_count={} window={:?}",
             tx,
             force_emit,
@@ -852,17 +1032,18 @@ impl QuerySubscriptionState {
             return None;
         }
 
-        let seq = self.sequence;
+        let sequence = self.sequence;
         self.sequence = self.sequence.saturating_add(1);
 
         Some(PendingQueryResponse {
             tx,
-            sequence: seq,
+            sequence,
             upsert_items,
             deletes,
             total_count,
             window: self.window.clone(),
-            window_order_ids: self.window.as_ref().map(|_| visible_ids),
+            window_order_ids: (self.window.is_some() || self.cursor_window.is_some())
+                .then_some(visible_ids),
         })
     }
 }
@@ -870,7 +1051,7 @@ impl QuerySubscriptionState {
 impl<W: WsWriter> Drop for ClientSession<W> {
     fn drop(&mut self) {
         // All guards drop automatically
-        log::trace!(
+        tracing::trace!(
             "ClientSession dropped for client {}, cleaning up {} subscriptions",
             self.client_id,
             self.subscriptions.len()
@@ -882,10 +1063,10 @@ impl<W: WsWriter> Drop for ClientSession<W> {
 mod tests {
     use std::sync::Mutex;
 
-    use hyphae::SelectExt;
+    use hyphae::{Mutable, SelectExt};
 
     use super::*;
-    use crate::{common::with_id::WithId, store::StoreRegistry};
+    use crate::{common::with_id::WithId, store::StoreRegistry, test_util::scheduler_test_serial};
 
     // Mock writer that collects messages
     struct MockWriter {
@@ -900,21 +1081,34 @@ mod tests {
         }
 
         fn message_count(&self) -> usize {
-            self.messages.lock().unwrap().len()
+            self.messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len()
         }
 
         fn last_message(&self) -> Option<MykoMessage> {
-            self.messages.lock().unwrap().last().cloned()
+            self.messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .last()
+                .cloned()
         }
 
         fn messages(&self) -> Vec<MykoMessage> {
-            self.messages.lock().unwrap().clone()
+            self.messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
         }
     }
 
     impl WsWriter for MockWriter {
         fn send(&self, msg: MykoMessage) {
-            self.messages.lock().unwrap().push(msg);
+            self.messages
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(msg);
         }
 
         fn send_serialized_command(
@@ -923,14 +1117,18 @@ mod tests {
             _command_id: String,
             payload: EncodedCommandMessage,
         ) {
-            let msg = match payload {
+            match payload {
                 EncodedCommandMessage::Json(json) => {
-                    serde_json::from_str(&json).expect("Serialized command JSON should decode")
+                    if let Ok(message) = serde_json::from_str(&json) {
+                        self.send(message);
+                    }
                 }
-                EncodedCommandMessage::Cbor(bytes) => ciborium::de::from_reader(bytes.as_slice())
-                    .expect("Serialized command CBOR should decode"),
-            };
-            self.send(msg);
+                EncodedCommandMessage::Cbor(bytes) => {
+                    if let Ok(message) = ciborium::de::from_reader(bytes.as_slice()) {
+                        self.send(message);
+                    }
+                }
+            }
         }
     }
 
@@ -978,8 +1176,7 @@ mod tests {
             other
                 .as_any()
                 .downcast_ref::<Self>()
-                .map(|typed| self == typed)
-                .unwrap_or(false)
+                .is_some_and(|typed| self == typed)
         }
     }
 
@@ -987,11 +1184,414 @@ mod tests {
         Arc::new(TestEntity {
             id: id.into(),
             name: name.to_string(),
-        }) as Arc<dyn AnyItem>
+        })
+    }
+
+    #[test]
+    fn unwindowed_batch_remove_then_insert_same_key_emits_only_final_upsert() {
+        let old_item = make_entity("task-1", "Old");
+        let new_item = make_entity("task-1", "New");
+        let expected_item = new_item.clone();
+        let mut state = QuerySubscriptionState {
+            sequence: 1,
+            all_items: HashMap::from([("task-1".into(), old_item.clone())]),
+            ..Default::default()
+        };
+        let diff = hyphae::MapDiff::Batch {
+            changes: vec![
+                hyphae::MapDiff::Remove {
+                    key: "task-1".into(),
+                    old_value: old_item,
+                },
+                hyphae::MapDiff::Insert {
+                    key: "task-1".into(),
+                    value: new_item,
+                },
+            ],
+        };
+
+        let response = state.apply_source_diff_unwindowed(&diff, "tx".into());
+        assert!(response.is_some(), "expected a response");
+        let Some(response) = response else {
+            return;
+        };
+        assert!(response.deletes.is_empty());
+        assert_eq!(response.upsert_items.len(), 1);
+        assert!(
+            response
+                .upsert_items
+                .first()
+                .is_some_and(|item| Arc::ptr_eq(item, &expected_item)),
+            "the final inserted item should be upserted"
+        );
+    }
+
+    #[test]
+    fn unwindowed_batch_insert_then_remove_same_key_emits_only_final_delete() {
+        let item = make_entity("task-1", "Transient");
+        let mut state = QuerySubscriptionState {
+            sequence: 1,
+            ..Default::default()
+        };
+        let diff = hyphae::MapDiff::Batch {
+            changes: vec![
+                hyphae::MapDiff::Insert {
+                    key: "task-1".into(),
+                    value: item.clone(),
+                },
+                hyphae::MapDiff::Remove {
+                    key: "task-1".into(),
+                    old_value: item,
+                },
+            ],
+        };
+
+        let response = state.apply_source_diff_unwindowed(&diff, "tx".into());
+        assert!(response.is_some(), "expected a response");
+        let Some(response) = response else {
+            return;
+        };
+        assert!(response.upsert_items.is_empty());
+        assert_eq!(response.deletes, vec![Arc::<str>::from("task-1")]);
+    }
+
+    #[test]
+    fn nested_batch_initial_resets_sequence_and_coalesces_to_full_snapshot() {
+        let stale_item = make_entity("stale", "Stale");
+        let transient = make_entity("transient", "Transient");
+        let fresh = make_entity("fresh", "Fresh");
+        let later = make_entity("later", "Later");
+        let mut state = QuerySubscriptionState {
+            sequence: 7,
+            all_items: HashMap::from([("stale".into(), stale_item)]),
+            ..Default::default()
+        };
+        let diff = hyphae::MapDiff::Batch {
+            changes: vec![
+                hyphae::MapDiff::Insert {
+                    key: "transient".into(),
+                    value: transient,
+                },
+                hyphae::MapDiff::Batch {
+                    changes: vec![
+                        hyphae::MapDiff::Initial {
+                            entries: vec![("fresh".into(), fresh)],
+                        },
+                        hyphae::MapDiff::Insert {
+                            key: "later".into(),
+                            value: later,
+                        },
+                    ],
+                },
+            ],
+        };
+
+        let response = state.apply_source_diff(&diff, "tx".into());
+        assert!(response.is_some(), "nested Initial should emit a snapshot");
+        let Some(response) = response else {
+            return;
+        };
+        let mut ids: Vec<_> = response.upsert_items.iter().map(|item| item.id()).collect();
+        ids.sort_unstable();
+
+        assert_eq!(response.sequence, 0);
+        assert_eq!(
+            ids,
+            vec![Arc::<str>::from("fresh"), Arc::<str>::from("later")]
+        );
+        assert!(response.deletes.is_empty());
+        assert_eq!(response.total_count, 2);
+    }
+
+    #[test]
+    fn bounded_to_unwindowed_emits_full_sequence_zero_snapshot() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
+        store.insert("c".into(), make_entity("c", "Charlie"));
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-1".into();
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+        session.subscribe_query(
+            tx.clone(),
+            "query-1".into(),
+            cellmap,
+            Some(QueryWindow {
+                offset: 1,
+                limit: 1,
+            }),
+        );
+        let before = mock.message_count();
+
+        session.update_query_window(&tx, None);
+
+        assert_eq!(mock.message_count(), before + 1);
+        let last_message = mock.last_message();
+        assert!(
+            matches!(last_message, Some(MykoMessage::QueryResponse(_))),
+            "expected QueryResponse"
+        );
+        let Some(MykoMessage::QueryResponse(response)) = last_message else {
+            return;
+        };
+        let mut ids: Vec<_> = response.upserts.iter().map(|item| item.item.id()).collect();
+        ids.sort_unstable();
+        assert_eq!(response.sequence, 0);
+        assert_eq!(
+            ids,
+            vec![
+                Arc::<str>::from("a"),
+                Arc::<str>::from("b"),
+                Arc::<str>::from("c")
+            ]
+        );
+        assert!(response.deletes.is_empty());
+        assert!(response.window.is_none());
+        assert!(response.changes.is_empty());
+        assert_eq!(response.total_count, Some(3));
+    }
+
+    #[test]
+    fn pushed_window_source_emits_authoritative_pages_without_full_session_state() {
+        let _serial = scheduler_test_serial();
+        let first = make_entity("b", "Bob");
+        let second = make_entity("c", "Charlie");
+        let snapshots = Cell::new(Arc::new(WindowedQuerySnapshot {
+            entries: vec![("b".into(), first)],
+            total_count: 3,
+            window: Some(QueryWindow {
+                offset: 1,
+                limit: 1,
+            }),
+        }));
+        let snapshots_for_window = snapshots.clone();
+        let second_for_window = second.clone();
+        let source = WindowedQuerySource::new(snapshots.lock(), move |window| {
+            snapshots_for_window.set(Arc::new(WindowedQuerySnapshot {
+                entries: vec![("c".into(), second_for_window.clone())],
+                total_count: 3,
+                window,
+            }));
+        });
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-pushed".into();
+        session.subscribe_windowed_query(tx.clone(), "query-pushed".into(), source);
+
+        let initial_message = mock.last_message();
+        assert!(matches!(
+            initial_message,
+            Some(MykoMessage::QueryResponse(_))
+        ));
+        let Some(MykoMessage::QueryResponse(initial)) = initial_message else {
+            return;
+        };
+        assert_eq!(initial.sequence, 0);
+        assert_eq!(initial.total_count, Some(3));
+        assert!(matches!(
+            initial.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }] if ids == &[Arc::<str>::from("b")]
+        ));
+
+        session.update_query_window(
+            &tx,
+            Some(QueryWindow {
+                offset: 2,
+                limit: 1,
+            }),
+        );
+        let next_message = mock.last_message();
+        assert!(matches!(next_message, Some(MykoMessage::QueryResponse(_))));
+        let Some(MykoMessage::QueryResponse(next)) = next_message else {
+            return;
+        };
+        assert_eq!(next.sequence, 1);
+        assert_eq!(next.deletes, vec![Arc::<str>::from("b")]);
+        assert!(matches!(
+            next.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }] if ids == &[Arc::<str>::from("c")]
+        ));
+        assert_eq!(next.total_count, Some(3));
+    }
+
+    #[test]
+    fn unwindowed_to_bounded_updates_visible_page() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
+        store.insert("c".into(), make_entity("c", "Charlie"));
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-1".into();
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+        session.subscribe_query(tx.clone(), "query-1".into(), cellmap, None);
+
+        session.update_query_window(
+            &tx,
+            Some(QueryWindow {
+                offset: 1,
+                limit: 1,
+            }),
+        );
+
+        let last_message = mock.last_message();
+        assert!(
+            matches!(last_message, Some(MykoMessage::QueryResponse(_))),
+            "expected QueryResponse"
+        );
+        let Some(MykoMessage::QueryResponse(response)) = last_message else {
+            return;
+        };
+        assert_eq!(response.sequence, 1);
+        assert_eq!(response.upserts.len(), 1);
+        assert!(
+            response
+                .upserts
+                .first()
+                .is_some_and(|item| item.item.id().as_ref() == "b")
+        );
+        assert!(response.deletes.is_empty());
+        assert!(matches!(
+            response.window,
+            Some(QueryWindow {
+                offset: 1,
+                limit: 1
+            })
+        ));
+        assert!(matches!(
+            response.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }] if ids == &[Arc::<str>::from("b")]
+        ));
+    }
+
+    #[test]
+    fn cursor_windows_are_exclusive_and_bidirectional() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        for id in ["a", "b", "c", "d"] {
+            store.insert(id.into(), make_entity(id, id));
+        }
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-cursor".into();
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+        session.subscribe_query(
+            tx.clone(),
+            "query-cursor".into(),
+            cellmap,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 2,
+            }),
+        );
+
+        session.update_query_cursor_window(&tx, QueryCursorWindow::after("b", 2));
+        let forward_message = mock.last_message();
+        assert!(matches!(
+            forward_message,
+            Some(MykoMessage::QueryResponse(_))
+        ));
+        let Some(MykoMessage::QueryResponse(forward)) = forward_message else {
+            return;
+        };
+        assert!(forward.window.is_none());
+        assert!(matches!(
+            forward.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }]
+                if ids == &[Arc::<str>::from("c"), Arc::<str>::from("d")]
+        ));
+
+        session.update_query_cursor_window(&tx, QueryCursorWindow::before("c", 2));
+        let backward_message = mock.last_message();
+        assert!(matches!(
+            backward_message,
+            Some(MykoMessage::QueryResponse(_))
+        ));
+        let Some(MykoMessage::QueryResponse(backward)) = backward_message else {
+            return;
+        };
+        assert!(matches!(
+            backward.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }]
+                if ids == &[Arc::<str>::from("a"), Arc::<str>::from("b")]
+        ));
+    }
+
+    #[test]
+    fn bounded_window_change_emits_even_when_selected_ids_are_unchanged() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("Entity");
+        store.insert("a".into(), make_entity("a", "Alice"));
+        store.insert("b".into(), make_entity("b", "Bob"));
+
+        let mock = Arc::new(MockWriter::new());
+        let writer = ArcMockWriter(mock.clone());
+        let mut session = ClientSession::new("client-1".into(), writer);
+        let tx: Arc<str> = "tx-1".into();
+        let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
+        session.subscribe_query(
+            tx.clone(),
+            "query-1".into(),
+            cellmap,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 2,
+            }),
+        );
+        let before = mock.message_count();
+
+        session.update_query_window(
+            &tx,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 20,
+            }),
+        );
+
+        assert_eq!(mock.message_count(), before + 1);
+        let last_message = mock.last_message();
+        assert!(
+            matches!(last_message, Some(MykoMessage::QueryResponse(_))),
+            "expected QueryResponse"
+        );
+        let Some(MykoMessage::QueryResponse(response)) = last_message else {
+            return;
+        };
+        assert_eq!(response.sequence, 1);
+        assert!(response.upserts.is_empty());
+        assert!(response.deletes.is_empty());
+        assert!(matches!(
+            response.window,
+            Some(QueryWindow {
+                offset: 0,
+                limit: 20
+            })
+        ));
+        assert!(matches!(
+            response.changes.as_slice(),
+            [QueryChange::WindowOrder { ids, .. }]
+                if ids == &[Arc::<str>::from("a"), Arc::<str>::from("b")]
+        ));
     }
 
     #[test]
     fn test_subscribe_query_cellmap() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1002,7 +1602,7 @@ mod tests {
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
-        session.subscribe_query("tx-1".into(), cellmap, None);
+        session.subscribe_query("tx-1".into(), "query-1".into(), cellmap, None);
 
         // Should have received initial data
         assert!(mock.message_count() >= 1);
@@ -1014,14 +1614,15 @@ mod tests {
 
     #[test]
     fn test_cancel_subscription() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         let mock = Arc::new(MockWriter::new());
-        let writer = ArcMockWriter(mock.clone());
+        let writer = ArcMockWriter(mock);
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
-        session.subscribe_query("tx-1".into(), cellmap, None);
+        session.subscribe_query("tx-1".into(), "query-1".into(), cellmap, None);
         assert_eq!(session.subscription_count(), 1);
 
         session.cancel(&"tx-1".into());
@@ -1030,19 +1631,20 @@ mod tests {
 
     #[test]
     fn test_session_drop_cleanup() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
 
         {
             let mock = Arc::new(MockWriter::new());
-            let writer = ArcMockWriter(mock.clone());
+            let writer = ArcMockWriter(mock);
             let mut session = ClientSession::new("client-1".into(), writer);
 
             let cellmap1 = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
             let cellmap2 = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
-            session.subscribe_query("tx-1".into(), cellmap1, None);
-            session.subscribe_query("tx-2".into(), cellmap2, None);
+            session.subscribe_query("tx-1".into(), "query-1".into(), cellmap1, None);
+            session.subscribe_query("tx-2".into(), "query-2".into(), cellmap2, None);
 
             // 2 subscriptions active
             assert_eq!(session.subscription_count(), 2);
@@ -1052,6 +1654,7 @@ mod tests {
 
     #[test]
     fn test_subscribe_by_id() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1063,7 +1666,7 @@ mod tests {
         let id: Arc<str> = "a".into();
         let cellmap =
             hyphae::MapQuery::materialize((*store).clone().select(move |item| *item.id() == *id));
-        session.subscribe_query("tx-1".into(), cellmap, None);
+        session.subscribe_query("tx-1".into(), "query-1".into(), cellmap, None);
 
         // Should have received initial data
         assert!(mock.message_count() >= 1);
@@ -1075,6 +1678,7 @@ mod tests {
 
     #[test]
     fn test_delete_sends_deletes_not_upserts() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1085,7 +1689,7 @@ mod tests {
         let mut session = ClientSession::new("client-1".into(), writer);
 
         let cellmap = hyphae::MapQuery::materialize((*store).clone().select(|_| true));
-        session.subscribe_query("tx-1".into(), cellmap, None);
+        session.subscribe_query("tx-1".into(), "query-1".into(), cellmap, None);
 
         let initial_count = mock.message_count();
 
@@ -1096,7 +1700,11 @@ mod tests {
         assert!(mock.message_count() > initial_count);
 
         // Find the delete message (it should be the last one)
-        let last_msg = mock.last_message().unwrap();
+        let last_msg = mock.last_message();
+        assert!(last_msg.is_some(), "expected response message");
+        let Some(last_msg) = last_msg else {
+            return;
+        };
         if let MykoMessage::QueryResponse(QueryResponse {
             deletes, upserts, ..
         }) = last_msg
@@ -1108,12 +1716,16 @@ mod tests {
             );
             assert!(upserts.is_empty(), "Upserts should be empty for delete");
         } else {
-            panic!("Expected QueryResponse");
+            assert!(
+                matches!(last_msg, MykoMessage::QueryResponse(_)),
+                "Expected QueryResponse"
+            );
         }
     }
 
     #[test]
     fn test_subscribe_view_respects_initial_window() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));
@@ -1139,15 +1751,17 @@ mod tests {
             MykoMessage::ViewResponse(r) => Some(r),
             _ => None,
         });
+        assert!(first.is_some(), "expected at least one ViewResponse");
         let Some(resp) = first else {
-            panic!("expected at least one ViewResponse");
+            return;
         };
 
         assert_eq!(resp.upserts.len(), 1);
         assert_eq!(resp.deletes.len(), 0);
         assert_eq!(resp.total_count, Some(3));
+        assert!(resp.window.is_some(), "expected window in response");
         let Some(window) = resp.window else {
-            panic!("expected window in response");
+            return;
         };
         assert_eq!(window.offset, 0);
         assert_eq!(window.limit, 1);
@@ -1155,6 +1769,7 @@ mod tests {
 
     #[test]
     fn test_view_window_ignores_out_of_window_updates() {
+        let _serial = scheduler_test_serial();
         let registry = Arc::new(StoreRegistry::new());
         let store = registry.get_or_create("Entity");
         store.insert("a".into(), make_entity("a", "Alice"));

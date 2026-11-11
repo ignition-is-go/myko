@@ -1,5 +1,4 @@
-use std::collections::HashMap;
-use std::hash::Hash;
+use std::{collections::HashMap, hash::Hash};
 
 /// Maps opaque ids to dense `u32` slots so the index can use compact bitmaps
 /// and Vec-indexed records. Reuses freed slots across compactions.
@@ -12,6 +11,7 @@ pub struct IdInterner<Id> {
 }
 
 impl<Id: Clone + Eq + Hash> IdInterner<Id> {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             forward: HashMap::new(),
@@ -20,6 +20,7 @@ impl<Id: Clone + Eq + Hash> IdInterner<Id> {
         }
     }
 
+    #[must_use]
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             forward: HashMap::with_capacity(cap),
@@ -36,10 +37,15 @@ impl<Id: Clone + Eq + Hash> IdInterner<Id> {
             return existing;
         }
         let slot = if let Some(reused) = self.free_list.pop() {
-            self.reverse[reused as usize] = Some(id.clone());
+            if let Some(entry) = usize::try_from(reused)
+                .ok()
+                .and_then(|index| self.reverse.get_mut(index))
+            {
+                *entry = Some(id.clone());
+            }
             reused
         } else {
-            let new_slot = self.reverse.len() as u32;
+            let new_slot = u32::try_from(self.reverse.len()).unwrap_or(u32::MAX);
             self.reverse.push(Some(id.clone()));
             new_slot
         };
@@ -51,22 +57,33 @@ impl<Id: Clone + Eq + Hash> IdInterner<Id> {
         self.forward.get(id).copied()
     }
 
+    #[must_use]
     pub fn id_of(&self, slot: u32) -> Option<&Id> {
-        self.reverse.get(slot as usize).and_then(|s| s.as_ref())
+        usize::try_from(slot)
+            .ok()
+            .and_then(|index| self.reverse.get(index))
+            .and_then(Option::as_ref)
     }
 
     /// Mark a slot as free. Future `intern` calls may reuse it.
     pub fn release(&mut self, id: &Id) {
         if let Some(slot) = self.forward.remove(id) {
-            self.reverse[slot as usize] = None;
+            if let Some(entry) = usize::try_from(slot)
+                .ok()
+                .and_then(|index| self.reverse.get_mut(index))
+            {
+                *entry = None;
+            }
             self.free_list.push(slot);
         }
     }
 
+    #[must_use]
     pub fn len(&self) -> usize {
         self.forward.len()
     }
 
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.forward.is_empty()
     }

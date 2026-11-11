@@ -2,26 +2,42 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{ItemStruct, Path};
 
-pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) -> TokenStream {
+#[allow(clippy::too_many_lines)]
+pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct) -> TokenStream {
+    let (scopes, public) = match crate::public_access::take_operation_access(&mut input_struct) {
+        Ok(access) => access,
+        Err(error) => return error.to_compile_error(),
+    };
     let manual_cache_key = crate::take_manual_cache_key_attr(&mut input_struct);
     let non_hash_cache_key = crate::take_non_hash_cache_key_attr(&mut input_struct);
     let struct_name = &input_struct.ident;
     let ctx = crate::DeriveCtx::new();
     let krate = &ctx.krate;
-    let serde_path = &ctx.serde_path;
-    let serde_rename_attr = ctx.serde_attr(quote!(rename_all = "camelCase"));
+    let scope_registration = crate::public_access::registration(
+        &syn::parse_quote!(Report),
+        struct_name,
+        &scopes,
+        public,
+        krate,
+    );
 
-    // Gate user-written `#[ts(...)]` attrs behind the ts-export feature.
+    let serde_path = &ctx.serde_path;
+    let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
+
+    // Reflection metadata for the MCP `search()` operation index — see
+    // `myko::reflection` and the matching comment in `query.rs`.
+    let (description_tokens, args_tokens) = crate::operation_metadata_tokens(&input_struct, krate);
+    let input_contract = crate::input_contract_tokens(&input_struct, "report", krate);
+
+    // Gate user-written `#[ts(...)]` attrs behind the codegen-ts feature.
     crate::gate_ts_attrs(&mut input_struct.attrs);
-    for field in input_struct.fields.iter_mut() {
-        crate::gate_ts_attrs(&mut field.attrs);
-    }
+    crate::gate_field_ts_attrs(&mut input_struct.fields);
 
     // Check if struct has no fields (empty)
     let is_empty = matches!(&input_struct.fields, syn::Fields::Named(f) if f.named.is_empty())
         || matches!(&input_struct.fields, syn::Fields::Unit);
 
-    let ts_cfg_derive = quote!(#[cfg_attr(feature = "ts-export", derive(#krate::TS))]);
+    let ts_cfg_derive = quote!(#[derive(#krate::TS)] #[ts(crate = "myko::ts_rs")]);
 
     // Apply derives (add Default for empty structs)
     let derives = if is_empty {
@@ -61,6 +77,8 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
             output_type_crate: module_path!(),
             parse: <#struct_name as #krate::report::ReportFactory>::parse,
             cell_factory: <#struct_name as #krate::report::ReportFactory>::cell_factory,
+            args: #args_tokens,
+            description: #description_tokens,
         }
     };
 
@@ -87,6 +105,8 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
     let expanded = quote! {
         #derives
         #input_struct
+        #input_contract
+        #scope_registration
 
         // Registration is server-only (requires ReportFactory which depends on hyphae)
         #[cfg(not(target_arch = "wasm32"))]
@@ -95,7 +115,7 @@ pub fn myko_report_impl(report_output_type: Path, mut input_struct: ItemStruct) 
         }
 
         // Register for ts-rs export (just the params type now)
-        #krate::register_ts_export!(#struct_name);
+        #krate::register_typegen_type!(#struct_name);
 
         // Impl ReportId
         impl #krate::prelude::ReportId for #struct_name {

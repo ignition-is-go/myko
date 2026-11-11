@@ -35,9 +35,9 @@ pub struct QueryResponse {
     pub window: Option<QueryWindow>,
 }
 
-/// Custom Deserialize for QueryResponse: deserializes using Value-based items,
+/// Custom Deserialize for `QueryResponse`: deserializes using Value-based items,
 /// then parses each through the item registry to produce Arc<dyn AnyItem>.
-/// Falls back to a no-op AnyItem wrapper when running on the client side (WASM)
+/// Falls back to a no-op `AnyItem` wrapper when running on the client side (WASM)
 /// or when the item type is unknown.
 impl<'de> Deserialize<'de> for QueryResponse {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -45,7 +45,7 @@ impl<'de> Deserialize<'de> for QueryResponse {
         D: serde::Deserializer<'de>,
     {
         let raw = ClientQueryResponse::deserialize(deserializer)?;
-        Ok(QueryResponse {
+        Ok(Self {
             changes: raw
                 .changes
                 .into_iter()
@@ -91,8 +91,8 @@ impl<'de> Deserialize<'de> for QueryResponse {
     }
 }
 
-/// Thin AnyItem wrapper around a serde_json::Value, used when deserializing
-/// QueryResponse on the client side where concrete entity types are unavailable.
+/// Thin `AnyItem` wrapper around a `serde_json::Value`, used when deserializing
+/// `QueryResponse` on the client side where concrete entity types are unavailable.
 #[derive(Debug, Clone)]
 struct ValueItem {
     value: Value,
@@ -127,8 +127,7 @@ impl AnyItem for ValueItem {
         other
             .as_any()
             .downcast_ref::<Self>()
-            .map(|typed| self.value == typed.value)
-            .unwrap_or(false)
+            .is_some_and(|typed| self.value == typed.value)
     }
 }
 
@@ -157,8 +156,9 @@ pub struct QueryResult<T> {
 }
 
 impl<T> QueryResult<T> {
-    pub fn new(tx: String, upserts: Vec<T>) -> QueryResult<T> {
-        QueryResult {
+    #[must_use]
+    pub const fn new(tx: String, upserts: Vec<T>) -> Self {
+        Self {
             deletes: vec![],
             upserts,
             sequence: 0,
@@ -167,9 +167,62 @@ impl<T> QueryResult<T> {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+fn collect_query_change(
+    diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
+    upserts: &mut Vec<ErasedWrappedItem>,
+    deletes: &mut Vec<Arc<str>>,
+    changes: &mut Vec<QueryChange>,
+) {
+    match diff {
+        MapDiff::Initial { entries } => {
+            for (_, item) in entries {
+                let wrapped = ErasedWrappedItem {
+                    item: item.clone(),
+                    item_type: item.entity_type().into(),
+                };
+                changes.push(QueryChange::Upsert {
+                    item: wrapped.clone(),
+                });
+                upserts.push(wrapped);
+            }
+        }
+        MapDiff::Insert { value, .. } => {
+            let wrapped = ErasedWrappedItem {
+                item: value.clone(),
+                item_type: value.entity_type().into(),
+            };
+            changes.push(QueryChange::Upsert {
+                item: wrapped.clone(),
+            });
+            upserts.push(wrapped);
+        }
+        MapDiff::Update { new_value, .. } => {
+            let wrapped = ErasedWrappedItem {
+                item: new_value.clone(),
+                item_type: new_value.entity_type().into(),
+            };
+            changes.push(QueryChange::Upsert {
+                item: wrapped.clone(),
+            });
+            upserts.push(wrapped);
+        }
+        MapDiff::Remove { key, .. } => {
+            deletes.push(key.clone());
+            changes.push(QueryChange::Delete { id: key.clone() });
+        }
+        MapDiff::Batch { changes: batch } => {
+            for change in batch {
+                collect_query_change(change, upserts, deletes, changes);
+            }
+        }
+    }
+}
+
 impl QueryResponse {
-    pub fn new(tx: Arc<str>, _result: Vec<Value>) -> QueryResponse {
-        QueryResponse {
+    #[must_use]
+    pub fn new(tx: Arc<str>, _result: Vec<Value>) -> Self {
+        Self {
             changes: vec![],
             sequence: 0,
             upserts: vec![],
@@ -180,175 +233,46 @@ impl QueryResponse {
         }
     }
 
-    /// Create a QueryResponse from a MapDiff.
+    /// Create a `QueryResponse` from a `MapDiff`.
     #[cfg(not(target_arch = "wasm32"))]
+    #[must_use]
     pub fn from_diff(
         diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
         tx: Arc<str>,
         sequence: u64,
-    ) -> QueryResponse {
-        fn push_change(
-            diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>,
-            upserts: &mut Vec<ErasedWrappedItem>,
-            deletes: &mut Vec<Arc<str>>,
-            changes: &mut Vec<QueryChange>,
-        ) {
-            match diff {
-                MapDiff::Initial { entries } => {
-                    for (_, item) in entries {
-                        let wrapped = ErasedWrappedItem {
-                            item: item.clone(),
-                            item_type: item.entity_type().into(),
-                        };
-                        changes.push(QueryChange::Upsert {
-                            item: wrapped.clone(),
-                        });
-                        upserts.push(wrapped);
-                    }
-                }
-                MapDiff::Insert { key: _, value } => {
-                    let wrapped = ErasedWrappedItem {
-                        item: value.clone(),
-                        item_type: value.entity_type().into(),
-                    };
-                    changes.push(QueryChange::Upsert {
-                        item: wrapped.clone(),
-                    });
-                    upserts.push(wrapped);
-                }
-                MapDiff::Update {
-                    key: _,
-                    old_value: _,
-                    new_value,
-                } => {
-                    let wrapped = ErasedWrappedItem {
-                        item: new_value.clone(),
-                        item_type: new_value.entity_type().into(),
-                    };
-                    changes.push(QueryChange::Upsert {
-                        item: wrapped.clone(),
-                    });
-                    upserts.push(wrapped);
-                }
-                MapDiff::Remove { key, old_value: _ } => {
-                    deletes.push(key.clone());
-                    changes.push(QueryChange::Delete { id: key.clone() });
-                }
-                MapDiff::Batch { changes: batch } => {
-                    for change in batch {
-                        push_change(change, upserts, deletes, changes);
-                    }
-                }
-            }
-        }
-
-        match diff {
-            MapDiff::Initial { entries } => {
-                let upserts: Vec<ErasedWrappedItem> = entries
-                    .iter()
-                    .map(|(_, item)| ErasedWrappedItem {
-                        item: item.clone(),
-                        item_type: item.entity_type().into(),
-                    })
-                    .collect();
-                let changes = upserts
-                    .iter()
-                    .cloned()
-                    .map(|item| QueryChange::Upsert { item })
-                    .collect();
-                QueryResponse {
-                    tx,
-                    sequence,
-                    changes,
-                    upserts,
-                    deletes: vec![],
-                    total_count: None,
-                    window: None,
-                }
-            }
-            MapDiff::Insert { key: _, value } => {
-                let upserts = vec![ErasedWrappedItem {
-                    item: value.clone(),
-                    item_type: value.entity_type().into(),
-                }];
-                let changes = upserts
-                    .iter()
-                    .cloned()
-                    .map(|item| QueryChange::Upsert { item })
-                    .collect();
-                QueryResponse {
-                    tx,
-                    sequence,
-                    changes,
-                    upserts,
-                    deletes: vec![],
-                    total_count: None,
-                    window: None,
-                }
-            }
-            MapDiff::Update {
-                key: _,
-                old_value: _,
-                new_value,
-            } => {
-                let upserts = vec![ErasedWrappedItem {
-                    item: new_value.clone(),
-                    item_type: new_value.entity_type().into(),
-                }];
-                let changes = upserts
-                    .iter()
-                    .cloned()
-                    .map(|item| QueryChange::Upsert { item })
-                    .collect();
-                QueryResponse {
-                    tx,
-                    sequence,
-                    changes,
-                    upserts,
-                    deletes: vec![],
-                    total_count: None,
-                    window: None,
-                }
-            }
-            MapDiff::Remove { key, old_value: _ } => QueryResponse {
-                tx,
-                sequence,
-                changes: vec![QueryChange::Delete { id: key.clone() }],
-                upserts: vec![],
-                deletes: vec![key.clone()],
-                total_count: None,
-                window: None,
-            },
-            MapDiff::Batch { .. } => {
-                let mut upserts = Vec::new();
-                let mut deletes = Vec::new();
-                let mut changes = Vec::new();
-                push_change(diff, &mut upserts, &mut deletes, &mut changes);
-                QueryResponse {
-                    tx,
-                    sequence,
-                    changes,
-                    upserts,
-                    deletes,
-                    total_count: None,
-                    window: None,
-                }
-            }
+    ) -> Self {
+        let mut upserts = Vec::new();
+        let mut deletes = Vec::new();
+        let mut changes = Vec::new();
+        collect_query_change(diff, &mut upserts, &mut deletes, &mut changes);
+        Self {
+            tx,
+            sequence,
+            changes,
+            upserts,
+            deletes,
+            total_count: None,
+            window: None,
         }
     }
 
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn to_string(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
 }
 
 impl QueryResponse {
+    #[must_use]
     pub fn get_tx(&self) -> Arc<str> {
         self.tx.clone()
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct QueryWindow {
     pub offset: usize,
@@ -361,6 +285,69 @@ pub struct QueryWindowUpdate {
     pub tx: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<QueryWindow>,
+}
+
+/// Keyset window over the canonical ascending result-ID order.
+///
+/// `after` and `before` are exclusive. Supplying neither selects the first
+/// page; supplying both is rejected by the server.
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryCursorWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Arc<str>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<Arc<str>>,
+    pub limit: usize,
+}
+
+impl QueryCursorWindow {
+    #[must_use]
+    pub const fn first(limit: usize) -> Self {
+        Self {
+            after: None,
+            before: None,
+            limit,
+        }
+    }
+
+    #[must_use]
+    pub fn after(cursor: impl Into<Arc<str>>, limit: usize) -> Self {
+        Self {
+            after: Some(cursor.into()),
+            before: None,
+            limit,
+        }
+    }
+
+    #[must_use]
+    pub fn before(cursor: impl Into<Arc<str>>, limit: usize) -> Self {
+        Self {
+            after: None,
+            before: Some(cursor.into()),
+            limit,
+        }
+    }
+
+    /// Validate the mutually-exclusive cursor contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when both cursor directions are supplied.
+    pub const fn validate(&self) -> Result<(), &'static str> {
+        if self.after.is_some() && self.before.is_some() {
+            Err("cursor window cannot contain both after and before")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct QueryCursorWindowUpdate {
+    pub tx: String,
+    pub window: QueryCursorWindow,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, TS)]
@@ -381,12 +368,26 @@ pub struct QueryError {
     pub message: String,
 }
 
+impl QueryError {
+    pub fn new(
+        tx: impl Into<String>,
+        query_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            tx: tx.into(),
+            query_id: query_id.into(),
+            message: message.into(),
+        }
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Client-side (inbound) deserialization types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Client-side query response for deserialization. Uses WrappedItem (JSON values)
-/// instead of the server-side ErasedWrappedItem (type-erased AnyItem).
+/// Client-side query response for deserialization. Uses `WrappedItem` (JSON values)
+/// instead of the server-side `ErasedWrappedItem` (type-erased `AnyItem`).
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ClientQueryResponse {
@@ -425,6 +426,10 @@ pub enum ClientQueryChange {
     },
 }
 
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn wrap_query<Q: QueryId + QueryItemType + Serialize + Clone>(
     tx: Arc<str>,
     query: &Q,

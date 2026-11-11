@@ -36,6 +36,7 @@ use super::{
 /// Automatically exposes all registered queries, reports, and commands
 /// through the MCP protocol.
 pub struct McpServer {
+    credential_provider: Option<Arc<dyn myko_auth::CredentialProvider>>,
     info: ServerInfo,
 }
 
@@ -47,8 +48,10 @@ impl Default for McpServer {
 
 impl McpServer {
     /// Create a new MCP server with default settings.
+    #[must_use]
     pub fn new() -> Self {
         Self {
+            credential_provider: None,
             info: ServerInfo::default(),
         }
     }
@@ -56,18 +59,31 @@ impl McpServer {
     /// Create a new MCP server with custom name and version.
     pub fn with_info(name: impl Into<String>, version: impl Into<String>) -> Self {
         Self {
+            credential_provider: None,
             info: ServerInfo {
                 name: name.into(),
                 version: version.into(),
                 instructions: None,
+                operation_index: Arc::new(Vec::new()),
             },
         }
     }
 
     /// Set the optional `instructions` text returned in the MCP `initialize`
     /// response. Surfaced to the model by the connecting client on connect.
+    #[must_use]
     pub fn with_instructions(mut self, instructions: impl Into<String>) -> Self {
         self.info.instructions = Some(instructions.into());
+        self
+    }
+
+    /// Authenticate the remote Myko connection with renewable service credentials.
+    #[must_use]
+    pub fn with_credential_provider(
+        mut self,
+        provider: Arc<dyn myko_auth::CredentialProvider>,
+    ) -> Self {
+        self.credential_provider = Some(provider);
         self
     }
 
@@ -76,6 +92,9 @@ impl McpServer {
     /// Reads JSON-RPC requests from stdin and writes responses to stdout.
     /// Logs go to stderr. Connects to a Myko WebSocket server via the
     /// `MYKO_ADDRESS` env var (default `ws://localhost:5155`).
+    /// # Errors
+    ///
+    /// Returns an error when the stdio transport cannot be started or written.
     pub fn run_stdio(&self) -> io::Result<()> {
         let rt = tokio::runtime::Runtime::new()?;
         rt.block_on(async { self.run_stdio_async().await })
@@ -85,22 +104,27 @@ impl McpServer {
         let myko_address =
             std::env::var("MYKO_ADDRESS").unwrap_or_else(|_| "ws://localhost:5155".to_string());
 
-        eprintln!("[myko-mcp] Connecting to Myko at {}", myko_address);
+        eprintln!("[myko-mcp] Connecting to Myko at {myko_address}");
 
         let client = Arc::new(MykoClient::new());
+        if let Some(provider) = &self.credential_provider {
+            client
+                .set_credential_provider(Some(provider.clone()))
+                .map_err(io::Error::other)?;
+        }
         client.set_address(Some(myko_address));
 
         let status_guard = client.connection_status().subscribe(move |signal| {
             if let hyphae::Signal::Value(status) = signal {
                 match &**status {
                     ConnectionStatus::Connected(addr) => {
-                        eprintln!("[myko-mcp] Connected to {}", addr)
+                        eprintln!("[myko-mcp] Connected to {addr}");
                     }
                     ConnectionStatus::Connecting(addr) => {
-                        eprintln!("[myko-mcp] Connecting to {}", addr)
+                        eprintln!("[myko-mcp] Connecting to {addr}");
                     }
                     ConnectionStatus::Reconnecting(addr) => {
-                        eprintln!("[myko-mcp] Reconnecting to {}", addr)
+                        eprintln!("[myko-mcp] Reconnecting to {addr}");
                     }
                     ConnectionStatus::Idle => eprintln!("[myko-mcp] Idle"),
                     ConnectionStatus::Disconnected => eprintln!("[myko-mcp] Disconnected"),
@@ -135,7 +159,7 @@ impl McpServer {
                 let line = match line {
                     Ok(l) => l,
                     Err(e) => {
-                        eprintln!("[myko-mcp] stdin error: {}", e);
+                        eprintln!("[myko-mcp] stdin error: {e}");
                         continue;
                     }
                 };
@@ -146,7 +170,7 @@ impl McpServer {
                 let request: McpRequest = match serde_json::from_str(&line) {
                     Ok(r) => r,
                     Err(e) => {
-                        eprintln!("[myko-mcp] Parse error: {}", e);
+                        eprintln!("[myko-mcp] Parse error: {e}");
                         let response =
                             McpResponse::error(Value::Null, McpError::parse_error(e.to_string()));
                         let _ = response_tx_clone.blocking_send(response);
@@ -169,10 +193,11 @@ impl McpServer {
         });
 
         // Write responses to stdout.
-        let mut stdout = io::stdout().lock();
         while let Some(response) = response_rx.recv().await {
             let json = serde_json::to_string(&response)?;
-            writeln!(stdout, "{}", json)?;
+            let stdout = io::stdout();
+            let mut stdout = stdout.lock();
+            writeln!(stdout, "{json}")?;
             stdout.flush()?;
         }
 
@@ -180,6 +205,7 @@ impl McpServer {
     }
 
     /// Get a summary of all registered items.
+    #[must_use]
     pub fn summary(&self) -> McpSummary {
         let mut queries = Vec::new();
         let mut reports = Vec::new();

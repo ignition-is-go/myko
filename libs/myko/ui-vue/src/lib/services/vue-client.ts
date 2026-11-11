@@ -9,8 +9,11 @@
 import {
 	ConnectionStatus,
 	MykoClient,
+	applyCollectionDiff,
+	type CollectionChanges,
 	type Command,
 	type CommandResult,
+	type LiveCollectionStatus,
 	type QueryDiff,
 	type QueryItem,
 	type Query,
@@ -42,6 +45,18 @@ export type ReactiveQuery<Q extends Query<unknown>> = {
 	release: () => void;
 };
 
+/** Reactive query state with incremental change and lifecycle metadata. */
+export type ReactiveQueryState<Q extends Query<unknown>> = ReactiveQuery<Q> & {
+	/** Loading, live, or terminal error state. */
+	readonly status: Ref<LiveCollectionStatus>;
+	/** Latest subscription error; existing items remain available. */
+	readonly error: ShallowRef<Error | undefined>;
+	/** Monotonic local revision updated for every diff or error. */
+	readonly revision: Ref<number>;
+	/** Latest reset/upsert/delete set for row-oriented consumers. */
+	readonly changes: ShallowRef<CollectionChanges<QueryItem<Q> & { id: string }>>;
+};
+
 /** Reactive report result - generic over the Report factory type */
 export type ReactiveReport<R extends Report<unknown>> = {
 	/** Current value (reactive via ref) */
@@ -54,6 +69,10 @@ export type ReactiveReport<R extends Report<unknown>> = {
 type SharedQuery<T extends { id: string }> = {
 	items: Map<string, T>;
 	resolved: Ref<boolean>;
+	status: Ref<LiveCollectionStatus>;
+	error: ShallowRef<Error | undefined>;
+	revision: Ref<number>;
+	changes: ShallowRef<CollectionChanges<T>>;
 	subscription: Subscription;
 	refCount: number;
 };
@@ -178,23 +197,41 @@ export class VueMykoClient {
 			// Create new shared query with reactive Map
 			const items = shallowReactive(new Map<string, Item>());
 			const resolved = ref(false);
+			const status = ref<LiveCollectionStatus>('loading');
+			const error = shallowRef<Error>();
+			const revision = ref(0);
+			const changes = shallowRef<CollectionChanges<Item>>({
+				sequence: null,
+				reset: false,
+				deletes: [],
+				upserts: []
+			});
 
 			const subscription = this.client.watchQueryDiff(queryFactory).subscribe({
 				next: (diff) => {
-					if (diff.sequence === 0n) {
-						items.clear();
-					}
-					for (const id of diff.deletes) {
-						items.delete(id);
-					}
-					for (const item of diff.upserts as Item[]) {
-						items.set(item.id, item);
-					}
+					changes.value = applyCollectionDiff(items, diff as QueryDiff<Item>);
 					resolved.value = true;
+					status.value = 'live';
+					error.value = undefined;
+					revision.value += 1;
+				},
+				error: (cause) => {
+					status.value = 'error';
+					error.value = cause instanceof Error ? cause : new Error(String(cause));
+					revision.value += 1;
 				}
 			});
 
-			shared = { items, resolved, subscription, refCount: 0 };
+			shared = {
+				items,
+				resolved,
+				status,
+				error,
+				revision,
+				changes,
+				subscription,
+				refCount: 0
+			};
 			this.sharedQueries.set(cacheKey, shared as SharedQuery<{ id: string }>);
 		}
 
@@ -203,9 +240,13 @@ export class VueMykoClient {
 
 		let released = false;
 
-		return {
+		const result: ReactiveQueryState<Q> = {
 			items: shared.items,
 			resolved: shared.resolved,
+			status: shared.status,
+			error: shared.error,
+			revision: shared.revision,
+			changes: shared.changes,
 			release: () => {
 				if (released) return;
 				released = true;
@@ -220,6 +261,12 @@ export class VueMykoClient {
 				}
 			}
 		};
+		return result;
+	}
+
+	/** Watch a query with explicit lifecycle and incremental change metadata. */
+	queryState<Q extends Query<unknown>>(queryFactory: Q): ReactiveQueryState<Q> {
+		return this.query(queryFactory) as ReactiveQueryState<Q>;
 	}
 
 	/**

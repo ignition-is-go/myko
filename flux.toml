@@ -5,34 +5,178 @@ dev = { channel = "canary", prerelease = true }
 [tasks.check]
 workspace_batchable = true
 depends_on = ["gen"]
-cargo = ["cargo", "check", "--target-dir", "target/claude"]
+cargo = ["cargo", "check"]
 bun = ["bun", "run", "check"]
 
 [tasks.build]
 workspace_batchable = true
 depends_on = ["gen"]
-cargo = ["cargo", "build"]
+cargo = ["cargo", "build", "--locked"]
 bun = ["bun", "run", "build"]
 
 [tasks.test]
 workspace_batchable = true
-cargo = ["cargo", "test"]
+# `ci` is a per-crate umbrella feature (see each crate's Cargo.toml) covering
+# everything worth exercising in CI except `bench` — bench_entities/criterion
+# are for local profiling, not routine CI.
+cargo = ["cargo", "test", "--features", "ci"]
 bun = ["bun", "test"]
 
 [tasks.lint]
-cargo = ["cargo", "clippy", "--all-targets", "--all-features", "--", "-D", "warnings"]
+cargo = ["cargo", "clippy", "--all-targets", "--features", "ci", "--", "-D", "warnings"]
 bun = ["bun", "run", "lint"]
 
+[tasks.format-rust]
+root = ["cargo", "fmt", "--all"]
+
+[tasks.test-live-query]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko", "live_bucket_replays_queued_write_during_reconciliation", "--lib"]
+
+[tasks.test-live-query-integration]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--test", "query_live_test"]
+
+# Snapshot hydration and history adapter tests; no database is required.
+[tasks.test-postgres]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--lib", "postgres::tests", "--", "--test-threads=1"]
+
+[tasks.check-server]
+root = ["cargo", "clippy", "--jobs", "4", "-p", "myko-server", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.check-wasm]
+# wasm32 coverage for the crates that actually ship to a browser/wasm target
+# (myko, autosocket, myko-leptos — see each crate's `[package.metadata.flux]`
+# tasks list; myko-server/myko-macros don't opt in since they're host-only).
+# `check` alone doesn't exercise `#[cfg(target_arch = "wasm32")]` code paths,
+# so a break there passes native CI silently without this.
+workspace_batchable = true
+cargo = ["cargo", "check", "--target", "wasm32-unknown-unknown"]
+
 [tasks.gen]
-default = ["cargo", "run", "-p", "myko", "--features", "codegen", "--bin", "typegen", "--", "src/generated"]
+default = ["cargo", "run", "-p", "myko", "--features", "codegen-ts", "--bin", "typegen", "--", "src/generated"]
 
 [tasks.publish]
+include_dev_dependencies = true
 cascade = "all"
 autoapply = "inherit"
 depends_on = ["build"]
-cargo = ["cargo", "publish"]
+cargo = 'bun "$(git rev-parse --show-toplevel)/scripts/publish-package.ts" cargo'
 bun = """cp package.json package.json.bak \
   && bun "$(git rev-parse --show-toplevel)/scripts/apply-publish-config.ts" \
-  && VERSION=$(bun -p "require('./package.json').version") \
-  && if echo "$VERSION" | grep -q '-'; then TAG=canary; else TAG=latest; fi \
-  && npm publish --provenance --access public --tag "$TAG" ; mv package.json.bak package.json"""
+  && bun "$(git rev-parse --show-toplevel)/scripts/publish-package.ts" npm; status=$?; mv package.json.bak package.json; exit $status"""
+# `--provenance=false`: npm rejects provenance from self-hosted runners (E422),
+# and the old `; mv` made that failure the exit status of `mv`, so every npm
+# publish since the runner move silently failed while the workflow stayed green
+# (@myko/core sat at 6.5.4 through v6.5.12). Trusted publishing still
+# authenticates the job. Same fix as marshal#111.
+
+[tasks.check-telemetry]
+root = ["cargo", "clippy", "-p", "myko-telemetry", "--all-targets", "--", "-D", "warnings"]
+
+[tasks.test-telemetry]
+root = ["cargo", "test", "-p", "myko-telemetry"]
+
+[tasks.check-mcp]
+depends_on = ["check-server"]
+root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "-p", "myko-macros", "--lib", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-mcp-unit]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--lib", "mcp::"]
+
+[tasks.test-mcp-http]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--test", "mcp_code_mode"]
+
+[tasks.test-mcp-http-codegen]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko-server", "--features", "myko/ci", "--test", "mcp_code_mode"]
+
+[tasks.test-mcp-contract]
+root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--lib", "operation_index"]
+
+[tasks.lint-mcp-contract]
+root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-auth]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-auth", "-p", "myko-auth0", "--all-features"]
+
+[tasks.test-auth-server]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "--tests"]
+
+[tasks.test-auth-client]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "autosocket", "--lib"]
+
+[tasks.check-auth-client-wasm]
+root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "autosocket", "-p", "myko", "--target", "wasm32-unknown-unknown"]
+
+[tasks.check-auth]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-auth", "-p", "myko-auth0", "-p", "myko-macros", "-p", "myko-server", "-p", "autosocket", "--all-features", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.check-auth-core]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.check-auth-format]
+root = ["cargo", "fmt", "--all", "--", "--check"]
+
+[tasks.verify-auth]
+root = ["sh", "scripts/verify-auth.sh"]
+
+[tasks.test-auth-macros]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-macros", "--lib"]
+
+[tasks.test-auth-graph]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "core::graph"]
+
+[tasks.test-permissions]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-permissions", "--all-features"]
+
+[tasks.check-permissions]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-permissions", "--all-features", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-permissions-ui-backend]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-auth", "-p", "myko-permissions", "--all-features"]
+
+[tasks.check-permissions-ui-backend]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-auth", "-p", "myko-permissions", "--all-targets", "--all-features", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-permissions-ui]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-permissions-leptos", "--features", "ssr"]
+
+[tasks.check-permissions-ui]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-permissions-leptos", "--features", "ssr", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.check-permissions-ui-wasm]
+root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-permissions-leptos", "--features", "demo", "--examples", "--target", "wasm32-unknown-unknown"]
+
+[tasks.verify-permissions-ui]
+root = ["sh", "scripts/verify-permissions-ui.sh"]
+
+[tasks.test-permissions-ui-client]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "client::report_result_tests"]
+
+[tasks.test-permissions-ui-bridge]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-leptos", "--features", "leptos/ssr", "--lib"]
+
+[tasks.build-permissions-ui-demo]
+root = ["sh", "scripts/build-permissions-ui-demo.sh"]
+
+[tasks.test-permissions-client-regression]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "client::"]
+
+[tasks.check-permissions-client-contract]
+root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-permissions", "--all-targets", "--no-default-features"]
+
+[tasks.test-auth-client-reconnect]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "autosocket", "--lib", "native::tests::reconnect_obtains_credentials_before_each_authenticated_upgrade", "--", "--exact"]
+
+[tasks.check-permissions-ui-bridge]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-leptos", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-public-access]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-auth", "-p", "myko-macros", "-p", "myko-server", "--lib", "--test", "public_access"]
+
+[tasks.check-subscription-errors-wasm]
+root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-leptos", "--target", "wasm32-unknown-unknown"]
+
+[tasks.test-identity]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "identity::tests"]
+
+[tasks.test-publish]
+root = ["bun", "test", "scripts/publish-package.test.ts"]

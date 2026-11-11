@@ -49,8 +49,8 @@ dump/
 
 # rust
 /.cargo/
-/target/
-**/target/claude
+**/target/
+/.bun-tmp/
 
 # logs
 *.log

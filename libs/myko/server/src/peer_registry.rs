@@ -12,14 +12,12 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use hyphae::{
-    Cell, CellImmutable, MaterializeDefinite, Signal, SubscriptionGuard, TapExt, Watchable,
-};
-use log::info;
+use hyphae::{Cell, CellImmutable, Materialize, Signal, SubscriptionGuard, TapExt, Watchable};
 use myko::{
     entities::server::{GetAllServers, GetPeerServers, Server, ServerId},
-    server::CellServerCtx,
+    server::MykoServerContext,
 };
+use tracing::info;
 
 mod peer_connection_handle;
 use peer_connection_handle::{PeerConnectionHandle, PeerState};
@@ -61,23 +59,24 @@ impl PeerRegistry {
     }
 
     fn spawn_self_advertise_guard(
-        ctx: CellServerCtx,
+        ctx: MykoServerContext,
         local_server: Server,
         self_host_id: ServerId,
     ) -> SubscriptionGuard {
         let all_servers = ctx
             .query_map(GetAllServers {}, ctx.new_server_transaction())
-            .items();
+            .items()
+            .materialize();
         all_servers.subscribe(move |signal| {
             if let Signal::Value(servers) = signal {
                 let has_self = servers.iter().any(|s| s.id == self_host_id);
                 if !has_self {
-                    log::info!(
+                    tracing::info!(
                         "Local server {} missing from GetAllServers; re-advertising",
                         self_host_id
                     );
                     if let Err(e) = ctx.set(&local_server) {
-                        log::error!("Failed to re-advertise local server: {e}");
+                        tracing::error!("Failed to re-advertise local server: {e}");
                     }
                 }
             }
@@ -89,13 +88,13 @@ impl PeerRegistry {
         host_id: &ServerId,
         local_address: &str,
         local_port: u16,
-        ctx: &CellServerCtx,
+        ctx: &MykoServerContext,
         connections: &Arc<DashMap<ServerId, PeerConnectionHandle>>,
         remove_guards: &Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) where
         T: AsRef<[Arc<Server>]>,
     {
-        log::info!(
+        tracing::info!(
             "Current Peers: {}",
             peers
                 .as_ref()
@@ -110,7 +109,7 @@ impl PeerRegistry {
             // it is a stale incarnation and should be tombstoned.
             if server.id != *host_id && server.address == local_address && server.port == local_port
             {
-                log::warn!(
+                tracing::warn!(
                     "Deleting stale entries: {}:{}:{}",
                     server.id,
                     server.address,
@@ -118,7 +117,7 @@ impl PeerRegistry {
                 );
                 ctx.unregister_peer_client(server.id.as_ref());
                 if let Err(e) = ctx.del(server.as_ref()) {
-                    log::error!("Failed to delete stale server entry: {e}");
+                    tracing::error!("Failed to delete stale server entry: {e}");
                 }
                 continue;
             }
@@ -140,7 +139,7 @@ impl PeerRegistry {
                 if let Signal::Value(v) = state
                     && v.as_ref() == &PeerState::Delete
                 {
-                    log::warn!(
+                    tracing::warn!(
                         "Deleting: {}:{}:{}",
                         remove_server.id,
                         remove_server.address,
@@ -150,7 +149,7 @@ impl PeerRegistry {
                     remove_state_guards.remove(&remove_server.id);
                     remove_ctx.unregister_peer_client(remove_server.id.as_ref());
                     if let Err(e) = remove_ctx.del(remove_server.as_ref()) {
-                        log::error!("Failed to delete peer server: {e}");
+                        tracing::error!("Failed to delete peer server: {e}");
                     }
                 }
             });
@@ -167,7 +166,7 @@ impl PeerRegistry {
         host_id: ServerId,
         local_address: String,
         local_port: u16,
-        ctx: CellServerCtx,
+        ctx: MykoServerContext,
         connections: Arc<DashMap<ServerId, PeerConnectionHandle>>,
         remove_guards: Arc<DashMap<ServerId, SubscriptionGuard>>,
     ) -> SubscriptionGuard {
@@ -187,12 +186,15 @@ impl PeerRegistry {
             .subscribe(|_| {})
     }
 
-    pub fn new(ctx: CellServerCtx, config: PeerRegistryConfig) -> Self {
+    pub fn new(ctx: MykoServerContext, config: PeerRegistryConfig) -> Self {
         let server_req = ctx.new_server_transaction();
 
         let connections = Arc::new(DashMap::new());
         let remove_guards = Arc::new(DashMap::new());
-        let peer_servers = ctx.query_map(GetPeerServers {}, server_req).items();
+        let peer_servers = ctx
+            .query_map(GetPeerServers {}, server_req)
+            .items()
+            .materialize();
         let host_id = ServerId(ctx.host_id.to_string().into());
         let server = Self::build_local_server(&config, &host_id);
 
@@ -201,7 +203,7 @@ impl PeerRegistry {
 
         let peer_sub = Self::spawn_peer_reconcile_guard(
             peer_servers,
-            host_id.clone(),
+            host_id,
             config.address.clone(),
             config.port,
             ctx.clone(),
@@ -209,15 +211,17 @@ impl PeerRegistry {
             remove_guards.clone(),
         );
 
-        log::info!(
+        tracing::info!(
             "Publishing local server bootstrap advert: {}:{}:{}",
             server.id,
             server.address,
             server.port
         );
         if let Err(e) = ctx.set(&server) {
-            log::error!("Failed to publish local server bootstrap advert: {e}");
+            tracing::error!("Failed to publish local server bootstrap advert: {e}");
         }
+        drop(ctx);
+        drop(config);
 
         Self {
             _peers_guard: peer_sub,
@@ -234,7 +238,7 @@ impl PeerRegistry {
 
 impl Drop for PeerRegistry {
     fn drop(&mut self) {
-        log::warn!("Dropping Peer Registry");
+        tracing::warn!("Dropping Peer Registry");
         self.shutdown();
     }
 }

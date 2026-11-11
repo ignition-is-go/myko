@@ -1,4 +1,4 @@
-//! CommandRequest wrapper type.
+//! `CommandRequest` wrapper type.
 
 use std::{fmt::Debug, sync::Arc};
 
@@ -53,7 +53,7 @@ impl<C> CommandRequest<C> {
     }
 
     /// Create a new command request with a specific tx.
-    pub fn with_tx(command: C, tx: Arc<str>) -> Self {
+    pub const fn with_tx(command: C, tx: Arc<str>) -> Self {
         Self { tx, command }
     }
 }
@@ -64,18 +64,18 @@ impl<C: Default> Default for CommandRequest<C> {
     }
 }
 
-/// Convert command params directly into a CommandRequest.
-/// This only works for types that implement CommandParams (actual command param structs),
-/// not for CommandRequest itself, which avoids ambiguity with From<&CommandRequest<C>>.
+/// Convert command params directly into a `CommandRequest`.
+/// This only works for types that implement `CommandParams` (actual command param structs),
+/// not for `CommandRequest` itself, which avoids ambiguity with From<&`CommandRequest`<C>>.
 impl<C: CommandParams> From<C> for CommandRequest<C> {
     fn from(command: C) -> Self {
         Self::new(command)
     }
 }
 
-/// Convert a reference to a CommandRequest into an owned CommandRequest by cloning.
-impl<C: Clone> From<&CommandRequest<C>> for CommandRequest<C> {
-    fn from(request: &CommandRequest<C>) -> Self {
+/// Convert a reference to a `CommandRequest` into an owned `CommandRequest` by cloning.
+impl<C: Clone> From<&Self> for CommandRequest<C> {
+    fn from(request: &Self) -> Self {
         request.clone()
     }
 }
@@ -102,6 +102,6 @@ impl<C: CommandResultType> CommandResultType for CommandRequest<C> {
 
 impl<C: CommandId + Serialize + Debug + Send + Sync + 'static> AnyCommand for CommandRequest<C> {
     fn to_value(&self) -> Value {
-        serde_json::to_value(self).expect("CommandRequest should serialize to JSON")
+        serde_json::to_value(self).unwrap_or(serde_json::Value::Null)
     }
 }

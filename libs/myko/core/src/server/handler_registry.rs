@@ -7,8 +7,9 @@ use std::sync::Arc;
 
 use crate::{
     command::CommandHandlerRegistration,
+    graph::GraphQueryRegistration,
     item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
-    query::{QueryCellFactory, QueryParseFn, QueryRegistration},
+    query::{QueryCellFactory, QueryParseFn, QueryRegistration, QueryWindowCellFactory},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
     view::{ViewCellFactory, ViewParseFn, ViewRegistration},
 };
@@ -18,12 +19,31 @@ use crate::{
 // vs default SipHash on Arc<str> keys.
 type AMap<K, V> = std::collections::HashMap<K, V, ahash::RandomState>;
 
+fn format_list<'a>(keys: impl Iterator<Item = &'a Arc<str>>) -> String {
+    let mut items: Vec<&str> = keys.map(std::convert::AsRef::as_ref).collect();
+    items.sort_unstable();
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
+fn format_str_list(items: &[&str]) -> String {
+    if items.is_empty() {
+        "(none)".to_string()
+    } else {
+        items.join(", ")
+    }
+}
+
 /// Stored query registration data.
 pub struct StoredQueryData {
     pub query_id: Arc<str>,
     pub query_item_type: Arc<str>,
     pub parse: QueryParseFn,
     pub cell_factory: QueryCellFactory,
+    pub window_cell_factory: Option<QueryWindowCellFactory>,
 }
 
 /// Stored view registration data.
@@ -69,12 +89,12 @@ impl HandlerRegistry {
 
         // Collect item registrations
         for registration in inventory::iter::<ItemRegistration> {
-            log::trace!("Registered item parser: {}", registration.entity_type);
+            tracing::trace!("Registered item parser: {}", registration.entity_type);
             item_parsers.insert(registration.entity_type.into(), registration.parse);
         }
 
         for registration in inventory::iter::<IngestBufferRegistration> {
-            log::trace!(
+            tracing::trace!(
                 "Registered ingest buffer policy: {} -> {:?}",
                 registration.entity_type,
                 registration.policy
@@ -84,19 +104,34 @@ impl HandlerRegistry {
 
         // Collect query registrations
         for registration in inventory::iter::<QueryRegistration> {
-            log::trace!("Registered query: {}", registration.query_id);
+            tracing::trace!("Registered query: {}", registration.query_id);
             let data = StoredQueryData {
                 query_id: registration.query_id.into(),
                 query_item_type: registration.query_item_type.into(),
                 parse: registration.parse,
                 cell_factory: registration.cell_factory,
+                window_cell_factory: Some(registration.window_cell_factory),
+            };
+            query_data.insert(data.query_id.clone(), data);
+        }
+
+        // Graph operations use the ordinary query wire/runtime but render
+        // endpoint-aware bindings from the separate graph catalog.
+        for registration in inventory::iter::<GraphQueryRegistration> {
+            tracing::trace!("Registered graph query: {}", registration.query_id);
+            let data = StoredQueryData {
+                query_id: registration.query_id.into(),
+                query_item_type: registration.edge_type.into(),
+                parse: registration.parse,
+                cell_factory: registration.cell_factory,
+                window_cell_factory: Some(registration.window_cell_factory),
             };
             query_data.insert(data.query_id.clone(), data);
         }
 
         // Collect view registrations
         for registration in inventory::iter::<ViewRegistration> {
-            log::trace!("Registered view: {}", registration.view_id);
+            tracing::trace!("Registered view: {}", registration.view_id);
             let data = StoredViewData {
                 view_id: registration.view_id.into(),
                 view_item_type: registration.view_item_type.into(),
@@ -108,7 +143,7 @@ impl HandlerRegistry {
 
         // Collect report registrations
         for registration in inventory::iter::<ReportRegistration> {
-            log::trace!("Registered report: {}", registration.report_id);
+            tracing::trace!("Registered report: {}", registration.report_id);
             let data = StoredReportData {
                 report_id: registration.report_id.into(),
                 parse: registration.parse,
@@ -123,25 +158,7 @@ impl HandlerRegistry {
             .collect();
         command_ids.sort_unstable();
 
-        fn format_list<'a>(keys: impl Iterator<Item = &'a Arc<str>>) -> String {
-            let mut items: Vec<&str> = keys.map(|k| k.as_ref()).collect();
-            items.sort_unstable();
-            if items.is_empty() {
-                "(none)".to_string()
-            } else {
-                items.join(", ")
-            }
-        }
-
-        fn format_str_list(items: &[&str]) -> String {
-            if items.is_empty() {
-                "(none)".to_string()
-            } else {
-                items.join(", ")
-            }
-        }
-
-        log::trace!(
+        tracing::trace!(
             "HandlerRegistry initialized:\n  Items ({}):\n    {}\n  Queries ({}):\n    {}\n  Views ({}):\n    {}\n  Reports ({}):\n    {}\n  Commands ({}):\n    {}",
             item_parsers.len(),
             format_list(item_parsers.keys()),
@@ -165,12 +182,14 @@ impl HandlerRegistry {
     }
 
     /// Get an item parse function by entity type name.
-    pub fn get_item_parser(&self, entity_type: &str) -> Option<ItemParseFn> {
+    #[must_use]
+    pub fn item_parser(&self, entity_type: &str) -> Option<ItemParseFn> {
         self.item_parsers.get(entity_type).copied()
     }
 
     /// Get the ingest buffering policy for an entity type.
-    pub fn get_item_buffer_policy(&self, entity_type: &str) -> IngestBufferPolicy {
+    #[must_use]
+    pub fn item_buffer_policy(&self, entity_type: &str) -> IngestBufferPolicy {
         self.item_buffer_policies
             .get(entity_type)
             .copied()
@@ -178,21 +197,25 @@ impl HandlerRegistry {
     }
 
     /// Get query registration data by query id.
-    pub fn get_query(&self, query_id: &str) -> Option<&StoredQueryData> {
+    #[must_use]
+    pub fn query(&self, query_id: &str) -> Option<&StoredQueryData> {
         self.query_data.get(query_id)
     }
 
     /// Get report registration data by report id.
-    pub fn get_report(&self, report_id: &str) -> Option<&StoredReportData> {
+    #[must_use]
+    pub fn report(&self, report_id: &str) -> Option<&StoredReportData> {
         self.report_data.get(report_id)
     }
 
     /// Get view registration data by view id.
-    pub fn get_view(&self, view_id: &str) -> Option<&StoredViewData> {
+    #[must_use]
+    pub fn view(&self, view_id: &str) -> Option<&StoredViewData> {
         self.view_data.get(view_id)
     }
 
     /// Check if an entity type has a registered parser.
+    #[must_use]
     pub fn has_item_parser(&self, entity_type: &str) -> bool {
         self.item_parsers.contains_key(entity_type)
     }

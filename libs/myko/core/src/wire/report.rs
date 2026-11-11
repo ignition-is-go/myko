@@ -14,6 +14,10 @@ pub struct ReportResponse {
 }
 
 impl ReportResponse {
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn to_string(&self) -> Result<String, serde_json::Error> {
         serde_json::to_string(self)
     }
@@ -36,19 +40,33 @@ pub struct ReportError {
     pub message: String,
 }
 
+impl ReportError {
+    pub fn new(
+        tx: impl Into<String>,
+        report_id: impl Into<String>,
+        message: impl Into<String>,
+    ) -> Self {
+        Self {
+            tx: tx.into(),
+            report_id: report_id.into(),
+            message: message.into(),
+        }
+    }
+}
+
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn wrap_report<Q: ReportId + Serialize + Clone>(
     tx: String,
     report: &Q,
 ) -> Result<WrappedReport, serde_json::Error> {
     let mut json = serde_json::to_value(report.clone())?;
 
-    let obj_mut = json.as_object_mut();
-
-    if obj_mut.is_none() {
+    let Some(obj) = json.as_object_mut() else {
         return Err(serde_json::Error::custom("Could not convert to object"));
-    }
-
-    let obj = obj_mut.unwrap();
+    };
 
     obj.insert("tx".to_string(), tx.into());
 

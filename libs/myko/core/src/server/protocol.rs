@@ -4,14 +4,22 @@
 
 pub use crate::wire::MykoMessage;
 
-/// Serialize a MykoMessage to CBOR bytes.
+/// Serialize a `MykoMessage` to CBOR bytes.
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn message_to_cbor(msg: &MykoMessage) -> Result<Vec<u8>, ciborium::ser::Error<std::io::Error>> {
     let mut bytes = Vec::new();
     ciborium::ser::into_writer(msg, &mut bytes)?;
     Ok(bytes)
 }
 
-/// Serialize a MykoMessage to JSON.
+/// Serialize a `MykoMessage` to JSON.
+///
+/// # Errors
+///
+/// Returns an error when the requested operation cannot be completed.
 pub fn message_to_json(msg: &MykoMessage) -> Result<String, serde_json::Error> {
     serde_json::to_string(msg)
 }

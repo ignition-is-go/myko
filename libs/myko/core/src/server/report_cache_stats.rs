@@ -1,9 +1,9 @@
 //! Periodic-summary report-cache hit/miss instrumentation.
 //!
-//! Replaces per-call `log::debug!` lines in `CellServerCtx::report` (which
+//! Replaces per-call `tracing::debug!` lines in `MykoServerContext::report` (which
 //! were firing thousands of times per scene load and dominated I/O).
 //!
-//! The hot path increments per-report-id atomic counters via DashMap entry
+//! The hot path increments per-report-id atomic counters via `DashMap` entry
 //! lookup; a single dedicated thread emits one summary log line every
 //! `WINDOW_MS`. Quiet windows emit nothing.
 
@@ -69,10 +69,10 @@ pub fn start_periodic_logger() {
         .name("myko-report-cache-stats".to_string())
         .spawn(run_loop)
         .map_err(|e| {
-            log::warn!(
+            tracing::warn!(
                 target: "myko::server::report_cache_stats",
                 "Failed to spawn report_cache_stats thread: {}", e
-            )
+            );
         });
 }
 
@@ -100,28 +100,33 @@ fn emit_window() {
     if snap.is_empty() {
         return;
     }
-    snap.sort_by_key(|b| std::cmp::Reverse(b.1 + b.2 + b.3));
-    let total_hits: u64 = snap.iter().map(|s| s.1 + s.2).sum();
+    snap.sort_by_key(|bucket| {
+        std::cmp::Reverse(bucket.1.saturating_add(bucket.2).saturating_add(bucket.3))
+    });
+    let total_hits: u64 = snap.iter().map(|stat| stat.1.saturating_add(stat.2)).sum();
     let total_misses: u64 = snap.iter().map(|s| s.3).sum();
     let detail = snap
         .iter()
         .map(|(rid, h, g, m)| {
             if *g > 0 {
-                format!("{}=H{}/G{}/M{}", rid, h, g, m)
+                format!("{rid}=H{h}/G{g}/M{m}")
             } else {
-                format!("{}=H{}/M{}", rid, h, m)
+                format!("{rid}=H{h}/M{m}")
             }
         })
         .collect::<Vec<_>>()
         .join(", ");
-    log::info!(
+    tracing::info!(
         target: "myko::server::report_cache_stats",
         "[report_cache window={}ms] hits={} misses={} miss_rate={:.0}% [{}]",
         WINDOW_MS,
         total_hits,
         total_misses,
-        if total_hits + total_misses > 0 {
-            100.0 * total_misses as f64 / (total_hits + total_misses) as f64
+        if total_hits.saturating_add(total_misses) > 0 {
+            let misses = num_traits::ToPrimitive::to_f64(&total_misses).unwrap_or(0.0);
+            let total = num_traits::ToPrimitive::to_f64(&total_hits.saturating_add(total_misses))
+                .unwrap_or(0.0);
+            100.0 * misses / total
         } else {
             0.0
         },

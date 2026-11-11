@@ -5,36 +5,37 @@ use std::{
 
 use myko::{
     entities::server::{GetAllServers, ServerId},
-    event::EventOptions,
     relationship::iter_server_owned_registrations,
-    server::{CellServerCtx, PersistError},
+    server::{MykoServerContext, PersistError},
 };
 
 pub struct ServerOwnershipManager;
 
 impl ServerOwnershipManager {
     /// Get IDs of all currently live servers.
-    fn live_server_ids(ctx: &CellServerCtx) -> Vec<ServerId> {
-        use hyphae::Gettable;
+    fn live_server_ids(ctx: &MykoServerContext) -> Vec<ServerId> {
+        use hyphae::{Gettable, Materialize};
         let req = ctx.new_server_transaction();
         ctx.query_map(GetAllServers {}, req)
             .items()
+            .materialize()
             .get()
             .iter()
             .map(|s| s.id.clone())
             .collect()
     }
 
-    /// Count how many server_owned items each server currently owns
-    /// across ALL registered #[server_owned] types.
-    fn count_distribution(ctx: &CellServerCtx) -> HashMap<Arc<str>, usize> {
+    /// Count how many `server_owned` items each server currently owns
+    /// across ALL registered #[`server_owned`] types.
+    fn count_distribution(ctx: &MykoServerContext) -> HashMap<Arc<str>, usize> {
         let mut counts: HashMap<Arc<str>, usize> = HashMap::new();
 
         for reg in iter_server_owned_registrations() {
             let store = ctx.registry.get_or_create(reg.entity_type);
             for (_, item) in store.snapshot() {
                 if let Some(owner) = item.server_owner() {
-                    *counts.entry(Arc::from(owner)).or_default() += 1;
+                    let count = counts.entry(Arc::from(owner)).or_default();
+                    *count = count.saturating_add(1);
                 }
             }
         }
@@ -49,11 +50,14 @@ impl ServerOwnershipManager {
             .cloned()
     }
 
-    /// Scan all server_owned items and reassign any referencing dead/empty servers.
-    pub fn claim_orphaned(ctx: &CellServerCtx) -> Result<(), PersistError> {
+    /// Scan all `server_owned` items and reassign any referencing dead/empty servers.
+    /// # Errors
+    ///
+    /// Returns an error when an orphaned entity cannot be claimed.
+    pub fn claim_orphaned(ctx: &MykoServerContext) -> Result<(), PersistError> {
         let live_ids = Self::live_server_ids(ctx);
         if live_ids.is_empty() {
-            log::warn!("[ServerOwnership] No live servers found, skipping orphan claim");
+            tracing::warn!("[ServerOwnership] No live servers found, skipping orphan claim");
             return Ok(());
         }
 
@@ -79,21 +83,18 @@ impl ServerOwnershipManager {
                 };
 
                 if let Some(patched) = item.bake_server_owner(&new_owner.0) {
-                    ctx.set_dyn_with_options(
-                        patched,
-                        Some(EventOptions {
-                            prevent_relationship_updates: true,
-                            ..Default::default()
-                        }),
-                    )?;
-                    *counts.entry(new_owner.0.clone()).or_default() += 1;
-                    reassigned += 1;
+                    // Server-ownership rebakes are Local (per the event-bus design):
+                    // re-emit the item normally rather than suppressing relationships.
+                    ctx.set_dyn(patched)?;
+                    let count = counts.entry(new_owner.0.clone()).or_default();
+                    *count = count.saturating_add(1);
+                    reassigned = reassigned.saturating_add(1);
                 }
             }
         }
 
         if reassigned > 0 {
-            log::info!(
+            tracing::info!(
                 "[ServerOwnership] Reassigned {} orphaned item(s)",
                 reassigned
             );
@@ -102,12 +103,12 @@ impl ServerOwnershipManager {
     }
 
     /// Watch for Server entity removals and redistribute orphaned items.
-    /// Returns a SubscriptionGuard that must be kept alive.
-    pub fn watch_peer_deaths(ctx: &CellServerCtx) -> hyphae::SubscriptionGuard {
-        use hyphae::{Gettable, Signal, Watchable};
+    /// Returns a `SubscriptionGuard` that must be kept alive.
+    pub fn watch_peer_deaths(ctx: &MykoServerContext) -> hyphae::SubscriptionGuard {
+        use hyphae::{Gettable, Materialize, Signal, Watchable};
 
         let req = ctx.new_server_transaction();
-        let servers_cell = ctx.query_map(GetAllServers {}, req).items();
+        let servers_cell = ctx.query_map(GetAllServers {}, req).items().materialize();
 
         let prev_ids: std::sync::Mutex<HashSet<Arc<str>>> =
             std::sync::Mutex::new(servers_cell.get().iter().map(|s| s.id.0.clone()).collect());
@@ -120,7 +121,9 @@ impl ServerOwnershipManager {
 
             let current_ids: HashSet<Arc<str>> = servers.iter().map(|s| s.id.0.clone()).collect();
 
-            let mut prev = prev_ids.lock().unwrap();
+            let mut prev = prev_ids
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let removed: Vec<Arc<str>> = prev.difference(&current_ids).cloned().collect();
             *prev = current_ids;
             drop(prev);
@@ -130,14 +133,14 @@ impl ServerOwnershipManager {
             }
 
             for id in &removed {
-                log::warn!(
+                tracing::warn!(
                     "[ServerOwnership] Server {} left cluster, redistributing",
                     id
                 );
             }
 
-            if let Err(e) = ServerOwnershipManager::claim_orphaned(&ctx) {
-                log::error!("[ServerOwnership] Failed to redistribute: {}", e);
+            if let Err(e) = Self::claim_orphaned(&ctx) {
+                tracing::error!("[ServerOwnership] Failed to redistribute: {}", e);
             }
         })
     }

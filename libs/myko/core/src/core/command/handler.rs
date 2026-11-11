@@ -1,47 +1,51 @@
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use serde::{Serialize, de::DeserializeOwned};
+use serde::de::DeserializeOwned;
 use serde_json::Value;
-use uuid::Uuid;
 
-#[cfg(not(target_arch = "wasm32"))]
-use crate::server::CellServerCtx;
 use crate::{
-    command::CommandError,
-    common::to_value::ToValue,
-    entities::client::ClientId,
-    event::EventOptions,
-    item::Eventable,
-    query::QueryParams,
-    request::RequestContext,
-    wire::{MEvent, MEventType},
+    command::CommandError, core::capability::RequestScoped, query::QueryParams,
+    request::RequestContext, server::MykoServerContext,
 };
 
 /// Context provided to command handlers for accessing dependencies.
 ///
-/// CommandContext allows handlers to:
+/// `CommandContext` allows handlers to:
 /// - Emit SET/DEL events
 /// - Execute queries against the store
-/// - Access request context (tx, client_id, lineage, host_id)
+/// - Access request context (tx, `client_id`, lineage, `host_id`)
 #[derive(Clone)]
 pub struct CommandContext {
-    /// Request context with tracing information (tx, client_id, lineage, host_id).
+    /// Request context with tracing information (tx, `client_id`, lineage, `host_id`).
     pub req: Arc<RequestContext>,
 
     /// The command ID being executed (for error reporting).
     pub command_id: Arc<str>,
 
-    #[cfg(not(target_arch = "wasm32"))]
-    server_ctx: Arc<CellServerCtx>,
+    server_ctx: Arc<MykoServerContext>,
 }
 
 impl CommandContext {
-    /// Create a new CommandContext.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn new(
+    /// Resolve the authenticated application user from this request.
+    /// # Errors
+    /// Returns a command error if no live authenticated user is available.
+    pub fn user_id(&self) -> Result<&crate::identity::UserId, CommandError> {
+        self.req.user_id().map_err(|error| {
+            CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                error.to_string(),
+            )
+        })
+    }
+
+    /// Create a new `CommandContext`.
+    #[must_use]
+    pub const fn new(
         command_id: Arc<str>,
         req: Arc<RequestContext>,
-        server_ctx: Arc<CellServerCtx>,
+        server_ctx: Arc<MykoServerContext>,
     ) -> Self {
         Self {
             req,
@@ -54,273 +58,24 @@ impl CommandContext {
     // Convenience accessors
     // ─────────────────────────────────────────────────────────────────────────
 
-    /// Get the transaction ID.
-    pub fn tx(&self) -> Arc<str> {
-        self.req.tx.clone()
-    }
-
-    /// Get the client ID if present.
-    pub fn client_id(&self) -> Option<ClientId> {
-        self.req.client_id.clone()
-    }
-
-    /// Get the host ID.
-    pub fn host_id(&self) -> Uuid {
-        self.req.host_id
-    }
-
-    /// Get the lineage (call chain).
-    pub fn lineage(&self) -> &[Arc<str>] {
-        &self.req.lineage
-    }
-
     /// Get the request creation timestamp.
+    #[must_use]
     pub fn created_at(&self) -> &str {
         &self.req.created_at
-    }
-
-    /// Emit a SET event for an item.
-    pub fn emit_set<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        self.emit_set_with_options(item, EventOptions::default())
-    }
-
-    /// Emit a SET event for an item with custom options.
-    pub fn emit_set_with_options<T>(
-        &self,
-        item: impl std::ops::Deref<Target = T>,
-        options: EventOptions,
-    ) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx
-                .set_with_options(&*item, Some(options))
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (item, options);
-            unreachable!();
-        }
-    }
-
-    /// Emit a batch of SET events for items.
-    ///
-    /// This is more efficient than repeated `emit_set` calls because the server can
-    /// apply the events in one bulk pass.
-    pub fn emit_set_batch<T: Eventable + Serialize + Clone + 'static>(
-        &self,
-        items: &[T],
-    ) -> Result<(), CommandError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            if items.is_empty() {
-                return Ok(());
-            }
-
-            let source_id = Some(self.req.host_id.to_string());
-            let mut events = Vec::with_capacity(items.len());
-            for item in items {
-                let item_json = serde_json::to_value(item).map_err(|err| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: format!("Failed to serialize item for batch set: {}", err),
-                })?;
-                events.push(MEvent {
-                    item: item_json,
-                    change_type: MEventType::SET,
-                    item_type: item.entity_type().to_string(),
-                    created_at: self.req.created_at.to_string(),
-                    tx: self.req.tx.to_string(),
-                    source_id: source_id.clone(),
-                    options: None,
-                });
-            }
-            self.server_ctx
-                .apply_event_batch(events)
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!();
-        }
-    }
-
-    /// Emit a mixed batch of SET events for type-erased items.
-    ///
-    /// This is useful when a command needs to publish multiple entity types
-    /// together in one server batch.
-    pub fn emit_set_any_batch<I>(&self, items: I) -> Result<(), CommandError>
-    where
-        I: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let items: Vec<_> = items.into_iter().collect();
-            if items.is_empty() {
-                return Ok(());
-            }
-
-            let source_id = Some(self.req.host_id.to_string());
-            let mut events = Vec::with_capacity(items.len());
-            for item in items {
-                events.push(MEvent {
-                    item: item.to_value(),
-                    change_type: MEventType::SET,
-                    item_type: item.entity_type().to_string(),
-                    created_at: self.req.created_at.to_string(),
-                    tx: self.req.tx.to_string(),
-                    source_id: source_id.clone(),
-                    options: None,
-                });
-            }
-            self.server_ctx
-                .apply_event_batch(events)
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!();
-        }
-    }
-
-    /// Emit a DEL event for an item.
-    pub fn emit_del<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        self.emit_del_with_options(item, EventOptions::default())
-    }
-
-    /// Emit a batch of DEL events for items.
-    ///
-    /// This is more efficient than repeated `emit_del` calls because the server can
-    /// apply the events in one bulk pass.
-    pub fn emit_del_batch<'a, T, I>(&self, items: I) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-        I: IntoIterator<Item = &'a T>,
-        T: 'a,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            let items: Vec<&T> = items.into_iter().collect();
-            if items.is_empty() {
-                return Ok(());
-            }
-
-            let source_id = Some(self.req.host_id.to_string());
-            let mut events = Vec::with_capacity(items.len());
-            for item in items {
-                let item_json = serde_json::to_value(item).map_err(|err| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: format!("Failed to serialize item for batch del: {}", err),
-                })?;
-                events.push(MEvent {
-                    item: item_json,
-                    change_type: MEventType::DEL,
-                    item_type: item.entity_type().to_string(),
-                    created_at: self.req.created_at.to_string(),
-                    tx: self.req.tx.to_string(),
-                    source_id: source_id.clone(),
-                    options: None,
-                });
-            }
-            self.server_ctx
-                .apply_event_batch(events)
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })?;
-            Ok(())
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = items;
-            unreachable!();
-        }
-    }
-
-    /// Emit a DEL event for an item with custom options.
-    pub fn emit_del_with_options<T>(
-        &self,
-        item: impl std::ops::Deref<Target = T>,
-        options: EventOptions,
-    ) -> Result<(), CommandError>
-    where
-        T: Eventable + Serialize + Clone + 'static,
-    {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx
-                .del_with_options(&*item, Some(options))
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = (item, options);
-            unreachable!();
-        }
-    }
-
-    /// Emit a batch of pre-built MEvents (SET or DEL).
-    ///
-    /// This is useful for type-erased imports where the caller already has
-    /// the raw JSON and entity type strings.
-    pub fn emit_event_batch(&self, events: Vec<MEvent>) -> Result<usize, CommandError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.server_ctx
-                .apply_event_batch(events)
-                .map_err(|e| CommandError {
-                    tx: self.req.tx.to_string(),
-                    command_id: self.command_id.to_string(),
-                    message: e.to_string(),
-                })
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = events;
-            unreachable!();
-        }
     }
 
     /// Execute a query and return the first result.
     ///
     /// This performs a one-shot query against the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn exec_query_first<Q>(&self, query: Q) -> Result<Option<Arc<Q::Item>>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
         {
             Ok(self
                 .server_ctx
@@ -328,21 +83,20 @@ impl CommandContext {
                 .into_iter()
                 .next())
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = query;
-            unreachable!();
-        }
     }
+
     /// Execute a query and return all results.
     ///
     /// This performs a one-shot query against the store.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn exec_query<Q>(&self, query: Q) -> Result<Vec<Arc<Q::Item>>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
-        #[cfg(not(target_arch = "wasm32"))]
         {
             Ok(self
                 .server_ctx
@@ -350,25 +104,15 @@ impl CommandContext {
                 .into_iter()
                 .collect())
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = query;
-            unreachable!();
-        }
-    }
-
-    /// Execute another command within this context.
-    ///
-    /// This allows command handlers to compose by calling other commands.
-    /// The nested command shares the same transaction context.
-    /// The command is consumed by execution, but the context is borrowed.
-    pub fn execute_command<C: CommandHandler>(&self, cmd: C) -> Result<C::Result, CommandError> {
-        cmd.execute(self.clone())
     }
 
     /// Execute a report and return the current value.
     ///
     /// This allows command handlers to query reports for decision making.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn exec_report<R>(
         &self,
         report: R,
@@ -376,7 +120,6 @@ impl CommandContext {
     where
         R: crate::report::ReportParams + Clone,
     {
-        #[cfg(not(target_arch = "wasm32"))]
         {
             use hyphae::Gettable;
             Ok(self
@@ -386,11 +129,247 @@ impl CommandContext {
                 .as_ref()
                 .clone())
         }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = report;
-            unreachable!();
+    }
+
+    /// Look up the existing edge occupying the candidate's unique pair and
+    /// scope. Used by generated idempotent graph commands.
+    #[doc(hidden)]
+    pub fn graph_unique_edge<E>(
+        &self,
+        a: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        b: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        scope: Option<&<E::Scope as crate::graph::EdgeScope>::Value>,
+    ) -> Result<Option<Arc<E>>, CommandError>
+    where
+        E: crate::graph::GraphEdge,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        if E::PAIR_POLICY != crate::graph::PairPolicy::Unique {
+            return Err(CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                format!("{} does not declare unique pairs", E::ENTITY_NAME_STATIC),
+            ));
         }
+
+        let query = self.server_ctx.edges::<E>();
+        let result = scope.map_or_else(
+            || query.one_between(a, b),
+            |scope| query.one_between_in_scope(scope, a, b),
+        );
+        result.map_err(|error| {
+            CommandError::new(
+                self.req.tx.to_string(),
+                self.command_id.to_string(),
+                error.to_string(),
+            )
+        })
+    }
+
+    /// Atomically make `edges` the exact edge set at endpoint A and within the
+    /// optional edge scope. Generated graph commands use this entry point.
+    #[doc(hidden)]
+    pub fn graph_sync_from<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::Value,
+        scope: Option<&serde_json::Value>,
+        edges: &[E],
+    ) -> Result<crate::graph::GraphSyncResult, CommandError>
+    where
+        E: crate::graph::GraphEdge + Clone + PartialEq,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let endpoint =
+            <<E::Ends as crate::graph::TypedEdgeEnds>::A as crate::graph::EndpointSpec>::erase(
+                endpoint,
+            )
+            .map_err(|error| self.graph_command_error(error))?;
+        self.graph_sync_at(crate::graph::EndPosition::A, &endpoint, scope, edges)
+    }
+
+    /// Endpoint-B counterpart of [`Self::graph_sync_from`].
+    #[doc(hidden)]
+    pub fn graph_sync_to<E>(
+        &self,
+        endpoint: &<<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::Value,
+        scope: Option<&serde_json::Value>,
+        edges: &[E],
+    ) -> Result<crate::graph::GraphSyncResult, CommandError>
+    where
+        E: crate::graph::GraphEdge + Clone + PartialEq,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        let endpoint =
+            <<E::Ends as crate::graph::TypedEdgeEnds>::B as crate::graph::EndpointSpec>::erase(
+                endpoint,
+            )
+            .map_err(|error| self.graph_command_error(error))?;
+        self.graph_sync_at(crate::graph::EndPosition::B, &endpoint, scope, edges)
+    }
+
+    fn graph_command_error(&self, error: impl std::fmt::Display) -> CommandError {
+        CommandError::new(
+            self.req.tx.to_string(),
+            self.command_id.to_string(),
+            error.to_string(),
+        )
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn graph_sync_at<E>(
+        &self,
+        position: crate::graph::EndPosition,
+        endpoint: &crate::graph::EndpointValue,
+        scope: Option<&serde_json::Value>,
+        edges: &[E],
+    ) -> Result<crate::graph::GraphSyncResult, CommandError>
+    where
+        E: crate::graph::GraphEdge + Clone + PartialEq,
+        E::Ends: crate::graph::TypedEdgeEnds,
+    {
+        use crate::core::item::{AnyItem, downcast_any_item_arc};
+        use crate::graph::{EdgeEnds, EdgeScope};
+
+        let graph = self
+            .server_ctx
+            .graph_index()
+            .ok_or_else(|| self.graph_command_error("application has no graph registrations"))?;
+        let expected_scope = scope
+            .map(crate::graph::IndexValue::from_serializable)
+            .transpose()
+            .map_err(|error| self.graph_command_error(error))?;
+        let is_scoped = <E::Scope as EdgeScope>::scope_type().is_some();
+        if is_scoped != expected_scope.is_some() {
+            return Err(self.graph_command_error(if is_scoped {
+                "scoped graph reconciliation requires a scope"
+            } else {
+                "unscoped graph reconciliation does not accept a scope"
+            }));
+        }
+
+        let mut desired_ids = HashSet::with_capacity(edges.len());
+        for edge in edges {
+            let ends =
+                E::Ends::erase(&edge.ends()).map_err(|error| self.graph_command_error(error))?;
+            let candidate = match position {
+                crate::graph::EndPosition::A => &ends.a,
+                crate::graph::EndPosition::B => &ends.b,
+            };
+            if candidate != endpoint {
+                return Err(
+                    self.graph_command_error("desired edge does not match the reconciled endpoint")
+                );
+            }
+            let edge_scope = edge
+                .scope()
+                .as_ref()
+                .map(E::Scope::erase)
+                .transpose()
+                .map_err(|error| self.graph_command_error(error))?;
+            if edge_scope != expected_scope {
+                return Err(
+                    self.graph_command_error("desired edge does not match the reconciled scope")
+                );
+            }
+            if !desired_ids.insert(edge.id()) {
+                return Err(self.graph_command_error("desired edge IDs must be unique"));
+            }
+        }
+
+        for _ in 0..64 {
+            let generation = graph.generation();
+            let ids = graph.edge_ids_at(E::ENTITY_NAME_STATIC, position, endpoint);
+            let current = self
+                .server_ctx
+                .registry
+                .get(E::ENTITY_NAME_STATIC)
+                .map_or_else(HashMap::new, |store| {
+                    ids.into_iter()
+                        .filter_map(|id| store.get_value(&id))
+                        .filter_map(|item| downcast_any_item_arc::<E>(&item, "graph endpoint sync"))
+                        .filter(|edge| {
+                            edge.scope()
+                                .as_ref()
+                                .map(E::Scope::erase)
+                                .transpose()
+                                .is_ok_and(|scope| scope == expected_scope)
+                        })
+                        .map(|edge| (edge.id(), edge))
+                        .collect()
+                });
+
+            let mut result = crate::graph::GraphSyncResult::default();
+            let mut upserts = Vec::<Arc<dyn AnyItem>>::new();
+            for edge in edges {
+                let id = edge.id();
+                match current.get(&id) {
+                    Some(old) if E::eq(old.as_ref(), edge) => {
+                        result.unchanged = result.unchanged.saturating_add(1);
+                    }
+                    Some(_) => {
+                        result.updated = result.updated.saturating_add(1);
+                        upserts.push(Arc::new(edge.clone()));
+                    }
+                    None => {
+                        result.inserted = result.inserted.saturating_add(1);
+                        upserts.push(Arc::new(edge.clone()));
+                    }
+                }
+            }
+            let deletes = current
+                .into_iter()
+                .filter(|(id, _)| !desired_ids.contains(id))
+                .map(|(_, edge)| {
+                    result.deleted = result.deleted.saturating_add(1);
+                    let edge: Arc<dyn AnyItem> = edge;
+                    edge
+                })
+                .collect::<Vec<_>>();
+
+            if upserts.is_empty() && deletes.is_empty() {
+                if graph.generation() == generation {
+                    return Ok(result);
+                }
+                continue;
+            }
+            if self
+                .server_ctx
+                .replace_batch_any_if_graph_generation(upserts, deletes, generation)
+                .map_err(|error| self.graph_command_error(error))?
+            {
+                return Ok(result);
+            }
+        }
+        Err(self.graph_command_error(
+            "graph endpoint kept changing; reconciliation retry budget exhausted",
+        ))
+    }
+}
+
+// Capability impls. The command context is the only one that carries
+// `EventPublishing` (emit typed SET/DEL events) and `CommandSending` (dispatch
+// nested commands) — which is exactly why a report/view/query/saga handler
+// cannot emit or dispatch: they don't implement these traits. The bodies live
+// in `core::capability`; these impls just wire the accessors.
+impl crate::core::capability::sealed::Sealed for CommandContext {}
+impl crate::core::capability::RequestScoped for CommandContext {
+    fn __request(&self) -> &Arc<RequestContext> {
+        &self.req
+    }
+}
+impl crate::core::capability::ServerScoped for CommandContext {
+    fn __server_ctx(&self) -> &Arc<MykoServerContext> {
+        &self.server_ctx
+    }
+}
+impl crate::core::capability::EventPublishing for CommandContext {
+    fn __command_id(&self) -> &Arc<str> {
+        &self.command_id
+    }
+}
+impl crate::core::capability::CommandSending for CommandContext {
+    fn __command_ctx(&self) -> CommandContext {
+        self.clone()
     }
 }
 
@@ -423,7 +402,14 @@ pub trait CommandHandler: crate::command::CommandParams {
     /// Execute the command synchronously.
     ///
     /// `self` is the deserialized command parameters (owned, consumed by execution).
-    fn execute(self, ctx: CommandContext) -> Result<Self::Result, CommandError>;
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    #[allow(clippy::unreachable)]
+    fn execute(self, _ctx: CommandContext) -> Result<Self::Result, CommandError> {
+        unreachable!("command handlers execute on the server")
+    }
 }
 
 /// Type-erased command executor for dynamic dispatch.
@@ -435,6 +421,10 @@ pub trait DynCommandExecutor: Send + Sync + 'static {
     fn command_id(&self) -> &'static str;
 
     /// Execute the command from a JSON value
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     fn execute_from_value(
         &self,
         command: Value,
@@ -442,13 +432,14 @@ pub trait DynCommandExecutor: Send + Sync + 'static {
     ) -> Result<Value, CommandError>;
 }
 
-/// Adapter that wraps a CommandHandler to provide DynCommandExecutor
+/// Adapter that wraps a `CommandHandler` to provide `DynCommandExecutor`
 pub struct CommandExecutorAdapter<C: CommandHandler> {
     _phantom: std::marker::PhantomData<C>,
 }
 
 impl<C: CommandHandler> CommandExecutorAdapter<C> {
-    pub fn new() -> Self {
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
             _phantom: std::marker::PhantomData,
         }
@@ -468,24 +459,44 @@ impl<C: CommandHandler> DynCommandExecutor for CommandExecutorAdapter<C> {
 
     fn execute_from_value(
         &self,
-        command: Value,
+        mut command: Value,
         ctx: CommandContext,
     ) -> Result<Value, CommandError> {
+        // `tx` belongs to CommandRequest and is already represented by the
+        // RequestContext. Leaving it in the flattened wire object makes a
+        // command with `#[serde(deny_unknown_fields)]` reject every valid
+        // native-WS and MCP invocation before its handler can run.
+        if let Some(params) = command.as_object_mut() {
+            params.remove("tx");
+        }
+
         // Deserialize the command
-        let cmd: C = serde_json::from_value(command).map_err(|e| CommandError {
-            tx: ctx.tx().to_string(),
-            command_id: C::command_id_static().to_string(),
-            message: format!("Failed to deserialize command: {}", e),
+        let cmd: C = serde_json::from_value(command).map_err(|e| {
+            CommandError::new(
+                ctx.tx(),
+                C::command_id_static(),
+                format!("Failed to deserialize command: {e}"),
+            )
         })?;
 
-        // Execute the handler
+        // Execute the handler. Same "myko.command" span as
+        // CommandContext::execute_command, for the inbound (ws/wire)
+        // dispatch path — this is the DynCommandExecutor adapter used when
+        // a command arrives already-serialized rather than called directly.
+        let _span = tracing::trace_span!("myko.command", cmd = C::command_id_static()).entered();
+        // "external": arrived pre-serialized — the funnel for both native-WS
+        // command dispatch and MCP HTTP/WS in-process tool calls — see
+        // `dispatch_metrics::record_command`.
+        crate::server::dispatch_metrics::record_command(C::command_id_static(), "external");
         let result = cmd.execute(ctx)?;
 
         // Serialize the result
-        serde_json::to_value(result).map_err(|e| CommandError {
-            tx: String::new(),
-            command_id: C::command_id_static().to_string(),
-            message: format!("Failed to serialize result: {}", e),
+        serde_json::to_value(result).map_err(|e| {
+            CommandError::new(
+                String::new(),
+                C::command_id_static(),
+                format!("Failed to serialize result: {e}"),
+            )
         })
     }
 }

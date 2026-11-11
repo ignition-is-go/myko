@@ -18,7 +18,7 @@ export interface UseReportReturn<R extends Report<unknown>> {
  * ```vue
  * <script setup>
  *   import { useReport } from '@myko/ui-vue'
- *   import { reports } from '@rship/entities'
+ *   import { reports } from '@your-app/entities'
  *
  *   const { value } = useReport(reports.CountAllTargets({}))
  * </script>

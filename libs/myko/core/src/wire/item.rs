@@ -9,11 +9,11 @@ use crate::{
     core::item::{AnyItem, lookup_item_registration},
 };
 
-/// Wrapper that implements serde::Serialize by delegating through erased_serde.
+/// Wrapper that implements `serde::Serialize` by delegating through `erased_serde`.
 ///
 /// Since `dyn AnyItem` implements `serde::Serialize` via `erased_serde::serialize_trait_object!`,
 /// this wrapper enables serialization of type-erased items directly to any serde format
-/// without going through serde_json::Value.
+/// without going through `serde_json::Value`.
 pub struct SerializableItem<'a>(pub &'a dyn AnyItem);
 
 impl Serialize for SerializableItem<'_> {
@@ -23,7 +23,7 @@ impl Serialize for SerializableItem<'_> {
 }
 
 /// Wrapper for items in wire protocol responses.
-/// Holds a type-erased AnyItem and serializes it directly to the output format.
+/// Holds a type-erased `AnyItem` and serializes it directly to the output format.
 #[derive(Clone)]
 pub struct ErasedWrappedItem {
     pub item: Arc<dyn AnyItem>,
@@ -41,24 +41,29 @@ impl std::fmt::Debug for ErasedWrappedItem {
 
 impl Serialize for ErasedWrappedItem {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::{Error as _, SerializeStruct};
+        use serde::ser::SerializeStruct;
         // Human-readable serializers (JSON) go through the typed shim emitted
         // by `myko_item`, which monomorphizes the inner `Serialize` and skips
         // erased_serde entirely. Non-human-readable serializers (CBOR) and
         // unregistered types (e.g. client-side `ValueItem`) fall back to the
         // erased path. Bench: JSON path is ~2.5× faster than erased_serde.
         let json_raw = if serializer.is_human_readable() {
+            // Registrations are indexed by unqualified entity name. Distinct
+            // crates can register the same name; their concrete serializers
+            // cannot serialize each other's items. The erased serializer below
+            // dispatches through the actual item and retains serializer errors.
             lookup_item_registration(self.item_type.as_ref())
-                .map(|reg| (reg.serialize_json)(&*self.item).map_err(S::Error::custom))
-                .transpose()?
+                .and_then(|reg| (reg.serialize_json)(&*self.item).ok())
         } else {
             None
         };
 
         let mut s = serializer.serialize_struct("WrappedItem", 2)?;
-        match json_raw {
-            Some(raw) => s.serialize_field("item", &raw)?,
-            None => s.serialize_field("item", &*self.item as &dyn erased_serde::Serialize)?,
+        if let Some(raw) = json_raw {
+            s.serialize_field("item", &raw)?;
+        } else {
+            let erased: &dyn erased_serde::Serialize = &*self.item;
+            s.serialize_field("item", erased)?;
         }
         s.serialize_field("itemType", &self.item_type)?;
         s.end()

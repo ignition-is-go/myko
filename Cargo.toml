@@ -2,14 +2,20 @@
 resolver = "2"
 members = [
   "libs/myko/core",
+  "libs/myko/auth",
+  "libs/myko/auth0",
+  "libs/myko/permissions",
+  "libs/myko/permissions-leptos",
   "libs/myko/macros",
   "libs/myko/server",
+  "libs/myko/telemetry",
   "libs/myko/leptos",
+  "libs/myko/gpui",
   "libs/autosocket",
 ]
 
 [workspace.package]
-version = "4.14.0"
+version = "6.0.0"
 edition = "2024"
 authors = ["Trevor"]
 license = "MIT OR Apache-2.0"
@@ -22,9 +28,26 @@ codegen-units = 1
 panic = "abort"
 
 [workspace.lints.clippy]
+pedantic = { level = "deny", priority = -1 }
+nursery = { level = "deny", priority = -1 }
 disallowed_types = "deny"
+# DENY PANICS:
+unwrap_used = "deny"
+expect_used = "deny"
+indexing_slicing = "deny"
+arithmetic_side_effects = "deny"
+unreachable = "deny"
+unimplemented = "deny"
+unchecked_time_subtraction = "deny"
+todo = "deny"
+string_slice = "deny"
+panic_in_result_fn = "deny"
+panic = "deny"
+exit = "deny"
+as_conversions = "deny"
 
 [workspace.dependencies]
+num-traits = "0.2"
 # Core async runtime
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
@@ -45,8 +68,11 @@ pin-project-lite = "0.2"
 # Error handling
 anyhow = "1.0"
 
-# Logging
-log = "0.4"
+# Typed layered application configuration
+confique = "0.4"
+
+# Logging/tracing
+tracing = "0.1"
 
 # Time/UUID
 chrono = { version = "0.4", features = ["serde"] }
@@ -62,7 +88,7 @@ quote = "1.0"
 syn = { version = "2.0", features = ["full"] }
 
 # Type generation
-ts-rs = "11.1"
+ts-rs = "12.0.1"
 
 # Misc utilities
 url = "2.5"
@@ -70,13 +96,31 @@ crossbeam = "0.8"
 flume = "0.11"
 dashmap = "6.1.0"
 ahash = "0.8"
-partially = { version = "0.2", features = ["derive"] }
+parking_lot = "0.12"
 
-hyphae = { version = "^1.0.0" }
+# The scheduler is required by Myko's batched store propagation. Keep the
+# Leptos adapter on the same Hyphae major so its extension traits share types.
+hyphae = { version = "^3.1.8", features = ["scheduler"] }
+hyphae-leptos = { version = "^3.1.8" }
+# Pin the published bridge so Myko and Hyphae share one GPUI type universe.
+hyphae-gpui = "=3.1.2"
+
+# GPUI native/web stack. Pin the unofficial packages so every adapter shares one type universe.
+gpui = { package = "gpui-unofficial", version = "=1.16.1" }
+gpui_platform = { package = "gpui-platform-gpui-unofficial", version = "=1.16.1" }
 
 # Internal crates
-autosocket = { version = "4.14.0", path = "libs/autosocket" }
-myko-leptos = { version = "4.14.0", path = "libs/myko/leptos" }
-myko-macros = { version = "4.14.0", path = "libs/myko/macros" }
-myko = { version = "4.14.0", path = "libs/myko/core" }
-myko-server = { version = "4.14.0", path = "libs/myko/server" }
+myko-auth = { version = "6.12.1", path = "libs/myko/auth" }
+myko-permissions = { version = "6.12.1", path = "libs/myko/permissions", default-features = false }
+myko-permissions-leptos = { path = "libs/myko/permissions-leptos", version = "6.12.1" }
+autosocket = { version = "6.12.1", path = "libs/autosocket" }
+myko-gpui = { version = "6.12.1", path = "libs/myko/gpui" }
+myko-leptos = { version = "6.12.1", path = "libs/myko/leptos" }
+myko-macros = { version = "6.12.1", path = "libs/myko/macros" }
+myko = { version = "6.12.1", path = "libs/myko/core" }
+myko-server = { version = "6.12.1", path = "libs/myko/server" }
+
+[patch.crates-io]
+# Test the Git-distributed GPUI bridge against this workspace's Myko core.
+# Downstream consumers ignore dependency-owned patches and use crates.io.
+myko = { path = "libs/myko/core" }

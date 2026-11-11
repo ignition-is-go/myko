@@ -32,12 +32,30 @@ use uuid::Uuid;
 
 use crate::entities::client::ClientId;
 
+/// How a view or report cache is partitioned across request callers.
+///
+/// Handlers that read [`RequestContext::client_id`] must use
+/// [`Self::PerClient`](RequestCacheScope::PerClient), because their reactive
+/// graph captures the caller that first materializes it. Transaction IDs are
+/// intentionally excluded: they correlate a request but do not change the
+/// graph a caller should share.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum RequestCacheScope {
+    /// One graph is shared by every caller with identical operation parameters.
+    #[default]
+    Shared,
+    /// One graph per client identity, with internal/server callers in their own scope.
+    PerClient,
+}
+
 /// Context that propagates through request processing.
 ///
 /// Created when a request arrives via WebSocket and flows through
 /// command execution, query subscriptions, and report generation.
 #[derive(Clone, Debug)]
 pub struct RequestContext {
+    /// External authenticated or anonymous authority. Internal requests have no external session.
+    pub auth: Option<myko_auth::AuthSession>,
     /// Transaction ID - same across all operations in one request.
     /// Used to correlate logs, events, and responses.
     pub tx: Arc<str>,
@@ -64,7 +82,29 @@ pub struct RequestContext {
 }
 
 impl RequestContext {
-    /// Create a new RequestContext with explicit values.
+    /// Resolve the authenticated application user supplied by the host.
+    /// # Errors
+    /// Rejects missing, expired or revoked authority and identities without a user.
+    pub fn user_id(&self) -> Result<&crate::identity::UserId, myko_auth::AuthError> {
+        let session = self
+            .auth
+            .as_ref()
+            .ok_or(myko_auth::AuthError::Unauthenticated)?;
+        session.check()?;
+        session
+            .identity()
+            .and_then(|identity| identity.user_id.as_ref())
+            .filter(|id| !id.as_ref().is_empty())
+            .ok_or(myko_auth::AuthError::Unauthenticated)
+    }
+
+    #[must_use]
+    pub fn with_auth(mut self, auth: Option<myko_auth::AuthSession>) -> Self {
+        self.auth = auth;
+        self
+    }
+
+    /// Create a new `RequestContext` with explicit values.
     pub fn new(
         tx: Arc<str>,
         client_id: Option<Arc<str>>,
@@ -73,6 +113,7 @@ impl RequestContext {
         created_at: String,
     ) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: client_id.map(Into::into),
             lineage,
@@ -84,10 +125,12 @@ impl RequestContext {
 
     /// Create a context for a client-initiated request.
     ///
-    /// Sets lineage to `["client"]` and created_at to current time.
+    /// Sets lineage to `["client"]` and `created_at` to current time.
     /// Use `from_client_with_windback` to include windback state.
+    #[must_use]
     pub fn from_client(tx: Arc<str>, client_id: Arc<str>, host_id: Uuid) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: Some(client_id.into()),
             lineage: vec![Arc::from("client")],
@@ -99,7 +142,8 @@ impl RequestContext {
 
     /// Create a context for a client-initiated request with windback state.
     ///
-    /// Sets lineage to `["client"]` and created_at to current time.
+    /// Sets lineage to `["client"]` and `created_at` to current time.
+    #[must_use]
     pub fn from_client_with_windback(
         tx: Arc<str>,
         client_id: Arc<str>,
@@ -107,6 +151,7 @@ impl RequestContext {
         windback: Option<Arc<str>>,
     ) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: Some(client_id.into()),
             lineage: vec![Arc::from("client")],
@@ -119,8 +164,10 @@ impl RequestContext {
     /// Create a context for an internal operation (no client).
     ///
     /// Used for saga-initiated operations, startup tasks, etc.
+    #[must_use]
     pub fn internal(tx: Arc<str>, host_id: Uuid, origin: &str) -> Self {
         Self {
+            auth: None,
             tx,
             client_id: None,
             lineage: vec![Arc::from(origin)],
@@ -151,10 +198,12 @@ impl RequestContext {
     /// assert_eq!(child.lineage[0].as_ref(), "client");
     /// assert_eq!(child.lineage[1].as_ref(), "CreateBinding");
     /// ```
+    #[must_use]
     pub fn child(&self, operation: &str) -> Self {
         let mut lineage = self.lineage.clone();
         lineage.push(Arc::from(operation));
         Self {
+            auth: self.auth.clone(),
             tx: self.tx.clone(),
             client_id: self.client_id.clone(),
             lineage,
@@ -165,30 +214,46 @@ impl RequestContext {
     }
 
     /// Check if this context is in windback mode.
-    pub fn is_windback(&self) -> bool {
+    #[must_use]
+    pub const fn is_windback(&self) -> bool {
         self.windback.is_some()
     }
 
     /// Get the windback timestamp if set.
+    #[must_use]
     pub fn windback(&self) -> Option<&str> {
         self.windback.as_deref()
     }
 
     /// Get the transaction ID as a string slice.
+    #[must_use]
     pub fn tx(&self) -> &str {
         &self.tx
     }
 
     /// Get the client ID if present.
+    #[must_use]
     pub fn client_id(&self) -> Option<&str> {
         self.client_id.as_deref()
     }
 
+    /// Dispatch origin — the first lineage element (`"client"` for native-WS
+    /// requests and MCP-stdio-over-WS, `"mcp"` for MCP HTTP/WS in-process,
+    /// `"saga"` for saga-initiated operations). Used to tag dispatch metrics
+    /// by transport/origin.
+    #[must_use]
+    pub fn origin(&self) -> &str {
+        self.lineage
+            .first()
+            .map_or("unknown", std::convert::AsRef::as_ref)
+    }
+
     /// Get the lineage as a string for logging.
+    #[must_use]
     pub fn lineage_string(&self) -> String {
         self.lineage
             .iter()
-            .map(|s| s.as_ref())
+            .map(std::convert::AsRef::as_ref)
             .collect::<Vec<_>>()
             .join(" → ")
     }

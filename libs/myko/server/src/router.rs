@@ -11,12 +11,14 @@
 //!
 //! Header parsing is bounded (8 KB) and lower-cased for lookup.
 
-use std::{net::SocketAddr, sync::Arc};
+use base64::Engine as _;
+use myko_auth::{AuthError, AuthSession, Credentials, MykoAuthProvider};
+use std::{fmt::Write as _, net::SocketAddr, sync::Arc};
 
-use myko::server::CellServerCtx;
+use myko::server::MykoServerContext;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 
-use crate::{mcp, mcp::dispatch::ServerInfo, ws_handler::WsHandler};
+use crate::{GatewayAccess, mcp, mcp::dispatch::ServerInfo};
 
 /// Cap on the header section (request line + headers).
 const MAX_HEADER_BYTES: usize = 8 * 1024;
@@ -38,6 +40,7 @@ pub struct HttpRequestHead {
 
 impl HttpRequestHead {
     /// Case-insensitive header lookup. Returns the first matching value.
+    #[must_use]
     pub fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -46,38 +49,38 @@ impl HttpRequestHead {
     }
 
     /// `true` if the request is a WebSocket upgrade.
+    #[must_use]
     pub fn is_websocket_upgrade(&self) -> bool {
         let upgrade = self
             .header("Upgrade")
-            .map(|v| v.eq_ignore_ascii_case("websocket"))
-            .unwrap_or(false);
-        let connection_has_upgrade = self
-            .header("Connection")
-            .map(|v| {
-                v.split(',')
-                    .any(|p| p.trim().eq_ignore_ascii_case("upgrade"))
-            })
-            .unwrap_or(false);
+            .is_some_and(|v| v.eq_ignore_ascii_case("websocket"));
+        let connection_has_upgrade = self.header("Connection").is_some_and(|v| {
+            v.split(',')
+                .any(|p| p.trim().eq_ignore_ascii_case("upgrade"))
+        });
         upgrade && connection_has_upgrade
     }
 
     /// `true` if the client wants an SSE stream.
+    #[must_use]
     pub fn wants_event_stream(&self) -> bool {
-        self.header("Accept")
-            .map(|v| {
-                v.split(',').any(|part| {
-                    // Strip media-type params like `;q=0.9`.
-                    let media = part.split(';').next().unwrap_or("").trim();
-                    media.eq_ignore_ascii_case("text/event-stream")
-                })
+        self.header("Accept").is_some_and(|v| {
+            v.split(',').any(|part| {
+                // Strip media-type params like `;q=0.9`.
+                let media = part.split(';').next().unwrap_or("").trim();
+                media.eq_ignore_ascii_case("text/event-stream")
             })
-            .unwrap_or(false)
+        })
     }
 }
 
 /// Read and parse one HTTP request head from the socket.
 ///
 /// Returns `Ok(None)` if the peer closed before sending a complete request.
+///
+/// # Errors
+///
+/// Returns an error when the request cannot be read or parsed.
 pub async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option<HttpRequestHead>> {
     use tokio::io::AsyncReadExt;
 
@@ -95,9 +98,15 @@ pub async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option
         if n == 0 {
             return Ok(None);
         }
-        buffer.extend_from_slice(&chunk[..n]);
+        buffer.extend_from_slice(chunk.get(..n).unwrap_or(&chunk));
 
         if let Some(idx) = find_header_terminator(&buffer) {
+            if idx > MAX_HEADER_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "HTTP header section exceeded 8 KB",
+                ));
+            }
             break idx;
         }
     };
@@ -105,7 +114,7 @@ pub async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option
     let mut headers_buf = [httparse::EMPTY_HEADER; MAX_HEADERS];
     let mut req = httparse::Request::new(&mut headers_buf);
     let status = req
-        .parse(&buffer[..header_end])
+        .parse(buffer.get(..header_end).unwrap_or(&buffer))
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     if !status.is_complete() {
         return Err(std::io::Error::new(
@@ -127,7 +136,7 @@ pub async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option
         })
         .collect();
 
-    let leftover_body = buffer[header_end..].to_vec();
+    let leftover_body = buffer.get(header_end..).unwrap_or_default().to_vec();
 
     Ok(Some(HttpRequestHead {
         method,
@@ -138,33 +147,285 @@ pub async fn read_request_head(stream: &mut TcpStream) -> std::io::Result<Option
 }
 
 fn find_header_terminator(buf: &[u8]) -> Option<usize> {
-    buf.windows(4).position(|w| w == b"\r\n\r\n").map(|i| i + 4)
+    buf.windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| index.saturating_add(4))
 }
 
 /// Route a freshly-accepted TCP connection.
+///
+/// # Errors
+///
+/// Returns an error when the selected HTTP or WebSocket handler fails.
 pub async fn route_connection(
-    mut stream: TcpStream,
+    stream: TcpStream,
     addr: SocketAddr,
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let head = match read_request_head(&mut stream).await {
-        Ok(Some(h)) => h,
-        Ok(None) => return Ok(()),
-        Err(e) => {
-            log::debug!("HTTP parse error from {}: {}", addr, e);
-            let _ = write_status(&mut stream, 400, "Bad Request").await;
+    route_connection_with_paths(stream, addr, ctx, server_info, "/myko", "/myko/mcp").await
+}
+
+/// Route a connection with an immutable inbound capability policy.
+///
+/// Read-only connections reject all MCP transports with HTTP 403.
+/// # Errors
+/// Returns an error when the selected HTTP or WebSocket handler fails.
+pub async fn route_connection_with_access(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    access: GatewayAccess,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    route_connection_with_paths_and_access(
+        stream,
+        addr,
+        ctx,
+        server_info,
+        "/myko",
+        "/myko/mcp",
+        access,
+    )
+    .await
+}
+
+pub(crate) async fn route_connection_with_paths(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    websocket_path: &str,
+    mcp_path: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    route_connection_with_paths_and_access(
+        stream,
+        addr,
+        ctx,
+        server_info,
+        websocket_path,
+        mcp_path,
+        GatewayAccess::Full,
+    )
+    .await
+}
+
+async fn route_connection_with_paths_and_access(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    websocket_path: &str,
+    mcp_path: &str,
+    access: GatewayAccess,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    route_connection_with_paths_and_auth(
+        stream,
+        addr,
+        ctx,
+        server_info,
+        websocket_path,
+        mcp_path,
+        access,
+        None,
+    )
+    .await
+}
+
+/// Route an app-owned listener through authentication and the gateway access ceiling.
+/// # Errors
+/// Returns an error when transport handling fails.
+pub async fn route_connection_with_auth(
+    stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    access: GatewayAccess,
+    provider: Arc<MykoAuthProvider>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    route_connection_with_paths_and_auth(
+        stream,
+        addr,
+        ctx,
+        server_info,
+        "/myko",
+        "/myko/mcp",
+        access,
+        Some(provider),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub(crate) async fn route_connection_with_paths_and_auth(
+    mut stream: TcpStream,
+    addr: SocketAddr,
+    ctx: Arc<MykoServerContext>,
+    server_info: Arc<ServerInfo>,
+    websocket_path: &str,
+    mcp_path: &str,
+    access: GatewayAccess,
+    provider: Option<Arc<MykoAuthProvider>>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let head = match tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        read_request_head(&mut stream),
+    )
+    .await
+    {
+        Ok(result) => match result {
+            Ok(Some(h)) => h,
+            Ok(None) => return Ok(()),
+            Err(e) => {
+                tracing::debug!("HTTP parse error from {}: {}", addr, e);
+                let _ = write_status(&mut stream, 400, "Bad Request").await;
+                shutdown_cleanly(stream).await;
+                return Ok(());
+            }
+        },
+        Err(_) => return Ok(()),
+    };
+
+    tracing::trace!("router accept from {}", addr);
+
+    let path = head.path.split('?').next().unwrap_or(&head.path);
+    let _oauth_flow = provider
+        .as_ref()
+        .map(|provider| crate::oauth_http::install(&ctx, provider))
+        .transpose()?;
+    if let Some(provider) = &provider
+        && crate::oauth_http::handles(provider, path)
+    {
+        return crate::oauth_http::handle(stream, head, provider.clone()).await;
+    }
+
+    if head.method == "GET"
+        && let Some(resource) = provider.as_ref().and_then(|provider| provider.mcp_oauth())
+        && (path == resource.metadata_path() || path == "/.well-known/oauth-protected-resource")
+    {
+        let body = serde_json::to_vec(&resource.metadata())?;
+        write_full(
+            &mut stream,
+            200,
+            "OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("Cache-Control", "no-store"),
+                ("Access-Control-Allow-Origin", "*"),
+            ],
+            &body,
+        )
+        .await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    }
+
+    if head.method == "POST"
+        && path == mcp_path
+        && let Some(provider) = &provider
+    {
+        if access == GatewayAccess::ReadOnly {
+            write_status(&mut stream, 403, "Forbidden").await?;
             shutdown_cleanly(stream).await;
             return Ok(());
         }
+        return mcp::http::handle_post_with_provider(
+            stream,
+            ctx,
+            server_info,
+            head,
+            provider.clone(),
+        )
+        .await;
+    }
+
+    if head.method == "GET"
+        && path == mcp_path
+        && provider.is_some()
+        && head.wants_event_stream()
+        && !head.is_websocket_upgrade()
+        && credentials_from_head(&head).is_ok_and(|credentials| credentials.bearer.is_none())
+    {
+        // An optional event-stream probe must not start login before a tool call.
+        // No server notifications are available to an unauthenticated caller.
+        let (status, reason) = if access == GatewayAccess::ReadOnly {
+            (403, "Forbidden")
+        } else {
+            (405, "Method Not Allowed")
+        };
+        write_full(&mut stream, status, reason, &[("Allow", "POST")], &[]).await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    }
+
+    let auth = if path == websocket_path || path == mcp_path {
+        if let Some(provider) = provider {
+            let result = match credentials_from_head(&head) {
+                Ok(credentials) => {
+                    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                        if path == mcp_path
+                            && let Some(server) = provider.oauth_server()
+                        {
+                            credentials
+                                .bearer
+                                .as_deref()
+                                .ok_or(AuthError::Unauthenticated)
+                                .and_then(|token| server.authenticate(token))
+                        } else if path == mcp_path && provider.mcp_oauth().is_some() {
+                            provider.authenticate(credentials).await
+                        } else {
+                            provider.admit(credentials).await
+                        }
+                    })
+                    .await
+                    .unwrap_or(Err(AuthError::Unavailable))
+                }
+                Err(error) => Err(error),
+            };
+            match result {
+                Ok(session) => Some(session),
+                Err(error) => {
+                    let status = if error == AuthError::Unavailable {
+                        503
+                    } else {
+                        401
+                    };
+                    let reason = if status == 503 {
+                        "Service Unavailable"
+                    } else {
+                        "Unauthorized"
+                    };
+                    let challenge = provider
+                        .mcp_oauth()
+                        .filter(|_| path == mcp_path)
+                        .map_or_else(|| "Bearer".to_owned(), myko_auth::OAuthResource::challenge);
+                    write_full(
+                        &mut stream,
+                        status,
+                        reason,
+                        &[("WWW-Authenticate", &challenge), ("Content-Length", "0")],
+                        b"",
+                    )
+                    .await?;
+                    shutdown_cleanly(stream).await;
+                    return Ok(());
+                }
+            }
+        } else {
+            None
+        }
+    } else {
+        None
     };
 
-    log::trace!("router accept {} {} from {}", head.method, head.path, addr,);
-
-    let path = head.path.split('?').next().unwrap_or(&head.path);
+    if access == GatewayAccess::ReadOnly && path == mcp_path {
+        write_status(&mut stream, 403, "Forbidden").await?;
+        shutdown_cleanly(stream).await;
+        return Ok(());
+    }
 
     match (head.method.as_str(), path) {
-        ("GET", p) if p == "/myko" || p.starts_with("/myko?") => {
+        ("GET", p) if p == websocket_path => {
             if !head.is_websocket_upgrade() {
                 let _ = write_status(&mut stream, 426, "Upgrade Required").await;
                 shutdown_cleanly(stream).await;
@@ -174,25 +435,51 @@ pub async fn route_connection(
             // tungstenite, which requires the unmodified raw bytes. We've
             // already consumed the request, so finish the handshake here
             // and pass the upgraded stream to the WS gateway.
-            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Myko).await
+            handle_ws_upgrade(
+                stream,
+                addr,
+                ctx,
+                server_info,
+                head,
+                WsTarget::Myko,
+                access,
+                auth,
+            )
+            .await
         }
-        ("GET", "/myko/mcp") if head.is_websocket_upgrade() => {
-            handle_ws_upgrade(stream, addr, ctx, server_info, head, WsTarget::Mcp).await
+        ("GET", p) if p == mcp_path && head.is_websocket_upgrade() => {
+            handle_ws_upgrade(
+                stream,
+                addr,
+                ctx,
+                server_info,
+                head,
+                WsTarget::Mcp,
+                access,
+                auth,
+            )
+            .await
         }
-        ("GET", "/myko/mcp") if head.wants_event_stream() => {
-            mcp::http::handle_sse(stream, ctx, head).await
+        ("GET", p) if p == mcp_path && head.wants_event_stream() => {
+            mcp::http::handle_sse_with_auth(stream, ctx, head, auth).await
         }
-        ("POST", "/myko/mcp") => mcp::http::handle_post(stream, ctx, server_info, head).await,
-        ("GET", "/myko/mcp") => {
+        ("POST", p) if p == mcp_path => {
+            mcp::http::handle_post_with_auth(stream, ctx, server_info, head, auth).await
+        }
+        ("GET", p) if p == mcp_path => {
             // No SSE accept, no WS upgrade — caller probably wants a quick
             // status check or hit the URL in a browser.
-            let body = b"{\"status\":\"ok\",\"endpoint\":\"/myko/mcp\",\"transports\":[\"POST\",\"WebSocket\",\"SSE\"]}";
+            let body = serde_json::to_vec(&serde_json::json!({
+                "status": "ok",
+                "endpoint": mcp_path,
+                "transports": ["POST", "WebSocket", "SSE"],
+            }))?;
             let result = write_full(
                 &mut stream,
                 200,
                 "OK",
                 &[("Content-Type", "application/json")],
-                body,
+                &body,
             )
             .await;
             shutdown_cleanly(stream).await;
@@ -211,18 +498,21 @@ enum WsTarget {
     Mcp,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_ws_upgrade(
     stream: TcpStream,
     addr: SocketAddr,
-    ctx: Arc<CellServerCtx>,
+    ctx: Arc<MykoServerContext>,
     server_info: Arc<ServerInfo>,
     head: HttpRequestHead,
     target: WsTarget,
+    access: GatewayAccess,
+    auth: Option<AuthSession>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Reject if the client sent body bytes alongside the handshake — a
     // compliant client waits for our 101 before sending WS frames.
     if !head.leftover_body.is_empty() {
-        log::warn!(
+        tracing::warn!(
             "Rejecting WS upgrade from {} with {} leftover body bytes",
             addr,
             head.leftover_body.len()
@@ -234,17 +524,32 @@ async fn handle_ws_upgrade(
     }
 
     match target {
-        WsTarget::Myko => mcp::ws::handle_myko_ws_upgrade(stream, addr, ctx, head).await,
-        WsTarget::Mcp => mcp::ws::handle_mcp_ws_upgrade(stream, ctx, server_info, head).await,
+        WsTarget::Myko => {
+            mcp::ws::handle_myko_ws_upgrade_with_access_and_auth(
+                stream, addr, ctx, head, access, auth,
+            )
+            .await
+        }
+        WsTarget::Mcp => {
+            mcp::ws::handle_mcp_ws_upgrade_with_auth(stream, ctx, server_info, head, auth).await
+        }
     }
 }
 
 /// Write a bare `HTTP/1.1 <code> <reason>` response with no body and close.
+///
+/// # Errors
+///
+/// Returns an error when the response cannot be written.
 pub async fn write_status(stream: &mut TcpStream, code: u16, reason: &str) -> std::io::Result<()> {
     write_full(stream, code, reason, &[("Content-Length", "0")], b"").await
 }
 
 /// Write a full HTTP/1.1 response with headers and body.
+///
+/// # Errors
+///
+/// Returns an error when the response cannot be written.
 pub async fn write_full(
     stream: &mut TcpStream,
     code: u16,
@@ -252,16 +557,16 @@ pub async fn write_full(
     extra_headers: &[(&str, &str)],
     body: &[u8],
 ) -> std::io::Result<()> {
-    let mut head = format!("HTTP/1.1 {} {}\r\n", code, reason);
+    let mut head = format!("HTTP/1.1 {code} {reason}\r\n");
     head.push_str("Connection: close\r\n");
     if !extra_headers
         .iter()
         .any(|(k, _)| k.eq_ignore_ascii_case("Content-Length"))
     {
-        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+        let _ = write!(head, "Content-Length: {}\r\n", body.len());
     }
     for (k, v) in extra_headers {
-        head.push_str(&format!("{}: {}\r\n", k, v));
+        let _ = write!(head, "{k}: {v}\r\n");
     }
     head.push_str("\r\n");
     stream.write_all(head.as_bytes()).await?;
@@ -293,17 +598,56 @@ pub async fn shutdown_cleanly(mut stream: TcpStream) {
         loop {
             match stream.read(&mut buf).await {
                 Ok(0) | Err(_) => return,
-                Ok(_) => continue,
+                Ok(_) => {}
             }
         }
     })
     .await;
 }
 
-// Wire WsHandler in scope so the path is documented at the module top.
-#[allow(dead_code)]
-fn _ws_handler_in_scope() -> WsHandler {
-    WsHandler
+pub(crate) fn credentials_from_head(head: &HttpRequestHead) -> Result<Credentials, AuthError> {
+    let headers: Vec<_> = head
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        .collect();
+    if headers.len() > 1 {
+        return Err(AuthError::Unauthenticated);
+    }
+    let mut bearer = if let Some((_, value)) = headers.first() {
+        let (scheme, token) = value.split_once(' ').ok_or(AuthError::Unauthenticated)?;
+        if !scheme.eq_ignore_ascii_case("Bearer")
+            || token.is_empty()
+            || token.chars().any(char::is_whitespace)
+        {
+            return Err(AuthError::Unauthenticated);
+        }
+        Some(token.to_string())
+    } else {
+        None
+    };
+    for (_, value) in head
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("sec-websocket-protocol"))
+    {
+        for protocol in value.split(',').map(str::trim) {
+            if let Some(encoded) = protocol.strip_prefix("myko.bearer.") {
+                if bearer.is_some() {
+                    return Err(AuthError::Unauthenticated);
+                }
+                let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(encoded)
+                    .map_err(|_| AuthError::Unauthenticated)?;
+                let token = String::from_utf8(bytes).map_err(|_| AuthError::Unauthenticated)?;
+                if token.is_empty() || token.chars().any(char::is_whitespace) {
+                    return Err(AuthError::Unauthenticated);
+                }
+                bearer = Some(token);
+            }
+        }
+    }
+    Ok(Credentials { bearer })
 }
 
 #[cfg(test)]
@@ -365,8 +709,12 @@ mod tests {
     #[test]
     fn header_terminator_is_found() {
         let req = b"GET / HTTP/1.1\r\nHost: x\r\n\r\nbody";
-        let idx = find_header_terminator(req).expect("terminator must be found");
-        assert_eq!(&req[idx..], b"body");
+        let idx = find_header_terminator(req);
+        assert!(idx.is_some(), "terminator must be found");
+        let Some(idx) = idx else {
+            return;
+        };
+        assert_eq!(req.get(idx..), Some(b"body".as_slice()));
         assert_eq!(find_header_terminator(b"no terminator here"), None);
     }
 }

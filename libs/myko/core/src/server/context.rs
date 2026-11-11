@@ -1,21 +1,26 @@
 //! Server context for the cell-based server.
 //!
-//! Provides modules (like PeerRegistry) with the ability to:
-//! - Run reactive queries (like GetPeerServers)
+//! Provides modules (like `PeerRegistry`) with the ability to:
+//! - Run reactive queries (like `GetPeerServers`)
 //! - Publish entities (Reduce → Relationships → Persist)
-//! - Access server identity (host_id)
+//! - Access server identity (`host_id`)
 
 use std::{
     any::Any,
-    collections::HashMap,
-    sync::{Arc, Mutex},
+    cell::RefCell,
+    collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+    sync::{
+        Arc, Mutex, RwLock,
+        atomic::{AtomicU64, Ordering},
+    },
     thread,
     time::Duration,
 };
 
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable, IdFor, MaterializeDefinite, Mutable,
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, MapDiff, Materialize, Mutable, Watchable,
     WeakCellMap,
 };
 use serde::de::DeserializeOwned;
@@ -27,7 +32,7 @@ use super::{
 };
 use crate::{
     cache::CacheKey,
-    client::{ConnectionStatus, MykoClient},
+    client::MykoClient,
     common::{
         to_value::ToValue,
         with_id::{WithId, WithTypedId},
@@ -36,21 +41,151 @@ use crate::{
         AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc, typed_map_arc_from_any_item,
         typed_map_from_any_item_with_typed_id,
     },
+    graph::{EdgeApplyMode, GraphIndex},
     query::{
-        FilteredCellMap, QueryContext, QueryFactory, QueryHandler, QueryParams, QueryRequest,
-        QueryTestCtx,
+        FilteredCellMap, LiveFilterQuery, QueryContext, QueryFactory, QueryHandler, QueryParams,
+        QueryRequest, QueryTestContext,
     },
     report::{ReportContext, ReportHandler, ReportId},
-    request::RequestContext,
+    request::{RequestCacheScope, RequestContext},
     search::SearchIndex,
     store::StoreRegistry,
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
-    wire::{EventOptions, MEvent, MEventType},
+    wire::{MEvent, MEventType},
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
-type AnyItemBatchEntries = Vec<(Arc<str>, AnyItemArc)>;
-type AnyItemEntriesByType = HashMap<Arc<str>, AnyItemBatchEntries>;
+
+/// Where a mutation came from. This is the single policy point for the apply
+/// pipeline's loop-safety: it determines whether a mutation should run
+/// relationship cascades and durability.
+///
+/// It replaces the scattered per-call loop-guard flag checks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// A command handler / server module emitting a new mutation here (also a
+    /// client event ingested over the WebSocket). Cascades and produces.
+    Local,
+    /// A structural relationship product — a consequence of another mutation
+    /// that must itself enforce relationships transitively.
+    Cascade,
+    /// An in-place relationship bookkeeping update, such as removing a deleted
+    /// child ID from an `owns_many` parent. It must not start another structural
+    /// cascade, or the fixup can feed back into the relation that produced it.
+    RelationshipFixup,
+    /// A live-only mutation such as an in-progress editor gesture. It updates
+    /// local reactive state and relationships without durable persistence.
+    Transient,
+}
+
+impl Origin {
+    /// Whether this origin's mutations should run relationship cascades.
+    ///
+    /// - `Local` mutations always cascade.
+    /// - Structural `Cascade` products keep cascading for both SET and DEL, so
+    ///   `ensure_for` creation and deletion are enforced transitively.
+    /// - `RelationshipFixup` is only an in-place bookkeeping SET and does not
+    ///   descend structurally.
+    ///
+    /// Transitive DEL cascade terminates without a depth counter or visited set:
+    /// reduce runs before cascade, so each node is removed from the store before
+    /// its own cascade runs. The store is therefore a monotonically shrinking
+    /// visited-set — a cyclic schema (A→B→A) finds nothing the second time, and
+    /// a cascade-deleted child cannot resurrect its already-removed parent.
+    const fn should_cascade(self, _change: MEventType) -> bool {
+        match self {
+            Self::Local | Self::Cascade => true,
+            Self::RelationshipFixup | Self::Transient => false,
+        }
+    }
+
+    /// Whether this origin's mutations should be produced to persisters/sink.
+    ///
+    /// Both origins produce; per-type durability is the persister router's job
+    /// (`BlackholePersister`), not a per-event flag.
+    const fn should_produce(self) -> bool {
+        !matches!(self, Self::RelationshipFixup | Self::Transient)
+    }
+}
+
+/// Per-root bounds for synchronously derived relationship/graph work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CausalLimits {
+    pub max_depth: usize,
+    pub max_derived_mutations: usize,
+}
+
+impl Default for CausalLimits {
+    fn default() -> Self {
+        Self {
+            max_depth: 64,
+            max_derived_mutations: 100_000,
+        }
+    }
+}
+
+/// Lifetime counters for mutation-loop protection.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CausalDiagnostics {
+    pub roots: u64,
+    pub derived_mutations: u64,
+    pub duplicate_transitions_suppressed: u64,
+    pub budget_exhaustions: u64,
+    pub max_observed_depth: u64,
+}
+
+#[derive(Default)]
+struct CausalCounters {
+    roots: AtomicU64,
+    derived_mutations: AtomicU64,
+    duplicate_transitions_suppressed: AtomicU64,
+    budget_exhaustions: AtomicU64,
+    max_observed_depth: AtomicU64,
+}
+
+#[derive(Clone, Debug, Hash, Eq, PartialEq)]
+struct TransitionKey {
+    entity_type: &'static str,
+    id: Arc<str>,
+    operation: u8,
+    content_hash: u64,
+}
+
+enum PendingMutationKind {
+    Uniform {
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+    },
+    Replace {
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        expected_graph_generation: Option<u64>,
+    },
+}
+
+struct PendingMutation {
+    kind: PendingMutationKind,
+    origin: Origin,
+    mode: EdgeApplyMode,
+    depth: usize,
+    chain: Vec<String>,
+}
+
+struct CausalState {
+    // Cloned contexts share counters; distinct servers must never share a queue.
+    owner: Arc<CausalCounters>,
+    root_tx: Uuid,
+    queue: VecDeque<PendingMutation>,
+    seen: HashSet<TransitionKey>,
+    derived_count: usize,
+    current_depth: Option<usize>,
+    current_mode: Option<EdgeApplyMode>,
+    current_chain: Vec<String>,
+}
+
+thread_local! {
+    static CAUSAL_STATES: RefCell<Vec<CausalState>> = const { RefCell::new(Vec::new()) };
+}
 
 /// Weak-ref report cache entry. The cell stays alive as long as someone is
 /// subscribed to it. When all subscribers drop, the weak ref fails to upgrade
@@ -127,7 +262,7 @@ impl MapCacheEntry {
     }
 
     fn get(&self) -> Option<FilteredCellMap> {
-        self.weak.upgrade().map(|map| map.lock())
+        self.weak.upgrade().map(hyphae::CellMap::lock)
     }
 
     /// Get or create a typed projection of this untyped map.
@@ -141,7 +276,11 @@ impl MapCacheEntry {
         F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     {
         let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
-        let mut typed = self.typed.lock().unwrap();
+        let source = self.weak.upgrade()?.lock();
+        let mut typed = self
+            .typed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Try to upgrade an existing weak ref
         if let Some(entry) = typed.get(&type_key) {
@@ -155,23 +294,26 @@ impl MapCacheEntry {
         }
 
         // Create from the untyped source
-        let source = self.weak.upgrade()?.lock();
         let built = create(source);
         typed.insert(type_key, Box::new(built.downgrade()));
+        drop(typed);
         Some(built)
     }
 }
 
 /// Context providing capabilities to server modules.
 ///
-/// This is the cell-based equivalent of `MykoServerCtx`, providing:
+/// This is the cell-based equivalent of `MykoServerContext`, providing:
 /// - Entity store access (read-only, via queries)
 /// - Event publishing (Reduce → Relationships → Persist)
 /// - Server identity
 #[derive(Clone)]
-pub struct CellServerCtx {
+pub struct MykoServerContext {
     /// Unique identifier for this server instance
     pub host_id: Uuid,
+    /// `host_id` pre-rendered once — the durable-backend producers stamp it
+    /// on every event, and `Uuid::to_string` per event is pure churn.
+    host_id_str: Arc<str>,
     /// Store registry for entity access
     pub registry: Arc<StoreRegistry>,
     /// Handler registry for item parsers
@@ -204,11 +346,21 @@ pub struct CellServerCtx {
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>, ahash::RandomState>>,
     /// Optional history replay provider for point-in-time snapshots.
     history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+    /// Present only when graph metadata was registered by the application.
+    graph_index: Option<Arc<GraphIndex>>,
+    causal_limits: Arc<RwLock<CausalLimits>>,
+    causal_counters: Arc<CausalCounters>,
 }
 
-impl CellServerCtx {
+pub struct MykoServerRuntime {
+    pub peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
+    pub event_sink: Option<flume::Sender<MEvent>>,
+    pub history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+}
+
+impl MykoServerContext {
     /// Create a new server context.
-    #[allow(clippy::too_many_arguments)]
+    #[must_use]
     pub fn new(
         host_id: Uuid,
         registry: Arc<StoreRegistry>,
@@ -216,12 +368,22 @@ impl CellServerCtx {
         relationship_manager: Arc<RelationshipManager>,
         persisters: Arc<PersisterRouter>,
         search_index: Arc<SearchIndex>,
-        peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
-        event_sink: Option<flume::Sender<MEvent>>,
-        history_replay: Option<Arc<dyn crate::server::HistoryReplayProvider>>,
+        runtime: MykoServerRuntime,
     ) -> Self {
+        let MykoServerRuntime {
+            peer_clients,
+            event_sink,
+            history_replay,
+        } = runtime;
+        let graph_index = GraphIndex::from_inventory(registry.clone()).map(Arc::new);
+        if let Some(graph) = &graph_index
+            && let Err(error) = graph.rebuild()
+        {
+            tracing::error!(%error, "initial graph projection rebuild failed");
+        }
         Self {
             host_id,
+            host_id_str: Arc::from(host_id.to_string()),
             registry,
             handler_registry,
             relationship_manager,
@@ -236,26 +398,65 @@ impl CellServerCtx {
             compute_gates: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
+            graph_index,
+            causal_limits: Arc::new(RwLock::new(CausalLimits::default())),
+            causal_counters: Arc::new(CausalCounters::default()),
         }
     }
 
     fn cache_key<T: CacheKey>(
-        &self,
         kind: &str,
         id: &str,
         params: &T,
         request: &RequestContext,
     ) -> String {
+        Self::cache_key_with_scope(kind, id, params, request, RequestCacheScope::Shared)
+    }
+
+    fn cache_key_with_scope<T: CacheKey>(
+        kind: &str,
+        id: &str,
+        params: &T,
+        request: &RequestContext,
+        scope: RequestCacheScope,
+    ) -> String {
         let payload_hash = params.cache_key_hash();
-        format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
+        if let Some(auth) = &request.auth {
+            return format!(
+                "{}:{kind}:{id}:{payload_hash:016x}:auth:{}",
+                request.host_id,
+                auth.id()
+            );
+        }
+        match scope {
+            RequestCacheScope::Shared => {
+                format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
+            }
+            RequestCacheScope::PerClient => request.client_id.as_deref().map_or_else(
+                || {
+                    format!(
+                        "{}:{kind}:{id}:{payload_hash:016x}:request-server",
+                        request.host_id
+                    )
+                },
+                |client_id| {
+                    format!(
+                        "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}",
+                        request.host_id
+                    )
+                },
+            ),
+        }
     }
 
     /// Get the search index.
-    pub fn search_index(&self) -> &Arc<SearchIndex> {
+    #[must_use]
+    pub const fn search_index(&self) -> &Arc<SearchIndex> {
         &self.search_index
     }
 
     /// Get the history replay provider, if configured.
+    #[must_use]
     pub fn history_replay(&self) -> Option<&Arc<dyn crate::server::HistoryReplayProvider>> {
         self.history_replay.as_ref()
     }
@@ -277,49 +478,65 @@ impl CellServerCtx {
     }
 
     /// Get a live peer client by server id, if present.
+    #[must_use]
     pub fn peer_client(&self, peer_id: &str) -> Option<Arc<MykoClient>> {
         self.peer_clients
             .get(peer_id)
             .map(|entry| entry.value().clone())
     }
 
-    /// Get a peer's current connection status if the client is present.
-    pub fn peer_connection_status(&self, peer_id: &str) -> Option<ConnectionStatus> {
-        self.peer_client(peer_id)
-            .map(|client| client.get_connection_status_sync())
-    }
-
     /// Reactive tick that updates whenever peer client membership changes.
+    #[must_use]
     pub fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {
         self.peer_clients_tick.clone().lock()
     }
 
     /// Number of currently tracked peer clients.
+    ///
+    /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
+    /// sync heartbeat gates its anchor re-emit on this (skip the re-emit when
+    /// no peers are connected, since nobody would catch up from it).
+    #[must_use]
     pub fn peer_client_count(&self) -> usize {
         self.peer_clients.len()
     }
 
     /// Get the live persist health counters from the default persister.
+    #[must_use]
     pub fn persist_health(&self) -> Arc<PersistHealth> {
         self.persisters.default_health()
     }
 
+    /// Get a one-shot typed entity snapshot by id.
+    ///
+    /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
+    /// multi-action executor resolves a single Action this way, deliberately
+    /// avoiding a reactive subscription for a point lookup.
+    pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
+    where
+        T: Eventable + WithTypedId + Send + Sync + 'static,
+        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
+    {
+        let store = self.registry.get_or_create(T::entity_name_static());
+        let map_key = <<T as WithTypedId>::Id as hyphae::IdFor<T>>::map_key(id);
+        let item = store.get_value(&map_key)?;
+        downcast_any_item_arc::<T>(&item, "MykoServerContext::entity_snapshot")
+    }
+
     /// Number of entries in the query cache (includes dead weak refs).
+    #[must_use]
     pub fn query_cache_len(&self) -> usize {
         self.query_cache.len()
     }
 
-    /// Number of entries in the view cache (includes dead weak refs).
-    pub fn view_cache_len(&self) -> usize {
-        self.view_cache.len()
-    }
-
     /// Number of entries in the report cache (includes dead weak refs).
+    #[must_use]
     pub fn report_cache_len(&self) -> usize {
         self.report_cache.len()
     }
 
     /// Count live (upgradeable) entries in the report cache.
+    #[must_use]
     pub fn report_cache_live_count(&self) -> usize {
         self.report_cache
             .iter()
@@ -328,6 +545,7 @@ impl CellServerCtx {
     }
 
     /// Count live (upgradeable) entries in the query cache.
+    #[must_use]
     pub fn query_cache_live_count(&self) -> usize {
         self.query_cache
             .iter()
@@ -335,7 +553,18 @@ impl CellServerCtx {
             .count()
     }
 
+    // NOTE(ts): the view_cache_* pair was dropped by f8c71afd as zero-caller,
+    // but it completes the query/view/report cache-diagnostics triple that
+    // rship_server's periodic health log reports — restored for symmetry.
+
+    /// Number of entries in the view cache (includes dead weak refs).
+    #[must_use]
+    pub fn view_cache_len(&self) -> usize {
+        self.view_cache.len()
+    }
+
     /// Count live (upgradeable) entries in the view cache.
+    #[must_use]
     pub fn view_cache_live_count(&self) -> usize {
         self.view_cache
             .iter()
@@ -343,13 +572,19 @@ impl CellServerCtx {
             .count()
     }
 
-    /// Remove dead weak-ref entries from all caches.
+    /// Remove dead weak-ref entries from all caches, including belongs-to
+    /// source index buckets (process-global, not per-`MykoServerContext`, but
+    /// swept from here for hosting apps that already call this
+    /// periodically). Bucket entries are also reaped lazily on next access
+    /// regardless — this is a backstop for foreign ids that go dead and are
+    /// never looked up again.
     pub fn sweep_dead_cache_entries(&self) {
         self.query_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.view_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.report_cache.retain(|_, entry| entry.is_alive());
+        crate::query::sweep_all_belongs_to_source_indexes();
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
@@ -357,16 +592,17 @@ impl CellServerCtx {
     /// Takes the `Value` by ownership so we don't pay a deep-clone of the
     /// nested-enum tree on every applied event. Bench `from_value_with_clone`
     /// shows the clone is ~136 ns/event on a typical entity payload — small
-    /// per event, but multiplied by the apply_event_batch hot path it's the
+    /// per event, but multiplied by the `apply_event_batch` hot path it's the
     /// cheapest non-breaking win on the ingest path.
     ///
     /// Returns None if the entity type is not registered or parsing fails.
+    #[must_use]
     pub fn parse_item(
         &self,
         entity_type: &str,
         json: serde_json::Value,
     ) -> Option<Arc<dyn AnyItem>> {
-        let parse = self.handler_registry.get_item_parser(entity_type)?;
+        let parse = self.handler_registry.item_parser(entity_type)?;
         parse(json).ok()
     }
 
@@ -377,117 +613,82 @@ impl CellServerCtx {
     /// Publish an entity (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn set<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        self.set_with_options(entity, None)
+        self.set_with_origin(entity, Origin::Local)
     }
 
-    /// Publish an entity (SET) with options.
+    /// Publish a live-only SET for an in-progress interaction. The item is
+    /// reduced and reactive subscribers observe it, but no durable event or
+    /// saga notification is produced. Emit the final value with [`Self::set`].
     ///
-    /// Options control:
-    /// - `prevent_relationship_updates`: skip cascade processing
-    /// - `prevent_persist`: skip durable backend
-    pub fn set_with_options<T>(
-        &self,
-        entity: &T,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
+    /// # Errors
+    ///
+    /// Returns an error when the entity cannot be serialized or applied.
+    pub fn set_transient<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        let options = options.unwrap_or_default();
-        let id = entity.id();
-        let entity_type = entity.entity_type();
+        self.set_with_origin(entity, Origin::Transient)
+    }
+
+    /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
+    /// shared `apply_effects` tail, gated by `origin`.
+    pub(crate) fn set_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
+    where
+        T: Eventable + 'static,
+    {
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-
-        // Reduce: update store
-        self.registry
-            .get_or_create(entity_type)
-            .insert(id.clone(), item.clone());
-
-        log::debug!("[entity] SET {} id={}", entity_type, id);
-
-        // Search: index searchable fields
-        self.search_index.index_item(&item);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_set(item, self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_set(entity)?;
-        }
-
-        Ok(())
+        self.submit_mutation(vec![item], MEventType::SET, origin)
     }
 
     /// Delete an entity (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del<T>(&self, entity: &T) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
-        self.del_with_options(entity, None)
+        self.del_with_origin(entity, Origin::Local)
     }
 
-    /// Delete an entity (DEL) with options.
-    pub fn del_with_options<T>(
-        &self,
-        entity: &T,
-        options: Option<EventOptions>,
-    ) -> Result<(), PersistError>
+    pub(crate) fn del_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
-        let options = options.unwrap_or_default();
-        let entity_type = entity.entity_type();
-        let id = entity.id();
         let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-
-        log::debug!("[entity] DEL {} id={}", entity_type, id);
-
-        // Reduce: remove from store
-        self.registry.get_or_create(entity_type).remove(&id);
-
-        // Search: remove from index
-        self.search_index.remove_entity(entity_type, &id);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_del(entity)?;
-        }
-
-        log::trace!("Published DEL {}:{}", entity_type, id);
-        Ok(())
+        self.submit_mutation(vec![item], MEventType::DEL, origin)
     }
 
     /// Publish a batch of entities (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_set<T>(&self, entities: &[T]) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
-        self.batch_set_with_options(entities, None)
+        self.batch_set_with_origin(entities, Origin::Local)
     }
 
-    /// Publish a batch of entities (SET) with shared options.
-    ///
-    /// This avoids manual `MEvent` construction and performs a grouped store insert.
-    pub fn batch_set_with_options<T>(
+    /// Publish a batch of entities (SET) with one grouped store insert.
+    pub(crate) fn batch_set_with_origin<T>(
         &self,
         entities: &[T],
-        options: Option<EventOptions>,
+        origin: Origin,
     ) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
@@ -495,60 +696,32 @@ impl CellServerCtx {
         if entities.is_empty() {
             return Ok(());
         }
-
-        let options = options.unwrap_or_default();
-        let entity_type = T::entity_name_static();
-        let store = self.registry.get_or_create(entity_type);
-
-        let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> = Vec::with_capacity(entities.len());
-        let mut items: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entities.len());
-
-        for entity in entities {
-            let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-            log::debug!("[entity] SET {} id={}", entity_type, entity.id());
-            self.search_index.index_item(&item);
-            entries.push((entity.id(), item.clone()));
-            items.push(item);
-        }
-
-        // Reduce: one diff emission for the whole batch.
-        store.insert_many(entries);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            for item in &items {
-                self.relationship_manager.forward_set(item.clone(), self)?;
-            }
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            for item in &items {
-                self.produce_set_dyn(item)?;
-            }
-        }
-
-        log::trace!("Published batch SET {} count={}", entity_type, items.len());
-        Ok(())
+        let items: Vec<Arc<dyn AnyItem>> = entities
+            .iter()
+            .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
+            .collect();
+        self.submit_mutation(items, MEventType::SET, origin)
     }
 
     /// Delete a batch of entities (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn batch_del<T>(&self, entities: &[T]) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
     {
-        self.batch_del_with_options(entities, None)
+        self.batch_del_with_origin(entities, Origin::Local)
     }
 
-    /// Delete a batch of entities (DEL) with shared options.
-    ///
-    /// This avoids manual `MEvent` construction and performs a grouped store remove.
-    pub fn batch_del_with_options<T>(
+    /// Delete a batch of entities (DEL) with one grouped store remove.
+    pub(crate) fn batch_del_with_origin<T>(
         &self,
         entities: &[T],
-        options: Option<EventOptions>,
+        origin: Origin,
     ) -> Result<(), PersistError>
     where
         T: Eventable + Clone + 'static,
@@ -556,40 +729,11 @@ impl CellServerCtx {
         if entities.is_empty() {
             return Ok(());
         }
-
-        let options = options.unwrap_or_default();
-        let entity_type = T::entity_name_static();
-        let store = self.registry.get_or_create(entity_type);
-
-        let mut ids: Vec<Arc<str>> = Vec::with_capacity(entities.len());
-        let mut items: Vec<Arc<dyn AnyItem>> = Vec::with_capacity(entities.len());
-
-        for entity in entities {
-            let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
-            let id = item.id();
-            log::debug!("[entity] DEL {} id={}", entity_type, id);
-            self.search_index.remove_entity(entity_type, &id);
-            ids.push(id);
-            items.push(item);
-        }
-
-        // Reduce: one diff emission for the whole batch.
-        store.remove_many(ids);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del_batch(&items, self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            for item in &items {
-                self.produce_del_dyn(item)?;
-            }
-        }
-
-        log::trace!("Published batch DEL {} count={}", entity_type, items.len());
-        Ok(())
+        let items: Vec<Arc<dyn AnyItem>> = entities
+            .iter()
+            .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
+            .collect();
+        self.submit_mutation(items, MEventType::DEL, origin)
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -599,184 +743,73 @@ impl CellServerCtx {
     /// Publish a dynamic item (SET) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn set_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.set_dyn_with_options(item, None)
+        self.set_dyn_with_origin(item, Origin::Local)
     }
 
-    /// Publish a dynamic item (SET) with options.
-    pub fn set_dyn_with_options(
+    pub(crate) fn set_dyn_with_origin(
         &self,
         item: Arc<dyn AnyItem>,
-        options: Option<EventOptions>,
+        origin: Origin,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
-        let entity_type = item.entity_type();
-        let id = item.id();
-
-        log::debug!("[entity] SET {} id={}", entity_type, id);
-
-        // Reduce: update store
-        self.registry
-            .get_or_create(entity_type)
-            .insert(id.clone(), item.clone());
-
-        // Search: index searchable fields
-        self.search_index.index_item(&item);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_set(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_set_dyn(&item)?;
-        }
-
-        log::trace!("Published SET {}:{}", entity_type, id);
-        Ok(())
+        self.submit_mutation(vec![item], MEventType::SET, origin)
     }
 
-    /// Publish a batch of dynamic items (SET) with shared options.
-    pub fn batch_set_dyn_with_options(
+    /// Publish a batch of dynamic items (SET).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn batch_set_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+        self.batch_set_dyn_with_origin(items, Origin::Local)
+    }
+
+    pub(crate) fn batch_set_dyn_with_origin(
         &self,
         items: &[Arc<dyn AnyItem>],
-        options: Option<EventOptions>,
+        origin: Origin,
     ) -> Result<(), PersistError> {
-        if items.is_empty() {
-            return Ok(());
-        }
-
-        let options = options.unwrap_or_default();
-        let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
-            std::collections::BTreeMap::new();
-
-        for item in items {
-            items_by_type
-                .entry(item.entity_type())
-                .or_default()
-                .push(item.clone());
-        }
-
-        for (entity_type, typed_items) in items_by_type {
-            let store = self.registry.get_or_create(entity_type);
-            let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
-                Vec::with_capacity(typed_items.len());
-
-            for item in &typed_items {
-                log::debug!("[entity] SET {} id={}", entity_type, item.id());
-                self.search_index.index_item(item);
-                entries.push((item.id(), item.clone()));
-            }
-
-            store.insert_many(entries);
-
-            if !options.prevent_relationship_updates {
-                for item in &typed_items {
-                    self.relationship_manager.forward_set(item.clone(), self)?;
-                }
-            }
-
-            if !options.prevent_persist {
-                for item in &typed_items {
-                    self.produce_set_dyn(item)?;
-                }
-            }
-
-            log::trace!(
-                "Published batch SET {} count={}",
-                entity_type,
-                typed_items.len()
-            );
-        }
-        Ok(())
+        self.submit_mutation(items.to_vec(), MEventType::SET, origin)
     }
 
     /// Delete a dynamic item (DEL) with default options.
     ///
     /// Default behavior: Reduce + Relationships + Persist
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn del_dyn(&self, item: Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.del_dyn_with_options(item, None)
+        self.del_dyn_with_origin(item, Origin::Local)
     }
 
-    /// Delete a dynamic item (DEL) with options.
-    pub fn del_dyn_with_options(
+    pub(crate) fn del_dyn_with_origin(
         &self,
         item: Arc<dyn AnyItem>,
-        options: Option<EventOptions>,
+        origin: Origin,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
-        let entity_type = item.entity_type();
-        let id = item.id();
-
-        log::debug!("[entity] DEL {} id={}", entity_type, id);
-
-        // Reduce: remove from store
-        self.registry.get_or_create(entity_type).remove(&id);
-
-        // Search: remove from index
-        self.search_index.remove_entity(entity_type, &id);
-
-        // Relationships: process cascades (unless prevented)
-        if !options.prevent_relationship_updates {
-            self.relationship_manager.forward_del(item.clone(), self)?;
-        }
-
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
-            self.produce_del_dyn(&item)?;
-        }
-
-        log::trace!("Published DEL {}:{}", entity_type, id);
-        Ok(())
+        self.submit_mutation(vec![item], MEventType::DEL, origin)
     }
 
-    /// Publish a batch of dynamic items (DEL) with shared options.
-    pub fn batch_del_dyn_with_options(
+    /// Publish a batch of dynamic items (DEL).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn batch_del_dyn(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+        self.batch_del_dyn_with_origin(items, Origin::Local)
+    }
+
+    pub(crate) fn batch_del_dyn_with_origin(
         &self,
         items: &[Arc<dyn AnyItem>],
-        options: Option<EventOptions>,
+        origin: Origin,
     ) -> Result<(), PersistError> {
-        if items.is_empty() {
-            return Ok(());
-        }
-
-        let options = options.unwrap_or_default();
-        let mut items_by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
-            std::collections::BTreeMap::new();
-
-        for item in items {
-            items_by_type
-                .entry(item.entity_type())
-                .or_default()
-                .push(item.clone());
-        }
-
-        for (entity_type, typed_items) in items_by_type {
-            let store = self.registry.get_or_create(entity_type);
-            let mut ids: Vec<Arc<str>> = Vec::with_capacity(typed_items.len());
-
-            for item in &typed_items {
-                let id = item.id();
-                log::debug!("[entity] DEL {} id={}", entity_type, id);
-                self.search_index.remove_entity(entity_type, &id);
-                ids.push(id);
-            }
-
-            store.remove_many(ids);
-
-            if !options.prevent_relationship_updates {
-                self.relationship_manager
-                    .forward_del_batch(&typed_items, self)?;
-            }
-
-            if !options.prevent_persist {
-                for item in &typed_items {
-                    self.produce_del_dyn(item)?;
-                }
-            }
-        }
-        Ok(())
+        self.submit_mutation(items.to_vec(), MEventType::DEL, origin)
     }
 
     /// Delete an entity by type/id and publish DEL even if the item is not present locally.
@@ -785,19 +818,28 @@ impl CellServerCtx {
     /// where we must ensure a DEL event is produced to durable backend.
     ///
     /// Note: relationship cascades require the full item and are therefore skipped here.
-    pub fn del_by_id_with_options(
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
+        self.del_by_id_with_origin(entity_type, id, Origin::Local)
+    }
+
+    pub(crate) fn del_by_id_with_origin(
         &self,
         entity_type: &str,
         id: &str,
-        options: Option<EventOptions>,
+        origin: Origin,
     ) -> Result<(), PersistError> {
-        let options = options.unwrap_or_default();
         let id_arc: Arc<str> = id.into();
 
         let existing = self
             .registry
             .get(entity_type)
-            .and_then(|store| store.get(&id_arc).get());
+            .and_then(|store| store.get(&id_arc).materialize().get());
+
+        crate::server::entity_set_stats::record_del(entity_type);
 
         // Reduce: remove from store
         self.registry.get_or_create(entity_type).remove(&id_arc);
@@ -805,12 +847,12 @@ impl CellServerCtx {
         // Search: remove from index
         self.search_index.remove_entity(entity_type, id);
 
-        // Persist: produce to durable backend (unless prevented)
-        if !options.prevent_persist {
+        // Persist: produce unless this origin must not (e.g. a peer tombstone).
+        if origin.should_produce() {
             if let Some(item) = existing {
                 self.produce_del_dyn(&item)?;
             } else {
-                log::warn!(
+                tracing::warn!(
                     "del_by_id could not persist DEL without full entity: {}:{}",
                     entity_type,
                     id
@@ -818,18 +860,17 @@ impl CellServerCtx {
             }
         }
 
-        log::trace!("Published DEL {}:{}", entity_type, id);
+        tracing::trace!("Published DEL {}:{}", entity_type, id);
         Ok(())
-    }
-
-    /// Delete an entity by type/id with default options.
-    pub fn del_by_id(&self, entity_type: &str, id: &str) -> Result<(), PersistError> {
-        self.del_by_id_with_options(entity_type, id, None)
     }
 
     /// Apply a single wire event (parse -> reduce -> relationships -> persist).
     ///
     /// Returns `true` when the event was parsed and applied, `false` otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn apply_event(&self, event: MEvent) -> Result<bool, PersistError> {
         Ok(self.apply_event_batch(vec![event])? == 1)
     }
@@ -838,6 +879,91 @@ impl CellServerCtx {
     ///
     /// This reduces overhead versus calling `set_dyn`/`del_dyn` for each event individually.
     /// Returns the number of successfully parsed/applied events.
+    /// Emit a batch of typed SET events, applied immediately.
+    ///
+    /// Reduces + runs the cascade/produce tail via the shared typed path
+    /// ([`emit_grouped`](Self::emit_grouped)). Unlike
+    /// [`apply_event_batch`](Self::apply_event_batch), this never routes through
+    /// the WS-ingest time-window buffer — that buffer is for wire ingest only.
+    /// Command emit batches land here so everything a command emits is a typed,
+    /// immediately-applied event.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn set_batch_any(
+        &self,
+        items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+    ) -> Result<(), PersistError> {
+        let items: Vec<Arc<dyn AnyItem>> = items.into_iter().collect();
+        self.submit_mutation(items, MEventType::SET, Origin::Local)
+    }
+
+    /// Emit a batch of typed DEL events, applied immediately. DEL counterpart of
+    /// [`set_batch_any`](Self::set_batch_any).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn del_batch_any(
+        &self,
+        items: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+    ) -> Result<(), PersistError> {
+        let items: Vec<Arc<dyn AnyItem>> = items.into_iter().collect();
+        self.submit_mutation(items, MEventType::DEL, Origin::Local)
+    }
+
+    /// Atomically apply disjoint typed upserts and deletions as one final-state
+    /// reactive diff while retaining authoritative validation, causal loop
+    /// protection, and reduce-before-persist ordering.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when validation, reduction, or persistence fails.
+    pub fn replace_batch_any(
+        &self,
+        upserts: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+        deletes: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+    ) -> Result<(), PersistError> {
+        self.submit_replace_mutation(
+            upserts.into_iter().collect(),
+            deletes.into_iter().collect(),
+            Origin::Local,
+        )
+    }
+
+    /// Apply one mixed replacement only when the graph has not changed since
+    /// the caller planned it. A `false` result is a retry signal; no canonical
+    /// or projected state was changed.
+    pub(crate) fn replace_batch_any_if_graph_generation(
+        &self,
+        upserts: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+        deletes: impl IntoIterator<Item = Arc<dyn AnyItem>>,
+        expected_graph_generation: u64,
+    ) -> Result<bool, PersistError> {
+        self.submit_replace_mutation_inner(
+            upserts.into_iter().collect(),
+            deletes.into_iter().collect(),
+            Origin::Local,
+            Some(expected_graph_generation),
+        )
+    }
+
+    /// Apply pre-built raw events immediately (type-erased import path),
+    /// bypassing the WS-ingest time-window buffer: each event is parsed to its
+    /// typed item, then reduced + cascaded. Returns the number applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn apply_events_immediate(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
+        self.apply_event_batch_immediate(events)
+    }
+
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
     pub fn apply_event_batch(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
             return Ok(0);
@@ -848,13 +974,10 @@ impl CellServerCtx {
         let mut buffered_by_type: HashMap<Arc<str>, (u64, Vec<MEvent>)> = HashMap::new();
 
         for event in events {
-            match self
-                .handler_registry
-                .get_item_buffer_policy(&event.item_type)
-            {
+            match self.handler_registry.item_buffer_policy(&event.item_type) {
                 IngestBufferPolicy::None => immediate_events.push(event),
                 IngestBufferPolicy::TimeWindow { window_ms } => {
-                    let entity_type: Arc<str> = event.item_type.clone().into();
+                    let entity_type: Arc<str> = event.item_type.clone();
                     buffered_by_type
                         .entry(entity_type)
                         .or_insert_with(|| (window_ms, Vec::new()))
@@ -865,11 +988,11 @@ impl CellServerCtx {
         }
 
         if !immediate_events.is_empty() {
-            accepted += self.apply_event_batch_immediate(immediate_events)?;
+            accepted = accepted.saturating_add(self.apply_event_batch_immediate(immediate_events)?);
         }
 
         for (entity_type, (window_ms, buffered_events)) in buffered_by_type {
-            accepted += buffered_events.len();
+            accepted = accepted.saturating_add(buffered_events.len());
             self.enqueue_buffered_events(entity_type, window_ms, buffered_events);
         }
 
@@ -882,148 +1005,58 @@ impl CellServerCtx {
         }
         let input_len = events.len();
 
-        #[derive(Clone)]
-        struct SetOp {
-            item: Arc<dyn AnyItem>,
-            options: EventOptions,
-        }
-
-        #[derive(Clone)]
-        struct DelOp {
-            item: Arc<dyn AnyItem>,
-            options: EventOptions,
-        }
-
-        let mut sets: Vec<SetOp> = Vec::new();
-        let mut dels: Vec<DelOp> = Vec::new();
+        let mut set_items: Vec<Arc<dyn AnyItem>> = Vec::new();
+        let mut del_items: Vec<Arc<dyn AnyItem>> = Vec::new();
 
         for event in events {
-            let options = event.options.clone().unwrap_or_default();
+            let change = event.change_type;
             let item_type = event.item_type;
             let item_value = event.item;
-            match event.change_type {
-                MEventType::SET => {
-                    if let Some(item) = self.parse_item(&item_type, item_value) {
-                        sets.push(SetOp { item, options });
-                    } else {
-                        log::warn!("Unknown entity type or parse error for SET: {item_type}");
-                    }
-                }
-                MEventType::DEL => {
-                    if let Some(item) = self.parse_item(&item_type, item_value) {
-                        dels.push(DelOp { item, options });
-                    } else {
-                        log::warn!("Unknown entity type or parse error for DEL: {item_type}");
-                    }
-                }
+            let Some(item) = self.parse_item(&item_type, item_value) else {
+                tracing::warn!("Unknown entity type or parse error for ingest: {item_type}");
+                continue;
+            };
+            match change {
+                MEventType::SET => set_items.push(item),
+                MEventType::DEL => del_items.push(item),
             }
         }
 
-        if sets.is_empty() && dels.is_empty() {
+        let applied = set_items.len().saturating_add(del_items.len());
+        if applied == 0 {
             return Ok(0);
         }
 
-        log::trace!(
+        tracing::trace!(
             target: "myko::server::context",
             "apply_event_batch parsed: input_events={} sets={} dels={}",
             input_len,
-            sets.len(),
-            dels.len()
+            set_items.len(),
+            del_items.len()
         );
 
-        let mut inserts_by_type: AnyItemEntriesByType = HashMap::new();
-        let mut removes_by_type: HashMap<Arc<str>, Vec<Arc<str>>> = HashMap::new();
+        // Ingested wire events are Local (cascade + produce); the shared batch
+        // path groups by type, reduces, then runs the cascade/produce tail.
+        // `emit_grouped` itself opens the `hyphae::batch` window (scoped to
+        // just its reduce loop — see the comment there for why).
+        let emit = || -> Result<(), PersistError> {
+            self.submit_mutation_mode(
+                set_items.clone(),
+                MEventType::SET,
+                Origin::Local,
+                EdgeApplyMode::Import,
+            )?;
+            self.submit_mutation_mode(
+                del_items.clone(),
+                MEventType::DEL,
+                Origin::Local,
+                EdgeApplyMode::Import,
+            )?;
+            Ok(())
+        };
+        emit()?;
 
-        for op in &sets {
-            let entity_type: Arc<str> = op.item.entity_type().into();
-            let id = op.item.id();
-            log::debug!("[entity] SET {} id={}", entity_type, id);
-            inserts_by_type
-                .entry(entity_type)
-                .or_default()
-                .push((id, op.item.clone()));
-            self.search_index.index_item(&op.item);
-        }
-        for op in &dels {
-            let entity_type_static = op.item.entity_type();
-            let entity_type: Arc<str> = entity_type_static.into();
-            let id = op.item.id();
-            log::debug!("[entity] DEL {} id={}", entity_type, id);
-            removes_by_type
-                .entry(entity_type)
-                .or_default()
-                .push(id.clone());
-            self.search_index.remove_entity(entity_type_static, &id);
-        }
-
-        // Reduce: one diff emission per entity type per operation kind.
-        for (entity_type, entries) in inserts_by_type {
-            log::trace!(
-                target: "myko::server::context",
-                "apply_event_batch reduce inserts: entity_type={} count={}",
-                entity_type,
-                entries.len()
-            );
-            let store = self.registry.get_or_create(entity_type.as_ref());
-            let count = entries.len();
-            let before = store.snapshot().len();
-            store.insert_many(entries);
-            let after = store.snapshot().len();
-            if after != before || count > 100 {
-                log::info!(
-                    "insert_many {}: submitted={} store_before={} store_after={} net_new={}",
-                    entity_type,
-                    count,
-                    before,
-                    after,
-                    after as i64 - before as i64
-                );
-            }
-        }
-        for (entity_type, keys) in removes_by_type {
-            log::trace!(
-                target: "myko::server::context",
-                "apply_event_batch reduce removes: entity_type={} count={}",
-                entity_type,
-                keys.len()
-            );
-            let store = self.registry.get_or_create(entity_type.as_ref());
-            store.remove_many(keys);
-        }
-
-        // Relationships
-        for op in &sets {
-            if !op.options.prevent_relationship_updates {
-                self.relationship_manager
-                    .forward_set(op.item.clone(), self)?;
-            }
-        }
-        let mut dels_with_relationships: HashMap<Arc<str>, Vec<Arc<dyn AnyItem>>> = HashMap::new();
-        for op in &dels {
-            if !op.options.prevent_relationship_updates {
-                dels_with_relationships
-                    .entry(op.item.entity_type().into())
-                    .or_default()
-                    .push(op.item.clone());
-            }
-        }
-        for (_, items) in dels_with_relationships {
-            self.relationship_manager.forward_del_batch(&items, self)?;
-        }
-
-        // Persist
-        for op in &sets {
-            if !op.options.prevent_persist {
-                self.produce_set_dyn(&op.item)?;
-            }
-        }
-        for op in &dels {
-            if !op.options.prevent_persist {
-                self.produce_del_dyn(&op.item)?;
-            }
-        }
-
-        Ok(sets.len() + dels.len())
+        Ok(applied)
     }
 
     fn ingest_buffer_for(&self, entity_type: Arc<str>) -> Arc<BufferedIngestType> {
@@ -1037,12 +1070,12 @@ impl CellServerCtx {
         let buffer = self.ingest_buffer_for(entity_type.clone());
         let should_schedule = {
             let Ok(mut state) = buffer.state.lock() else {
-                log::error!(
+                tracing::error!(
                     "Could not acquire ingest buffer lock for entity_type={}",
                     entity_type
                 );
                 if let Err(e) = self.apply_event_batch_immediate(events) {
-                    log::error!("Failed to apply buffered events for {}: {}", entity_type, e);
+                    tracing::error!("Failed to apply buffered events for {}: {}", entity_type, e);
                 }
                 return;
             };
@@ -1078,7 +1111,7 @@ impl CellServerCtx {
 
         let events = {
             let Ok(mut state) = buffer.state.lock() else {
-                log::error!(
+                tracing::error!(
                     "Could not acquire ingest buffer lock for flush entity_type={}",
                     entity_type
                 );
@@ -1093,7 +1126,7 @@ impl CellServerCtx {
             std::mem::take(&mut state.events)
         };
 
-        log::trace!(
+        tracing::trace!(
             target: "myko::server::context",
             "flush_buffered_events entity_type={} count={}",
             entity_type,
@@ -1103,7 +1136,7 @@ impl CellServerCtx {
         match self.apply_event_batch_immediate(events) {
             Ok(count) => count,
             Err(e) => {
-                log::error!("Failed to flush buffered events for {}: {}", entity_type, e);
+                tracing::error!("Failed to flush buffered events for {}: {}", entity_type, e);
                 0
             }
         }
@@ -1124,63 +1157,1199 @@ impl CellServerCtx {
     }
 
     // ─────────────────────────────────────────────────────────────────────────
+    // shared emission pipeline (batch is first-class; single is a thin wrapper)
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Replace loop-protection budgets for subsequently started root mutations.
+    pub fn set_causal_limits(&self, limits: CausalLimits) {
+        *self
+            .causal_limits
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = limits;
+    }
+
+    /// Snapshot lifetime causal-loop counters.
+    #[must_use]
+    pub fn causal_diagnostics(&self) -> CausalDiagnostics {
+        CausalDiagnostics {
+            roots: self.causal_counters.roots.load(Ordering::Relaxed),
+            derived_mutations: self
+                .causal_counters
+                .derived_mutations
+                .load(Ordering::Relaxed),
+            duplicate_transitions_suppressed: self
+                .causal_counters
+                .duplicate_transitions_suppressed
+                .load(Ordering::Relaxed),
+            budget_exhaustions: self
+                .causal_counters
+                .budget_exhaustions
+                .load(Ordering::Relaxed),
+            max_observed_depth: self
+                .causal_counters
+                .max_observed_depth
+                .load(Ordering::Relaxed),
+        }
+    }
+
+    fn transition_key(item: &dyn AnyItem, change: MEventType) -> TransitionKey {
+        let mut hasher = DefaultHasher::new();
+        match serde_json::to_vec(item) {
+            Ok(bytes) => bytes.hash(&mut hasher),
+            Err(_) => item.id().hash(&mut hasher),
+        }
+        TransitionKey {
+            entity_type: item.entity_type(),
+            id: item.id(),
+            operation: match change {
+                MEventType::SET => 1,
+                MEventType::DEL => 2,
+            },
+            content_hash: hasher.finish(),
+        }
+    }
+
+    #[allow(clippy::needless_pass_by_value)]
+    fn causal_error(item: &dyn AnyItem, message: String) -> PersistError {
+        PersistError {
+            entity_type: Arc::from(item.entity_type()),
+            message: format!("causal loop protection: {message}"),
+        }
+    }
+
+    fn enqueue_causal(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+        requested_mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let Some(first) = items.first().cloned() else {
+            return Ok(());
+        };
+        let limits = *self
+            .causal_limits
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        CAUSAL_STATES.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(state) = slot
+                .iter_mut()
+                .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
+            else {
+                return Err(Self::causal_error(
+                    first.as_ref(),
+                    "internal causal state was not initialized".to_string(),
+                ));
+            };
+            let mode = state.current_mode.unwrap_or(requested_mode);
+            let depth = state
+                .current_depth
+                .map_or(0, |depth| depth.saturating_add(1));
+            let mut chain = state.current_chain.clone();
+            chain.push(format!("{origin:?}:{change:?}@{depth}"));
+            if depth > limits.max_depth {
+                self.causal_counters
+                    .budget_exhaustions
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(Self::causal_error(
+                    first.as_ref(),
+                    format!(
+                        "root={} exceeded max depth {}: {}",
+                        state.root_tx,
+                        limits.max_depth,
+                        chain.join(" -> ")
+                    ),
+                ));
+            }
+
+            let mut accepted = Vec::with_capacity(items.len());
+            for item in items {
+                let key = Self::transition_key(item.as_ref(), change);
+                if !state.seen.insert(key) {
+                    self.causal_counters
+                        .duplicate_transitions_suppressed
+                        .fetch_add(1, Ordering::Relaxed);
+                    tracing::warn!(
+                        root_tx = %state.root_tx,
+                        entity_type = item.entity_type(),
+                        id = %item.id(),
+                        ?change,
+                        chain = %chain.join(" -> "),
+                        "suppressed repeated causal transition"
+                    );
+                    continue;
+                }
+                if depth > 0 {
+                    state.derived_count = state.derived_count.saturating_add(1);
+                    if state.derived_count > limits.max_derived_mutations {
+                        self.causal_counters
+                            .budget_exhaustions
+                            .fetch_add(1, Ordering::Relaxed);
+                        return Err(Self::causal_error(
+                            item.as_ref(),
+                            format!(
+                                "root={} exceeded derived mutation budget {}: {}",
+                                state.root_tx,
+                                limits.max_derived_mutations,
+                                chain.join(" -> ")
+                            ),
+                        ));
+                    }
+                    self.causal_counters
+                        .derived_mutations
+                        .fetch_add(1, Ordering::Relaxed);
+                }
+                accepted.push(item);
+            }
+            if !accepted.is_empty() {
+                self.causal_counters
+                    .max_observed_depth
+                    .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
+                state.queue.push_back(PendingMutation {
+                    kind: PendingMutationKind::Uniform {
+                        items: accepted,
+                        change,
+                    },
+                    origin,
+                    mode,
+                    depth,
+                    chain,
+                });
+            }
+            Ok(())
+        })
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn enqueue_causal_replace(
+        &self,
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        origin: Origin,
+        requested_mode: EdgeApplyMode,
+        expected_graph_generation: Option<u64>,
+    ) -> Result<(), PersistError> {
+        let Some(first) = upserts.first().or_else(|| deletes.first()).cloned() else {
+            return Ok(());
+        };
+        let limits = *self
+            .causal_limits
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        CAUSAL_STATES.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let Some(state) = slot
+                .iter_mut()
+                .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
+            else {
+                return Err(Self::causal_error(
+                    first.as_ref(),
+                    "internal causal state was not initialized".to_string(),
+                ));
+            };
+            let mode = state.current_mode.unwrap_or(requested_mode);
+            let depth = state
+                .current_depth
+                .map_or(0, |depth| depth.saturating_add(1));
+            let mut chain = state.current_chain.clone();
+            chain.push(format!("{origin:?}:REPLACE@{depth}"));
+            if depth > limits.max_depth {
+                self.causal_counters
+                    .budget_exhaustions
+                    .fetch_add(1, Ordering::Relaxed);
+                return Err(Self::causal_error(
+                    first.as_ref(),
+                    format!(
+                        "root={} exceeded max depth {}: {}",
+                        state.root_tx,
+                        limits.max_depth,
+                        chain.join(" -> ")
+                    ),
+                ));
+            }
+
+            let mut accept = |items: Vec<Arc<dyn AnyItem>>, change| {
+                let mut accepted = Vec::with_capacity(items.len());
+                for item in items {
+                    let key = Self::transition_key(item.as_ref(), change);
+                    if !state.seen.insert(key) {
+                        self.causal_counters
+                            .duplicate_transitions_suppressed
+                            .fetch_add(1, Ordering::Relaxed);
+                        tracing::warn!(
+                            root_tx = %state.root_tx,
+                            entity_type = item.entity_type(),
+                            id = %item.id(),
+                            ?change,
+                            chain = %chain.join(" -> "),
+                            "suppressed repeated causal transition"
+                        );
+                        continue;
+                    }
+                    if depth > 0 {
+                        state.derived_count = state.derived_count.saturating_add(1);
+                        if state.derived_count > limits.max_derived_mutations {
+                            self.causal_counters
+                                .budget_exhaustions
+                                .fetch_add(1, Ordering::Relaxed);
+                            return Err(Self::causal_error(
+                                item.as_ref(),
+                                format!(
+                                    "root={} exceeded derived mutation budget {}: {}",
+                                    state.root_tx,
+                                    limits.max_derived_mutations,
+                                    chain.join(" -> ")
+                                ),
+                            ));
+                        }
+                        self.causal_counters
+                            .derived_mutations
+                            .fetch_add(1, Ordering::Relaxed);
+                    }
+                    accepted.push(item);
+                }
+                Ok(accepted)
+            };
+            let deletes = accept(deletes, MEventType::DEL)?;
+            let upserts = accept(upserts, MEventType::SET)?;
+            if !upserts.is_empty() || !deletes.is_empty() {
+                self.causal_counters
+                    .max_observed_depth
+                    .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
+                state.queue.push_back(PendingMutation {
+                    kind: PendingMutationKind::Replace {
+                        upserts,
+                        deletes,
+                        expected_graph_generation,
+                    },
+                    origin,
+                    mode,
+                    depth,
+                    chain,
+                });
+            }
+            Ok(())
+        })
+    }
+
+    /// Submit into the active root's FIFO queue, or establish and drain a new
+    /// root transaction. Derived calls therefore never recurse through the
+    /// mutation pipeline.
+    fn submit_mutation(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        self.submit_mutation_mode(items, change, origin, EdgeApplyMode::Authoritative)
+    }
+
+    fn submit_mutation_mode(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        let nested = CAUSAL_STATES.with(|slot| {
+            slot.borrow()
+                .iter()
+                .any(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
+        });
+        if nested {
+            return self.enqueue_causal(items, change, origin, mode);
+        }
+        let needs_causal_root = origin.should_cascade(change)
+            && items.iter().any(|item| {
+                self.relationship_manager
+                    .coordinates(item.entity_type(), change)
+                    || self
+                        .graph_index
+                        .as_ref()
+                        .is_some_and(|graph| graph.coordinates(item.as_ref(), change))
+            });
+        if !needs_causal_root {
+            return if items.len() == 1 {
+                let Some(item) = items.into_iter().next() else {
+                    return Ok(());
+                };
+                self.emit_one(item, change, origin, mode)
+            } else {
+                self.emit_grouped(&items, change, origin, mode)
+            };
+        }
+
+        self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
+        CAUSAL_STATES.with(|slot| {
+            slot.borrow_mut().push(CausalState {
+                owner: self.causal_counters.clone(),
+                root_tx: Uuid::new_v4(),
+                queue: VecDeque::new(),
+                seen: HashSet::new(),
+                derived_count: 0,
+                current_depth: None,
+                current_mode: None,
+                current_chain: Vec::new(),
+            });
+        });
+
+        let result = (|| {
+            self.enqueue_causal(items, change, origin, mode)?;
+            loop {
+                let pending = CAUSAL_STATES.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let state = slot
+                        .iter_mut()
+                        .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))?;
+                    let pending = state.queue.pop_front();
+                    if let Some(pending) = &pending {
+                        state.current_depth = Some(pending.depth);
+                        state.current_mode = Some(pending.mode);
+                        state.current_chain.clone_from(&pending.chain);
+                    }
+                    pending
+                });
+                let Some(pending) = pending else { break };
+                match pending.kind {
+                    PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
+                        let Some(item) = items.into_iter().next() else {
+                            continue;
+                        };
+                        self.emit_one(item, change, pending.origin, pending.mode)?;
+                    }
+                    PendingMutationKind::Uniform { items, change } => {
+                        self.emit_grouped(&items, change, pending.origin, pending.mode)?;
+                    }
+                    PendingMutationKind::Replace {
+                        upserts,
+                        deletes,
+                        expected_graph_generation,
+                    } => {
+                        let applied = self.emit_replace_grouped(
+                            &upserts,
+                            &deletes,
+                            pending.origin,
+                            pending.mode,
+                            expected_graph_generation,
+                        )?;
+                        debug_assert!(applied, "unconditional replacement must apply");
+                    }
+                }
+            }
+            Ok(())
+        })();
+        CAUSAL_STATES.with(|slot| {
+            slot.borrow_mut()
+                .retain(|state| !Arc::ptr_eq(&state.owner, &self.causal_counters));
+        });
+        result
+    }
+
+    fn submit_replace_mutation(
+        &self,
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        let applied = self.submit_replace_mutation_inner(upserts, deletes, origin, None)?;
+        debug_assert!(applied, "unconditional replacement must apply");
+        Ok(())
+    }
+
+    fn submit_replace_mutation_inner(
+        &self,
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        origin: Origin,
+        expected_graph_generation: Option<u64>,
+    ) -> Result<bool, PersistError> {
+        if upserts.is_empty() && deletes.is_empty() {
+            return Ok(true);
+        }
+        if CAUSAL_STATES.with(|slot| {
+            slot.borrow()
+                .iter()
+                .any(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
+        }) {
+            if expected_graph_generation.is_some() {
+                return Ok(false);
+            }
+            self.enqueue_causal_replace(
+                upserts,
+                deletes,
+                origin,
+                EdgeApplyMode::Authoritative,
+                None,
+            )?;
+            return Ok(true);
+        }
+
+        self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
+        CAUSAL_STATES.with(|slot| {
+            slot.borrow_mut().push(CausalState {
+                owner: self.causal_counters.clone(),
+                root_tx: Uuid::new_v4(),
+                queue: VecDeque::new(),
+                seen: HashSet::new(),
+                derived_count: 0,
+                current_depth: None,
+                current_mode: None,
+                current_chain: Vec::new(),
+            });
+        });
+
+        let result = (|| {
+            self.enqueue_causal_replace(
+                upserts,
+                deletes,
+                origin,
+                EdgeApplyMode::Authoritative,
+                expected_graph_generation,
+            )?;
+            loop {
+                let pending = CAUSAL_STATES.with(|slot| {
+                    let mut slot = slot.borrow_mut();
+                    let state = slot
+                        .iter_mut()
+                        .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))?;
+                    let pending = state.queue.pop_front();
+                    if let Some(pending) = &pending {
+                        state.current_depth = Some(pending.depth);
+                        state.current_mode = Some(pending.mode);
+                        state.current_chain.clone_from(&pending.chain);
+                    }
+                    pending
+                });
+                let Some(pending) = pending else { break };
+                match pending.kind {
+                    PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
+                        let Some(item) = items.into_iter().next() else {
+                            continue;
+                        };
+                        self.emit_one(item, change, pending.origin, pending.mode)?;
+                    }
+                    PendingMutationKind::Uniform { items, change } => {
+                        self.emit_grouped(&items, change, pending.origin, pending.mode)?;
+                    }
+                    PendingMutationKind::Replace {
+                        upserts,
+                        deletes,
+                        expected_graph_generation,
+                    } => {
+                        let applied = self.emit_replace_grouped(
+                            &upserts,
+                            &deletes,
+                            pending.origin,
+                            pending.mode,
+                            expected_graph_generation,
+                        )?;
+                        if !applied {
+                            return Ok(false);
+                        }
+                    }
+                }
+            }
+            Ok(true)
+        })();
+        CAUSAL_STATES.with(|slot| {
+            slot.borrow_mut()
+                .retain(|state| !Arc::ptr_eq(&state.owner, &self.causal_counters));
+        });
+        result
+    }
+
+    /// Return the graph projection when this application registered graph metadata.
+    #[must_use]
+    pub const fn graph_index(&self) -> Option<&Arc<GraphIndex>> {
+        self.graph_index.as_ref()
+    }
+
+    /// Configure validation for one registered graph edge type.
+    ///
+    /// `Observe` retains ordinary mutations while recording diagnostics, so
+    /// existing item types can be introduced as edges without a flag day.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the edge type is not registered or the server has
+    /// no linked graph registrations.
+    pub fn set_edge_apply_mode<E: crate::graph::GraphEdge>(
+        &self,
+        mode: EdgeApplyMode,
+    ) -> anyhow::Result<()> {
+        self.graph_index
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no graph registrations are linked"))?
+            .set_apply_mode::<E>(mode)
+    }
+
+    /// Benchmark-only control context that removes graph coordination while
+    /// retaining every other server component.
+    #[cfg(feature = "bench")]
+    #[must_use]
+    pub fn without_graph_for_benchmark(mut self) -> Self {
+        self.graph_index = None;
+        self
+    }
+
+    fn graph_error(item: &dyn AnyItem, error: impl std::fmt::Display) -> PersistError {
+        PersistError {
+            entity_type: Arc::from(item.entity_type()),
+            message: format!("graph mutation rejected: {error}"),
+        }
+    }
+
+    fn canonical_item(&self, item: &dyn AnyItem) -> Option<Arc<dyn AnyItem>> {
+        self.registry
+            .get(item.entity_type())
+            .and_then(|store| store.get_value(&item.id()))
+    }
+
+    /// Single authoritative mutation. Reduction, projection, and persistence
+    /// enqueue occur inside one closed Hyphae batch; downstream effects drain
+    /// only after persistence has been attempted.
+    fn emit_one(
+        &self,
+        item: Arc<dyn AnyItem>,
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        let coordinated_graph = self
+            .graph_index
+            .as_ref()
+            .filter(|graph| graph.coordinates(item.as_ref(), change));
+        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        let old = self.canonical_item(item.as_ref());
+        let mut graph_cascades = Vec::new();
+        if let Some(graph) = coordinated_graph {
+            if change == MEventType::DEL {
+                graph_cascades = graph
+                    .endpoint_delete_plan(&crate::graph::EntityRef::new(
+                        item.entity_type(),
+                        item.id(),
+                    ))
+                    .map_err(|error| Self::graph_error(item.as_ref(), error))?
+                    .cascade_edges;
+            }
+            let new = (change == MEventType::SET).then_some(item.as_ref());
+            graph
+                .preflight(old.as_deref(), new, mode)
+                .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+        }
+
+        hyphae::batch(|| -> Result<(), PersistError> {
+            self.reduce_one(&item, change);
+            if let Some(graph) = coordinated_graph {
+                let new = (change == MEventType::SET).then_some(item.as_ref());
+                graph
+                    .apply(old.as_deref(), new)
+                    .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+            }
+            let persist_result = if origin.should_produce() {
+                match change {
+                    MEventType::SET => self.persist_set_dyn(&item),
+                    MEventType::DEL => self.persist_del_dyn(&item),
+                }
+            } else {
+                Ok(())
+            };
+            let watch_result = coordinated_graph
+                .filter(|graph| {
+                    graph.has_watch_subscribers()
+                        && graph.registration(item.entity_type()).is_some()
+                })
+                .map_or(Ok(()), |graph| {
+                    let new = (change == MEventType::SET).then(|| item.clone());
+                    graph
+                        .publish_watch_change(old.clone(), new)
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))
+                });
+            persist_result?;
+            watch_result
+        })?;
+
+        self.apply_effects(std::slice::from_ref(&item), change, origin, true)?;
+        let result = self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade);
+        drop(item);
+        result
+    }
+
+    /// Single-item store reduce — **no allocation**. Records the stat and applies
+    /// the store insert/remove for one item. Paired with
+    /// `apply_effects(slice::from_ref(&item), …)` by the single-item entry points
+    /// so a single mutation never allocates a Vec or groups by type.
+    fn reduce_one(&self, item: &Arc<dyn AnyItem>, change: MEventType) {
+        let entity_type = item.entity_type();
+        // Every SET/DEL entry point (typed set/del, batch_*, apply_event,
+        // set_dyn/del_dyn) funnels through here — the true root of a fanout
+        // cascade. One span here, discriminated by entity_type (bounded
+        // cardinality — never per-instance id), lets a span-based profiler
+        // (e.g. a tracing-Tracy layer) show the whole downstream
+        // `hyphae.fanout` subtree nested under one legible typed zone
+        // instead of an anonymous root.
+        let _span = tracing::trace_span!("myko.reduce", ty = entity_type, op = ?change).entered();
+        match change {
+            MEventType::SET => {
+                crate::server::entity_set_stats::record_set(entity_type);
+                self.registry
+                    .get_or_create(entity_type)
+                    .insert(item.id(), item.clone());
+                self.relationship_manager
+                    .release_ensure_reservation_for_item(item.as_ref());
+            }
+            MEventType::DEL => {
+                crate::server::entity_set_stats::record_del(entity_type);
+                self.registry.get_or_create(entity_type).remove(&item.id());
+            }
+        }
+    }
+
+    /// The batch emission path (first-class). Groups `items` by entity type,
+    /// applies one grouped store reduce per type (a single store diff each) for
+    /// **all** groups before any cascade runs, then runs the shared
+    /// `apply_effects` tail per (same-type) group.
+    ///
+    /// Every batch entry point and the wire-ingest path funnel through here. The
+    /// single-item entry points deliberately do **not** — they call
+    /// `reduce_one` + `apply_effects` directly to avoid the grouping/Vec cost.
+    #[allow(clippy::too_many_lines)]
+    fn emit_grouped(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        if items.is_empty() {
+            return Ok(());
+        }
+        let Some(first_item) = items.first() else {
+            return Ok(());
+        };
+
+        let mut by_type: std::collections::BTreeMap<&'static str, Vec<Arc<dyn AnyItem>>> =
+            std::collections::BTreeMap::new();
+        for item in items {
+            by_type
+                .entry(item.entity_type())
+                .or_default()
+                .push(item.clone());
+        }
+
+        let coordinated_graph = self.graph_index.as_ref().filter(|graph| {
+            by_type
+                .values()
+                .flatten()
+                .any(|item| graph.coordinates(item.as_ref(), change))
+        });
+        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        if change == MEventType::SET
+            && let Some(graph) = coordinated_graph
+        {
+            graph
+                .preflight_batch(items, mode)
+                .map_err(|error| Self::graph_error(first_item.as_ref(), error))?;
+        }
+
+        let mut old_by_key = HashMap::new();
+        let mut graph_cascades = Vec::new();
+        for group in by_type.values() {
+            for item in group {
+                let old = self.canonical_item(item.as_ref());
+                if let Some(graph) = coordinated_graph {
+                    if change == MEventType::DEL {
+                        graph_cascades.extend(
+                            graph
+                                .endpoint_delete_plan(&crate::graph::EntityRef::new(
+                                    item.entity_type(),
+                                    item.id(),
+                                ))
+                                .map_err(|error| Self::graph_error(item.as_ref(), error))?
+                                .cascade_edges,
+                        );
+                    }
+                    let new = (change == MEventType::SET).then_some(item.as_ref());
+                    graph
+                        .preflight(old.as_deref(), new, mode)
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                }
+                old_by_key.insert((item.entity_type(), item.id()), old);
+            }
+        }
+        let graph_watch_changes = coordinated_graph
+            .filter(|graph| graph.has_watch_subscribers())
+            .map_or_else(Vec::new, |graph| {
+                by_type
+                    .values()
+                    .flatten()
+                    .filter(|item| graph.registration(item.entity_type()).is_some())
+                    .map(|item| {
+                        let old = old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .cloned()
+                            .flatten();
+                        let new = (change == MEventType::SET).then(|| item.clone());
+                        (old, new)
+                    })
+                    .collect()
+            });
+
+        // Reduce: one store diff per type, across all groups, before any cascade
+        // (so the store is fully settled — load-bearing for transitive cascade).
+        //
+        // Wrapped in `hyphae::batch` so N distinct types' stores settle in one
+        // glitch-free drain instead of firing eagerly per type — but scoped to
+        // *only* this loop, not the `apply_effects` tail below. `by_type`
+        // guarantees each type's `diffs_cell` is set at most once in this loop,
+        // which is the invariant `batch`'s last-write-wins coalescing needs
+        // (`diffs_cell` carries diff *events*, not latest-value state, and
+        // isn't `no_coalesce`-stamped — two sets to the same one in one window
+        // silently drops the first). `apply_effects` runs after this batch has
+        // already drained, specifically because cascades recurse back into
+        // `emit_grouped` (e.g. `handle_belongs_to_cascade_batch` ->
+        // `publish_del_cascade_batch` -> `batch_del_dyn_with_origin` ->
+        // `emit_grouped`) and could touch a type already reduced in this same
+        // window — running effects outside the batch means that recursive call
+        // opens its own fresh window instead of joining (and colliding with)
+        // this one.
+        hyphae::batch(|| -> Result<(), PersistError> {
+            for (entity_type, group) in &by_type {
+                let store = self.registry.get_or_create(entity_type);
+                match change {
+                    MEventType::SET => {
+                        let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
+                            Vec::with_capacity(group.len());
+                        for item in group {
+                            crate::server::entity_set_stats::record_set(entity_type);
+                            entries.push((item.id(), item.clone()));
+                        }
+                        store.insert_many(entries);
+                    }
+                    MEventType::DEL => {
+                        let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
+                        for item in group {
+                            crate::server::entity_set_stats::record_del(entity_type);
+                            ids.push(item.id());
+                        }
+                        store.remove_many(ids);
+                    }
+                }
+            }
+
+            // Canonical state is now locally visible inside the closed batch.
+            // Keep projection and durability enqueue ahead of reactive drain.
+            let mutation_result = (|| -> Result<(), PersistError> {
+                for group in by_type.values() {
+                    for item in group {
+                        if let Some(graph) = coordinated_graph {
+                            let old = old_by_key
+                                .get(&(item.entity_type(), item.id()))
+                                .and_then(Option::as_deref);
+                            let new = (change == MEventType::SET).then_some(item.as_ref());
+                            graph
+                                .apply(old, new)
+                                .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                        }
+                        if origin.should_produce() {
+                            match change {
+                                MEventType::SET => self.persist_set_dyn(item)?,
+                                MEventType::DEL => self.persist_del_dyn(item)?,
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            })();
+            let watch_result = if graph_watch_changes.is_empty() {
+                Ok(())
+            } else if let Some(graph) = coordinated_graph {
+                graph
+                    .publish_watch_changes(graph_watch_changes)
+                    .map_err(|error| Self::graph_error(first_item.as_ref(), error))
+            } else {
+                Ok(())
+            };
+            mutation_result?;
+            watch_result
+        })?;
+
+        // Effects: search + cascade + produce, per same-type group.
+        for group in by_type.values() {
+            self.apply_effects(group, change, origin, true)?;
+        }
+        self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade)
+    }
+
+    /// Mixed final-state batch used by authoritative graph reconciliation.
+    /// Every entity type emits one `MapDiff::Batch`, even when that type has
+    /// both deletions and upserts.
+    #[allow(clippy::too_many_lines)]
+    fn emit_replace_grouped(
+        &self,
+        upserts: &[Arc<dyn AnyItem>],
+        deletes: &[Arc<dyn AnyItem>],
+        origin: Origin,
+        mode: EdgeApplyMode,
+        expected_graph_generation: Option<u64>,
+    ) -> Result<bool, PersistError> {
+        let Some(first_item) = upserts.first().or_else(|| deletes.first()) else {
+            return Ok(true);
+        };
+        let mut seen = HashSet::new();
+        for item in deletes.iter().chain(upserts) {
+            if !seen.insert((item.entity_type(), item.id())) {
+                return Err(Self::graph_error(
+                    item.as_ref(),
+                    "replacement batch contains the same entity ID more than once",
+                ));
+            }
+        }
+
+        let coordinated_graph = self.graph_index.as_ref().filter(|graph| {
+            deletes
+                .iter()
+                .any(|item| graph.coordinates(item.as_ref(), MEventType::DEL))
+                || upserts
+                    .iter()
+                    .any(|item| graph.coordinates(item.as_ref(), MEventType::SET))
+        });
+        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        if let (Some(graph), Some(expected)) = (coordinated_graph, expected_graph_generation)
+            && graph.generation() != expected
+        {
+            return Ok(false);
+        }
+        let mut old_by_key = HashMap::new();
+        let mut effective_deletes = Vec::with_capacity(deletes.len());
+        let mut graph_cascades = Vec::new();
+        for item in deletes {
+            let old = self.canonical_item(item.as_ref());
+            if old.is_none() {
+                old_by_key.insert((item.entity_type(), item.id()), None);
+                continue;
+            }
+            if let Some(graph) = coordinated_graph {
+                graph_cascades.extend(
+                    graph
+                        .endpoint_delete_plan(&crate::graph::EntityRef::new(
+                            item.entity_type(),
+                            item.id(),
+                        ))
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?
+                        .cascade_edges,
+                );
+            }
+            old_by_key.insert((item.entity_type(), item.id()), old);
+            effective_deletes.push(item.clone());
+        }
+        for item in upserts {
+            old_by_key.insert(
+                (item.entity_type(), item.id()),
+                self.canonical_item(item.as_ref()),
+            );
+        }
+        if let Some(graph) = coordinated_graph {
+            graph
+                .preflight_replace_batch(upserts, &effective_deletes, mode)
+                .map_err(|error| Self::graph_error(first_item.as_ref(), error))?;
+        }
+
+        let graph_watch_changes = coordinated_graph
+            .filter(|graph| graph.has_watch_subscribers())
+            .map_or_else(Vec::new, |graph| {
+                effective_deletes
+                    .iter()
+                    .filter(|item| graph.registration(item.entity_type()).is_some())
+                    .filter_map(|item| {
+                        old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .cloned()
+                            .flatten()
+                            .map(|old| (Some(old), None))
+                    })
+                    .chain(
+                        upserts
+                            .iter()
+                            .filter(|item| graph.registration(item.entity_type()).is_some())
+                            .map(|item| {
+                                let old = old_by_key
+                                    .get(&(item.entity_type(), item.id()))
+                                    .cloned()
+                                    .flatten();
+                                (old, Some(item.clone()))
+                            }),
+                    )
+                    .collect()
+            });
+
+        let mut by_type = std::collections::BTreeMap::<
+            &'static str,
+            (Vec<Arc<dyn AnyItem>>, Vec<Arc<dyn AnyItem>>),
+        >::new();
+        for item in &effective_deletes {
+            by_type
+                .entry(item.entity_type())
+                .or_default()
+                .0
+                .push(item.clone());
+        }
+        for item in upserts {
+            by_type
+                .entry(item.entity_type())
+                .or_default()
+                .1
+                .push(item.clone());
+        }
+
+        hyphae::batch(|| -> Result<(), PersistError> {
+            for (entity_type, (type_deletes, type_upserts)) in &by_type {
+                let store = self.registry.get_or_create(entity_type);
+                let mut changes =
+                    Vec::with_capacity(type_deletes.len().saturating_add(type_upserts.len()));
+                for item in type_deletes {
+                    let Some(old_value) = old_by_key
+                        .get(&(item.entity_type(), item.id()))
+                        .cloned()
+                        .flatten()
+                    else {
+                        continue;
+                    };
+                    crate::server::entity_set_stats::record_del(entity_type);
+                    changes.push(MapDiff::Remove {
+                        key: item.id(),
+                        old_value,
+                    });
+                }
+                for item in type_upserts {
+                    crate::server::entity_set_stats::record_set(entity_type);
+                    let key = item.id();
+                    changes.push(
+                        old_by_key
+                            .get(&(item.entity_type(), key.clone()))
+                            .cloned()
+                            .flatten()
+                            .map_or_else(
+                                || MapDiff::Insert {
+                                    key: key.clone(),
+                                    value: item.clone(),
+                                },
+                                |old_value| MapDiff::Update {
+                                    key: key.clone(),
+                                    old_value,
+                                    new_value: item.clone(),
+                                },
+                            ),
+                    );
+                }
+                store.apply_batch(changes);
+            }
+
+            for item in &effective_deletes {
+                if let Some(graph) = coordinated_graph {
+                    let old = old_by_key
+                        .get(&(item.entity_type(), item.id()))
+                        .and_then(Option::as_deref);
+                    graph
+                        .apply(old, None)
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                }
+                if origin.should_produce() {
+                    self.persist_del_dyn(item)?;
+                }
+            }
+            for item in upserts {
+                if let Some(graph) = coordinated_graph {
+                    let old = old_by_key
+                        .get(&(item.entity_type(), item.id()))
+                        .and_then(Option::as_deref);
+                    graph
+                        .apply(old, Some(item.as_ref()))
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                }
+                if origin.should_produce() {
+                    self.persist_set_dyn(item)?;
+                }
+            }
+            if !graph_watch_changes.is_empty()
+                && let Some(graph) = coordinated_graph
+            {
+                graph
+                    .publish_watch_changes(graph_watch_changes)
+                    .map_err(|error| Self::graph_error(first_item.as_ref(), error))?;
+            }
+            Ok(())
+        })?;
+
+        for (type_deletes, type_upserts) in by_type.values() {
+            self.apply_effects(type_deletes, MEventType::DEL, origin, true)?;
+            self.apply_effects(type_upserts, MEventType::SET, origin, true)?;
+        }
+        self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade)?;
+        Ok(true)
+    }
+
+    /// Shared post-reduce tail: search index, relationship cascade (gated by
+    /// `origin`), and produce (gated by `origin`).
+    ///
+    /// Operates on a slice of items **of the same entity type** whose store
+    /// reduce has already run. Single-item callers pass `slice::from_ref(&item)`
+    /// (zero alloc); `emit_grouped` passes each type-group. The type-erased
+    /// produce path is equivalent to the typed one (`MEvent::from_item` ≡
+    /// `MEvent::set_from_value(item.to_value())`, modulo the fresh `created_at`/`tx`).
+    fn apply_effects(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+        persister_already_enqueued: bool,
+    ) -> Result<(), PersistError> {
+        // Separate from `myko.reduce` so the relationship-cascade/persist
+        // tail is distinguishable from the direct state-cell write in a
+        // profiler trace. `items` is always a single entity-type group by
+        // the time it reaches here (see the doc comment above).
+        let _span = tracing::trace_span!(
+            "myko.apply_effects",
+            ty = items.first().map_or("empty", |i| i.entity_type()),
+            op = ?change,
+        )
+        .entered();
+
+        // Search: index searchable fields.
+        match change {
+            MEventType::SET => {
+                for item in items {
+                    self.search_index.index_item(item);
+                }
+            }
+            MEventType::DEL => {
+                for item in items {
+                    self.search_index
+                        .remove_entity(item.entity_type(), &item.id());
+                }
+            }
+        }
+
+        // Relationships: run cascades unless this origin must not descend.
+        if origin.should_cascade(change) {
+            match change {
+                MEventType::SET => {
+                    self.relationship_manager.forward_set_batch(items, self)?;
+                }
+                MEventType::DEL => self.relationship_manager.forward_del_batch(items, self)?,
+            }
+        }
+
+        // Produce after reduce/cascade. Batch paths enqueue the durable side
+        // before their reactive drain, so only the saga sink remains here.
+        if origin.should_produce() {
+            match change {
+                MEventType::SET => {
+                    for item in items {
+                        if persister_already_enqueued {
+                            self.send_set_to_sink(item);
+                        } else {
+                            self.produce_set_dyn(item)?;
+                        }
+                    }
+                }
+                MEventType::DEL => {
+                    for item in items {
+                        if persister_already_enqueued {
+                            self.send_del_to_sink(item);
+                        } else {
+                            self.produce_del_dyn(item)?;
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // durable backend production (private)
     // ─────────────────────────────────────────────────────────────────────────
 
-    fn produce_set<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
-            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::from_item(entity, MEventType::SET, &self.host_id.to_string());
-            let _ = sink.send(event);
+    /// Fan one produced event out to the durable persister and/or the saga
+    /// event sink. `build` is the change-type-specific event constructor
+    /// (SET vs DEL); it is invoked ONCE per call — event construction
+    /// serializes the whole item into a JSON tree, so the persister/sink pair
+    /// shares a single build and clones the cheaper `MEvent` for the sink.
+    fn produce_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        build: impl Fn() -> MEvent,
+    ) -> Result<(), PersistError> {
+        match (
+            self.persisters.resolve(item.entity_type()),
+            &self.event_sink,
+        ) {
+            (None, None) => {}
+            (Some(persister), None) => persister.persist(build())?,
+            (None, Some(sink)) => {
+                let _ = sink.send(build());
+            }
+            (Some(persister), Some(sink)) => {
+                let event = build();
+                let for_sink = event.clone();
+                persister.persist(event)?;
+                let _ = sink.send(for_sink);
+            }
         }
         Ok(())
     }
 
-    fn produce_del<T: Eventable>(&self, entity: &T) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(T::entity_name_static()) {
-            let event = MEvent::del(entity, &self.host_id.to_string());
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::del(entity, &self.host_id.to_string());
-            let _ = sink.send(event);
+    fn persist_dyn(
+        &self,
+        item: &Arc<dyn AnyItem>,
+        build: impl FnOnce() -> MEvent,
+    ) -> Result<(), PersistError> {
+        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
+            persister.persist(build())?;
         }
         Ok(())
+    }
+
+    fn send_dyn_to_sink(&self, build: impl FnOnce() -> MEvent) {
+        if let Some(sink) = &self.event_sink {
+            let _ = sink.send(build());
+        }
+    }
+
+    fn persist_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.persist_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
+    }
+
+    fn persist_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
+        self.persist_dyn(item, || {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        })
+    }
+
+    fn send_del_to_sink(&self, item: &Arc<dyn AnyItem>) {
+        self.send_dyn_to_sink(|| MEvent::del_from_any(item, &self.host_id_str));
+    }
+
+    fn send_set_to_sink(&self, item: &Arc<dyn AnyItem>) {
+        self.send_dyn_to_sink(|| {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        });
     }
 
     fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::del_from_any(item, &self.host_id.to_string());
-            let _ = sink.send(event);
-        }
-        Ok(())
+        self.produce_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
     }
 
     fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            let event = MEvent::set_from_value(
-                item.entity_type(),
-                item.to_value(),
-                &self.host_id.to_string(),
-            );
-            persister.persist(event)?;
-        }
-        if let Some(sink) = &self.event_sink {
-            let event = MEvent::set_from_value(
-                item.entity_type(),
-                item.to_value(),
-                &self.host_id.to_string(),
-            );
-            let _ = sink.send(event);
-        }
-        Ok(())
+        self.produce_dyn(item, || {
+            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+        })
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -1208,26 +2377,35 @@ impl CellServerCtx {
             + Sync
             + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
         let untyped = self.query_map_untyped(query, request);
-        if let Some(entry) = self.query_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
-            })
-        {
-            return typed;
-        }
-        // Concurrent cache sweep may have evicted the entry — re-insert and retry
-        self.query_cache
-            .insert(key.clone(), MapCacheEntry::new(&untyped));
-        let entry = self.query_cache.get(&key).expect("just re-inserted");
-        entry
-            .value()
-            .get_or_create_typed(|source| {
-                typed_map_from_any_item_with_typed_id(source, "CellServerCtx::query_map")
-            })
-            .expect("typed projection from freshly inserted entry")
+        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+            typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
+        })
+    }
+
+    /// Reactive filter parameters: `filter_cell` replaces a value-based
+    /// `GetXsByQuery` with a live `Cell`, so a filter derived from other
+    /// cells no longer needs a `switch_map` wrapper — see
+    /// `query::query_live` for the mechanics
+    /// (incremental bucket-diffing on `In`/`Eq` field changes, scoped
+    /// rescan on `Range`/`Contains` changes, never a graph teardown).
+    ///
+    /// Deliberately uncached, unlike `query_map`'s typed-projection cache:
+    /// a `Cell` is object identity, not a value, so there's no meaningful
+    /// key to share a projection under — each call site gets its own
+    /// independent graph node (spec §5: "no value-identity cache sharing").
+    pub fn query_live<F>(
+        &self,
+        filter_cell: impl Watchable<F>,
+    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
+    where
+        F: LiveFilterQuery,
+        F::Item: WithTypedId,
+    {
+        let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
+        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -1243,25 +2421,11 @@ impl CellServerCtx {
         Q::Item:
             Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         let untyped = self.query_map_untyped(query, request);
-        if let Some(entry) = self.query_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
-            })
-        {
-            return typed;
-        }
-        // Concurrent cache sweep may have evicted the entry — re-insert and retry
-        self.query_cache
-            .insert(key.clone(), MapCacheEntry::new(&untyped));
-        let entry = self.query_cache.get(&key).expect("just re-inserted");
-        entry
-            .value()
-            .get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::query_map_by_str")
-            })
-            .expect("typed projection from freshly inserted entry")
+        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+            typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
+        })
     }
 
     /// Run a reactive query.
@@ -1275,9 +2439,9 @@ impl CellServerCtx {
     /// use std::sync::Arc;
     /// use myko::entities::server::GetPeerServers;
     /// use myko::request::RequestContext;
-    /// use myko::server::CellServerCtx;
+    /// use myko::server::MykoServerContext;
     ///
-    /// fn demo(ctx: &CellServerCtx, req: Arc<RequestContext>) {
+    /// fn demo(ctx: &MykoServerContext, req: Arc<RequestContext>) {
     ///     let _peer_servers = ctx.query_map_untyped(GetPeerServers {}, req);
     ///     // _peer_servers is CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>
     /// }
@@ -1287,47 +2451,119 @@ impl CellServerCtx {
         Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
+        self.compute_or_cache(&key, &self.query_cache, || {
+            let query_req = QueryRequest::with_tx(query, request.tx.clone());
+            let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
+            Q::cell_factory(
+                any_query,
+                self.registry.clone(),
+                request,
+                Some(Arc::new(self.clone())),
+            )
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    query_id = %Q::query_id_static(),
+                    %error,
+                    "typed query factory failed; returning an empty query"
+                );
+                CellMap::new().lock()
+            })
+        })
+    }
 
+    /// Fast-path lookup shared by the query and view untyped-map caches:
+    /// return the live shared map if the weak ref still upgrades, otherwise
+    /// evict the dead entry and report a miss.
+    fn try_get_cached(
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        key: &str,
+    ) -> Option<FilteredCellMap> {
+        let existing = cache.get(key)?;
+        if let Some(shared) = existing.value().get() {
+            return Some(shared);
+        }
+        drop(existing);
+        cache.remove(key);
+        None
+    }
+
+    /// Shared typed-projection retrieval for `query_map` and `query_map_by_str`.
+    ///
+    /// Returns the cached typed projection under `key`; if a concurrent cache
+    /// sweep evicted the untyped entry between computing `untyped` and this
+    /// lookup, re-inserts it from `untyped` and retries. `project` builds the
+    /// typed map from the untyped source and is the only per-caller difference.
+    fn typed_projection<K, V>(
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        key: &str,
+        untyped: &FilteredCellMap,
+        project: impl Fn(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
+    ) -> CellMap<K, V, CellImmutable>
+    where
+        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
+        V: hyphae::traits::CellValue + 'static,
+    {
+        if let Some(entry) = cache.get(key)
+            && let Some(typed) = entry.value().get_or_create_typed(&project)
+        {
+            return typed;
+        }
+        // Concurrent cache sweep may have evicted the entry — re-insert and retry
+        cache.insert(key.to_owned(), MapCacheEntry::new(untyped));
+        if let Some(entry) = cache.get(key)
+            && let Some(typed) = entry.value().get_or_create_typed(&project)
+        {
+            return typed;
+        }
+        tracing::error!(%key, "typed projection cache entry disappeared after insertion");
+        project(untyped.clone())
+    }
+
+    /// Compute-gate + double-checked caching shared by `query_map_untyped` and
+    /// `view_map_untyped`. Returns the cached untyped map on a fast-path or
+    /// post-gate hit; otherwise runs `build` exactly once under the per-key
+    /// compute gate, caches the result, and releases the gate.
+    ///
+    /// `build` is the only per-caller difference — each caller keeps its exact
+    /// request-wrap and `cell_factory` invocation (queries pass
+    /// `Some(server_ctx)`, views pass `server_ctx`) inside the closure.
+    fn compute_or_cache(
+        &self,
+        key: &str,
+        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
+        compute: impl FnOnce() -> FilteredCellMap,
+    ) -> FilteredCellMap {
         // Fast path
-        if let Some(cell) = self.try_get_cached_query(&key) {
+        if let Some(cell) = Self::try_get_cached(cache, key) {
             return cell;
         }
 
         let gate = self
             .compute_gates
-            .entry(key.clone())
+            .entry(key.to_string())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
-        let _lock = gate.lock().unwrap();
+        let _lock = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check after gate
-        if let Some(cell) = self.try_get_cached_query(&key) {
+        if let Some(cell) = Self::try_get_cached(cache, key) {
             return cell;
         }
 
-        let query_req = QueryRequest::with_tx(query, request.tx.clone());
-        let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
-
-        let built = Q::cell_factory(
-            any_query,
-            self.registry.clone(),
-            request,
-            Some(Arc::new(self.clone())),
-        )
-        .expect("query cell factory should not fail for typed query");
-        self.query_cache.insert(key, MapCacheEntry::new(&built));
-        built
-    }
-
-    fn try_get_cached_query(&self, key: &str) -> Option<FilteredCellMap> {
-        let existing = self.query_cache.get(key)?;
-        if let Some(shared) = existing.value().get() {
-            return Some(shared);
-        }
-        drop(existing);
-        self.query_cache.remove(key);
-        None
+        let computed = compute();
+        cache.insert(key.to_string(), MapCacheEntry::new(&computed));
+        // The gate's only job was deduping concurrent first-computation; once
+        // the cache entry above is visible, any racing caller's re-check will
+        // hit it directly, gate or no gate. Removing it here — rather than
+        // never, which is a compute_gates memory leak that grows with every
+        // distinct query/param combination ever computed — is safe regardless
+        // of ordering relative to `_lock`'s drop, since a fresh gate + a cache
+        // hit on re-check behaves identically to blocking on the old gate.
+        self.compute_gates.remove(key);
+        computed
     }
 
     /// Build a reactive view cell map (type-erased for framework internals).
@@ -1336,56 +2572,31 @@ impl CellServerCtx {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-
-        // Fast path
-        if let Some(cell) = self.try_get_cached_view(&key) {
-            return cell;
-        }
-
-        let gate = self
-            .compute_gates
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
-            .clone();
-        let _lock = gate.lock().unwrap();
-
-        // Re-check after gate
-        if let Some(cell) = self.try_get_cached_view(&key) {
-            return cell;
-        }
-
-        let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
-        let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
-
-        let built = V::cell_factory(
-            any_view,
-            self.registry.clone(),
-            request,
-            Arc::new(self.clone()),
-        )
-        .expect("view cell factory should not fail for typed view");
-        self.view_cache.insert(key, MapCacheEntry::new(&built));
-        built
-    }
-
-    fn try_get_cached_view(&self, key: &str) -> Option<FilteredViewCellMap> {
-        let existing = self.view_cache.get(key)?;
-        if let Some(shared) = existing.value().get() {
-            return Some(shared);
-        }
-        drop(existing);
-        self.view_cache.remove(key);
-        None
-    }
-
-    /// Back-compat alias for type-erased view map.
-    pub fn view_map<V>(&self, view: V, request: Arc<RequestContext>) -> FilteredViewCellMap
-    where
-        V: ViewFactory + Clone + Send + Sync + 'static,
-        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
-    {
-        self.view_map_untyped(view, request)
+        let key = Self::cache_key_with_scope(
+            "view",
+            V::view_id_static().as_ref(),
+            &view,
+            &request,
+            V::request_cache_scope(),
+        );
+        self.compute_or_cache(&key, &self.view_cache, || {
+            let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
+            let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
+            V::cell_factory(
+                any_view,
+                self.registry.clone(),
+                request,
+                Arc::new(self.clone()),
+            )
+            .unwrap_or_else(|error| {
+                tracing::error!(
+                    view_id = %V::view_id_static(),
+                    %error,
+                    "typed view factory failed; returning an empty view"
+                );
+                CellMap::new().lock()
+            })
+        })
     }
 
     /// Build a typed reactive view cell map.
@@ -1394,59 +2605,26 @@ impl CellServerCtx {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = self.cache_key("view", V::view_id_static().as_ref(), &view, &request);
-        let _untyped = self.view_map_untyped(view, request);
+        let key = Self::cache_key_with_scope(
+            "view",
+            V::view_id_static().as_ref(),
+            &view,
+            &request,
+            V::request_cache_scope(),
+        );
+        let untyped = self.view_map_untyped(view, request);
         if let Some(entry) = self.view_cache.get(&key)
             && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "CellServerCtx::view")
+                typed_map_arc_from_any_item(source, "MykoServerContext::view")
             })
         {
             return typed;
         }
-        unreachable!("view_map_untyped just populated the cache")
-    }
-
-    /// Get a one-shot typed entity snapshot by id.
-    pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        let store = self.registry.get_or_create(T::entity_name_static());
-        let map_key = id.map_key();
-        let item = store.get_value(&map_key)?;
-        Some(downcast_any_item_arc::<T>(
-            &item,
-            "CellServerCtx::entity_snapshot",
-        ))
-    }
-
-    /// Get one-shot typed entity snapshots for an item type.
-    pub fn entity_snapshots<T>(&self) -> Vec<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        let store = self.registry.get_or_create(T::entity_name_static());
-        store
-            .snapshot()
-            .into_iter()
-            .map(|(_, item)| downcast_any_item_arc::<T>(&item, "CellServerCtx::entity_snapshots"))
-            .collect()
-    }
-
-    /// Get one-shot typed entity snapshots for the provided ids.
-    pub fn entity_snapshots_by_id<T>(
-        &self,
-        ids: impl IntoIterator<Item = <T as WithTypedId>::Id>,
-    ) -> Vec<Arc<T>>
-    where
-        T: Eventable + WithTypedId + Send + Sync + 'static,
-        <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
-    {
-        ids.into_iter()
-            .filter_map(|id| self.entity_snapshot::<T>(&id))
-            .collect()
+        tracing::error!(
+            view_id = %V::view_id_static(),
+            "view cache entry disappeared after construction; using an uncached projection"
+        );
+        typed_map_arc_from_any_item(untyped, "MykoServerContext::view fallback")
     }
 
     /// Run a one-shot (non-reactive) query.
@@ -1462,9 +2640,7 @@ impl CellServerCtx {
         let query_item_type = Q::query_item_type_static();
         let store = self.registry.get_or_create(&query_item_type);
 
-        let query_context = Arc::new(QueryContext {
-            req: request.clone(),
-        });
+        let query_context = Arc::new(QueryContext { req: request });
         let query = Arc::new(query);
 
         store
@@ -1472,8 +2648,8 @@ impl CellServerCtx {
             .into_iter()
             .filter_map(|(_, item)| {
                 let typed_item =
-                    downcast_any_item_arc::<Q::Item>(&item, "CellServerCtx::query_snapshot");
-                let ctx = QueryTestCtx {
+                    downcast_any_item_arc::<Q::Item>(&item, "MykoServerContext::query_snapshot")?;
+                let ctx = QueryTestContext {
                     item: typed_item.clone(),
                     query: query.clone(),
                     query_context: query_context.clone(),
@@ -1495,13 +2671,19 @@ impl CellServerCtx {
     where
         R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
     {
-        let key = self.cache_key("report", report.report_id().as_ref(), &report, &request);
+        let key = Self::cache_key_with_scope(
+            "report",
+            report.report_id().as_ref(),
+            &report,
+            &request,
+            R::request_cache_scope(),
+        );
         let report_id = report.report_id();
 
         // Fast path: cache hit with live cell.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
             crate::server::report_cache_stats::record_hit(&report_id);
-            log::trace!(
+            tracing::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache HIT report_id={} key={}",
                 report_id,
@@ -1517,12 +2699,14 @@ impl CellServerCtx {
             .entry(key.clone())
             .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
             .clone();
-        let _lock = gate.lock().unwrap();
+        let _lock = gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
             crate::server::report_cache_stats::record_hit_after_gate(&report_id);
-            log::trace!(
+            tracing::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache HIT_AFTER_GATE report_id={} key={}",
                 report_id,
@@ -1534,10 +2718,10 @@ impl CellServerCtx {
         // Emit MISS_COMPUTE *before* compute() so the analyze pass can correlate
         // the miss with the work that follows even if compute panics or hangs.
         // Payload is only serialized when the trace target is enabled.
-        if log::log_enabled!(target: "myko::server::context::report_cache", log::Level::Trace) {
+        if tracing::enabled!(target: "myko::server::context::report_cache", tracing::Level::TRACE) {
             let payload = serde_json::to_string(&report)
                 .unwrap_or_else(|e| format!("<serialize error: {e}>"));
-            log::trace!(
+            tracing::trace!(
                 target: "myko::server::context::report_cache",
                 "report_cache MISS_COMPUTE report_id={} key={} payload={}",
                 report_id,
@@ -1546,13 +2730,31 @@ impl CellServerCtx {
             );
         }
 
+        // Bounded cardinality (one name per report *type*, not per invocation),
+        // matching the `myko.reduce`/`myko.command` spans — this is the one-time
+        // cache-miss materialization, not a per-subscriber-update hot path.
+        let _span = tracing::trace_span!("myko.report", report = report_id.as_ref()).entered();
+        crate::server::dispatch_metrics::record_report(report_id.as_ref(), request.origin());
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
         // The trait returns `impl Pipeline<...>`; materialize once here so the
         // cache and downstream consumers get a concrete `Cell`. This is the only
         // materialization per report, regardless of how deep the inner chain is.
         let built = report.compute(nested_ctx).materialize();
+        drop(report);
+        // Named by report id (bounded cardinality — one name per report
+        // *type*, not per invocation) so hyphae's `hyphae.fanout` span
+        // (under the `profiling` feature) surfaces `cell.name` instead of
+        // being anonymous. `Cell<T, CellImmutable>::with_name` is available
+        // post-materialize (unlike `CellMap`, which only exposes it pre-lock
+        // — query/view result maps can't be named at this seam the same way).
+        #[cfg(feature = "profiling")]
+        let built = built.with_name(report_id.as_ref());
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
+        // See the matching comment in `query_map_untyped` — the gate is only
+        // needed to dedupe concurrent first-computation, not after the cache
+        // entry above is visible.
+        self.compute_gates.remove(&key);
 
         crate::server::report_cache_stats::record_miss(&report_id);
 
@@ -1579,8 +2781,10 @@ impl CellServerCtx {
         None
     }
 
+    #[must_use]
     pub fn new_server_transaction(&self) -> Arc<RequestContext> {
         Arc::new(RequestContext {
+            auth: None,
             tx: Arc::<str>::from(Uuid::new_v4().to_string()),
             client_id: None,
             lineage: vec![],
@@ -1591,30 +2795,37 @@ impl CellServerCtx {
     }
 }
 
-impl std::fmt::Debug for CellServerCtx {
+impl std::fmt::Debug for MykoServerContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CellServerCtx").finish()
+        f.debug_struct("MykoServerContext").finish()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    };
 
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::CellServerCtx;
+    use super::{MykoServerContext, MykoServerRuntime};
     use crate::{
         common::with_id::WithId,
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hyphae::Gettable,
+        hyphae::{Gettable, Materialize, ReactiveKeys},
         search::SearchIndex,
-        server::{HandlerRegistry, RelationshipManager, persister::PersisterRouter},
+        server::{
+            HandlerRegistry, PersistError, Persister, RelationshipManager,
+            persister::PersisterRouter,
+        },
         store::StoreRegistry,
+        test_util::scheduler_test_serial,
         wire::{MEvent, MEventType},
     };
 
@@ -1643,8 +2854,7 @@ mod tests {
             other
                 .as_any()
                 .downcast_ref::<Self>()
-                .map(|typed| self == typed)
-                .unwrap_or(false)
+                .is_some_and(|typed| self == typed)
         }
     }
 
@@ -1659,7 +2869,9 @@ mod tests {
             parse: BufferedTestItem::parse,
             parse_bytes: BufferedTestItem::parse_bytes,
             serialize_json: |any| {
-                let typed = any.as_any().downcast_ref::<BufferedTestItem>().unwrap();
+                let typed = any.as_any().downcast_ref::<BufferedTestItem>().ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::other("BufferedTestItem type mismatch"))
+                })?;
                 ::serde_json::value::to_raw_value(typed)
             },
         }
@@ -1697,8 +2909,7 @@ mod tests {
             other
                 .as_any()
                 .downcast_ref::<Self>()
-                .map(|typed| self == typed)
-                .unwrap_or(false)
+                .is_some_and(|typed| self == typed)
         }
     }
 
@@ -1713,28 +2924,369 @@ mod tests {
             parse: ImmediateTestItem::parse,
             parse_bytes: ImmediateTestItem::parse_bytes,
             serialize_json: |any| {
-                let typed = any.as_any().downcast_ref::<ImmediateTestItem>().unwrap();
+                let typed = any.as_any().downcast_ref::<ImmediateTestItem>().ok_or_else(|| {
+                    serde_json::Error::io(std::io::Error::other("ImmediateTestItem type mismatch"))
+                })?;
                 ::serde_json::value::to_raw_value(typed)
             },
         }
     }
 
-    fn make_ctx() -> CellServerCtx {
-        CellServerCtx::new(
+    fn make_ctx() -> MykoServerContext {
+        MykoServerContext::new(
             Uuid::new_v4(),
             Arc::new(StoreRegistry::new()),
             Arc::new(HandlerRegistry::new()),
             Arc::new(RelationshipManager::new()),
             Arc::new(PersisterRouter::default()),
             Arc::new(SearchIndex::new()),
-            Arc::new(dashmap::DashMap::new()),
-            None,
-            None,
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
         )
+    }
+
+    #[derive(Clone, Copy)]
+    enum ForwardMutation {
+        Set,
+        Replace,
+    }
+
+    struct ForwardingPersister {
+        destination: MykoServerContext,
+        mutation: ForwardMutation,
+    }
+
+    impl Persister for ForwardingPersister {
+        fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
+            let item = ImmediateTestItem {
+                id: "forwarded".into(),
+                value: 2,
+            };
+            match self.mutation {
+                ForwardMutation::Set => self.destination.set(&item),
+                ForwardMutation::Replace => {
+                    let item: Arc<dyn AnyItem> = Arc::new(item);
+                    self.destination.replace_batch_any([item], [])
+                }
+            }
+        }
+    }
+
+    fn nested_server_mutation(mutation: ForwardMutation) {
+        let _serial = scheduler_test_serial();
+        let destination = make_ctx();
+        let registry = Arc::new(StoreRegistry::new());
+        let mut persister = PersisterRouter::default();
+        persister.set_default(Some(Arc::new(ForwardingPersister {
+            destination: destination.clone(),
+            mutation,
+        })));
+        let source = MykoServerContext::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(persister),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        );
+        assert!(
+            source
+                .replace_batch_any([immediate_item("source", 1)], [])
+                .is_ok()
+        );
+        let destination_items = destination.registry.get_or_create("ImmediateTestItem");
+        assert!(
+            destination_items
+                .get(&Arc::from("forwarded"))
+                .materialize()
+                .get()
+                .is_some(),
+            "nested mutation must reach its destination server"
+        );
+        let source_items = registry.get_or_create("ImmediateTestItem");
+        assert!(
+            source_items
+                .get(&Arc::from("source"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+        assert!(
+            source_items
+                .get(&Arc::from("forwarded"))
+                .materialize()
+                .get()
+                .is_none(),
+            "a foreign server's mutation must not enter the source queue"
+        );
+        assert_eq!(source.causal_diagnostics().roots, 1);
+    }
+
+    #[test]
+    fn nested_server_set_uses_destination_causal_queue() {
+        nested_server_mutation(ForwardMutation::Set);
+    }
+
+    #[test]
+    fn nested_server_replace_uses_destination_causal_queue() {
+        nested_server_mutation(ForwardMutation::Replace);
+    }
+
+    fn immediate_item(id: &str, value: i32) -> Arc<dyn AnyItem> {
+        Arc::new(ImmediateTestItem {
+            id: Arc::from(id),
+            value,
+        })
+    }
+
+    #[test]
+    fn reactive_writes_keep_their_server_context() {
+        let _serial = scheduler_test_serial();
+        for replace in [false, true] {
+            let source = make_ctx();
+            let receiver = Arc::new(make_ctx());
+            let store = source.registry.get_or_create("ImmediateTestItem");
+            let fired = Arc::new(AtomicBool::new(false));
+            let fired_callback = fired.clone();
+            let receiver_callback = receiver.clone();
+            let source_callback = store.clone();
+            let _subscription = store.subscribe_keys(move |_| {
+                if source_callback.snapshot().is_empty()
+                    || fired_callback.swap(true, Ordering::SeqCst)
+                {
+                    return;
+                }
+                let item = ImmediateTestItem {
+                    id: Arc::from("receiver"),
+                    value: 2,
+                };
+                if replace {
+                    let item_arc: Arc<dyn AnyItem> = Arc::new(item);
+                    assert!(
+                        receiver_callback.replace_batch_any([item_arc], []).is_ok(),
+                        "receiver replacement"
+                    );
+                } else {
+                    assert!(receiver_callback.set(&item).is_ok(), "receiver write");
+                }
+            });
+            assert!(
+                source
+                    .replace_batch_any([immediate_item("source", 1)], [],)
+                    .is_ok(),
+                "source replacement"
+            );
+            assert!(fired.load(Ordering::SeqCst));
+            assert_eq!(
+                store.snapshot().len(),
+                1,
+                "receiver data entered source store"
+            );
+            assert_eq!(
+                receiver
+                    .registry
+                    .get("ImmediateTestItem")
+                    .map_or(0, |store| store.snapshot().len()),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn cross_context_reentry_keeps_the_outer_causal_queue() {
+        let _serial = scheduler_test_serial();
+        let source = make_ctx();
+        let receiver = Arc::new(make_ctx());
+        let source_store = source.registry.get_or_create("ImmediateTestItem");
+        let receiver_store = receiver.registry.get_or_create("ImmediateTestItem");
+        let source_callback = source.clone();
+        let receiver_snapshot = receiver_store.clone();
+        let returned = Arc::new(AtomicBool::new(false));
+        let returned_callback = returned.clone();
+        let _receiver_subscription = receiver_store.subscribe_keys(move |_| {
+            if receiver_snapshot.snapshot().is_empty()
+                || returned_callback.swap(true, Ordering::SeqCst)
+            {
+                return;
+            }
+            assert!(
+                source_callback
+                    .set(&ImmediateTestItem {
+                        id: Arc::from("returned"),
+                        value: 3,
+                    })
+                    .is_ok(),
+                "return to source context"
+            );
+        });
+        let sent = Arc::new(AtomicBool::new(false));
+        let source_snapshot = source_store.clone();
+        let receiver_callback = receiver.clone();
+        let _source_subscription = source_store.subscribe_keys(move |_| {
+            if source_snapshot.snapshot().is_empty() || sent.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            assert!(
+                receiver_callback
+                    .replace_batch_any([immediate_item("receiver", 2)], [],)
+                    .is_ok(),
+                "nested receiver root"
+            );
+        });
+        assert!(
+            source
+                .replace_batch_any([immediate_item("source", 1)], [],)
+                .is_ok(),
+            "outer source root"
+        );
+        assert!(returned.load(Ordering::SeqCst));
+        assert_eq!(source_store.snapshot().len(), 2);
+        assert_eq!(receiver_store.snapshot().len(), 1);
+        assert_eq!(source.causal_diagnostics().roots, 1);
+        assert_eq!(source.causal_diagnostics().derived_mutations, 1);
+        assert_eq!(receiver.causal_diagnostics().roots, 1);
+        assert_eq!(receiver.causal_diagnostics().derived_mutations, 0);
+        assert!(super::CAUSAL_STATES.with(|states| states.borrow().is_empty()));
+    }
+
+    struct OrderingPersister {
+        registry: Arc<StoreRegistry>,
+        calls: AtomicUsize,
+        all_after_reduce: AtomicBool,
+        reactive_drained: Arc<AtomicBool>,
+        all_before_reactive_drain: AtomicBool,
+    }
+
+    impl Persister for OrderingPersister {
+        fn persist(&self, _event: MEvent) -> Result<(), PersistError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if self
+                .registry
+                .get("ImmediateTestItem")
+                .is_none_or(|store| store.snapshot().is_empty())
+            {
+                self.all_after_reduce.store(false, Ordering::Relaxed);
+            }
+            if self.reactive_drained.load(Ordering::Relaxed) {
+                self.all_before_reactive_drain
+                    .store(false, Ordering::Relaxed);
+            }
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn batch_reduces_before_persistence_and_before_reactive_drain() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let store = registry.get_or_create("ImmediateTestItem");
+        let reactive_drained = Arc::new(AtomicBool::new(false));
+        let drained_for_subscription = reactive_drained.clone();
+        let _subscription = store.subscribe_keys(move |_| {
+            drained_for_subscription.store(true, Ordering::Relaxed);
+        });
+        reactive_drained.store(false, Ordering::Relaxed);
+        let persister = Arc::new(OrderingPersister {
+            registry: registry.clone(),
+            calls: AtomicUsize::new(0),
+            all_after_reduce: AtomicBool::new(true),
+            reactive_drained: reactive_drained.clone(),
+            all_before_reactive_drain: AtomicBool::new(true),
+        });
+        let mut router = PersisterRouter::default();
+        router.set_default(Some(persister.clone()));
+        let ctx = MykoServerContext::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(router),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        );
+        let items = [
+            ImmediateTestItem {
+                id: "pre-reduce-1".into(),
+                value: 1,
+            },
+            ImmediateTestItem {
+                id: "pre-reduce-2".into(),
+                value: 2,
+            },
+        ];
+
+        assert!(ctx.batch_set(&items).is_ok());
+        assert_eq!(persister.calls.load(Ordering::Relaxed), items.len());
+        assert!(persister.all_after_reduce.load(Ordering::Relaxed));
+        assert!(persister.all_before_reactive_drain.load(Ordering::Relaxed));
+        assert!(reactive_drained.load(Ordering::Relaxed));
+        assert_eq!(
+            registry
+                .get("ImmediateTestItem")
+                .map_or(0, |store| store.snapshot().len()),
+            items.len()
+        );
+    }
+
+    #[test]
+    fn transient_set_updates_live_state_without_persistence() {
+        let _serial = scheduler_test_serial();
+        let registry = Arc::new(StoreRegistry::new());
+        let persister = Arc::new(OrderingPersister {
+            registry: registry.clone(),
+            calls: AtomicUsize::new(0),
+            all_after_reduce: AtomicBool::new(true),
+            reactive_drained: Arc::new(AtomicBool::new(false)),
+            all_before_reactive_drain: AtomicBool::new(true),
+        });
+        let mut router = PersisterRouter::default();
+        router.set_default(Some(persister.clone()));
+        let ctx = MykoServerContext::new(
+            Uuid::new_v4(),
+            registry.clone(),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(router),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        );
+
+        assert!(
+            ctx.set_transient(&ImmediateTestItem {
+                id: "transient-1".into(),
+                value: 9,
+            })
+            .is_ok()
+        );
+
+        assert_eq!(persister.calls.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            registry
+                .get("ImmediateTestItem")
+                .map_or(0, |store| store.snapshot().len()),
+            1
+        );
     }
 
     #[test]
     fn apply_event_batch_keeps_default_entities_immediate() {
+        let _serial = scheduler_test_serial();
         let ctx = make_ctx();
         let applied = ctx
             .apply_event_batch(vec![MEvent {
@@ -1743,21 +3295,27 @@ mod tests {
                     "value": 7,
                 }),
                 change_type: MEventType::SET,
-                item_type: "ImmediateTestItem".to_string(),
-                created_at: "2026-03-12T00:00:00Z".to_string(),
-                tx: "tx-immediate".to_string(),
-                source_id: Some("test".to_string()),
-                options: None,
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-immediate".into(),
+                source_id: Some("test".into()),
             }])
-            .expect("apply_event_batch should succeed");
+            .ok();
 
-        assert_eq!(applied, 1);
+        assert_eq!(applied, Some(1));
         let store = ctx.registry.get_or_create("ImmediateTestItem");
-        assert!(store.get(&Arc::<str>::from("immediate-1")).get().is_some());
+        assert!(
+            store
+                .get(&Arc::<str>::from("immediate-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
     }
 
     #[test]
     fn apply_event_batch_buffers_opted_in_entities() {
+        let _serial = scheduler_test_serial();
         let ctx = make_ctx();
         let applied = ctx
             .apply_event_batch(vec![MEvent {
@@ -1766,20 +3324,481 @@ mod tests {
                     "value": 42,
                 }),
                 change_type: MEventType::SET,
-                item_type: "BufferedTestItem".to_string(),
-                created_at: "2026-03-12T00:00:00Z".to_string(),
-                tx: "tx-buffered".to_string(),
-                source_id: Some("test".to_string()),
-                options: None,
+                item_type: "BufferedTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-buffered".into(),
+                source_id: Some("test".into()),
             }])
-            .expect("apply_event_batch should succeed");
+            .ok();
 
-        assert_eq!(applied, 1);
+        assert_eq!(applied, Some(1));
         let store = ctx.registry.get_or_create("BufferedTestItem");
-        assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_none());
+        assert!(
+            store
+                .get(&Arc::<str>::from("buffered-1"))
+                .materialize()
+                .get()
+                .is_none()
+        );
 
         let flushed = ctx.flush_all_buffered_events();
         assert_eq!(flushed, 1);
-        assert!(store.get(&Arc::<str>::from("buffered-1")).get().is_some());
+        assert!(
+            store
+                .get(&Arc::<str>::from("buffered-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn apply_event_batch_delivers_both_diffs_for_mixed_set_and_del_same_type() {
+        // Regression test for the hazard documented on `emit` in
+        // `apply_event_batch_immediate`: CellMap's `diffs_cell` coalesces
+        // last-write-wins like any other cell under `hyphae::batch`, so a
+        // single shared batch window across the SET and DEL groups would
+        // silently drop whichever of the two diffs isn't last. Each
+        // `emit_grouped` call now opens its own batch window instead, so a
+        // wire batch mixing a SET and a DEL of the *same* entity type must
+        // still deliver both diffs to subscribers.
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+
+        assert!(
+            ctx.apply_event_batch(vec![MEvent {
+                item: json!({ "id": "old-1", "value": 1 }),
+                change_type: MEventType::SET,
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-seed".into(),
+                source_id: Some("test".into()),
+            }])
+            .is_ok()
+        );
+
+        let store = ctx.registry.get_or_create("ImmediateTestItem");
+        let diffs_seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let diffs_seen_for_closure = diffs_seen.clone();
+        let _guard = store.subscribe_diffs(move |diff| {
+            diffs_seen_for_closure
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(format!("{diff:?}"));
+        });
+        // subscribe_diffs replays the current snapshot synchronously on
+        // subscribe -- drop that so only diffs from the batch below count.
+        diffs_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        let applied = ctx
+            .apply_event_batch(vec![
+                MEvent {
+                    item: json!({ "id": "new-1", "value": 2 }),
+                    change_type: MEventType::SET,
+                    item_type: "ImmediateTestItem".into(),
+                    created_at: "2026-03-12T00:00:01Z".into(),
+                    tx: "tx-mixed".into(),
+                    source_id: Some("test".into()),
+                },
+                MEvent {
+                    item: json!({ "id": "old-1", "value": 1 }),
+                    change_type: MEventType::DEL,
+                    item_type: "ImmediateTestItem".into(),
+                    created_at: "2026-03-12T00:00:01Z".into(),
+                    tx: "tx-mixed".into(),
+                    source_id: Some("test".into()),
+                },
+            ])
+            .ok();
+
+        assert_eq!(applied, Some(2));
+        assert!(
+            store
+                .get(&Arc::<str>::from("new-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+        assert!(
+            store
+                .get(&Arc::<str>::from("old-1"))
+                .materialize()
+                .get()
+                .is_none()
+        );
+
+        let seen = diffs_seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            seen.len(),
+            2,
+            "both the SET and DEL diffs must reach subscribers, not just the last one: {:?}",
+            *seen
+        );
+        drop(seen);
+    }
+
+    #[crate::myko_view(crate::entities::client::Client)]
+    struct CallerScopedClientView {}
+
+    #[test]
+    fn qualified_view_path_uses_canonical_item_name() {
+        assert_eq!(
+            <CallerScopedClientView as crate::prelude::ViewItemType>::view_item_type_static()
+                .as_ref(),
+            "Client"
+        );
+    }
+
+    impl crate::view::ViewHandler for CallerScopedClientView {
+        fn request_cache_scope() -> crate::request::RequestCacheScope {
+            crate::request::RequestCacheScope::PerClient
+        }
+
+        fn build_cell(
+            ctx: crate::view::ViewBuildArgs<Self>,
+        ) -> impl crate::hyphae::MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+            use crate::{
+                core::capability::RequestScoped,
+                entities::{client::ClientId, server::ServerId},
+                hyphae::CellMap,
+            };
+
+            let client_id = Arc::<str>::from(ctx.view_context.client_id().unwrap_or("server"));
+            let rows = CellMap::new();
+            rows.insert(
+                client_id.clone(),
+                Arc::new(crate::entities::client::Client {
+                    id: ClientId::from(client_id),
+                    server_id: ServerId::from(Arc::<str>::from(
+                        ctx.view_context.host_id().to_string(),
+                    )),
+                    address: None,
+                    windback: None,
+                }),
+            );
+            rows.lock()
+        }
+    }
+
+    fn request_for(
+        host_id: Uuid,
+        tx: &str,
+        client_id: Option<&str>,
+    ) -> Arc<crate::request::RequestContext> {
+        Arc::new(client_id.map_or_else(
+            || crate::request::RequestContext::internal(Arc::<str>::from(tx), host_id, "test"),
+            |client_id| {
+                crate::request::RequestContext::from_client(
+                    Arc::<str>::from(tx),
+                    Arc::<str>::from(client_id),
+                    host_id,
+                )
+            },
+        ))
+    }
+
+    #[test]
+    fn request_scoped_view_cache_partitions_callers_but_not_transactions() {
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let first = ctx.view(
+            CallerScopedClientView {},
+            request_for(ctx.host_id, "tx-a-1", Some("client-a")),
+        );
+        let same_caller = ctx.view(
+            CallerScopedClientView {},
+            request_for(ctx.host_id, "tx-a-2", Some("client-a")),
+        );
+        assert_eq!(
+            ctx.view_cache_len(),
+            1,
+            "transaction IDs must not split a caller cache"
+        );
+        assert!(
+            same_caller
+                .get_value(&Arc::<str>::from("client-a"))
+                .is_some()
+        );
+
+        let other_caller = ctx.view(
+            CallerScopedClientView {},
+            request_for(ctx.host_id, "tx-b", Some("client-b")),
+        );
+        assert_eq!(ctx.view_cache_len(), 2);
+        assert!(
+            other_caller
+                .get_value(&Arc::<str>::from("client-b"))
+                .is_some()
+        );
+        assert!(
+            other_caller
+                .get_value(&Arc::<str>::from("client-a"))
+                .is_none()
+        );
+
+        let server = ctx.view(
+            CallerScopedClientView {},
+            request_for(ctx.host_id, "tx-server", None),
+        );
+        assert_eq!(
+            ctx.view_cache_len(),
+            3,
+            "internal callers need their own cache scope"
+        );
+        assert!(server.get_value(&Arc::<str>::from("server")).is_some());
+        assert!(first.get_value(&Arc::<str>::from("server")).is_none());
+    }
+
+    #[test]
+    fn context_free_handlers_remain_shared_across_callers() {
+        use crate::entities::client::{ClientId, ClientStatus, ConnectedClients};
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let first = request_for(ctx.host_id, "tx-a", Some("client-a"));
+        let second = request_for(ctx.host_id, "tx-b", Some("client-b"));
+
+        let first_view = ctx.view(ConnectedClients {}, first.clone());
+        let second_view = ctx.view(ConnectedClients {}, second.clone());
+        assert_eq!(ctx.view_cache_len(), 1);
+        assert_eq!(
+            first_view.len().materialize().get(),
+            second_view.len().materialize().get()
+        );
+
+        let report = ClientStatus {
+            client_id: ClientId::from(Arc::<str>::from("unconnected-client")),
+        };
+        let first_report = ctx.report(report.clone(), first);
+        let second_report = ctx.report(report, second);
+        assert_eq!(ctx.report_cache_len(), 1);
+        assert_eq!(first_report.get(), second_report.get());
+    }
+
+    #[test]
+    fn request_scoped_report_cache_partitions_callers_but_not_transactions() {
+        use crate::{
+            entities::{
+                client::{Client, ClientId, WindbackStatus},
+                server::ServerId,
+            },
+            request::RequestContext,
+        };
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let clients = ctx.registry.get_or_create(Client::ENTITY_NAME_STATIC);
+        for (id, windback) in [
+            ("client-a", "2026-01-01T00:00:00Z"),
+            ("client-b", "2026-02-01T00:00:00Z"),
+        ] {
+            let client: Arc<dyn AnyItem> = Arc::new(Client {
+                id: ClientId::from(Arc::<str>::from(id)),
+                server_id: ServerId::from(Arc::<str>::from(ctx.host_id.to_string())),
+                address: None,
+                windback: Some(Arc::<str>::from(windback)),
+            });
+            clients.insert(Arc::<str>::from(id), client);
+        }
+
+        let first = ctx.report(
+            WindbackStatus {},
+            request_for(ctx.host_id, "tx-a-1", Some("client-a")),
+        );
+        let same_caller = ctx.report(
+            WindbackStatus {},
+            request_for(ctx.host_id, "tx-a-2", Some("client-a")),
+        );
+        assert_eq!(
+            ctx.report_cache_len(),
+            1,
+            "transaction IDs must not split a caller cache"
+        );
+        assert_eq!(
+            first.get().windback.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+        assert_eq!(
+            same_caller.get().windback.as_deref(),
+            Some("2026-01-01T00:00:00Z")
+        );
+
+        let other_caller = ctx.report(
+            WindbackStatus {},
+            request_for(ctx.host_id, "tx-b", Some("client-b")),
+        );
+        assert_eq!(ctx.report_cache_len(), 2);
+        assert_eq!(
+            other_caller.get().windback.as_deref(),
+            Some("2026-02-01T00:00:00Z")
+        );
+
+        let server = ctx.report(
+            WindbackStatus {},
+            Arc::new(RequestContext::internal(
+                Arc::<str>::from("tx-server"),
+                ctx.host_id,
+                "test",
+            )),
+        );
+        assert_eq!(
+            ctx.report_cache_len(),
+            3,
+            "internal callers need their own cache scope"
+        );
+        assert_eq!(server.get().windback, None);
+    }
+
+    #[test]
+    fn compute_gates_does_not_leak_after_cache_populates() {
+        // compute_gates only exists to dedupe concurrent first-computation
+        // (see the comment on the removal call in query_map_untyped); once
+        // the corresponding cache entry lands, the gate must not linger —
+        // otherwise every distinct (kind, id, param-hash) ever computed
+        // leaves a permanent entry, unbounded over the process lifetime.
+        use crate::{entities::server::GetPeerServers, request::RequestContext};
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            ctx.host_id,
+            "test",
+        ));
+
+        // First call: cache miss — populates compute_gates transiently, then
+        // must remove it once query_cache is populated.
+        let _ = ctx.query_map_untyped(GetPeerServers {}, request.clone());
+        assert!(
+            ctx.compute_gates.is_empty(),
+            "compute_gates must be empty once the query cache is populated, got {:?}",
+            ctx.compute_gates
+        );
+
+        // Second call: cache hit on the fast path — must not touch
+        // compute_gates at all.
+        let _ = ctx.query_map_untyped(GetPeerServers {}, request);
+        assert!(ctx.compute_gates.is_empty());
+    }
+
+    struct ClientStatusTestWriter;
+
+    impl crate::server::WsWriter for ClientStatusTestWriter {
+        fn send(&self, _msg: crate::wire::MykoMessage) {}
+
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: crate::wire::EncodedCommandMessage,
+        ) {
+        }
+    }
+
+    #[test]
+    fn client_liveness_uses_live_writer_registry_not_replayed_entity() {
+        use crate::{
+            entities::{
+                client::{Client, ClientId, ClientStatus, ConnectedClients},
+                server::ServerId,
+            },
+            request::RequestContext,
+            server::client_registry,
+        };
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let client_id: Arc<str> = format!("replayed-client-{}", Uuid::new_v4()).into();
+        let stale_client = Arc::new(Client {
+            id: ClientId::from(client_id.clone()),
+            server_id: ServerId::from(Arc::<str>::from(ctx.host_id.to_string())),
+            address: None,
+            windback: None,
+        });
+        let stale_item: Arc<dyn AnyItem> = stale_client;
+        let client_store = ctx.registry.get_or_create(Client::ENTITY_NAME_STATIC);
+        client_store.insert(client_id.clone(), stale_item);
+
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            ctx.host_id,
+            "test",
+        ));
+        let status = ctx.report(
+            ClientStatus {
+                client_id: ClientId::from(client_id.clone()),
+            },
+            request.clone(),
+        );
+        let connected_clients = ctx.view(ConnectedClients {}, request);
+
+        assert!(!status.get().online, "replayed entity is not a live client");
+        assert!(
+            connected_clients.get_value(&client_id).is_none(),
+            "replayed entity is absent from connected clients"
+        );
+
+        let registry = client_registry();
+        registry.register(client_id.clone(), Arc::new(ClientStatusTestWriter));
+        assert!(
+            status.get().online,
+            "registered writer makes the client live"
+        );
+        assert!(
+            connected_clients.get_value(&client_id).is_some(),
+            "registered writer adds the client to the connected view"
+        );
+
+        registry.unregister(&client_id);
+        assert!(
+            !status.get().online,
+            "unregistering the writer makes the client offline"
+        );
+        assert!(
+            connected_clients.get_value(&client_id).is_none(),
+            "unregistering the writer removes the client from the connected view"
+        );
+        assert!(
+            client_store.get_value(&client_id).is_some(),
+            "the stale entity remains, proving it is not the liveness source"
+        );
+    }
+
+    #[test]
+    fn compute_gates_does_not_leak_after_report_cache_populates() {
+        // Same invariant as compute_gates_does_not_leak_after_cache_populates,
+        // exercised through the report() call site's independent gate-removal
+        // (a separate line, since it inserts into report_cache instead of
+        // query_cache — verified both were fixed, not just the query one).
+        use crate::{
+            entities::client::{ClientId, ClientStatus},
+            request::RequestContext,
+        };
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            ctx.host_id,
+            "test",
+        ));
+
+        let report = ClientStatus {
+            client_id: ClientId::from(Arc::<str>::from("test-client")),
+        };
+        let _ = ctx.report(report.clone(), request.clone());
+        assert!(
+            ctx.compute_gates.is_empty(),
+            "compute_gates must be empty once the report cache is populated, got {:?}",
+            ctx.compute_gates
+        );
+
+        let _ = ctx.report(report, request);
+        assert!(ctx.compute_gates.is_empty());
     }
 }

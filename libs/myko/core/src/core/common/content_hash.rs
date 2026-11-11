@@ -23,7 +23,7 @@ impl ContentHash {
 
 impl Clone for ContentHash {
     fn clone(&self) -> Self {
-        ContentHash(AtomicU64::new(0))
+        Self(AtomicU64::new(0))
     }
 }
 

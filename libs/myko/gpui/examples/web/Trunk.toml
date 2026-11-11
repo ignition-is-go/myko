@@ -1,0 +1,8 @@
+[watch]
+watch = ["../../src", "../server_status.rs", "../../Cargo.toml", "../../../core/src", "../../../core/Cargo.toml", "../../../../autosocket/src", "../../../../autosocket/Cargo.toml"]
+
+[serve]
+addresses = ["127.0.0.1"]
+port = 8083
+open = true
+headers = { "Cross-Origin-Embedder-Policy" = "require-corp", "Cross-Origin-Opener-Policy" = "same-origin" }

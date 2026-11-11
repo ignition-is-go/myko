@@ -4,16 +4,14 @@
 
 mod cell;
 mod context;
-#[cfg(not(target_arch = "wasm32"))]
 mod registration;
 mod request;
 mod traits;
 
 pub use cell::{FilteredViewCellMap, TypedViewCellMap};
-pub use context::{ViewCellContext, ViewContext};
-#[cfg(not(target_arch = "wasm32"))]
+pub use context::{ViewBuildContext, ViewContext};
 pub use registration::{ViewCellFactory, ViewFactory, ViewParseFn, ViewRegistration};
 pub use request::ViewRequest;
 pub use traits::{
-    AnyView, ViewBuildCellCtx, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
+    AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,
 };

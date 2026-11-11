@@ -2,10 +2,13 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput};
 
-pub fn derive_message_events_impl(input: DeriveInput) -> TokenStream {
+pub fn derive_message_events_impl(input: &DeriveInput) -> TokenStream {
     let variants = match &input.data {
         Data::Enum(data) => &data.variants,
-        _ => panic!("MessageEvents can only be derived on enums"),
+        _ => {
+            return syn::Error::new_spanned(input, "MessageEvents can only be derived on enums")
+                .to_compile_error();
+        }
     };
 
     let registrations = variants.iter().filter_map(|variant| {

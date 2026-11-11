@@ -9,10 +9,13 @@ use std::{
 };
 
 use chrono::Utc;
-use hyphae::{Cell, MaterializeDefinite};
+use hyphae::{Cell, Definite, Materialize};
 use myko_macros::{myko_report, myko_report_output};
 use serde_json::Value;
 
+use crate::core::capability::{RegistryScoped, Replaying};
+// The BFS traversal + report handler are server-only (they pull in hyphae and
+// the store registry); their imports are gated alongside them below.
 use crate::{
     common::to_value::ToValue,
     relationship::{Relation, iter_relations},
@@ -25,6 +28,7 @@ use crate::{
 
 /// A single exported entity within the tree.
 #[myko_report_output]
+#[derive(Eq)]
 pub struct ExportedEntity {
     /// The entity type name (e.g., "Scene", "Binding").
     pub entity_type: Arc<str>,
@@ -34,6 +38,7 @@ pub struct ExportedEntity {
 
 /// The complete tree export containing all entities reachable from the root.
 #[myko_report_output]
+#[derive(Eq)]
 pub struct EntityTreeExport {
     /// Export format version.
     pub version: u32,
@@ -81,17 +86,16 @@ pub struct ChildRelation {
     /// How to discover child IDs from the parent.
     pub kind: ChildKind,
 }
-
 pub enum ChildKind {
-    /// BelongsTo: scan the child store for entities whose FK matches the parent ID.
+    /// `BelongsTo`: scan the child store for entities whose FK matches the parent ID.
     BelongsTo {
         extract_fk: crate::relationship::FkExtractor,
     },
-    /// OwnsMany: extract child IDs directly from the parent entity.
+    /// `OwnsMany`: extract child IDs directly from the parent entity.
     OwnsMany {
         extract_ids: crate::relationship::ArrayExtractor,
     },
-    /// EnsureFor: scan the local (ensured) store for entities whose FK matches the parent ID.
+    /// `EnsureFor`: scan the local (ensured) store for entities whose FK matches the parent ID.
     EnsureFor {
         extract_fk: crate::relationship::FkExtractor,
     },
@@ -101,6 +105,7 @@ pub enum ChildKind {
 ///
 /// This processes all registered relationships once and inverts them into
 /// a lookup table suitable for BFS traversal.
+#[must_use]
 pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
     let mut map: HashMap<&'static str, Vec<ChildRelation>> = HashMap::new();
 
@@ -177,15 +182,22 @@ pub fn build_adjacency_map() -> HashMap<&'static str, Vec<ChildRelation>> {
 /// Walk the entity tree via BFS starting from `(root_type, root_id)`.
 ///
 /// Returns all reachable entities (including the root) as `ExportedEntity` values.
-pub fn walk_tree(
+#[must_use]
+pub fn walk_tree<S>(
     root_type: &str,
     root_id: &str,
     registry: &StoreRegistry,
-    adjacency: &HashMap<&'static str, Vec<ChildRelation>>,
-) -> Vec<ExportedEntity> {
+    adjacency: &HashMap<&'static str, Vec<ChildRelation>, S>,
+) -> Vec<ExportedEntity>
+where
+    S: std::hash::BuildHasher,
+{
     let mut result = Vec::new();
     let mut visited: HashSet<(Arc<str>, Arc<str>)> = HashSet::new();
     let mut queue: VecDeque<(Arc<str>, Arc<str>)> = VecDeque::new();
+    // NOTE(ts): Index each FK on first use rather than rescanning the whole
+    // child store for every parent, which makes large exports quadratic.
+    let mut child_indices = HashMap::<_, HashMap<Arc<str>, Vec<Arc<str>>>>::new();
 
     let root_type: Arc<str> = root_type.into();
     let root_id: Arc<str> = root_id.into();
@@ -213,18 +225,25 @@ pub fn walk_tree(
             continue;
         };
 
-        for child_rel in children {
+        for (relation_index, child_rel) in children.iter().enumerate() {
             match &child_rel.kind {
-                ChildKind::BelongsTo { extract_fk } => {
-                    // Scan child store for entities whose FK matches this entity's ID
-                    let Some(child_store) = registry.get(child_rel.child_type) else {
-                        continue;
-                    };
-                    for (child_id, child_item) in child_store.snapshot() {
-                        if let Some(fk) = extract_fk(child_item.as_any())
-                            && fk == entity_id
-                        {
-                            let key = (Arc::<str>::from(child_rel.child_type), child_id);
+                ChildKind::BelongsTo { extract_fk } | ChildKind::EnsureFor { extract_fk } => {
+                    let by_parent = child_indices
+                        .entry((entity_type.clone(), relation_index))
+                        .or_insert_with(|| {
+                            let mut index = HashMap::<_, Vec<_>>::new();
+                            if let Some(store) = registry.get(child_rel.child_type) {
+                                for (id, item) in store.snapshot() {
+                                    if let Some(parent) = extract_fk(item.as_any()) {
+                                        index.entry(parent).or_default().push(id);
+                                    }
+                                }
+                            }
+                            index
+                        });
+                    if let Some(ids) = by_parent.get(&entity_id) {
+                        for child_id in ids {
+                            let key = (Arc::<str>::from(child_rel.child_type), child_id.clone());
                             if visited.insert(key.clone()) {
                                 queue.push_back(key);
                             }
@@ -242,22 +261,6 @@ pub fn walk_tree(
                         }
                     }
                 }
-                ChildKind::EnsureFor { extract_fk } => {
-                    // Scan the ensured entity store for entities whose FK matches this entity's ID
-                    let Some(ensured_store) = registry.get(child_rel.child_type) else {
-                        continue;
-                    };
-                    for (ensured_id, ensured_item) in ensured_store.snapshot() {
-                        if let Some(fk) = extract_fk(ensured_item.as_any())
-                            && fk == entity_id
-                        {
-                            let key = (Arc::<str>::from(child_rel.child_type), ensured_id);
-                            if visited.insert(key.clone()) {
-                                queue.push_back(key);
-                            }
-                        }
-                    }
-                }
             }
         }
     }
@@ -269,22 +272,20 @@ pub fn walk_tree(
 // ReportHandler impl
 // ─────────────────────────────────────────────────────────────────────────────
 
-#[cfg(not(target_arch = "wasm32"))]
+// Handlers compile on every target so downstream entity crates do not need to
+// duplicate target gates. Report computation still runs server-side in practice.
 impl crate::report::ReportHandler for ExportEntityTree {
     type Output = EntityTreeExport;
 
     fn compute(
         &self,
         ctx: crate::report::ReportContext,
-    ) -> impl MaterializeDefinite<Arc<Self::Output>> {
+    ) -> impl Materialize<Arc<Self::Output>, Definite> {
         let registry = if let Some(as_of) = &self.as_of {
             match ctx.replay_store(as_of) {
                 Ok(r) => r,
                 Err(err) => {
-                    eprintln!(
-                        "[ExportEntityTree] replay_store FAILED: as_of={} err={}",
-                        as_of, err
-                    );
+                    eprintln!("[ExportEntityTree] replay_store FAILED: as_of={as_of} err={err}");
                     return Cell::new(Arc::new(EntityTreeExport {
                         version: 1,
                         root_type: self.root_type.clone(),
