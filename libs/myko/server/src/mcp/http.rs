@@ -174,21 +174,22 @@ async fn run_post(
             Err(error) => return write_auth_error(stream, provider, error).await,
         }
     }
-    let mut modern = false;
-    let mut cacheable = false;
-    if let Ok(request) = &request {
-        match validate_post_protocol(&head, request) {
-            Ok(is_modern) => modern = is_modern,
+    let (modern, cacheable) = if let Ok(request) = &request {
+        let modern = match validate_post_protocol(&head, request) {
+            Ok(is_modern) => is_modern,
             Err(error) => {
                 let response = McpResponse::error(request.id.clone().unwrap_or(Value::Null), error);
                 return write_rpc_response(stream, 400, "Bad Request", &response).await;
             }
-        }
-        cacheable = matches!(
+        };
+        let cacheable = matches!(
             request.method.as_str(),
             "tools/list" | "resources/list" | "resources/read"
         );
-    }
+        (modern, cacheable)
+    } else {
+        (false, false)
+    };
     let filter = filter_from_head(&head);
     let executor = Executor::in_process(ctx, auth.clone());
     let response = match request {
@@ -323,15 +324,18 @@ fn validate_post_protocol(head: &HttpRequestHead, request: &McpRequest) -> Resul
         .and_then(|params| params.get(name_key))
         .and_then(Value::as_str);
     let header_name = head.header("Mcp-Name");
-    let matches =
-        match header_name.and_then(|value| value.strip_prefix("=?base64?")?.strip_suffix("?=")) {
-            Some(encoded) => STANDARD
-                .decode(encoded)
-                .ok()
-                .zip(name)
-                .is_some_and(|(bytes, name)| bytes == name.as_bytes()),
-            None => name.is_some() && header_name == name,
-        };
+    let matches = header_name
+        .and_then(|value| value.strip_prefix("=?base64?")?.strip_suffix("?="))
+        .map_or_else(
+            || name.is_some() && header_name == name,
+            |encoded| {
+                STANDARD
+                    .decode(encoded)
+                    .ok()
+                    .zip(name)
+                    .is_some_and(|(bytes, name)| bytes == name.as_bytes())
+            },
+        );
     if !matches {
         return Err(mismatch("Mcp-Name must match the request target"));
     }
