@@ -17,7 +17,7 @@ root = ["cargo", "test", "--jobs", "4", "--lib", "--", "--test-threads=1"]
 root = ["cargo", "test", "--jobs", "4", "--lib", "--features", "codegen-ts", "codegen::typescript::tests", "--", "--test-threads=1"]
 
 [tasks.test-core-ci]
-root = ["cargo", "test", "--jobs", "4", "--features", "ci", "--", "--test-threads=1"]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "--features", "ci", "--", "--test-threads=1"]
 
 [tasks.test-client-address]
 root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "--lib", "client::address_tests", "--", "--test-threads=1"]
@@ -27,3 +27,12 @@ root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "--lib
 
 [tasks.check-client-address-format]
 root = ["cargo", "fmt", "--", "--check"]
+
+[tasks.test-relationships]
+root = ["cargo", "test", "-p", "myko", "--jobs", "4", "--target-dir", "target/agent", "--lib", "server::relationship_manager", "--", "--test-threads=1"]
+
+[tasks.check-relationships]
+root = ["cargo", "clippy", "-p", "myko", "--jobs", "4", "--target-dir", "target/agent", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.benchmark-startup-relationships]
+root = ["cargo", "test", "-p", "myko", "--jobs", "4", "--target-dir", "target/agent", "--lib", "benchmark_startup_ensure_membership", "--", "--ignored", "--nocapture", "--test-threads=1"]
