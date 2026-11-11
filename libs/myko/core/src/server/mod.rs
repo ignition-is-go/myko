@@ -39,6 +39,7 @@ mod context;
 pub mod dispatch_metrics;
 pub mod entity_set_stats;
 mod handler_registry;
+pub mod history_feed;
 pub mod history_replay;
 pub mod persister;
 mod protocol;
@@ -50,6 +51,9 @@ pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 pub use handler_registry::HandlerRegistry;
+pub use history_feed::{
+    HistoryFeedRow, HistoryFilter, HistoryResetReason, HistorySubscription, HistoryUpdate,
+};
 pub use history_replay::{
     CommittedHistoryEvent, EntityHistory, HistoryEntityKey, HistoryEvent, HistoryPage,
     HistoryReplayProvider,

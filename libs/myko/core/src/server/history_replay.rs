@@ -239,6 +239,19 @@ fn entity_history_window_source(
 /// to enable point-in-time snapshots without coupling myko to a
 /// specific persistence backend.
 pub trait HistoryReplayProvider: Send + Sync {
+    /// Subscribe to filtered durable replay followed by live committed changes.
+    /// Poll the blocking subscription off the reactive thread.
+    ///
+    /// # Errors
+    /// Returns an error if subscriptions are unsupported or the filter is invalid.
+    fn subscribe_history(
+        &self,
+        filter: super::HistoryFilter,
+    ) -> Result<Box<dyn super::HistorySubscription>, String> {
+        let _ = filter;
+        Err("History subscriptions are not supported by this provider".to_string())
+    }
+
     /// Latest committed history row observed through the backend notification stream.
     fn committed_history_event(&self) -> Cell<Option<Arc<CommittedHistoryEvent>>, CellImmutable> {
         Cell::new(None).lock()

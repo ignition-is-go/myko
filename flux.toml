@@ -191,3 +191,6 @@ root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "m
 
 [tasks.test-publish]
 root = ["bun", "test", "scripts/publish-package.test.ts"]
+
+[tasks.test-history-feed]
+root = ["sh", "scripts/test-postgres-history.sh", "postgres::history_feed::tests"]
