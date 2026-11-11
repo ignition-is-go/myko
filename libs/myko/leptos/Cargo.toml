@@ -22,5 +22,12 @@ default = []
 # every crate flux runs it against.
 ci = []
 
+[dev-dependencies]
+autosocket.workspace = true
+flume.workspace = true
+serde_json.workspace = true
+any_spawner = { version = "0.3", features = ["futures-executor"] }
+leptos = { version = "0.8", features = ["csr"] }
+
 [lints]
 workspace = true
