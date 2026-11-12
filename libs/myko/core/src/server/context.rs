@@ -330,6 +330,7 @@ pub struct MykoServerContext {
     peer_clients_tick: Cell<u64, CellMutable>,
     /// Optional event sink used to fan out applied events to saga runtimes.
     event_sink: Option<flume::Sender<MEvent>>,
+    event_sink_filter: Option<Arc<EventSinkFilter>>,
     // AHash on the cache + dispatch maps below: every subscriber and every
     // applied event goes through one or more of these. Bench: ~1.6× faster
     // DashMap lookups vs default SipHash.
@@ -351,6 +352,8 @@ pub struct MykoServerContext {
     causal_limits: Arc<RwLock<CausalLimits>>,
     causal_counters: Arc<CausalCounters>,
 }
+
+type EventSinkFilter = dyn Fn(&str, MEventType) -> bool + Send + Sync;
 
 pub struct MykoServerRuntime {
     pub peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
@@ -392,6 +395,7 @@ impl MykoServerContext {
             peer_clients,
             peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
             event_sink,
+            event_sink_filter: None,
             query_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             view_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             report_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
@@ -2272,6 +2276,31 @@ impl MykoServerContext {
         Ok(())
     }
 
+    /// Filter the optional event sink before constructing its JSON event.
+    ///
+    /// Durable persisters are unaffected. Contexts without a filter retain all
+    /// sink events. Clones share the filter; install it before sharing a context.
+    #[must_use]
+    pub fn with_event_sink_filter(
+        mut self,
+        filter: impl Fn(&str, MEventType) -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.event_sink_filter = Some(Arc::new(filter));
+        self
+    }
+
+    fn matching_event_sink(
+        &self,
+        entity_type: &str,
+        change: MEventType,
+    ) -> Option<&flume::Sender<MEvent>> {
+        self.event_sink.as_ref().filter(|_| {
+            self.event_sink_filter
+                .as_ref()
+                .is_none_or(|filter| filter(entity_type, change))
+        })
+    }
+
     // ─────────────────────────────────────────────────────────────────────────
     // durable backend production (private)
     // ─────────────────────────────────────────────────────────────────────────
@@ -2284,11 +2313,12 @@ impl MykoServerContext {
     fn produce_dyn(
         &self,
         item: &Arc<dyn AnyItem>,
+        change: MEventType,
         build: impl Fn() -> MEvent,
     ) -> Result<(), PersistError> {
         match (
             self.persisters.resolve(item.entity_type()),
-            &self.event_sink,
+            self.matching_event_sink(item.entity_type(), change),
         ) {
             (None, None) => {}
             (Some(persister), None) => persister.persist(build())?,
@@ -2316,8 +2346,13 @@ impl MykoServerContext {
         Ok(())
     }
 
-    fn send_dyn_to_sink(&self, build: impl FnOnce() -> MEvent) {
-        if let Some(sink) = &self.event_sink {
+    fn send_dyn_to_sink(
+        &self,
+        entity_type: &str,
+        change: MEventType,
+        build: impl FnOnce() -> MEvent,
+    ) {
+        if let Some(sink) = self.matching_event_sink(entity_type, change) {
             let _ = sink.send(build());
         }
     }
@@ -2333,21 +2368,25 @@ impl MykoServerContext {
     }
 
     fn send_del_to_sink(&self, item: &Arc<dyn AnyItem>) {
-        self.send_dyn_to_sink(|| MEvent::del_from_any(item, &self.host_id_str));
+        self.send_dyn_to_sink(item.entity_type(), MEventType::DEL, || {
+            MEvent::del_from_any(item, &self.host_id_str)
+        });
     }
 
     fn send_set_to_sink(&self, item: &Arc<dyn AnyItem>) {
-        self.send_dyn_to_sink(|| {
+        self.send_dyn_to_sink(item.entity_type(), MEventType::SET, || {
             MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
         });
     }
 
     fn produce_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.produce_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
+        self.produce_dyn(item, MEventType::DEL, || {
+            MEvent::del_from_any(item, &self.host_id_str)
+        })
     }
 
     fn produce_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.produce_dyn(item, || {
+        self.produce_dyn(item, MEventType::SET, || {
             MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
         })
     }
@@ -2813,6 +2852,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::{MykoServerContext, MykoServerRuntime};
+    use crate::common::to_value::ToValue;
     use crate::{
         common::with_id::WithId,
         core::item::{
@@ -2946,6 +2986,88 @@ mod tests {
                 history_replay: None,
             },
         )
+    }
+
+    #[test]
+    fn event_sink_filter_skips_unmatched_serialization_and_keeps_matches() -> anyhow::Result<()> {
+        let (tx, rx) = flume::unbounded();
+        let mut ctx = make_ctx()
+            .with_event_sink_filter(|ty, op| ty == "ImmediateTestItem" && op == MEventType::DEL);
+        ctx.event_sink = Some(tx);
+        let item: Arc<dyn AnyItem> = Arc::new(ImmediateTestItem {
+            id: "filter".into(),
+            value: 7,
+        });
+        let builds = AtomicUsize::new(0);
+        let build = || {
+            builds.fetch_add(1, Ordering::Relaxed);
+            MEvent::del_from_any(&item, &ctx.host_id_str)
+        };
+        ctx.produce_dyn(&item, MEventType::SET, build)?;
+        ctx.send_dyn_to_sink("Other", MEventType::DEL, build);
+        anyhow::ensure!(builds.load(Ordering::Relaxed) == 0);
+        anyhow::ensure!(rx.is_empty());
+        ctx.produce_del_dyn(&item)?;
+        ctx.send_del_to_sink(&item);
+        anyhow::ensure!(rx.len() == 2);
+        anyhow::ensure!(
+            rx.try_iter()
+                .all(|event| event.change_type == MEventType::DEL
+                    && event.item_type.as_ref() == "ImmediateTestItem")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn event_sink_filter_preserves_durable_delivery_and_single_construction() -> anyhow::Result<()>
+    {
+        struct Capture(flume::Sender<MEvent>);
+        impl Persister for Capture {
+            fn persist(&self, event: MEvent) -> Result<(), PersistError> {
+                let _ = self.0.send(event);
+                Ok(())
+            }
+        }
+        for accept in [false, true] {
+            let (tx, rx) = flume::unbounded();
+            let mut ctx = make_ctx().with_event_sink_filter(move |_, _| accept);
+            ctx.event_sink = Some(tx);
+            let (durable_tx, durable_rx) = flume::unbounded();
+            let mut router = PersisterRouter::default();
+            router.set_default(Some(Arc::new(Capture(durable_tx))));
+            ctx.persisters = Arc::new(router);
+            let item: Arc<dyn AnyItem> = Arc::new(ImmediateTestItem {
+                id: "durable".into(),
+                value: 9,
+            });
+            let builds = AtomicUsize::new(0);
+            ctx.produce_dyn(&item, MEventType::SET, || {
+                builds.fetch_add(1, Ordering::Relaxed);
+                MEvent::set_from_value(item.entity_type(), item.to_value(), &ctx.host_id_str)
+            })?;
+            anyhow::ensure!(builds.load(Ordering::Relaxed) == 1);
+            anyhow::ensure!(durable_rx.len() == 1);
+            anyhow::ensure!(rx.len() == usize::from(accept));
+            if accept {
+                anyhow::ensure!(rx.recv()?.tx == durable_rx.recv()?.tx);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn event_sink_filter_defaults_to_unfiltered_delivery() -> anyhow::Result<()> {
+        let (tx, rx) = flume::unbounded();
+        let mut ctx = make_ctx();
+        ctx.event_sink = Some(tx);
+        let item: Arc<dyn AnyItem> = Arc::new(ImmediateTestItem {
+            id: "default".into(),
+            value: 1,
+        });
+        ctx.produce_set_dyn(&item)?;
+        ctx.produce_del_dyn(&item)?;
+        anyhow::ensure!(rx.len() == 2);
+        Ok(())
     }
 
     #[derive(Clone, Copy)]
