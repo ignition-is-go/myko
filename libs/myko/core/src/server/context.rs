@@ -1828,6 +1828,8 @@ impl MykoServerContext {
         // `hyphae.fanout` subtree nested under one legible typed zone
         // instead of an anonymous root.
         let _span = tracing::trace_span!("myko.reduce", ty = entity_type, op = ?change).entered();
+        #[cfg(feature = "profiling")]
+        tracing::trace!(target: "myko::work", work = "store_reduce", label = entity_type, rows = 1_u64);
         match change {
             MEventType::SET => {
                 crate::server::entity_set_stats::record_set(entity_type);
@@ -1955,6 +1957,8 @@ impl MykoServerContext {
         hyphae::batch(|| -> Result<(), PersistError> {
             for (entity_type, group) in &by_type {
                 let store = self.registry.get_or_create(entity_type);
+                #[cfg(feature = "profiling")]
+                tracing::trace!(target: "myko::work", work = "store_reduce", label = *entity_type, rows = group.len());
                 match change {
                     MEventType::SET => {
                         let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =

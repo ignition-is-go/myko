@@ -427,6 +427,8 @@ impl BelongsToSourceIndex {
     }
 
     fn route_action(&self, foreign_key: &CompoundKey, diff: BucketDiff) -> Option<BucketAction> {
+        #[cfg(feature = "profiling")]
+        tracing::trace!(target: "myko::work", work = "index_route", label = "belongs_to");
         self.route_to_live_bucket(foreign_key)
             .map(|bucket| (bucket, diff))
     }
@@ -1264,6 +1266,8 @@ where
 {
     source.select(move |item_any: &AnyItemArc| {
         downcast_any_item_arc::<Q::Item>(item_any, "filter_query_over_source").is_some_and(|item| {
+            #[cfg(feature = "profiling")]
+            tracing::trace!(target: "myko::work", work = "reactive_predicate", label = std::any::type_name::<Q>());
             Q::test_entity(QueryTestContext {
                 item,
                 query: query.clone(),
@@ -1408,6 +1412,8 @@ where
             move |item_any: &AnyItemArc| {
                 downcast_any_item_arc::<Q::Item>(item_any, "QueryFactory::cell_factory")
                     .is_some_and(|item| {
+                        #[cfg(feature = "profiling")]
+                        tracing::trace!(target: "myko::work", work = "reactive_predicate", label = std::any::type_name::<Q>());
                         Q::test_entity(QueryTestContext {
                             item,
                             query: query.clone(),

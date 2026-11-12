@@ -2,11 +2,6 @@
 //!
 //! Handles WebSocket connections using `ClientSession` for subscription management.
 
-use crate::GatewayAccess;
-use crate::delivery_diagnostics::DeliveryDiagnostics;
-use crate::subscription_authorization::{Delivery, SubscriptionAuthorization};
-use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
-use myko_auth::{AuthSession, AuthorizationRequest, EventChange, OperationKind};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -42,6 +37,7 @@ use myko::{
         ViewError, ViewWindowUpdate, WrappedQuery, WrappedView,
     },
 };
+use myko_auth::{AuthSession, AuthorizationRequest, EventChange, OperationKind};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, watch},
@@ -55,7 +51,13 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-use crate::blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING};
+use crate::{
+    GatewayAccess,
+    blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING},
+    delivery_diagnostics::DeliveryDiagnostics,
+    subscription_authorization::{Delivery, SubscriptionAuthorization},
+    view_sampling::{ViewDelivery, ViewDeliveryControl},
+};
 
 struct WsBenchmarkStats {
     message_count: AtomicU64,
@@ -1071,6 +1073,10 @@ impl WsHandler {
             return false;
         }
         let result = write.send(frame).await;
+        #[cfg(feature = "profiling")]
+        if result.is_ok() {
+            tracing::trace!(target: "myko::work", work = "wire_send", label = kind, bytes = payload_bytes);
+        }
         let (diagnostic_message, command_id) = match &message {
             OutboundMessage::Message(message) => (Some(message), None),
             OutboundMessage::SerializedCommand { command_id, .. } => {
