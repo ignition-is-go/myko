@@ -203,3 +203,6 @@ root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "m
 
 [tasks.check-event-sink]
 root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-server", "--lib", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-event-production]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "server::context::tests", "--", "--test-threads=1"]
