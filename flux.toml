@@ -75,6 +75,9 @@ root = ["cargo", "clippy", "-p", "myko-telemetry", "--all-targets", "--", "-D", 
 [tasks.test-telemetry]
 root = ["cargo", "test", "-p", "myko-telemetry"]
 
+[tasks.test-delivery-metrics]
+root = ["cargo", "test", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "delivery_diagnostics", "--", "--test-threads=1"]
+
 [tasks.check-mcp]
 depends_on = ["check-server"]
 root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "-p", "myko-macros", "--lib", "--no-deps", "--", "-D", "warnings"]

@@ -1,6 +1,6 @@
 [package]
 name = "myko-auth0"
-version = "6.15.1"
+version = "6.15.2"
 edition = "2024"
 description = "Auth0 authentication and machine credentials for Myko"
 license = "AGPL-3.0-or-later"

@@ -933,18 +933,7 @@ impl RelationshipManager {
 
         for lookup in lookups {
             let combinations = Self::get_dependency_combinations(ctx, &lookup.dependencies);
-            let store = ctx.registry.get_or_create(lookup.local_type);
-            let existing_items = store.snapshot();
-            let mut existing_combinations: HashSet<Vec<Arc<str>>> = existing_items
-                .iter()
-                .filter_map(|(_, item)| {
-                    lookup
-                        .dependencies
-                        .iter()
-                        .map(|dependency| (dependency.extract_fk)(item.as_any()))
-                        .collect()
-                })
-                .collect();
+            let mut existing_combinations = Self::existing_ensure_for_combinations(ctx, lookup);
 
             for combo in combinations {
                 if !existing_combinations.contains(&combo)
@@ -1299,21 +1288,14 @@ impl RelationshipManager {
                 // Get all combinations of dependency entities
                 let combinations = Self::get_dependency_combinations(ctx, &lookup.dependencies);
 
-                // Snapshot once outside the combo loop
-                let store = ctx.registry.get_or_create(lookup.local_type);
-                let existing_items = store.snapshot();
-
+                let mut existing_combinations = Self::existing_ensure_for_combinations(ctx, lookup);
                 let mut created_count = 0_u64;
 
                 for combo in combinations {
-                    // Check if derived entity already exists
-                    let existing = Self::find_ensure_for_entity_in(
-                        &existing_items,
-                        &lookup.dependencies,
-                        &combo,
-                    );
-
-                    if existing.is_none() && self.ensure_combination(lookup, &combo, ctx)? {
+                    if !existing_combinations.contains(&combo)
+                        && self.ensure_combination(lookup, &combo, ctx)?
+                    {
+                        existing_combinations.insert(combo);
                         created_count = created_count.saturating_add(1);
                     }
                 }
@@ -1389,6 +1371,25 @@ impl RelationshipManager {
         }
 
         result
+    }
+
+    /// Snapshot dependency tuples once so checking C combinations does not scan N rows C times.
+    fn existing_ensure_for_combinations(
+        ctx: &MykoServerContext,
+        lookup: &EnsureForLookup,
+    ) -> HashSet<Vec<Arc<str>>> {
+        let store = ctx.registry.get_or_create(lookup.local_type);
+        store
+            .snapshot()
+            .iter()
+            .filter_map(|(_, item)| {
+                lookup
+                    .dependencies
+                    .iter()
+                    .map(|dependency| (dependency.extract_fk)(item.as_any()))
+                    .collect()
+            })
+            .collect()
     }
 
     /// Find an `EnsureFor` entity matching the given dependency IDs
@@ -2093,6 +2094,8 @@ mod ensure_for_cascade_tests {
             })
             .unwrap_or_default()
     }
+
+    mod startup_tests;
 
     #[test]
     fn startup_initialization_enforces_recursive_ensure_chain() {

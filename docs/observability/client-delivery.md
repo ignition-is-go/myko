@@ -48,6 +48,12 @@ by the OTLP collector. A successful export without rejected points releases thos
 counters from server memory. Failed or partially rejected exports retain them for
 the next collection interval. Active clients remain cumulative.
 
+This lifecycle also covers the `myko.ws.delivery.*` counters, gauges, and
+histograms. A socket can close before its diagnostic writers finish. Retirement
+waits for those writers and an accepted final export. Later exports omit the
+retired connection's series. Historical samples remain in the backend until
+its retention policy removes them.
+
 There is no Prometheus query dependency or additional configuration. Collector
 acceptance is sufficient: a downstream failure or process restart can lose the
 last part of a client's metrics, which is acceptable for this diagnostic data.
@@ -66,6 +72,11 @@ or transaction IDs are logged or exported.
 
 For metrics, configure the host's existing OTLP pipeline with
 `OTEL_EXPORTER_OTLP_ENDPOINT` (or the existing `MYKO_TRACING_ENDPOINT` fallback).
+Initialize `myko_telemetry::init_from_env` or
+`myko_telemetry::otel_layer_from_env` before accepting connections. These
+initializers install the connection-owned exporter for wire counters and
+delivery diagnostics. Custom SDK-only integrations must adopt Myko's telemetry
+initialization to export these diagnostics.
 For a short log-based investigation, also set `MYKO_WS_DIAGNOSTICS_LOGS=1`
 and enable `myko_server::delivery=debug` in the tracing filter. This emits one
 client summary and at most five operation summaries (ranked by encoded bytes)
