@@ -218,3 +218,9 @@ root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", 
 
 [tasks.test-core-ci]
 root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "--features", "ci", "--", "--test-threads=1"]
+
+[tasks.format-autosocket-native]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "libs/autosocket/src/native.rs"]
+
+[tasks.check-autosocket-native]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "autosocket", "--all-targets", "--no-deps", "--", "-D", "warnings"]
