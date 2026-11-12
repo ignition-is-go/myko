@@ -197,3 +197,9 @@ root = ["bun", "test", "scripts/publish-package.test.ts"]
 
 [tasks.test-history-feed]
 root = ["sh", "scripts/test-postgres-history.sh", "postgres::history_feed::tests"]
+
+[tasks.test-event-sink]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "event_sink_filter", "--", "--test-threads=1"]
+
+[tasks.check-event-sink]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-server", "--lib", "--no-deps", "--", "-D", "warnings"]
