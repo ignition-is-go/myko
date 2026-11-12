@@ -144,11 +144,61 @@ struct CausalCounters {
 }
 
 #[derive(Clone, Debug, Hash, Eq, PartialEq)]
-struct TransitionKey {
+struct TransitionIdentity {
     entity_type: &'static str,
     id: Arc<str>,
     operation: u8,
-    content_hash: u64,
+}
+
+// Entity snapshots are immutable. Retain the first occurrence cheaply; only a
+// repeated identity needs the existing serialized-content comparison. Release
+// that snapshot once its fingerprint is cached so old payloads do not accumulate.
+enum SeenContent {
+    First(Arc<dyn AnyItem>),
+    Fingerprints(HashSet<u64>),
+}
+
+#[derive(Default)]
+struct SeenTransitions(HashMap<TransitionIdentity, SeenContent>);
+
+impl SeenTransitions {
+    fn insert(&mut self, item: &Arc<dyn AnyItem>, change: MEventType) -> bool {
+        let identity = TransitionIdentity {
+            entity_type: item.entity_type(),
+            id: item.id(),
+            operation: match change {
+                MEventType::SET => 1,
+                MEventType::DEL => 2,
+            },
+        };
+        match self.0.entry(identity) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(SeenContent::First(item.clone()));
+                true
+            }
+            std::collections::hash_map::Entry::Occupied(mut entry) => match entry.get_mut() {
+                SeenContent::First(first) if Arc::ptr_eq(first, item) => false,
+                SeenContent::First(first) => {
+                    let mut fingerprints = HashSet::from([Self::fingerprint(first.as_ref())]);
+                    let inserted = fingerprints.insert(Self::fingerprint(item.as_ref()));
+                    *entry.get_mut() = SeenContent::Fingerprints(fingerprints);
+                    inserted
+                }
+                SeenContent::Fingerprints(fingerprints) => {
+                    fingerprints.insert(Self::fingerprint(item.as_ref()))
+                }
+            },
+        }
+    }
+
+    fn fingerprint(item: &dyn AnyItem) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        match serde_json::to_vec(item) {
+            Ok(bytes) => bytes.hash(&mut hasher),
+            Err(_) => item.id().hash(&mut hasher),
+        }
+        hasher.finish()
+    }
 }
 
 enum PendingMutationKind {
@@ -176,7 +226,7 @@ struct CausalState {
     owner: Arc<CausalCounters>,
     root_tx: Uuid,
     queue: VecDeque<PendingMutation>,
-    seen: HashSet<TransitionKey>,
+    seen: SeenTransitions,
     derived_count: usize,
     current_depth: Option<usize>,
     current_mode: Option<EdgeApplyMode>,
@@ -1196,23 +1246,6 @@ impl MykoServerContext {
         }
     }
 
-    fn transition_key(item: &dyn AnyItem, change: MEventType) -> TransitionKey {
-        let mut hasher = DefaultHasher::new();
-        match serde_json::to_vec(item) {
-            Ok(bytes) => bytes.hash(&mut hasher),
-            Err(_) => item.id().hash(&mut hasher),
-        }
-        TransitionKey {
-            entity_type: item.entity_type(),
-            id: item.id(),
-            operation: match change {
-                MEventType::SET => 1,
-                MEventType::DEL => 2,
-            },
-            content_hash: hasher.finish(),
-        }
-    }
-
     #[allow(clippy::needless_pass_by_value)]
     fn causal_error(item: &dyn AnyItem, message: String) -> PersistError {
         PersistError {
@@ -1272,8 +1305,7 @@ impl MykoServerContext {
 
             let mut accepted = Vec::with_capacity(items.len());
             for item in items {
-                let key = Self::transition_key(item.as_ref(), change);
-                if !state.seen.insert(key) {
+                if !state.seen.insert(&item, change) {
                     self.causal_counters
                         .duplicate_transitions_suppressed
                         .fetch_add(1, Ordering::Relaxed);
@@ -1379,8 +1411,7 @@ impl MykoServerContext {
             let mut accept = |items: Vec<Arc<dyn AnyItem>>, change| {
                 let mut accepted = Vec::with_capacity(items.len());
                 for item in items {
-                    let key = Self::transition_key(item.as_ref(), change);
-                    if !state.seen.insert(key) {
+                    if !state.seen.insert(&item, change) {
                         self.causal_counters
                             .duplicate_transitions_suppressed
                             .fetch_add(1, Ordering::Relaxed);
@@ -1493,7 +1524,7 @@ impl MykoServerContext {
                 owner: self.causal_counters.clone(),
                 root_tx: Uuid::new_v4(),
                 queue: VecDeque::new(),
-                seen: HashSet::new(),
+                seen: SeenTransitions::default(),
                 derived_count: 0,
                 current_depth: None,
                 current_mode: None,
@@ -1598,7 +1629,7 @@ impl MykoServerContext {
                 owner: self.causal_counters.clone(),
                 root_tx: Uuid::new_v4(),
                 queue: VecDeque::new(),
-                seen: HashSet::new(),
+                seen: SeenTransitions::default(),
                 derived_count: 0,
                 current_depth: None,
                 current_mode: None,
@@ -2852,9 +2883,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{MykoServerContext, MykoServerRuntime};
-    use crate::common::to_value::ToValue;
     use crate::{
-        common::with_id::WithId,
+        common::{to_value::ToValue, with_id::WithId},
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
@@ -2986,6 +3016,137 @@ mod tests {
                 history_replay: None,
             },
         )
+    }
+
+    #[derive(Clone, Debug)]
+    struct FingerprintTestItem {
+        id: Arc<str>,
+        value: u64,
+        family: &'static str,
+        fail_serialization: bool,
+        serializations: Arc<AtomicUsize>,
+    }
+
+    impl Serialize for FingerprintTestItem {
+        fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+            self.serializations.fetch_add(1, Ordering::Relaxed);
+            if self.fail_serialization {
+                return Err(serde::ser::Error::custom("deliberate fingerprint failure"));
+            }
+            (&self.id, self.value).serialize(serializer)
+        }
+    }
+    impl WithId for FingerprintTestItem {
+        fn id(&self) -> Arc<str> {
+            self.id.clone()
+        }
+    }
+    impl AnyItem for FingerprintTestItem {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn entity_type(&self) -> &'static str {
+            self.family
+        }
+        fn equals(&self, other: &dyn AnyItem) -> bool {
+            other.as_any().downcast_ref::<Self>().is_some_and(|other| {
+                self.id == other.id
+                    && self.value == other.value
+                    && self.family == other.family
+                    && self.fail_serialization == other.fail_serialization
+            })
+        }
+    }
+    fn fingerprint_test_item(id: &str, value: u64, count: &Arc<AtomicUsize>) -> Arc<dyn AnyItem> {
+        Arc::new(FingerprintTestItem {
+            id: id.into(),
+            value,
+            family: "FingerprintTestItem",
+            fail_serialization: false,
+            serializations: count.clone(),
+        })
+    }
+
+    #[test]
+    fn causal_unique_identities_do_not_serialize_payloads() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut seen = super::SeenTransitions::default();
+        for index in 0..1000 {
+            let item = fingerprint_test_item(&format!("unique-{index}"), index, &count);
+            assert!(seen.insert(&item, MEventType::SET));
+        }
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn causal_same_snapshot_replay_does_not_serialize() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let item = fingerprint_test_item("same", 1, &count);
+        let mut seen = super::SeenTransitions::default();
+        assert!(seen.insert(&item, MEventType::SET));
+        assert!(!seen.insert(&item, MEventType::SET));
+        assert_eq!(count.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn causal_repeated_identity_fingerprints_once_then_releases_first_snapshot() {
+        let count = Arc::new(AtomicUsize::new(0));
+        let first = fingerprint_test_item("same", 1, &count);
+        let first_weak = Arc::downgrade(&first);
+        let mut seen = super::SeenTransitions::default();
+        assert!(seen.insert(&first, MEventType::SET));
+        drop(first);
+        assert!(first_weak.upgrade().is_some());
+        let repeated = fingerprint_test_item("same", 1, &count);
+        assert!(!seen.insert(&repeated, MEventType::SET));
+        assert_eq!(count.load(Ordering::Relaxed), 2);
+        assert!(first_weak.upgrade().is_none());
+        assert!(seen.insert(&fingerprint_test_item("same", 2, &count), MEventType::SET));
+        assert!(!seen.insert(&repeated, MEventType::SET));
+        assert_eq!(count.load(Ordering::Relaxed), 4);
+        assert!(seen.insert(&repeated, MEventType::DEL));
+        assert_eq!(count.load(Ordering::Relaxed), 4);
+    }
+
+    #[test]
+    fn causal_lazy_fingerprints_match_eager_reference_including_serialization_failures() {
+        use std::hash::{Hash, Hasher};
+        let count = Arc::new(AtomicUsize::new(0));
+        let mut lazy = super::SeenTransitions::default();
+        let mut eager = std::collections::HashSet::new();
+        let mut seed = 17_u64;
+        for _ in 0..5000 {
+            seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            let item: Arc<dyn AnyItem> = Arc::new(FingerprintTestItem {
+                id: format!("id-{}", seed.checked_rem(7).unwrap_or_default()).into(),
+                value: seed
+                    .checked_shr(8)
+                    .unwrap_or_default()
+                    .checked_rem(11)
+                    .unwrap_or_default(),
+                family: if seed & 1 == 0 {
+                    "FirstFamily"
+                } else {
+                    "SecondFamily"
+                },
+                fail_serialization: seed.checked_rem(13) == Some(0),
+                serializations: count.clone(),
+            });
+            let (operation, change) = if seed & 2 == 0 {
+                (1_u8, MEventType::SET)
+            } else {
+                (2_u8, MEventType::DEL)
+            };
+            // Preserve the previous eager algorithm as the independent oracle.
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            match serde_json::to_vec(item.as_ref()) {
+                Ok(bytes) => bytes.hash(&mut hasher),
+                Err(_) => item.id().hash(&mut hasher),
+            }
+            let expected =
+                eager.insert((item.entity_type(), item.id(), operation, hasher.finish()));
+            assert_eq!(lazy.insert(&item, change), expected);
+        }
     }
 
     #[test]

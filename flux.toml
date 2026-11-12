@@ -224,3 +224,9 @@ root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=t
 
 [tasks.check-autosocket-native]
 root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "autosocket", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.check-event-production-format]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "--check", "libs/myko/core/src/server/context.rs"]
+
+[tasks.format-event-production]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "libs/myko/core/src/server/context.rs"]
