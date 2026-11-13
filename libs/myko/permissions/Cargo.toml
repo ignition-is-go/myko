@@ -1,6 +1,6 @@
 [package]
 name = "myko-permissions"
-version = "6.15.2"
+version = "6.16.0"
 edition = "2024"
 description = "Persisted permission entities, local policy, and operator recovery for Myko"
 license = "AGPL-3.0-or-later"
