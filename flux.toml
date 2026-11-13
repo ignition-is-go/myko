@@ -197,3 +197,57 @@ root = ["bun", "test", "scripts/publish-package.test.ts"]
 
 [tasks.test-history-feed]
 root = ["sh", "scripts/test-postgres-history.sh", "postgres::history_feed::tests"]
+
+[tasks.test-event-sink]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "event_sink_filter", "--", "--test-threads=1"]
+
+[tasks.check-event-sink]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-server", "--lib", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-event-production]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "server::context::tests", "--", "--test-threads=1"]
+
+[tasks.test-relationship-index]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "relationship_manager::", "--", "--test-threads=1"]
+
+[tasks.format-relationship-index]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "libs/myko/core/src/server/relationship_manager.rs"]
+
+[tasks.check-relationship-index]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--tests", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-core-ci]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "--features", "ci", "--", "--test-threads=1"]
+
+[tasks.format-autosocket-native]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "libs/autosocket/src/native.rs"]
+
+[tasks.check-autosocket-native]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "autosocket", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.check-event-production-format]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "--check", "libs/myko/core/src/server/context.rs"]
+
+[tasks.format-event-production]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "libs/myko/core/src/server/context.rs"]
+
+[tasks.test-delivery-timing]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "ws_handler::delivery_timing_tests", "--", "--test-threads=1"]
+
+[tasks.format-delivery-timing]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "libs/myko/server/src/ws_handler.rs", "libs/myko/server/src/ws_handler/delivery_timing_tests.rs", "libs/myko/server/src/delivery_diagnostics.rs"]
+
+[tasks.test-delivery-writer]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "ws_handler::", "--", "--test-threads=1"]
+
+[tasks.test-delivery-schema]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-telemetry", "--lib", "websocket_metrics::delivery", "--", "--test-threads=1"]
+
+[tasks.test-delivery-authorization]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "subscription_authorization", "--", "--test-threads=1"]
+
+[tasks.check-delivery-timing]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-delivery-websocket-auth]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--test", "websocket_auth", "--", "--test-threads=1"]
