@@ -108,6 +108,17 @@ fn logs_enabled() -> bool {
 }
 
 impl DeliveryDiagnostics {
+    #[cfg(test)]
+    pub(super) fn for_timing_test(client_id: &str, peer: SocketAddr) -> Self {
+        Self::with_enabled(client_id, peer, true)
+    }
+
+    #[cfg(test)]
+    pub(super) fn timing_maxima_ms(&self) -> Option<(f64, f64, f64)> {
+        let state = self.state.as_ref()?.lock().ok()?;
+        Some((state.materialize_ms, state.serialize_ms, state.send_ms))
+    }
+
     pub fn new(client_id: &str, peer: SocketAddr) -> Self {
         static ENABLED: OnceLock<bool> = OnceLock::new();
         let enabled = *ENABLED
@@ -826,9 +837,10 @@ fn count(value: usize) -> u64 {
     clippy::expect_used
 )]
 mod tests {
-    use super::*;
     use myko::wire::{CancelSubscription, ReportResponse, WrappedReport};
     use serde_json::json;
+
+    use super::*;
 
     fn diagnostics() -> DeliveryDiagnostics {
         DeliveryDiagnostics::with_enabled(

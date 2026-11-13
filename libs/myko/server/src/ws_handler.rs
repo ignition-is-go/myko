@@ -2200,6 +2200,9 @@ impl WsWriter for ChannelWriter {
 }
 
 #[cfg(test)]
+mod delivery_timing_tests;
+
+#[cfg(test)]
 mod tests {
     use std::io;
 

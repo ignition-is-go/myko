@@ -230,3 +230,24 @@ root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=t
 
 [tasks.format-event-production]
 root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "libs/myko/core/src/server/context.rs"]
+
+[tasks.test-delivery-timing]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "ws_handler::delivery_timing_tests", "--", "--test-threads=1"]
+
+[tasks.format-delivery-timing]
+root = ["rustfmt", "+nightly", "--edition", "2024", "--config", "skip_children=true", "libs/myko/server/src/ws_handler.rs", "libs/myko/server/src/ws_handler/delivery_timing_tests.rs", "libs/myko/server/src/delivery_diagnostics.rs"]
+
+[tasks.test-delivery-writer]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "ws_handler::", "--", "--test-threads=1"]
+
+[tasks.test-delivery-schema]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-telemetry", "--lib", "websocket_metrics::delivery", "--", "--test-threads=1"]
+
+[tasks.test-delivery-authorization]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "subscription_authorization", "--", "--test-threads=1"]
+
+[tasks.check-delivery-timing]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--all-targets", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-delivery-websocket-auth]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--test", "websocket_auth", "--", "--test-threads=1"]
