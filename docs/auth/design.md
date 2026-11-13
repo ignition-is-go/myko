@@ -221,9 +221,39 @@ The server selects only public `myko` and never echoes the credential.
 Use TLS and redact authorization and WebSocket protocol headers in proxy logs.
 Tokens never belong in a connection URL.
 
-With the `client-credentials` feature, `Auth0ClientCredentials` implements `CredentialProvider`.
-It exchanges the service's client credentials for an API access token, caches the token, and renews it before expiry.
-The secret goes only to the configured HTTPS issuer.
+### Machine clients with an external authorization server
+
+Myko does not issue machine tokens. A service obtains them from an external OAuth 2.0
+authorization server with the client credentials grant (RFC 6749 section 4.4).
+The token identifies the client itself; no user is involved.
+
+Enable the native-only `client` feature of `myko-auth` and configure `client::ClientCredentials`.
+Protocol requests use the `oauth2` crate, and discovery uses the `openidconnect` crate.
+
+```rust,ignore
+use myko_auth::client::{ClientCredentials, TargetResource, TokenEndpoint};
+
+let credentials = ClientCredentials::new(
+    TokenEndpoint::Discover("https://login.example.com/".into()),
+    client_id,
+    client_secret,
+)?
+.with_target(TargetResource::Resource("https://api.example.com/".into()))
+.with_scope("Camera:read");
+client.set_credential_provider(Arc::new(credentials));
+```
+
+`TokenEndpoint::Discover` reads `token_endpoint` from the issuer's OIDC discovery document on first use.
+`TokenEndpoint::Fixed` uses a documented endpoint without discovery.
+`TargetResource` selects the RFC 8707 `resource` parameter or the Auth0-style `audience` parameter.
+`ClientAuth` selects `client_secret_basic`, the default, or `client_secret_post`.
+Endpoints must use HTTPS; plain HTTP is accepted only for loopback development hosts.
+The provider does not follow redirects, so the secret goes only to the configured endpoint.
+Clones share one token cache, which renews tokens shortly before expiry.
+
+With the `client-credentials` feature, `myko-auth0` provides `Auth0ClientCredentials`,
+which is `ClientCredentials` configured for Auth0's `oauth/token` endpoint,
+`client_secret_post`, and `audience` parameter.
 Auth0 token verification uses cached signing keys and validates RS256, issuer, audience, subject, expiry, and optional not-before.
 JWT validation never runs as a network request for each command.
 
