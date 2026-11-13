@@ -1,6 +1,8 @@
 //! Verified identities and app-owned local authorization.
 mod access;
 pub use access::AuthenticatedAccess;
+#[cfg(all(feature = "client", not(target_arch = "wasm32")))]
+pub mod client;
 pub mod client_events;
 pub mod identity;
 pub mod oauth;
