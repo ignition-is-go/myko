@@ -2416,7 +2416,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3759,9 +3759,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "3.1.8"
+version = "3.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cc422b98b0e75cb9ec0775a7e718a4ef28db5e7ee89bae433030426d8fecf6c"
+checksum = "a8737da165b405c716274711ffa937aea7f1973bad8d49b07a41d4abea9b65e8"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3781,9 +3781,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-gpui"
-version = "3.1.2"
+version = "3.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed2011c68d533cdd154cb6071b16512edf2da3cf59730da2a6caf4dbc5ae2e50"
+checksum = "304ea432d36937586257481582b8274ef3e9e2f34e432f2f2295e5caa65ddde6"
 dependencies = [
  "flume 0.11.1",
  "gpui-unofficial",
@@ -3792,9 +3792,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-leptos"
-version = "3.1.8"
+version = "3.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb07147a4b2f915db338422716799ec534d032e2481f4bcfb757e7f26e6187b9"
+checksum = "a9e4947c1bba76cbedb3f0c28e66613c8541384c067a5085629482ed30a95fce"
 dependencies = [
  "hyphae",
  "leptos",
@@ -3812,7 +3812,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.57.0",
+ "windows-core 0.62.2",
 ]
 
 [[package]]
@@ -4074,7 +4074,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6601,7 +6601,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7323,7 +7323,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -7336,7 +7336,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7394,7 +7394,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8652,7 +8652,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -10074,7 +10074,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
