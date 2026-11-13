@@ -156,9 +156,13 @@ then inspect its subscription usage and report dependencies.
    cover the priority/normal command queues. `queue_peak` samples all three send
    queue lengths plus producer observations of the deferred queue; it is an
    observed high-water mark, not an exact continuous gauge.
-5. Materialization measures conversion of a deferred report output to JSON;
-   serialization measures JSON/CBOR frame encoding. Send time includes the sink
-   send/flush wait. Successful send means accepted by the local socket path,
+5. Materialization measures conversion of a deferred report output to JSON or a
+   pending query/view response to its wire response. It excludes queue wait and
+   deliberate view sampling delay. Serialization measures JSON/CBOR frame
+   encoding, including encoding a replacement error response when authorization
+   rejects the original response. Authorization checks are outside both the
+   serialization and send timers. Send time measures only the sink send/flush
+   wait. Successful send means accepted by the local socket path,
    **not acknowledged or applied by Unreal**. Low server times with choppy Unreal
    application requires receive/decode/game-thread hooks at that endpoint.
 
@@ -167,11 +171,26 @@ The client-level `inspection` histogram measures the additional diagnostic work
 on the writer path. `untracked` and `inspection_incomplete` counters expose
 coverage limits even when optional debug logs are disabled.
 
-Operation-tagged histograms include subscription setup, production gap, queue wait, report
+Operation-tagged histograms include subscription setup, production gap, queue wait, response
 materialization, serialization, send, and inter-send gap. Connection-level gauge
 metrics include active subscriptions, equivalent initial subscriptions, and queue
 peak. Counters are exported on each five-second flush (and teardown), so use a
 rate window longer than both this window and the collector interval.
+
+To find expensive operations, group by the existing `kind` and `operation`
+labels and rank the rate of the serialization histogram's cumulative sum. This
+shows elapsed encoding seconds per wall second, rather than the slowest single
+response. Show the histogram count rate beside it; sum rate divided by count
+rate gives average encoding time per response. Add materialization sum rate
+when comparing the full response preparation cost, especially for reports.
+Neither measurement is a process CPU counter.
+
+Use p99 to locate occasional slow responses, not to rank total work. It estimates
+the duration at or below which 99% of observations fall in the selected interval.
+Histogram buckets make that estimate approximate. Frequent cheap responses can
+consume more total time than rare responses with a high p99. Compare counts,
+bytes, average duration, and p99 over the same interval. These timing corrections
+retain the existing instrument names, units, buckets, and labels.
 
 ## Bounds and operational cost
 
