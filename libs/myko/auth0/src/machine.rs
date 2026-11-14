@@ -1,48 +1,31 @@
-use std::{
-    fmt,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::fmt;
 
 use futures::future::BoxFuture;
-use myko_auth::{AuthError, CredentialProvider, Credentials};
-use serde::Deserialize;
-use tokio::sync::Mutex;
+use myko_auth::{
+    AuthError, CredentialProvider, Credentials,
+    client::{ClientAuth, ClientCredentials, TargetResource, TokenEndpoint},
+};
 
-use crate::{Issuer, http_client, read_json};
-
-#[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    token_type: String,
-    expires_in: u64,
-}
-
-struct CachedToken {
-    token: String,
-    renew_at: Instant,
-}
+use crate::Issuer;
 
 /// Obtains API access tokens using Auth0's client credentials grant.
 ///
-/// Clones share the token cache. Reconnects reuse a valid token and renew it
-/// before expiry. The client secret is sent only to the configured HTTPS issuer.
+/// This is [`ClientCredentials`] configured for Auth0's fixed token endpoint,
+/// `client_secret_post`, and `audience` parameter. Clones share the token cache.
+/// Reconnects reuse a valid token and renew it before expiry. The client secret
+/// is sent only to the configured HTTPS issuer.
 #[derive(Clone)]
 pub struct Auth0ClientCredentials {
-    issuer: Issuer,
-    client_id: String,
-    client_secret: String,
-    scope: Option<String>,
-    client: reqwest::Client,
-    token: Arc<Mutex<Option<CachedToken>>>,
+    issuer: String,
+    inner: ClientCredentials,
 }
 
 impl fmt::Debug for Auth0ClientCredentials {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Auth0ClientCredentials")
-            .field("issuer", &self.issuer.url)
-            .field("client_id", &self.client_id)
-            .finish_non_exhaustive()
+            .field("issuer", &self.issuer)
+            .field("inner", &self.inner)
+            .finish()
     }
 }
 
@@ -57,85 +40,38 @@ impl Auth0ClientCredentials {
         client_id: String,
         client_secret: String,
     ) -> Result<Self, AuthError> {
-        if client_id.is_empty() || client_secret.is_empty() {
-            return Err(AuthError::Unavailable);
-        }
-        Ok(Self {
-            issuer: Issuer::new(issuer, audience)?,
+        Self::for_issuer(&Issuer::new(issuer, audience)?, client_id, client_secret)
+    }
+
+    fn for_issuer(
+        issuer: &Issuer,
+        client_id: String,
+        client_secret: String,
+    ) -> Result<Self, AuthError> {
+        let inner = ClientCredentials::new(
+            TokenEndpoint::Fixed(issuer.endpoint("oauth/token")?.to_string()),
             client_id,
             client_secret,
-            scope: None,
-            client: http_client()?,
-            token: Arc::new(Mutex::new(None)),
+        )?
+        .with_client_auth(ClientAuth::Post)
+        .with_target(TargetResource::Audience(issuer.audience.clone()));
+        Ok(Self {
+            issuer: issuer.url.to_string(),
+            inner,
         })
     }
 
     /// Restricts the requested token to these space-separated API scopes.
     #[must_use]
     pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
-        self.scope = Some(scope.into());
+        self.inner = self.inner.with_scope(scope);
         self
-    }
-
-    async fn get(&self) -> Result<Credentials, AuthError> {
-        let mut cached = self.token.lock().await;
-        if let Some(token) = cached
-            .as_ref()
-            .filter(|token| Instant::now() < token.renew_at)
-        {
-            return Ok(Credentials {
-                bearer: Some(token.token.clone()),
-            });
-        }
-        let mut form = vec![
-            ("grant_type", "client_credentials"),
-            ("client_id", self.client_id.as_str()),
-            ("client_secret", self.client_secret.as_str()),
-            ("audience", self.issuer.audience.as_str()),
-        ];
-        if let Some(scope) = &self.scope {
-            form.push(("scope", scope.as_str()));
-        }
-        let started = Instant::now();
-        let response = self
-            .client
-            .post(self.issuer.endpoint("oauth/token")?)
-            .form(&form)
-            .send()
-            .await
-            .map_err(|_| AuthError::Unavailable)?;
-        let response: TokenResponse = serde_json::from_value(read_json(response).await?)
-            .map_err(|_| AuthError::Unavailable)?;
-        if response.access_token.is_empty()
-            || response.access_token.len() > crate::MAX_TOKEN_BYTES
-            || !response.token_type.eq_ignore_ascii_case("Bearer")
-            || response.expires_in == 0
-        {
-            return Err(AuthError::Unavailable);
-        }
-        let lifetime = Duration::from_secs(response.expires_in);
-        let margin = Duration::from_secs((response.expires_in / 10).clamp(1, 30));
-        let renew_at = started
-            .checked_add(lifetime.saturating_sub(margin))
-            .ok_or(AuthError::Unavailable)?;
-        if started.elapsed() >= lifetime {
-            return Err(AuthError::Expired);
-        }
-        let credentials = Credentials {
-            bearer: Some(response.access_token.clone()),
-        };
-        *cached = Some(CachedToken {
-            token: response.access_token,
-            renew_at,
-        });
-        drop(cached);
-        Ok(credentials)
     }
 }
 
 impl CredentialProvider for Auth0ClientCredentials {
     fn credentials(&self) -> BoxFuture<'_, Result<Credentials, AuthError>> {
-        Box::pin(self.get())
+        self.inner.credentials()
     }
 }
 
@@ -211,13 +147,17 @@ mod tests {
             }
             Ok(count)
         });
-        let mut provider = Auth0ClientCredentials::new(
-            "https://tenant.example/",
-            "myko-api",
+        let url = reqwest::Url::parse(&format!("http://{address}/"))?;
+        let issuer = Issuer {
+            identifier: url.to_string(),
+            url,
+            audience: "myko-api".to_owned(),
+        };
+        let provider = Auth0ClientCredentials::for_issuer(
+            &issuer,
             "machine-1".to_owned(),
             "fixture-secret".to_owned(),
         )?;
-        provider.issuer.url = reqwest::Url::parse(&format!("http://{address}/"))?;
         Ok((provider, handle))
     }
 
