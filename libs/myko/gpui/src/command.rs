@@ -4,6 +4,7 @@ use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, Render, Subscription, Window,
 };
 use hyphae_gpui::{CellEntity, CellEntityStatus, ToGpuiEntity as _};
+use myko::client::CommandLifecycle;
 use myko::hyphae::{Cell, CellImmutable, CellValue};
 use serde::de::DeserializeOwned;
 
@@ -319,6 +320,41 @@ impl<R: CellValue> CommandTracker<R> {
             }
         });
     }
+}
+
+/// Observe every command sent through the installed Myko client.
+///
+/// Each [`CommandLifecycle`] event is delivered on the foreground executor, in
+/// the order the client emitted it, so the callback can update entities or
+/// global state (for example, to raise app-wide toasts). Commands sent before
+/// the observation started are not reported. Drop the subscription to stop.
+pub fn on_command_lifecycle(
+    cx: &mut App,
+    callback: impl Fn(&CommandLifecycle, &mut App) + 'static,
+) -> Subscription {
+    let (sender, receiver) = flume::unbounded();
+    let guard = myko(cx).client().on_command_lifecycle(move |event| {
+        let _ = sender.send(event.clone());
+    });
+    let task = cx.spawn(async move |cx| {
+        loop {
+            // Same background-completion hop as the store bridges, for native
+            // and Wasm wakeups alike.
+            let receive = receiver.clone();
+            let Ok(event) = cx
+                .background_executor()
+                .spawn(async move { receive.recv_async().await })
+                .await
+            else {
+                break;
+            };
+            cx.update(|cx| callback(&event, cx));
+        }
+    });
+    Subscription::new(move || {
+        drop(guard);
+        drop(task);
+    })
 }
 
 /// Observe a command from an owning entity and redraw it on lifecycle changes.
@@ -869,5 +905,66 @@ mod tests {
         owner.read_with(cx, |owner, _| {
             assert_eq!(owner.errors, ["network"]);
         });
+    }
+
+    #[derive(Clone)]
+    struct Unserializable;
+
+    impl serde::Serialize for Unserializable {
+        fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("refused"))
+        }
+    }
+
+    impl myko::core::command::CommandId for Unserializable {
+        fn command_id(&self) -> Arc<str> {
+            "Unserializable".into()
+        }
+    }
+
+    #[gpui::test]
+    fn lifecycle_events_reach_the_foreground_in_order_until_dropped(cx: &mut TestAppContext) {
+        let seen = Arc::new(Mutex::new(Vec::<super::CommandLifecycle>::new()));
+        let subscription = cx.update(|cx| {
+            crate::provide_myko("ws://127.0.0.1:9", cx);
+            let seen = seen.clone();
+            super::on_command_lifecycle(cx, move |event, _cx| {
+                seen.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(event.clone());
+            })
+        });
+        let send = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                let _ = crate::myko(cx)
+                    .client()
+                    .send_command::<_, u32>(&Unserializable);
+            });
+            cx.run_until_parked();
+        };
+
+        send(cx);
+        let events = seen
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events.first(),
+            Some(super::CommandLifecycle::Sent { .. })
+        ));
+        assert!(matches!(
+            events.get(1),
+            Some(super::CommandLifecycle::Resolved { result: Err(_), .. })
+        ));
+
+        drop(subscription);
+        send(cx);
+        assert_eq!(
+            seen.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .len(),
+            2
+        );
     }
 }
