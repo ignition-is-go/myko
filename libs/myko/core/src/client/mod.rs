@@ -10,6 +10,7 @@ use std::{
 mod cbor_json;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
+mod lifecycle;
 mod map_response;
 mod query_map;
 mod view_map;
@@ -21,6 +22,7 @@ use hyphae::{
     Cell, CellImmutable, CellMap, CellMutable, CellValue, Gettable, JoinExt, MapExt, Materialize,
     Mutable, SubscriptionGuard, Watchable, WeakCellMap, flat,
 };
+pub use lifecycle::CommandLifecycle;
 pub use query_map::QueryMapWatch;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -544,6 +546,10 @@ impl<T: CellValue> WindowedQueryWatch<T> {
 /// Response handler for incoming command responses (one-shot).
 type CommandResponseHandler = Box<dyn FnOnce(Result<Value, String>) + Send>;
 
+/// A registered response handler plus the command id, captured only when a
+/// lifecycle observer existed at send time.
+type PendingCommandResponse = (Option<Arc<str>>, CommandResponseHandler);
+
 /// Handler for incoming query responses.
 type QueryHandler = Arc<dyn Fn(Value) + Send + Sync>;
 
@@ -999,8 +1005,9 @@ struct MykoClientInner {
     query_handlers: DashMap<Arc<str>, QueryHandler>,
     report_handlers: DashMap<Arc<str>, ReportHandler>,
     report_result_handlers: DashMap<Arc<str>, ReportResultHandler>,
-    command_response_handlers: Mutex<HashMap<String, CommandResponseHandler>>,
+    command_response_handlers: Mutex<HashMap<String, PendingCommandResponse>>,
     command_request_handlers: DashMap<Arc<str>, CommandRequestHandler>,
+    command_observers: lifecycle::CommandObservers,
 
     // Report subscription cache — keyed by report_id:params_hash
     report_cache: DashMap<String, Box<dyn ClientReportCacheEntryDyn>>,
@@ -1326,7 +1333,7 @@ impl MykoClient {
 
         let query_handlers: DashMap<Arc<str>, QueryHandler> = DashMap::new();
         let report_handlers: DashMap<Arc<str>, ReportHandler> = DashMap::new();
-        let command_response_handlers: Mutex<HashMap<String, CommandResponseHandler>> =
+        let command_response_handlers: Mutex<HashMap<String, PendingCommandResponse>> =
             Mutex::new(HashMap::new());
         let command_request_handlers: DashMap<Arc<str>, CommandRequestHandler> = DashMap::new();
         let pending_sends: Mutex<Vec<WsFrame>> = Mutex::new(Vec::new());
@@ -1402,6 +1409,7 @@ impl MykoClient {
                 report_result_handlers: DashMap::new(),
                 command_response_handlers,
                 command_request_handlers,
+                command_observers: lifecycle::CommandObservers::default(),
                 report_cache: DashMap::new(),
                 list_watch_cache: DashMap::new(),
                 list_watch_cache_gate: Mutex::new(()),
@@ -1649,33 +1657,12 @@ impl MykoClient {
             "ws:m:command-response" => {
                 if let Ok(response) = serde_json::from_value::<crate::wire::CommandResponse>(data())
                 {
-                    // Release the lock BEFORE invoking the one-shot handler. The
-                    // handler runs app callbacks synchronously (cell.set → hyphae
-                    // subscribers), which may re-enter `send_command` and re-lock
-                    // this same mutex → recursive-lock panic (WASM abort). `tx` is a
-                    // unique per-request id, so remove-then-call loses no atomicity.
-                    let handler = inner
-                        .command_response_handlers
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&response.tx);
-                    if let Some(handler) = handler {
-                        handler(Ok(response.response));
-                    }
+                    Self::resolve_command(inner, &response.tx, Ok(response.response));
                 }
             }
             "ws:m:command-error" => {
                 if let Ok(err) = serde_json::from_value::<crate::wire::CommandError>(data()) {
-                    // Same as command-response: drop the lock before the callback so
-                    // a command issued from it doesn't recursively re-lock.
-                    let handler = inner
-                        .command_response_handlers
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner)
-                        .remove(&err.tx);
-                    if let Some(handler) = handler {
-                        handler(Err(err.message));
-                    }
+                    Self::resolve_command(inner, &err.tx, Err(err.message));
                 }
             }
             "ws:m:command" => {
@@ -1759,6 +1746,33 @@ impl MykoClient {
     }
 
     /// Decode a WebSocket frame according to its type.
+    /// Run the one-shot handler for `tx`, then report its resolution.
+    fn resolve_command(inner: &MykoClientInner, tx: &str, result: Result<Value, String>) {
+        // Release the lock BEFORE invoking the one-shot handler. The handler runs
+        // app callbacks synchronously (cell.set → hyphae subscribers), which may
+        // re-enter `send_command` and re-lock this same mutex → recursive-lock panic
+        // (WASM abort). `tx` is a unique per-request id, so remove-then-call loses
+        // no atomicity.
+        let pending = inner
+            .command_response_handlers
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(tx);
+        let Some((command_id, handler)) = pending else {
+            return;
+        };
+        let outcome = command_id.as_ref().map(|_| {
+            result
+                .as_ref()
+                .map(|_| ())
+                .map_err(|message| Arc::<str>::from(message.as_str()))
+        });
+        handler(result);
+        if let Some(outcome) = outcome {
+            Self::emit_resolved(inner, tx, command_id, outcome);
+        }
+    }
+
     fn decode_message(frame: &WsFrame) -> Option<Value> {
         match frame {
             WsFrame::Text(content) => serde_json::from_str::<Value>(content).ok(),
@@ -2750,19 +2764,21 @@ impl MykoClient {
     {
         let request = CommandRequest::new(command.clone());
         let tx = request.tx.to_string();
+        let observed_id = self
+            .inner
+            .command_observers
+            .is_observed()
+            .then(|| command.command_id());
 
-        let wrapped = match wrap_command_request(&request) {
-            Ok(w) => w,
-            Err(e) => {
-                let cell = Cell::new(Some(Err(e.to_string())));
-                return cell.lock();
-            }
-        };
-
-        let msg = MykoMessage::Command(wrapped);
-        let frame = match self.encode_message(&msg) {
+        let frame = match wrap_command_request(&request)
+            .map_err(|e| e.to_string())
+            .and_then(|wrapped| self.encode_message(&MykoMessage::Command(wrapped)))
+        {
             Ok(f) => f,
             Err(e) => {
+                if let Some(command_id) = observed_id {
+                    self.emit_local_failure(&tx, command_id, &e);
+                }
                 let cell = Cell::new(Some(Err(e)));
                 return cell.lock();
             }
@@ -2779,16 +2795,22 @@ impl MykoClient {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             handlers.insert(
-                tx,
-                Box::new(move |result: Result<Value, String>| {
-                    let mapped = result.and_then(|value| {
-                        serde_json::from_value::<R>(value).map_err(|e| e.to_string())
-                    });
-                    cell_writer.set(Some(mapped));
-                }),
+                tx.clone(),
+                (
+                    observed_id.clone(),
+                    Box::new(move |result: Result<Value, String>| {
+                        let mapped = result.and_then(|value| {
+                            serde_json::from_value::<R>(value).map_err(|e| e.to_string())
+                        });
+                        cell_writer.set(Some(mapped));
+                    }),
+                ),
             );
         }
 
+        if let Some(command_id) = observed_id {
+            self.emit_sent(&tx, command_id);
+        }
         self.send_or_queue(frame);
 
         cell.lock()
@@ -2797,6 +2819,52 @@ impl MykoClient {
     // ─────────────────────────────────────────────────────────────────────────
     // Handle Command — callback-based
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// Observe every command this client sends, from any call site.
+    ///
+    /// The observer sees [`CommandLifecycle::Sent`] once the response handler is
+    /// registered and [`CommandLifecycle::Resolved`] after the per-command result
+    /// has been delivered. Commands sent before the observer was registered are
+    /// not reported. Observers run synchronously on the sending or WS read thread,
+    /// outside client locks, so they may send commands themselves; keep them cheap.
+    ///
+    /// Returns a `CallbackGuard` — drop it to unregister the observer. With no
+    /// observers registered, sending a command costs one atomic load extra.
+    pub fn on_command_lifecycle<F>(&self, observer: F) -> CallbackGuard
+    where
+        F: Fn(&CommandLifecycle) + Send + Sync + 'static,
+    {
+        let id = self.inner.command_observers.add(Arc::new(observer));
+        let inner = self.inner.clone();
+        CallbackGuard::new(move || inner.command_observers.remove(id))
+    }
+
+    fn emit_sent(&self, tx: &str, command_id: Arc<str>) {
+        self.inner.command_observers.emit(&CommandLifecycle::Sent {
+            tx: tx.into(),
+            command_id,
+        });
+    }
+
+    fn emit_local_failure(&self, tx: &str, command_id: Arc<str>, message: &str) {
+        self.emit_sent(tx, command_id.clone());
+        Self::emit_resolved(&self.inner, tx, Some(command_id), Err(message.into()));
+    }
+
+    fn emit_resolved(
+        inner: &MykoClientInner,
+        tx: &str,
+        command_id: Option<Arc<str>>,
+        result: Result<(), Arc<str>>,
+    ) {
+        if let Some(command_id) = command_id {
+            inner.command_observers.emit(&CommandLifecycle::Resolved {
+                tx: tx.into(),
+                command_id,
+                result,
+            });
+        }
+    }
 
     /// Register a handler for incoming commands of a specific type.
     ///
@@ -3122,6 +3190,11 @@ impl MykoClient {
             .and_then(|v| v.as_str())
             .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_string);
 
+        let observed_id: Option<Arc<str>> = self
+            .inner
+            .command_observers
+            .is_observed()
+            .then(|| command.command_id.as_str().into());
         let cell = Cell::new(None).with_name(format!("cmd:{}", command.command_id).as_str());
         let cell_writer = cell.clone();
 
@@ -3132,17 +3205,33 @@ impl MykoClient {
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             handlers.insert(
-                tx,
-                Box::new(move |result: Result<Value, String>| {
-                    cell_writer.set(Some(result));
-                }),
+                tx.clone(),
+                (
+                    observed_id.clone(),
+                    Box::new(move |result: Result<Value, String>| {
+                        cell_writer.set(Some(result));
+                    }),
+                ),
             );
         }
 
         if let Ok(frame) = self.encode_message(&MykoMessage::Command(command)) {
+            if let Some(command_id) = observed_id {
+                self.emit_sent(&tx, command_id);
+            }
             self.send_or_queue(frame);
         } else {
-            cell.set(Some(Err("Could not serialize command".to_string())));
+            // The frame never left, so no response will ever retire the handler.
+            self.inner
+                .command_response_handlers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&tx);
+            let message = "Could not serialize command";
+            if let Some(command_id) = observed_id {
+                self.emit_local_failure(&tx, command_id, message);
+            }
+            cell.set(Some(Err(message.to_string())));
         }
 
         cell.lock()
