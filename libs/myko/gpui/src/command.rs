@@ -328,6 +328,11 @@ impl<R: CellValue> CommandTracker<R> {
 /// the order the client emitted it, so the callback can update entities or
 /// global state (for example, to raise app-wide toasts). Commands sent before
 /// the observation started are not reported. Drop the subscription to stop.
+///
+/// Keep the returned [`Subscription`] for as long as events are wanted.
+/// [`Subscription::detach`] does not keep the observer alive: the observer is
+/// owned by the subscription's unsubscribe closure, which `detach` drops, so a
+/// detached observation stops at once.
 pub fn on_command_lifecycle(
     cx: &mut App,
     callback: impl Fn(&CommandLifecycle, &mut App) + 'static,
