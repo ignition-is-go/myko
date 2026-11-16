@@ -17,6 +17,7 @@ use crate::{
 /// - Emit SET/DEL events
 /// - Execute queries against the store
 /// - Access request context (tx, `client_id`, lineage, `host_id`)
+#[derive(Clone)]
 pub struct CommandContext {
     /// Request context with tracing information (tx, `client_id`, lineage, `host_id`).
     pub req: Arc<RequestContext>,
@@ -25,29 +26,11 @@ pub struct CommandContext {
     pub command_id: Arc<str>,
 
     server_ctx: Arc<MykoServerContext>,
-    operation_id: std::sync::OnceLock<Arc<str>>,
-}
-
-impl Clone for CommandContext {
-    fn clone(&self) -> Self {
-        Self {
-            req: self.req.clone(),
-            command_id: self.command_id.clone(),
-            server_ctx: self.server_ctx.clone(),
-            operation_id: std::sync::OnceLock::from(self.operation_id().clone()),
-        }
-    }
 }
 
 impl CommandContext {
-    fn operation_id(&self) -> &Arc<str> {
-        self.operation_id
-            .get_or_init(|| uuid::Uuid::new_v4().to_string().into())
-    }
-
     fn operation_provenance(&self) -> crate::server::OperationProvenance {
         crate::server::OperationProvenance {
-            operation_id: self.operation_id().clone(),
             request_tx: self.req.tx.clone(),
             unverified_client_id: self.req.client_id.as_deref().map(Arc::from),
             command_id: self.command_id.clone(),
@@ -79,7 +62,6 @@ impl CommandContext {
             req,
             command_id,
             server_ctx,
-            operation_id: std::sync::OnceLock::new(),
         }
     }
 

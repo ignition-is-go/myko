@@ -26,6 +26,39 @@ pub trait SagaCommand: Send + Sync + 'static {
     /// Returns an error when the requested operation cannot be completed.
     fn execute_boxed(self: Box<Self>, ctx: CommandContext) -> Result<(), CommandError>;
     fn command_name(&self) -> &'static str;
+
+    /// Transaction of the event that caused this command, when known.
+    fn originating_tx(&self) -> Option<&Arc<str>> {
+        None
+    }
+}
+
+/// Retains an event's transaction across the asynchronous saga command stream.
+pub struct CausedSagaCommand<C> {
+    command: C,
+    tx: Arc<str>,
+}
+
+impl<C> CausedSagaCommand<C> {
+    pub const fn new(command: C, tx: Arc<str>) -> Self {
+        Self { command, tx }
+    }
+}
+
+impl<C: SagaCommand> SagaCommand for CausedSagaCommand<C> {
+    fn execute_boxed(self: Box<Self>, mut ctx: CommandContext) -> Result<(), CommandError> {
+        // The stream may outlive its event handler and run on another thread.
+        Arc::make_mut(&mut ctx.req).tx = self.tx;
+        Box::new(self.command).execute_boxed(ctx)
+    }
+
+    fn command_name(&self) -> &'static str {
+        self.command.command_name()
+    }
+
+    fn originating_tx(&self) -> Option<&Arc<str>> {
+        Some(&self.tx)
+    }
 }
 
 impl<C> SagaCommand for C

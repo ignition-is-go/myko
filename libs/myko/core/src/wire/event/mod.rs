@@ -29,6 +29,8 @@ pub struct MEvent {
     #[serde(default = "utc_now_iso")]
     pub created_at: Arc<str>,
 
+    /// Originating command transaction, shared by its resulting events.
+    /// Standalone events without a command context receive a fresh transaction.
     #[serde(default = "generate_random_uuid")]
     pub tx: Arc<str>,
 

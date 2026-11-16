@@ -24,7 +24,7 @@ pub fn myko_saga_impl(attr: &TokenStream, input_struct: &ItemStruct) -> TokenStr
 
         impl #krate::saga::Saga for #struct_name {
             type State = ();
-            type Command = <#struct_name as #krate::saga::SagaHandler>::Command;
+            type Command = #krate::saga::CausedSagaCommand<<#struct_name as #krate::saga::SagaHandler>::Command>;
 
             fn name() -> &'static str {
                 #struct_name_str
@@ -64,13 +64,14 @@ pub fn myko_saga_impl(attr: &TokenStream, input_struct: &ItemStruct) -> TokenStr
                                     }
                                 };
 
+                                let tx = event.tx.clone();
                                 let out = <#struct_name as #krate::saga::SagaHandler>::handle(item, event, ctx);
                                 if out.is_some() {
                                     #krate::tracing::debug!("{} emitted command", #struct_name_str);
                                 } else {
                                     #krate::tracing::debug!("{} emitted no command", #struct_name_str);
                                 }
-                                out
+                                out.map(|command| #krate::saga::CausedSagaCommand::new(command, tx))
                             }
                         }),
                 )

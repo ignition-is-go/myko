@@ -455,8 +455,7 @@ impl PostgresProducerHandle {
         // Caller labels are untrusted. PostgreSQL JSONB cannot encode NUL,
         // and retrying such a sidecar would poison an otherwise valid batch.
         if record.provenance.as_ref().is_some_and(|provenance| {
-            provenance.operation_id.contains('\0')
-                || provenance.request_tx.contains('\0')
+            provenance.request_tx.contains('\0')
                 || provenance.command_id.contains('\0')
                 || provenance
                     .unverified_client_id
@@ -1455,6 +1454,113 @@ mod provenance_tests {
 
     #[test]
     #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]
+    fn command_transaction_survives_cascades_and_durable_history() -> anyhow::Result<()> {
+        use myko::{
+            command::CommandContext,
+            entities::{
+                client::Client as ConnectedClient,
+                server::{Server, ServerId},
+            },
+            prelude::EventPublishing,
+            request::RequestContext,
+            search::SearchIndex,
+            server::{
+                MykoServerContext, MykoServerRuntime, RelationshipManager,
+                persister::PersisterRouter,
+            },
+        };
+
+        let config = PostgresConfig {
+            url: std::env::var("MYKO_PROVENANCE_TEST_POSTGRES")?,
+            table: "transaction_test_events".into(),
+            channel: "transaction_test_events".into(),
+        };
+        let mut client = Client::connect(&config.url, NoTls)?;
+        ensure_schema(&mut client, &config)?;
+        client.batch_execute("TRUNCATE transaction_test_events RESTART IDENTITY")?;
+        let host_id = Uuid::new_v4();
+        let producer = PostgresProducer::new(&config, host_id).map_err(anyhow::Error::msg)?;
+        let mut router = PersisterRouter::default();
+        router.set_default(Some(Arc::new(producer.handle())));
+        let server = Arc::new(MykoServerContext::new(
+            host_id,
+            Arc::new(StoreRegistry::new()),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(router),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        ));
+        let request = Arc::new(RequestContext::from_client(
+            "originating-command-tx".into(),
+            "connection".into(),
+            host_id,
+        ));
+        let ctx = CommandContext::new("EditTree".into(), request, server);
+        let parent = Server {
+            id: "parent".into(),
+            version: "test".into(),
+            address: "test".into(),
+            port: 0,
+            started_at: "test".into(),
+        };
+        ctx.emit_set(&parent)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        ctx.emit_set(&ConnectedClient {
+            id: "child".into(),
+            server_id: ServerId::from(Arc::<str>::from("parent")),
+            address: None,
+            windback: None,
+        })
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+        ctx.emit_del(&parent)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+
+        let history = PostgresHistoryStore::new(config).map_err(anyhow::Error::msg)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let records = loop {
+            let records = history
+                .load_records_after_id(0, 10)
+                .map_err(anyhow::Error::msg)?;
+            if records.len() == 4 {
+                break records;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "command events were not persisted"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        anyhow::ensure!(
+            records
+                .iter()
+                .all(|(_, record)| record.event.tx.as_ref() == "originating-command-tx")
+        );
+        anyhow::ensure!(
+            records
+                .iter()
+                .any(|(_, record)| record.event.change_type == MEventType::DEL
+                    && record.event.item_type.as_ref() == "Client")
+        );
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM transaction_test_events WHERE tx = $1",
+                &[&"originating-command-tx"],
+            )?
+            .get(0);
+        anyhow::ensure!(
+            count == 4,
+            "the indexed transaction must group every command and cascade event"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]
     fn durable_envelopes_survive_single_batch_and_background_producer() -> anyhow::Result<()> {
         let url = std::env::var("MYKO_PROVENANCE_TEST_POSTGRES")?;
         let config = PostgresConfig {
@@ -1472,7 +1578,6 @@ mod provenance_tests {
                     "createdAt": "2026-11-05T00:00:00Z", "tx": "legacy-event-tx", "sourceId": null
                 }))?,
                 provenance: Some(OperationProvenance {
-                    operation_id: "server-operation".into(),
                     request_tx: "untrusted-request-label".into(),
                     unverified_client_id: Some("connection-only".into()),
                     command_id: "EditTree".into(),

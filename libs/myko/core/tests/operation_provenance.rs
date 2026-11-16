@@ -55,9 +55,21 @@ fn setup() -> (
     Arc<Recording>,
     flume::Receiver<MEvent>,
 ) {
+    setup_with_recording(true)
+}
+
+fn setup_with_recording(
+    record: bool,
+) -> (
+    Arc<MykoServerContext>,
+    Arc<Recording>,
+    flume::Receiver<MEvent>,
+) {
     let recorder = Arc::new(Recording::default());
     let mut router = PersisterRouter::default();
-    router.set_default(Some(recorder.clone()));
+    if record {
+        router.set_default(Some(recorder.clone()));
+    }
     let (tx, rx) = flume::unbounded();
     let server = Arc::new(MykoServerContext::new(
         Uuid::new_v4(),
@@ -109,7 +121,7 @@ impl CommandHandler for NestedEdit {
 }
 
 #[test]
-fn command_emissions_batches_replacements_and_cascades_share_operation() -> anyhow::Result<()> {
+fn command_emissions_batches_replacements_and_cascades_share_transaction() -> anyhow::Result<()> {
     let (server, recorder, sink) = setup();
     let ctx = context(server.clone());
     let cloned = ctx.clone(); // Cloning before the first emit must keep one operation.
@@ -146,17 +158,9 @@ fn command_emissions_batches_replacements_and_cascades_share_operation() -> anyh
         .first()
         .and_then(|r| r.provenance.as_ref())
         .ok_or_else(|| anyhow::anyhow!("missing provenance"))?;
-    anyhow::ensure!(first.operation_id.as_ref() != "caller-chosen-tx");
     for record in &records {
         anyhow::ensure!(record.provenance.as_ref() == Some(first));
-        anyhow::ensure!(
-            Uuid::parse_str(&record.event.tx).is_ok(),
-            "legacy per-event UUID remains intact"
-        );
-        anyhow::ensure!(
-            record.event.tx.as_ref() != first.request_tx.as_ref()
-                && record.event.tx != first.operation_id
-        );
+        anyhow::ensure!(record.event.tx.as_ref() == "caller-chosen-tx");
         let json = serde_json::to_string(record)?;
         anyhow::ensure!(serde_json::from_str::<EventRecord>(&json)? == *record);
         anyhow::ensure!(
@@ -164,10 +168,7 @@ fn command_emissions_batches_replacements_and_cascades_share_operation() -> anyh
             "old readers ignore sidecar"
         );
     }
-    anyhow::ensure!(
-        sink.try_iter()
-            .all(|e| Uuid::parse_str(&e.tx).is_ok() && e.tx.as_ref() != "caller-chosen-tx")
-    );
+    anyhow::ensure!(sink.try_iter().all(|e| e.tx.as_ref() == "caller-chosen-tx"));
     drop(records);
     server.set(&parent())?;
     let records = recorder
@@ -183,7 +184,7 @@ fn command_emissions_batches_replacements_and_cascades_share_operation() -> anyh
 }
 
 #[test]
-fn independent_contexts_do_not_trust_reused_request_tx() -> anyhow::Result<()> {
+fn independent_contexts_can_share_transaction() -> anyhow::Result<()> {
     let (server, recorder, _) = setup();
     context(server.clone())
         .emit_set(&parent())
@@ -196,11 +197,12 @@ fn independent_contexts_do_not_trust_reused_request_tx() -> anyhow::Result<()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    let ids: Vec<_> = records
-        .iter()
-        .filter_map(|r| r.provenance.as_ref().map(|p| p.operation_id.clone()))
-        .collect();
-    anyhow::ensure!(ids.len() == 2 && ids.first() != ids.last());
+    anyhow::ensure!(records.len() == 2);
+    anyhow::ensure!(
+        records
+            .iter()
+            .all(|record| record.event.tx.as_ref() == "caller-chosen-tx")
+    );
     Ok(())
 }
 
@@ -240,7 +242,8 @@ fn queued_reentrant_command_retains_its_own_operation() -> anyhow::Result<()> {
     outer
         .emit_set(&parent())
         .map_err(|e| anyhow::anyhow!(e.message))?;
-    let nested = context(server);
+    let mut nested = context(server);
+    Arc::make_mut(&mut nested.req).tx = "reentrant-tx".into();
     *recorder
         .1
         .lock()
@@ -253,6 +256,20 @@ fn queued_reentrant_command_retains_its_own_operation() -> anyhow::Result<()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
+    anyhow::ensure!(records.iter().all(|record| {
+        let reentrant = record
+            .event
+            .item
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            == Some("reentrant");
+        record.event.tx.as_ref()
+            == if reentrant {
+                "reentrant-tx"
+            } else {
+                "caller-chosen-tx"
+            }
+    }));
     let root = records.first().and_then(|r| r.provenance.as_ref());
     let nested = records
         .iter()
@@ -282,11 +299,174 @@ fn serialized_dispatch_uses_context_identity_not_wire_transaction() -> anyhow::R
         .clone();
     anyhow::ensure!(records.len() == 1);
     anyhow::ensure!(records.first().is_some_and(|r| {
-        Uuid::parse_str(&r.event.tx).is_ok()
-            && r.event.tx.as_ref() != "caller-chosen-tx"
+        r.event.tx.as_ref() == "caller-chosen-tx"
             && r.provenance
                 .as_ref()
                 .is_some_and(|p| p.request_tx.as_ref() == "caller-chosen-tx")
     }));
+    Ok(())
+}
+
+#[myko_query(Server)]
+pub struct TransactionQuery {
+    pub expected_tx: String,
+}
+
+impl QueryHandler for TransactionQuery {
+    fn test_entity(ctx: QueryTestContext<Self>) -> bool {
+        ctx.query_context.tx() == ctx.query.expected_tx
+    }
+}
+
+#[myko_report(String)]
+pub struct TransactionLeafReport {}
+
+impl ReportHandler for TransactionLeafReport {
+    type Output = String;
+
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<String>, Definite> {
+        let matches = ctx.query_map(TransactionQuery {
+            expected_tx: ctx.tx().to_owned(),
+        });
+        assert_eq!(matches.snapshot().len(), 1);
+        hyphae::Cell::new(Arc::new(ctx.tx().to_owned())).lock()
+    }
+}
+
+#[myko_report(String)]
+pub struct TransactionReport {}
+
+impl ReportHandler for TransactionReport {
+    type Output = String;
+
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<String>, Definite> {
+        ctx.report(TransactionLeafReport {})
+    }
+}
+
+#[myko_command]
+pub struct ReadThenWrite {}
+
+impl CommandHandler for ReadThenWrite {
+    fn execute(self, ctx: CommandContext) -> Result<(), myko::command::CommandError> {
+        let query = TransactionQuery {
+            expected_tx: ctx.tx().to_owned(),
+        };
+        let rows = ctx.exec_query(query.clone())?;
+        let first = ctx.exec_query_first(query)?;
+        let report_tx = ctx.exec_report(TransactionReport {})?;
+        if rows.len() != 1 || first.is_none() || report_tx != ctx.tx() {
+            return Err(myko::command::CommandError::new(
+                ctx.tx().to_owned(),
+                ctx.command_id.to_string(),
+                "query or report lost the originating transaction".to_owned(),
+            ));
+        }
+        ctx.execute_command(NestedEdit {})
+    }
+}
+
+#[test]
+fn command_queries_reports_and_nested_writes_keep_originating_transaction() -> anyhow::Result<()> {
+    let (server, recorder, _) = setup();
+    server.set(&parent())?;
+    context(server)
+        .execute_command(ReadThenWrite {})
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let records = recorder
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    anyhow::ensure!(
+        records
+            .last()
+            .is_some_and(|record| record.event.tx.as_ref() == "caller-chosen-tx")
+    );
+    drop(records);
+    Ok(())
+}
+
+#[test]
+fn sink_only_commands_keep_originating_transaction() -> anyhow::Result<()> {
+    let (server, _, sink) = setup_with_recording(false);
+    let ctx = context(server);
+    ctx.emit_set(&parent())
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    ctx.emit_set_batch(&[child("one"), child("two")])
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let events: Vec<_> = sink.try_iter().collect();
+    anyhow::ensure!(events.len() == 3);
+    anyhow::ensure!(
+        events
+            .iter()
+            .all(|event| event.tx.as_ref() == "caller-chosen-tx")
+    );
+    Ok(())
+}
+
+#[myko_saga]
+pub struct TransactionSaga;
+
+impl myko::saga::SagaHandler for TransactionSaga {
+    type EventItem = Server;
+    type Command = ReadThenWrite;
+    const EVENT_TYPE: MEventType = MEventType::SET;
+
+    fn handle(
+        _item: Server,
+        _event: MEvent,
+        _ctx: Arc<myko::saga::SagaContext>,
+    ) -> Option<Self::Command> {
+        Some(ReadThenWrite {})
+    }
+}
+
+#[test]
+fn saga_commands_keep_event_transaction_across_async_dispatch() -> anyhow::Result<()> {
+    use myko::futures::StreamExt;
+    use myko::saga::{AnySaga, SagaContext};
+
+    let (server, recorder, _) = setup();
+    let ctx = context(server.clone());
+    ctx.emit_set(&parent())
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let event = recorder
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing originating event"))?
+        .event
+        .clone();
+    let events = Box::pin(myko::futures::stream::iter(vec![event]));
+    let saga_ctx = Arc::new(SagaContext::new(server.host_id, server.registry.clone()));
+    let mut commands = TransactionSaga.build_boxed(events, saga_ctx);
+    let command = myko::futures::executor::block_on(commands.next())
+        .ok_or_else(|| anyhow::anyhow!("missing saga command"))?;
+    anyhow::ensure!(
+        command
+            .originating_tx()
+            .is_some_and(|tx| tx.as_ref() == "caller-chosen-tx")
+    );
+    let request = Arc::new(RequestContext::internal(
+        "unrelated-dispatch-tx".into(),
+        server.host_id,
+        "saga",
+    ));
+    let dispatch_ctx = CommandContext::new("ReadThenWrite".into(), request, server);
+    std::thread::spawn(move || command.execute_boxed(dispatch_ctx))
+        .join()
+        .map_err(|_| anyhow::anyhow!("saga dispatch thread panicked"))?
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+    let records = recorder
+        .0
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    anyhow::ensure!(
+        records
+            .iter()
+            .all(|record| record.event.tx.as_ref() == "caller-chosen-tx")
+    );
+    drop(records);
     Ok(())
 }
