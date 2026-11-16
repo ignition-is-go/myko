@@ -2,11 +2,6 @@
 //!
 //! Handles WebSocket connections using `ClientSession` for subscription management.
 
-use crate::GatewayAccess;
-use crate::delivery_diagnostics::DeliveryDiagnostics;
-use crate::subscription_authorization::{Delivery, SubscriptionAuthorization};
-use crate::view_sampling::{ViewDelivery, ViewDeliveryControl};
-use myko_auth::{AuthSession, AuthorizationRequest, EventChange, OperationKind};
 use std::{
     collections::HashMap,
     net::SocketAddr,
@@ -42,6 +37,7 @@ use myko::{
         ViewError, ViewWindowUpdate, WrappedQuery, WrappedView,
     },
 };
+use myko_auth::{AuthSession, AuthorizationRequest, EventChange, OperationKind};
 use tokio::{
     net::TcpStream,
     sync::{mpsc, watch},
@@ -55,7 +51,13 @@ use tokio_tungstenite::{
 };
 use uuid::Uuid;
 
-use crate::blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING};
+use crate::{
+    GatewayAccess,
+    blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING},
+    delivery_diagnostics::DeliveryDiagnostics,
+    subscription_authorization::{Delivery, SubscriptionAuthorization},
+    view_sampling::{ViewDelivery, ViewDeliveryControl},
+};
 
 struct WsBenchmarkStats {
     message_count: AtomicU64,
@@ -1041,7 +1043,7 @@ impl WsHandler {
             // this session rather than allowing later sequenced diffs through.
             return false;
         };
-        let send_started = Instant::now();
+        let mut serialize_elapsed = serialize_started.elapsed();
         if auth.is_some_and(|session| session.check().is_err()) {
             return false;
         }
@@ -1053,15 +1055,17 @@ impl WsHandler {
                 Delivery::Drop => return true,
                 Delivery::Error(error) => {
                     message = OutboundMessage::Message(error);
+                    let serialize_started = Instant::now();
                     let Some(error_frame) = Self::serialize_outbound(&message, outgoing_format)
                     else {
                         return false;
                     };
+                    serialize_elapsed =
+                        serialize_elapsed.saturating_add(serialize_started.elapsed());
                     frame = error_frame;
                 }
             }
         }
-        let serialize_elapsed = serialize_started.elapsed();
         let payload_bytes = match &frame {
             Message::Binary(bytes) => bytes.len(),
             Message::Text(text) => text.len(),
@@ -1070,7 +1074,9 @@ impl WsHandler {
         if auth.is_some_and(|session| session.check().is_err()) {
             return false;
         }
+        let send_started = Instant::now();
         let result = write.send(frame).await;
+        let send_elapsed = send_started.elapsed();
         let (diagnostic_message, command_id) = match &message {
             OutboundMessage::Message(message) => (Some(message), None),
             OutboundMessage::SerializedCommand { command_id, .. } => {
@@ -1081,7 +1087,7 @@ impl WsHandler {
             diagnostic_message,
             command_id,
             serialize_elapsed,
-            send_started.elapsed(),
+            send_elapsed,
             result.is_ok(),
         );
         if let Err(error) = result {
@@ -1130,12 +1136,30 @@ impl WsHandler {
     ) -> OutboundMessage {
         diagnostics.queue(1, Some((tx, queued_at.elapsed())));
         let started = Instant::now();
-        let response = output.to_value();
+        let message =
+            OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
+                response: output.to_value(),
+                tx: tx.to_string(),
+            }));
         diagnostics.materialized(tx, started.elapsed());
-        OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
-            response,
-            tx: tx.to_string(),
-        }))
+        message
+    }
+
+    fn materialize_query(
+        response: PendingQueryResponse,
+        is_view: bool,
+        diagnostics: &DeliveryDiagnostics,
+    ) -> OutboundMessage {
+        let tx = response.tx.clone();
+        let started = Instant::now();
+        let response = response.into_wire();
+        let message = OutboundMessage::Message(if is_view {
+            MykoMessage::ViewResponse(response)
+        } else {
+            MykoMessage::QueryResponse(response)
+        });
+        diagnostics.materialized(&tx, started.elapsed());
+        message
     }
 
     async fn run_writer(state: WriterState) {
@@ -1175,7 +1199,7 @@ impl WsHandler {
                 }
                 () = tokio::time::sleep_until(deadline.unwrap_or_else(Instant::now).into()), if deadline.is_some() => {
                     let Some(response) = delivery.take_due(Instant::now()) else { continue; };
-                    OutboundMessage::Message(MykoMessage::ViewResponse(response.into_wire()))
+                    Self::materialize_query(response, true, &diagnostics)
                 }
                 maybe = priority_rx.recv(), if priority_open => {
                     if let Some(msg) = maybe { OutboundMessage::Message(msg) } else {
@@ -1192,9 +1216,9 @@ impl WsHandler {
                             diagnostics.queue(deferred_rx.len().saturating_add(1), Some((&response.tx, queued_at.elapsed())));
                             if is_view {
                                 let Some(response) = delivery.push(response, Instant::now()) else { continue; };
-                                OutboundMessage::Message(MykoMessage::ViewResponse(response.into_wire()))
+                                Self::materialize_query(response, true, &diagnostics)
                             } else {
-                                OutboundMessage::Message(MykoMessage::QueryResponse(response.into_wire()))
+                                Self::materialize_query(response, false, &diagnostics)
                             }
                         }
                         Some(DeferredOutbound::CommandResult(response)) => {
@@ -2198,6 +2222,9 @@ impl WsWriter for ChannelWriter {
         }
     }
 }
+
+#[cfg(test)]
+mod delivery_timing_tests;
 
 #[cfg(test)]
 mod tests {

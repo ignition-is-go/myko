@@ -48,6 +48,12 @@ by the OTLP collector. A successful export without rejected points releases thos
 counters from server memory. Failed or partially rejected exports retain them for
 the next collection interval. Active clients remain cumulative.
 
+This lifecycle also covers the `myko.ws.delivery.*` counters, gauges, and
+histograms. A socket can close before its diagnostic writers finish. Retirement
+waits for those writers and an accepted final export. Later exports omit the
+retired connection's series. Historical samples remain in the backend until
+its retention policy removes them.
+
 There is no Prometheus query dependency or additional configuration. Collector
 acceptance is sufficient: a downstream failure or process restart can lose the
 last part of a client's metrics, which is acceptable for this diagnostic data.
@@ -66,6 +72,11 @@ or transaction IDs are logged or exported.
 
 For metrics, configure the host's existing OTLP pipeline with
 `OTEL_EXPORTER_OTLP_ENDPOINT` (or the existing `MYKO_TRACING_ENDPOINT` fallback).
+Initialize `myko_telemetry::init_from_env` or
+`myko_telemetry::otel_layer_from_env` before accepting connections. These
+initializers install the connection-owned exporter for wire counters and
+delivery diagnostics. Custom SDK-only integrations must adopt Myko's telemetry
+initialization to export these diagnostics.
 For a short log-based investigation, also set `MYKO_WS_DIAGNOSTICS_LOGS=1`
 and enable `myko_server::delivery=debug` in the tracing filter. This emits one
 client summary and at most five operation summaries (ranked by encoded bytes)
@@ -145,9 +156,13 @@ then inspect its subscription usage and report dependencies.
    cover the priority/normal command queues. `queue_peak` samples all three send
    queue lengths plus producer observations of the deferred queue; it is an
    observed high-water mark, not an exact continuous gauge.
-5. Materialization measures conversion of a deferred report output to JSON;
-   serialization measures JSON/CBOR frame encoding. Send time includes the sink
-   send/flush wait. Successful send means accepted by the local socket path,
+5. Materialization measures conversion of a deferred report output to JSON or a
+   pending query/view response to its wire response. It excludes queue wait and
+   deliberate view sampling delay. Serialization measures JSON/CBOR frame
+   encoding, including encoding a replacement error response when authorization
+   rejects the original response. Authorization checks are outside both the
+   serialization and send timers. Send time measures only the sink send/flush
+   wait. Successful send means accepted by the local socket path,
    **not acknowledged or applied by Unreal**. Low server times with choppy Unreal
    application requires receive/decode/game-thread hooks at that endpoint.
 
@@ -156,11 +171,26 @@ The client-level `inspection` histogram measures the additional diagnostic work
 on the writer path. `untracked` and `inspection_incomplete` counters expose
 coverage limits even when optional debug logs are disabled.
 
-Operation-tagged histograms include subscription setup, production gap, queue wait, report
+Operation-tagged histograms include subscription setup, production gap, queue wait, response
 materialization, serialization, send, and inter-send gap. Connection-level gauge
 metrics include active subscriptions, equivalent initial subscriptions, and queue
 peak. Counters are exported on each five-second flush (and teardown), so use a
 rate window longer than both this window and the collector interval.
+
+To find expensive operations, group by the existing `kind` and `operation`
+labels and rank the rate of the serialization histogram's cumulative sum. This
+shows elapsed encoding seconds per wall second, rather than the slowest single
+response. Show the histogram count rate beside it; sum rate divided by count
+rate gives average encoding time per response. Add materialization sum rate
+when comparing the full response preparation cost, especially for reports.
+Neither measurement is a process CPU counter.
+
+Use p99 to locate occasional slow responses, not to rank total work. It estimates
+the duration at or below which 99% of observations fall in the selected interval.
+Histogram buckets make that estimate approximate. Frequent cheap responses can
+consume more total time than rare responses with a high p99. Compare counts,
+bytes, average duration, and p99 over the same interval. These timing corrections
+retain the existing instrument names, units, buckets, and labels.
 
 ## Bounds and operational cost
 

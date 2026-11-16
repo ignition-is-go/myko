@@ -6,7 +6,7 @@
 //! - Automatic cleanup on disconnect
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{HashMap, HashSet, VecDeque},
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -141,7 +141,7 @@ struct QuerySubscription {
 }
 
 enum QueryWindowControl {
-    Materialized(Arc<Mutex<QuerySubscriptionState>>),
+    Materialized(Arc<Mutex<QueryDelivery<QuerySubscriptionState>>>),
     Pushed(WindowedQuerySource),
 }
 
@@ -149,6 +149,62 @@ enum QueryWindowControl {
 enum QuerySubscriptionKind {
     Query,
     View,
+}
+
+struct QueryDelivery<S> {
+    state: S,
+    pending: VecDeque<PendingQueryResponse>,
+    draining: bool,
+}
+
+impl<S> QueryDelivery<S> {
+    const fn new(state: S) -> Self {
+        Self {
+            state,
+            pending: VecDeque::new(),
+            draining: false,
+        }
+    }
+
+    fn update<W: WsWriter>(
+        delivery: &Mutex<Self>,
+        writer: &W,
+        is_view: bool,
+        tx: &str,
+        update: impl FnOnce(&mut S) -> Option<PendingQueryResponse>,
+    ) -> bool {
+        let mut response = {
+            let Ok(mut delivery) = delivery.lock() else {
+                tracing::error!(tx, "Query subscription state poisoned");
+                return false;
+            };
+            let Some(response) = update(&mut delivery.state) else {
+                return false;
+            };
+            if delivery.draining {
+                delivery.pending.push_back(response);
+                return true;
+            }
+            delivery.draining = true;
+            response
+        };
+
+        loop {
+            // NOTE(cx): A writer may reenter this subscription while publishing.
+            writer.send_query_response(response, is_view);
+            response = {
+                let Ok(mut delivery) = delivery.lock() else {
+                    tracing::error!(tx, "Query subscription delivery poisoned");
+                    return false;
+                };
+                let Some(response) = delivery.pending.pop_front() else {
+                    delivery.draining = false;
+                    return true;
+                };
+                response
+            };
+        }
+    }
 }
 
 #[derive(Default)]
@@ -202,24 +258,29 @@ impl<W: WsWriter> ClientSession<W> {
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();
         let query_id_for_diffs = query_id;
-        let state = Arc::new(Mutex::new(QuerySubscriptionState {
+        let state = Arc::new(Mutex::new(QueryDelivery::new(QuerySubscriptionState {
             window,
             ..Default::default()
-        }));
+        })));
         let state_for_diffs = state.clone();
 
         // subscribe_diffs sends Initial first, then subsequent diffs
         let guard = cell.subscribe_diffs(move |diff| {
-            let response = if let Ok(mut state) = state_for_diffs.lock() {
-                state.apply_source_diff(diff, tx_clone.clone())
-            } else {
-                tracing::error!("Query subscription state poisoned for tx={}", tx_clone);
-                return;
-            };
-            if let Some(response) = response {
-                crate::server::dispatch_metrics::record_query_response(&query_id_for_diffs);
-                writer.send_query_response(response, false);
-            }
+            QueryDelivery::update(
+                &state_for_diffs,
+                writer.as_ref(),
+                false,
+                &tx_clone,
+                |state| {
+                    state
+                        .apply_source_diff(diff, tx_clone.clone())
+                        .inspect(|_| {
+                            crate::server::dispatch_metrics::record_query_response(
+                                &query_id_for_diffs,
+                            );
+                        })
+                },
+            );
         });
         drop(cell);
 
@@ -258,24 +319,26 @@ impl<W: WsWriter> ClientSession<W> {
     ) {
         let writer = self.writer.clone();
         let tx_for_diffs = tx.clone();
-        let state = Arc::new(Mutex::new(PushedQuerySubscriptionState::default()));
+        let state = Arc::new(Mutex::new(QueryDelivery::new(
+            PushedQuerySubscriptionState::default(),
+        )));
         let state_for_diffs = state;
         let snapshots = source.snapshots().clone();
         let guard = snapshots.subscribe(move |signal| {
             let Signal::Value(snapshot) = signal else {
                 return;
             };
-            let response = if let Ok(mut state) = state_for_diffs.lock() {
-                state.apply_snapshot(snapshot, tx_for_diffs.clone())
-            } else {
-                tracing::error!(
-                    "Pushed query subscription state poisoned for tx={}",
-                    tx_for_diffs
-                );
-                return;
-            };
-            crate::server::dispatch_metrics::record_query_response(&query_id);
-            writer.send_query_response(response, false);
+            QueryDelivery::update(
+                &state_for_diffs,
+                writer.as_ref(),
+                false,
+                &tx_for_diffs,
+                |state| {
+                    let response = state.apply_snapshot(snapshot, tx_for_diffs.clone());
+                    crate::server::dispatch_metrics::record_query_response(&query_id);
+                    Some(response)
+                },
+            );
         });
         drop(snapshots);
 
@@ -314,20 +377,15 @@ impl<W: WsWriter> ClientSession<W> {
         let view_id_for_log = view_id.clone();
         let view_id_for_metrics = view_id.clone();
         let subscribed_at = Instant::now();
-        let state = Arc::new(Mutex::new(QuerySubscriptionState {
+        let state = Arc::new(Mutex::new(QueryDelivery::new(QuerySubscriptionState {
             window,
             ..Default::default()
-        }));
+        })));
         let state_for_diffs = state.clone();
 
         let guard = cell.subscribe_diffs(move |diff| {
-            let response = if let Ok(mut state) = state_for_diffs.lock() { state.apply_source_diff(diff, tx_clone.clone()) } else {
-                tracing::error!("View subscription state poisoned for tx={}", tx_clone);
-                return;
-            };
-            let Some(response) = response else {
-                return;
-            };
+            QueryDelivery::update(&state_for_diffs, writer.as_ref(), true, &tx_clone, |state| {
+            let response = state.apply_source_diff(diff, tx_clone.clone())?;
             tracing::trace!(
                 "ClientSession {} view tx={} seq={} upserts={} deletes={} changes={} window={:?} total_count={:?}",
                 client_id_for_log,
@@ -358,7 +416,8 @@ impl<W: WsWriter> ClientSession<W> {
                 );
             }
             crate::server::dispatch_metrics::record_view_response(&view_id_for_metrics);
-            writer.send_query_response(response, true);
+            Some(response)
+            });
         });
         drop(cell);
 
@@ -473,18 +532,14 @@ impl<W: WsWriter> ClientSession<W> {
             return None;
         };
 
-        let response = match &sub.control {
-            QueryWindowControl::Materialized(state) => {
-                if let Ok(mut state) = state.lock() {
-                    state.apply_window_update(window, tx.clone())
-                } else {
-                    tracing::error!(
-                        "Query subscription state poisoned on window update for tx={}",
-                        tx
-                    );
-                    return None;
-                }
-            }
+        let emitted = match &sub.control {
+            QueryWindowControl::Materialized(state) => QueryDelivery::update(
+                state,
+                self.writer.as_ref(),
+                matches!(sub.kind, QuerySubscriptionKind::View),
+                tx,
+                |state| state.apply_window_update(window, tx.clone()),
+            ),
             QueryWindowControl::Pushed(source) => {
                 tracing::trace!(
                     "ClientSession {} pushed query window tx={} (active_subscriptions={})",
@@ -496,7 +551,7 @@ impl<W: WsWriter> ClientSession<W> {
             }
         };
 
-        let Some(response) = response else {
+        if !emitted {
             tracing::trace!(
                 "ClientSession {} ignored no-op window update tx={} (active_subscriptions={})",
                 self.client_id,
@@ -504,11 +559,6 @@ impl<W: WsWriter> ClientSession<W> {
                 self.subscriptions.len()
             );
             return None;
-        };
-
-        match sub.kind {
-            QuerySubscriptionKind::Query => self.writer.send_query_response(response, false),
-            QuerySubscriptionKind::View => self.writer.send_query_response(response, true),
         }
         tracing::trace!(
             "ClientSession {} updated query window tx={} (active_subscriptions={})",
@@ -528,26 +578,22 @@ impl<W: WsWriter> ClientSession<W> {
         let Some(SubscriptionEntry::Query(sub)) = self.subscriptions.get(tx) else {
             return;
         };
-        let response = match &sub.control {
+        match &sub.control {
             QueryWindowControl::Materialized(state) => {
-                let Ok(mut state) = state.lock() else {
-                    tracing::error!(tx = %tx, "query cursor state poisoned");
-                    return;
-                };
-                state.window = None;
-                state.apply_cursor_window_update(window, tx.clone())
+                QueryDelivery::update(
+                    state,
+                    self.writer.as_ref(),
+                    matches!(sub.kind, QuerySubscriptionKind::View),
+                    tx,
+                    |state| {
+                        state.window = None;
+                        state.apply_cursor_window_update(window, tx.clone())
+                    },
+                );
             }
             QueryWindowControl::Pushed(source) => {
                 source.set_cursor_window(window);
-                return;
             }
-        };
-        let Some(response) = response else {
-            return;
-        };
-        match sub.kind {
-            QuerySubscriptionKind::Query => self.writer.send_query_response(response, false),
-            QuerySubscriptionKind::View => self.writer.send_query_response(response, true),
         }
     }
 
@@ -1185,6 +1231,255 @@ mod tests {
             id: id.into(),
             name: name.to_string(),
         })
+    }
+
+    struct PausedQueryWriter {
+        sequences: Arc<Mutex<Vec<u64>>>,
+        entered: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+        released: Arc<(Mutex<bool>, std::sync::Condvar)>,
+    }
+
+    impl WsWriter for PausedQueryWriter {
+        fn send(&self, _message: MykoMessage) {}
+
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: EncodedCommandMessage,
+        ) {
+        }
+
+        fn send_query_response(&self, response: PendingQueryResponse, _is_view: bool) {
+            if response.sequence == 1 {
+                let entered = self
+                    .entered
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(entered) = entered {
+                    assert!(entered.send(()).is_ok());
+                }
+                let (released, changed) = self.released.as_ref();
+                let mut released = released
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                while !*released {
+                    released = changed
+                        .wait(released)
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                }
+                drop(released);
+            }
+            self.sequences
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(response.sequence);
+        }
+    }
+
+    #[test]
+    fn query_and_view_responses_keep_sequence_order_with_a_paused_writer() {
+        let _serial = scheduler_test_serial();
+        for (is_view, reset) in [(false, false), (true, false), (false, true), (true, true)] {
+            let sequences = Arc::new(Mutex::new(Vec::new()));
+            let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+            let released = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+            let writer = PausedQueryWriter {
+                sequences: sequences.clone(),
+                entered: Mutex::new(Some(entered_tx)),
+                released: released.clone(),
+            };
+            let source = hyphae::CellMap::new();
+            let mut session = ClientSession::new("ordered-client".into(), writer);
+            if is_view {
+                session.subscribe_view("ordered-tx".into(), source.clone().lock(), None);
+            } else {
+                session.subscribe_query(
+                    "ordered-tx".into(),
+                    "ordered-query".into(),
+                    source.clone().lock(),
+                    None,
+                );
+            }
+            let first_source = source.clone();
+            let first = std::thread::spawn(move || {
+                first_source.insert("a".into(), make_entity("a", "first"));
+            });
+            assert!(
+                entered_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .is_ok()
+            );
+            if reset {
+                source.remove_many(vec!["a".into()]);
+            } else {
+                source.insert("b".into(), make_entity("b", "second"));
+                session
+                    .update_query_cursor_window(&"ordered-tx".into(), QueryCursorWindow::first(1));
+                session.update_query_window(
+                    &"ordered-tx".into(),
+                    Some(QueryWindow {
+                        offset: 0,
+                        limit: 1,
+                    }),
+                );
+                session.update_query_window(&"ordered-tx".into(), None);
+            }
+            let (release, changed) = released.as_ref();
+            *release
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+            changed.notify_one();
+            assert!(first.join().is_ok());
+            let expected = if reset {
+                vec![0, 1, 0]
+            } else {
+                vec![0, 1, 2, 3, 4, 0]
+            };
+            assert_eq!(
+                *sequences
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn pushed_query_responses_keep_sequence_order_with_a_paused_writer() {
+        let _serial = scheduler_test_serial();
+        let sequences = Arc::new(Mutex::new(Vec::new()));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let released = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let writer = PausedQueryWriter {
+            sequences: sequences.clone(),
+            entered: Mutex::new(Some(entered_tx)),
+            released: released.clone(),
+        };
+        let snapshot = |entries, window| {
+            Arc::new(WindowedQuerySnapshot {
+                entries,
+                total_count: 1,
+                window,
+            })
+        };
+        let snapshots = Cell::new(snapshot(
+            Vec::new(),
+            Some(QueryWindow {
+                offset: 0,
+                limit: 1,
+            }),
+        ));
+        let source = WindowedQuerySource::new(snapshots.clone().lock(), |_| {});
+        let mut session = ClientSession::new("ordered-client".into(), writer);
+        session.subscribe_windowed_query("ordered-tx".into(), "ordered-query".into(), source);
+        let first_snapshots = snapshots.clone();
+        let first = std::thread::spawn(move || {
+            first_snapshots.set(snapshot(
+                vec![("a".into(), make_entity("a", "first"))],
+                Some(QueryWindow {
+                    offset: 0,
+                    limit: 1,
+                }),
+            ));
+        });
+        assert!(
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .is_ok()
+        );
+        snapshots.set(snapshot(Vec::new(), None));
+        let (release, changed) = released.as_ref();
+        *release
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
+        changed.notify_one();
+        assert!(first.join().is_ok());
+        assert_eq!(
+            *sequences
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![0, 1, 0]
+        );
+    }
+
+    struct ReentrantQueryWriter {
+        sequences: Arc<Mutex<Vec<u64>>>,
+        reenter: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    }
+
+    impl WsWriter for ReentrantQueryWriter {
+        fn send(&self, _message: MykoMessage) {}
+
+        fn send_serialized_command(
+            &self,
+            _tx: Arc<str>,
+            _command_id: String,
+            _payload: EncodedCommandMessage,
+        ) {
+        }
+
+        fn send_query_response(&self, response: PendingQueryResponse, _is_view: bool) {
+            self.sequences
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(response.sequence);
+            if response.sequence == 1 {
+                let reenter = self
+                    .reenter
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                if let Some(reenter) = reenter {
+                    reenter();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn query_and_view_writers_can_reenter_their_subscription() {
+        let _serial = scheduler_test_serial();
+        for is_view in [false, true] {
+            let sequences = Arc::new(Mutex::new(Vec::new()));
+            let source = hyphae::CellMap::new();
+            let reentered_source = source.clone();
+            let writer = ReentrantQueryWriter {
+                sequences: sequences.clone(),
+                reenter: Mutex::new(Some(Box::new(move || {
+                    reentered_source.insert("b".into(), make_entity("b", "second"));
+                }))),
+            };
+            let mut session = ClientSession::new("ordered-client".into(), writer);
+            if is_view {
+                session.subscribe_view("ordered-tx".into(), source.clone().lock(), None);
+            } else {
+                session.subscribe_query(
+                    "ordered-tx".into(),
+                    "ordered-query".into(),
+                    source.clone().lock(),
+                    None,
+                );
+            }
+            let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+            let finished = std::thread::spawn(move || {
+                source.insert("a".into(), make_entity("a", "first"));
+                assert!(finished_tx.send(()).is_ok());
+            });
+            assert!(
+                finished_rx
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .is_ok()
+            );
+            assert!(finished.join().is_ok());
+            assert_eq!(
+                *sequences
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                vec![0, 1, 2]
+            );
+        }
     }
 
     #[test]

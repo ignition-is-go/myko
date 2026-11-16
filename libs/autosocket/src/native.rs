@@ -358,6 +358,9 @@ impl AutoReconnectSocket {
                         .insert(tungstenite::http::header::AUTHORIZATION, header);
                 }
                 let mut config = WebSocketConfig::default();
+                // Frame reads clear this scratch space even when the async stream is pending.
+                // Keep small-message polling cheap; message and frame limits remain independent.
+                config.read_buffer_size = 16 * 1024;
                 config.max_message_size = Some(max_message_size_bytes);
                 config.max_frame_size = Some(max_frame_size_bytes);
                 tokio_tungstenite::connect_async_with_config(request, Some(config), true)
@@ -1214,6 +1217,39 @@ mod tests {
                 .map_err(std::io::Error::other)?,
             (Message::Text(text), false) if text == "queued-during-backoff"
         ));
+        socket.close();
+        server.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn receives_large_text_and_binary_across_read_chunks() -> std::io::Result<()> {
+        let text = "large-message:".repeat(20_000);
+        let binary = vec![173_u8; 256 * 1024];
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = format!("ws://{}/large-messages", listener.local_addr()?);
+        let expected_text = text.clone();
+        let expected_binary = binary.clone();
+        let (done_tx, done_rx) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut websocket = tungstenite::accept(stream).unwrap();
+            websocket.send(Message::Text(text.into())).unwrap();
+            websocket.send(Message::Binary(binary.into())).unwrap();
+            done_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        });
+        let socket = AutoReconnectSocket::with_auto_reconnect(false);
+        let incoming = SocketTransport::read_rx(&socket);
+        socket.set_addr(Some(address));
+        assert!(matches!(
+            incoming.recv_timeout(Duration::from_secs(5)).map_err(std::io::Error::other)?,
+            WsFrame::Text(text) if text == expected_text
+        ));
+        assert!(matches!(
+            incoming.recv_timeout(Duration::from_secs(5)).map_err(std::io::Error::other)?,
+            WsFrame::Binary(binary) if binary == expected_binary
+        ));
+        done_tx.send(()).map_err(std::io::Error::other)?;
         socket.close();
         server.join().unwrap();
         Ok(())

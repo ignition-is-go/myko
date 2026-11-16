@@ -595,12 +595,13 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autosocket"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "base64",
  "flume 0.11.1",
  "futures",
  "futures-util",
+ "gloo-timers",
  "hyphae",
  "js-sys",
  "myko-auth",
@@ -3758,9 +3759,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "3.1.8"
+version = "3.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2cc422b98b0e75cb9ec0775a7e718a4ef28db5e7ee89bae433030426d8fecf6c"
+checksum = "a8737da165b405c716274711ffa937aea7f1973bad8d49b07a41d4abea9b65e8"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3780,9 +3781,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-gpui"
-version = "3.1.2"
+version = "3.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed2011c68d533cdd154cb6071b16512edf2da3cf59730da2a6caf4dbc5ae2e50"
+checksum = "304ea432d36937586257481582b8274ef3e9e2f34e432f2f2295e5caa65ddde6"
 dependencies = [
  "flume 0.11.1",
  "gpui-unofficial",
@@ -3791,9 +3792,9 @@ dependencies = [
 
 [[package]]
 name = "hyphae-leptos"
-version = "3.1.8"
+version = "3.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb07147a4b2f915db338422716799ec534d032e2481f4bcfb757e7f26e6187b9"
+checksum = "a9e4947c1bba76cbedb3f0c28e66613c8541384c067a5085629482ed30a95fce"
 dependencies = [
  "hyphae",
  "leptos",
@@ -4821,7 +4822,7 @@ dependencies = [
 
 [[package]]
 name = "myko"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "ahash",
  "anyhow",
@@ -4869,7 +4870,7 @@ dependencies = [
 
 [[package]]
 name = "myko-auth"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "base64",
  "futures",
@@ -4884,7 +4885,7 @@ dependencies = [
 
 [[package]]
 name = "myko-auth0"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "futures",
  "jsonwebtoken",
@@ -4897,7 +4898,7 @@ dependencies = [
 
 [[package]]
 name = "myko-gpui"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "flume 0.11.1",
  "gpui-platform-gpui-unofficial",
@@ -4911,17 +4912,21 @@ dependencies = [
 
 [[package]]
 name = "myko-leptos"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
+ "any_spawner",
+ "autosocket",
+ "flume 0.11.1",
  "hyphae-leptos",
  "leptos",
  "myko",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
 name = "myko-macros"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4931,7 +4936,7 @@ dependencies = [
 
 [[package]]
 name = "myko-permissions"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "ciborium",
  "futures-util",
@@ -4951,7 +4956,7 @@ dependencies = [
 
 [[package]]
 name = "myko-permissions-leptos"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "leptos",
  "myko",
@@ -4963,7 +4968,7 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -4982,7 +4987,9 @@ dependencies = [
  "myko-telemetry",
  "num-traits",
  "opentelemetry",
+ "opentelemetry-proto",
  "postgres",
+ "prost",
  "reqwest 0.12.28",
  "rquickjs",
  "serde",
@@ -4998,7 +5005,7 @@ dependencies = [
 
 [[package]]
 name = "myko-telemetry"
-version = "6.13.0"
+version = "6.17.0"
 dependencies = [
  "async-trait",
  "bytes",
@@ -5157,7 +5164,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7317,7 +7324,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
