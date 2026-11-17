@@ -878,3 +878,56 @@ fn undo_target_creation_cannot_break_a_later_non_owning_reference() -> anyhow::R
     );
     Ok(())
 }
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn startup_boundary_is_durable_and_excludes_old_transactions_without_rewriting_history()
+-> anyhow::Result<()> {
+    use myko::entities::undo::{UndoHistoryBoundary, begin_undo_history};
+    let mut fixture = Fixture::new()?;
+    fixture.seed()?;
+    fixture.moved("alice", "before-migration", &[("a", 1.0)])?;
+    // Ordinary entity writes cannot establish an internal migration boundary.
+    fixture
+        .context("bob", "forged-boundary")
+        .emit_set(&UndoHistoryBoundary {
+            id: "forged".into(),
+        })
+        .map_err(command_error)?;
+    fixture.backend.flush().map_err(anyhow::Error::msg)?;
+    anyhow::ensure!(
+        !fixture
+            .provider
+            .undo_boundary_exists("forged")
+            .map_err(anyhow::Error::msg)?
+    );
+    anyhow::ensure!(
+        begin_undo_history(&fixture.server, "migration-v1").map_err(anyhow::Error::msg)?
+    );
+    fixture.moved("alice", "after-migration", &[("a", 2.0)])?;
+    fixture.restart()?;
+    anyhow::ensure!(
+        !begin_undo_history(&fixture.server, "migration-v1").map_err(anyhow::Error::msg)?
+    );
+    let result = UndoMyLastTransaction {}
+        .execute(fixture.context("alice", "undo-new"))
+        .map_err(command_error)?
+        .ok_or_else(|| anyhow::anyhow!("new edit not undoable"))?;
+    anyhow::ensure!(result.transaction_id.as_ref() == "after-migration");
+    anyhow::ensure!(fixture.position("a")?.x == Some(1.0));
+    anyhow::ensure!(
+        UndoMyLastTransaction {}
+            .execute(fixture.context("alice", "no-old-history"))
+            .map_err(command_error)?
+            .is_none()
+    );
+    let error = UndoTransaction {
+        transaction_id: "before-migration".into(),
+    }
+    .execute(fixture.context("alice", "explicit-old"))
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("old edit was undoable"))?;
+    anyhow::ensure!(error.message.contains("predates"));
+    anyhow::ensure!(fixture.records("before-migration")?.records.len() == 1);
+    Ok(())
+}

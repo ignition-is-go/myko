@@ -28,6 +28,7 @@ pub struct TransactionHistory {
     pub changes: Vec<TransactionChange>,
     pub already_undone: bool,
     pub complete: bool,
+    pub predates_undo_boundary: bool,
 }
 
 impl TransactionHistory {

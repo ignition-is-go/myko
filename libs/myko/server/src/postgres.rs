@@ -338,6 +338,10 @@ impl PostgresHistoryReplayProvider {
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn undo_boundary_exists(&self, id: &str) -> Result<bool, String> {
+        PostgresHistoryStore::new(self.config.clone())?.undo_boundary_exists(id)
+    }
+
     fn history_identity(&self) -> Option<String> {
         Some(format!(
             "postgres:{}:{}",

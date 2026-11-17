@@ -11,6 +11,9 @@ use crate::{
     wire::MEventType,
 };
 
+mod boundary;
+pub use boundary::*;
+
 /// An immutable log receipt. Removing its live row does not remove the receipt
 /// from history or make the original transaction eligible a second time.
 #[myko_item]
@@ -158,6 +161,12 @@ fn reverse(
     }
     if history.transaction_id.as_ref() == ctx.tx() {
         return Err(failure(&ctx, "undo requires a fresh transaction ID"));
+    }
+    if history.predates_undo_boundary {
+        return Err(failure(
+            &ctx,
+            "transaction predates the start of undo history",
+        ));
     }
     if !history.complete {
         return Err(failure(

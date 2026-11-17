@@ -3,7 +3,43 @@ use super::{PostgresHistoryStore, connect_pg_client, qi};
 use myko::server::{EventRecord, HistoryEntityKey, TransactionChange, TransactionHistory};
 use std::sync::Arc;
 
+const fn boundary_filter() -> &'static str {
+    "item_type = 'UndoHistoryBoundary' AND change_type = 'SET' AND event->'provenance'->>'commandId' = 'myko:undo-history-boundary' AND event->'provenance'->>'actorUserId' IS NULL AND event->'provenance'->>'requestTx' = tx"
+}
+fn predates_boundary(
+    snapshot: &mut postgres::Transaction<'_>,
+    table: &str,
+    tx: &str,
+) -> Result<bool, String> {
+    snapshot.query_one(&format!(
+        "SELECT COALESCE((SELECT MIN(id) FROM {table} WHERE tx = $1) <= (SELECT MAX(id) FROM {table} WHERE {}), false)", boundary_filter()), &[&tx])
+        .map(|row| row.get(0)).map_err(|error| error.to_string())
+}
+fn decode_records(rows: Vec<postgres::Row>) -> Result<Vec<EventRecord>, String> {
+    rows.into_iter()
+        .map(|row| {
+            serde_json::from_str(&row.get::<_, String>(0)).map_err(|error| error.to_string())
+        })
+        .collect()
+}
 impl PostgresHistoryStore {
+    /// # Errors
+    /// Returns errors reading the durable migration boundary.
+    pub fn undo_boundary_exists(&self, id: &str) -> Result<bool, String> {
+        let mut client = connect_pg_client(&self.config, "undo_boundary_exists")?;
+        client
+            .query_one(
+                &format!(
+                    "SELECT EXISTS (SELECT 1 FROM {} WHERE {} AND item_id = $1)",
+                    qi(&self.config.table),
+                    boundary_filter()
+                ),
+                &[&id],
+            )
+            .map(|row| row.get(0))
+            .map_err(|error| error.to_string())
+    }
+
     /// # Errors
     /// Returns an error when durable transaction existence cannot be checked.
     pub fn transaction_exists(&self, tx: &str) -> Result<bool, String> {
@@ -36,13 +72,7 @@ impl PostgresHistoryStore {
                 &[&tx],
             )
             .map_err(|error| error.to_string())?;
-        let records = rows
-            .iter()
-            .map(|row| {
-                let value: String = row.get(0);
-                serde_json::from_str::<EventRecord>(&value).map_err(|error| error.to_string())
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let records = decode_records(rows)?;
         if records.is_empty() {
             return Err("transaction was not found".into());
         }
@@ -115,6 +145,7 @@ impl PostgresHistoryStore {
         let complete: bool = snapshot.query_one(&format!("SELECT EXISTS (
             SELECT 1 FROM {completions} c WHERE c.tx = $1 AND c.last_id = (SELECT MAX(id) FROM {table} WHERE tx = $1))"), &[&tx])
             .map_err(|error| error.to_string())?.get(0);
+        let predates_undo_boundary = predates_boundary(&mut snapshot, &table, tx)?;
         snapshot.commit().map_err(|error| error.to_string())?;
         Ok(TransactionHistory {
             transaction_id: tx.into(),
@@ -122,6 +153,7 @@ impl PostgresHistoryStore {
             changes,
             already_undone: undone,
             complete,
+            predates_undo_boundary,
         })
     }
 
@@ -152,12 +184,14 @@ impl PostgresHistoryStore {
         let mut client = connect_pg_client(&self.config, "user_transaction_page")?;
         let table = qi(&self.config.table);
         let completions = qi(&format!("{}_transactions", self.config.table));
+        let boundary = boundary_filter();
         let rows = client
             .query(
                 &format!(
                     "
             SELECT c.tx, c.first_id FROM {completions} c
-            WHERE c.user_id = $1 AND ($2::bigint IS NULL OR c.first_id < $2) AND c.last_id = (SELECT MAX(id) FROM {table} WHERE tx = c.tx)
+            WHERE c.first_id > COALESCE((SELECT MAX(id) FROM {table} WHERE {boundary}), 0)
+            AND c.user_id = $1 AND ($2::bigint IS NULL OR c.first_id < $2) AND c.last_id = (SELECT MAX(id) FROM {table} WHERE tx = c.tx)
             AND NOT EXISTS (SELECT 1 FROM {table} e WHERE e.tx = c.tx AND e.event->'provenance'->>'undoOfTx' IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM {table} u
                 JOIN {completions} finished ON finished.tx = u.event->'item'->>'undoTransactionId'

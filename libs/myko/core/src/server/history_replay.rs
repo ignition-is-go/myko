@@ -268,6 +268,13 @@ pub trait HistoryReplayProvider: Send + Sync {
         None
     }
 
+    /// Check a durable, internally authored undo boundary by migration id.
+    /// # Errors
+    /// Returns an error if boundary storage is unsupported or unavailable.
+    fn undo_boundary_exists(&self, _id: &str) -> Result<bool, String> {
+        Err("undo history boundaries are unsupported".into())
+    }
+
     /// Check whether a transaction already has any durable events.
     /// # Errors
     /// Returns an error when the backend cannot establish freshness.

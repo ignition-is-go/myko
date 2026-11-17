@@ -36,5 +36,17 @@ and physical type names remain unchanged.
 These hooks do not provide distributed locking or durable multi-event ACID.
 They share the existing single-authority and persistence-failure limitations of
 checked undo. Reader support must reach every participating peer before enabling
-new-format writes. Applications should provide their own explicit rollout gate
-and avoid changing historical log records during migration.
+new-format writes. Applications define their migration and undo boundaries without changing
+historical log records.
+
+## Starting an undo epoch after migration
+
+An application may deliberately start undo history with the current data model.
+After migrating and durably flushing current state, call
+`entities::undo::begin_undo_history(&server, migration_id)`. It appends an internally
+attributed boundary once per migration id. PostgreSQL selection excludes
+transactions that began before the latest boundary; explicit transaction undo
+rejects them too. Old event records remain readable and unchanged. Repeating the
+same migration id after restart does not advance the boundary, even if its live
+marker row was later deleted. Ordinary imported/entity writes do not establish a
+boundary without the internal provenance used by this server-only helper.
