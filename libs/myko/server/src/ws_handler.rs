@@ -2433,13 +2433,15 @@ mod tests {
             });
         }
         assert!(session.has_subscription(&tx));
-        assert_eq!(
-            writer
+        // NOTE(ts): at least one, not exactly one. The server writes its own
+        // `Server` row on its own schedule, which this query also reports.
+        assert!(
+            !writer
                 .0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .len(),
-            1
+                .is_empty(),
+            "the synchronous fallback sent no initial response"
         );
         assert!(release_tx.send(()).is_ok());
         let result = tokio::time::timeout(Duration::from_secs(5), completed.recv()).await;
@@ -2456,11 +2458,33 @@ mod tests {
                 })
                 .is_ok()
         );
+        // NOTE(ts): wait for the update itself, not for a message count. The
+        // tick queue is process-wide, so when another test is mid-drain this
+        // `set` settles on that test's thread after it returns here, and the
+        // server writes its own `Server` row on its own schedule.
+        let carries_update = |message: &MykoMessage| {
+            serde_json::to_string(message).is_ok_and(|json| json.contains("fallback-server"))
+        };
+        let delivered = tokio::time::timeout(Duration::from_secs(5), async {
+            while !writer
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .any(carries_update)
+            {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            delivered.is_ok(),
+            "the live update never reached the client"
+        );
         let messages = writer
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert_eq!(messages.len(), 2);
         assert!(
             messages
                 .iter()
