@@ -14,6 +14,12 @@ use crate::wire::MEvent;
 pub struct OperationProvenance {
     /// Originating command transaction; never an authorization boundary.
     pub request_tx: Arc<str>,
+    /// Verified application user at the originating command; absent on legacy/internal writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_user_id: Option<crate::identity::UserId>,
+    /// Original transaction reversed by this append-only compensation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_of_tx: Option<Arc<str>>,
     /// Connection attribution only, not a verified user/principal.
     pub unverified_client_id: Option<Arc<str>>,
     pub command_id: Arc<str>,

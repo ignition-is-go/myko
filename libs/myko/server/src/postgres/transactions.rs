@@ -1,0 +1,160 @@
+//! Indexed transaction selection and repeatable prior-state lookup.
+use super::{PostgresHistoryStore, connect_pg_client, qi};
+use myko::server::{EventRecord, HistoryEntityKey, TransactionChange, TransactionHistory};
+use std::sync::Arc;
+
+impl PostgresHistoryStore {
+    /// # Errors
+    /// Returns an error when durable transaction existence cannot be checked.
+    pub fn transaction_exists(&self, tx: &str) -> Result<bool, String> {
+        let mut client = connect_pg_client(&self.config, "transaction_exists")?;
+        client
+            .query_one(
+                &format!(
+                    "SELECT EXISTS (SELECT 1 FROM {} WHERE tx = $1)",
+                    qi(&self.config.table)
+                ),
+                &[&tx],
+            )
+            .map(|row| row.get(0))
+            .map_err(|error| error.to_string())
+    }
+
+    /// # Errors
+    /// Returns an error for unreadable, absent or malformed durable history.
+    pub fn transaction_history(&self, tx: &str) -> Result<TransactionHistory, String> {
+        let mut client = connect_pg_client(&self.config, "transaction_history")?;
+        let mut snapshot = client.transaction().map_err(|error| error.to_string())?;
+        snapshot
+            .batch_execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY")
+            .map_err(|error| error.to_string())?;
+        let table = qi(&self.config.table);
+        let completions = qi(&format!("{}_transactions", self.config.table));
+        let rows = snapshot
+            .query(
+                &format!("SELECT event::text FROM {table} WHERE tx = $1 ORDER BY id"),
+                &[&tx],
+            )
+            .map_err(|error| error.to_string())?;
+        let records = rows
+            .iter()
+            .map(|row| {
+                let value: String = row.get(0);
+                serde_json::from_str::<EventRecord>(&value).map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        if records.is_empty() {
+            return Err("transaction was not found".into());
+        }
+        let rows = snapshot.query(&format!("
+            WITH bounds AS (
+                SELECT item_type, item_id, MIN(id) first_id, MAX(id) last_id
+                FROM {table} WHERE tx = $1 GROUP BY item_type, item_id
+            )
+            SELECT b.item_type, b.item_id, b.last_id, previous.event::text, final.event::text, latest.id,
+                EXISTS (SELECT 1 FROM {table} later WHERE later.item_type = b.item_type
+                    AND later.item_id = b.item_id AND later.id > b.last_id
+                    AND NOT EXISTS (
+                        SELECT 1 FROM {table} receipt
+                        JOIN {completions} finished ON finished.tx = receipt.event->'item'->>'undoTransactionId'
+                        WHERE finished.last_id = (SELECT MAX(id) FROM {table} WHERE tx = finished.tx)
+                        AND receipt.item_type = 'TransactionUndo'
+                        AND receipt.change_type = 'SET'
+                AND receipt.event->'provenance'->>'undoOfTx' = receipt.event->'item'->>'transactionId'
+                AND receipt.event->'provenance'->>'requestTx' = receipt.tx
+                AND receipt.event->'item'->>'undoTransactionId' = receipt.tx
+                AND receipt.event->'provenance'->>'actorUserId' = finished.user_id
+                        AND (receipt.event->'item'->>'transactionId' = later.tx
+                            OR receipt.event->'item'->>'undoTransactionId' = later.tx)
+                    ))
+            FROM bounds b
+            JOIN {table} final ON final.id = b.last_id
+            LEFT JOIN LATERAL (
+                SELECT event FROM {table} e WHERE e.item_type = b.item_type
+                AND e.item_id = b.item_id AND e.id < b.first_id ORDER BY e.id DESC LIMIT 1
+            ) previous ON TRUE
+            JOIN LATERAL (
+                SELECT id FROM {table} e WHERE e.item_type = b.item_type
+                AND e.item_id = b.item_id ORDER BY e.id DESC LIMIT 1
+            ) latest ON TRUE ORDER BY b.item_type, b.item_id"), &[&tx])
+            .map_err(|error| error.to_string())?;
+        let mut changes = Vec::with_capacity(rows.len());
+        for row in rows {
+            let before: Option<String> = row.get(3);
+            let last: String = row.get(4);
+            changes.push(TransactionChange {
+                key: HistoryEntityKey::new(row.get::<_, String>(0), row.get::<_, String>(1)),
+                before: before
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
+                last: serde_json::from_str(&last).map_err(|error| error.to_string())?,
+                last_id: row.get(2),
+                latest_id: row.get(5),
+                has_conflict: row.get(6),
+            });
+        }
+        let undone: bool = snapshot
+            .query_one(
+                &format!(
+                    "SELECT EXISTS (
+            SELECT 1 FROM {table} receipt JOIN {completions} finished
+            ON finished.tx = receipt.event->'item'->>'undoTransactionId'
+            WHERE receipt.item_type = 'TransactionUndo' AND receipt.change_type = 'SET'
+                AND receipt.event->'provenance'->>'undoOfTx' = receipt.event->'item'->>'transactionId'
+                AND receipt.event->'provenance'->>'requestTx' = receipt.tx
+                AND receipt.event->'item'->>'undoTransactionId' = receipt.tx
+                AND receipt.event->'provenance'->>'actorUserId' = finished.user_id
+            AND receipt.event->'item'->>'transactionId' = $1
+            AND finished.last_id = (SELECT MAX(id) FROM {table} WHERE tx = finished.tx))"
+                ),
+                &[&tx],
+            )
+            .map_err(|error| error.to_string())?
+            .get(0);
+        let complete: bool = snapshot.query_one(&format!("SELECT EXISTS (
+            SELECT 1 FROM {completions} c WHERE c.tx = $1 AND c.last_id = (SELECT MAX(id) FROM {table} WHERE tx = $1))"), &[&tx])
+            .map_err(|error| error.to_string())?.get(0);
+        snapshot.commit().map_err(|error| error.to_string())?;
+        Ok(TransactionHistory {
+            transaction_id: tx.into(),
+            records,
+            changes,
+            already_undone: undone,
+            complete,
+        })
+    }
+
+    /// # Errors
+    /// Returns an error when user history cannot be read.
+    pub fn latest_user_transaction(
+        &self,
+        user: &myko::identity::UserId,
+    ) -> Result<Option<Arc<str>>, String> {
+        let mut client = connect_pg_client(&self.config, "latest_user_transaction")?;
+        let table = qi(&self.config.table);
+        let completions = qi(&format!("{}_transactions", self.config.table));
+        let rows = client
+            .query(
+                &format!(
+                    "
+            SELECT c.tx FROM {completions} c
+            WHERE c.user_id = $1 AND c.last_id = (SELECT MAX(id) FROM {table} WHERE tx = c.tx)
+            AND NOT EXISTS (SELECT 1 FROM {table} e WHERE e.tx = c.tx AND e.event->'provenance'->>'undoOfTx' IS NOT NULL)
+            AND NOT EXISTS (SELECT 1 FROM {table} u
+                JOIN {completions} finished ON finished.tx = u.event->'item'->>'undoTransactionId'
+                WHERE u.item_type = 'TransactionUndo' AND u.change_type = 'SET'
+                AND u.event->'provenance'->>'undoOfTx' = u.event->'item'->>'transactionId'
+                AND u.event->'provenance'->>'requestTx' = u.tx
+                AND u.event->'item'->>'undoTransactionId' = u.tx
+                AND u.event->'provenance'->>'actorUserId' = finished.user_id
+                AND u.event->'item'->>'transactionId' = c.tx
+                AND finished.last_id = (SELECT MAX(id) FROM {table} WHERE tx = finished.tx))
+            ORDER BY c.first_id DESC LIMIT 1"
+                ),
+                &[&user.as_ref()],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(rows.first().map(|row| Arc::from(row.get::<_, String>(0))))
+    }
+}

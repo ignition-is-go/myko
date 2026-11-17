@@ -640,11 +640,15 @@ impl MykoServer {
 
         // NOTE(ts): Dispatcher fans out events to saga channels, filtering by
         // entity type and change type so each saga only receives relevant events.
+        let dispatch_context = myko::saga::SagaContext::new(self.host_id, self.registry.clone());
         let dispatcher = tokio::spawn(async move {
             while let Ok(event) = rx.recv_async().await {
                 for ch in &saga_channels {
-                    if &*event.item_type == ch.entity_type && event.change_type == ch.change_type {
-                        let _ = ch.tx.send(event.clone());
+                    if &*event.item_type == ch.entity_type
+                        && event.change_type == ch.change_type
+                        && ch.tx.send(event.clone()).is_err()
+                    {
+                        drop(dispatch_context.begin_event(&event));
                     }
                 }
             }

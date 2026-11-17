@@ -435,6 +435,9 @@ impl MykoServerContext {
         {
             tracing::error!(%error, "initial graph projection rebuild failed");
         }
+        if history_replay.is_some() {
+            registry.transactions.enable_history();
+        }
         Self {
             host_id,
             host_id_str: Arc::from(host_id.to_string()),
@@ -882,6 +885,16 @@ impl MykoServerContext {
     }
 
     pub(crate) fn del_by_id_with_origin(
+        &self,
+        entity_type: &str,
+        id: &str,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        self.registry
+            .with_mutation(|| self.del_by_id_coordinated(entity_type, id, origin))
+    }
+
+    fn del_by_id_coordinated(
         &self,
         entity_type: &str,
         id: &str,
@@ -1493,6 +1506,18 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
+        self.registry.transactions.coordinate(false, || {
+            self.submit_mutation_mode_coordinated(items, change, origin, mode)
+        })
+    }
+
+    fn submit_mutation_mode_coordinated(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
         let nested = CAUSAL_STATES.with(|slot| {
             slot.borrow()
                 .iter()
@@ -1600,6 +1625,23 @@ impl MykoServerContext {
     }
 
     fn submit_replace_mutation_inner(
+        &self,
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        origin: Origin,
+        expected_graph_generation: Option<u64>,
+    ) -> Result<bool, PersistError> {
+        self.registry.transactions.coordinate(false, || {
+            self.submit_replace_mutation_inner_coordinated(
+                upserts,
+                deletes,
+                origin,
+                expected_graph_generation,
+            )
+        })
+    }
+
+    fn submit_replace_mutation_inner_coordinated(
         &self,
         upserts: Vec<Arc<dyn AnyItem>>,
         deletes: Vec<Arc<dyn AnyItem>>,
@@ -2357,22 +2399,75 @@ impl MykoServerContext {
             self.matching_event_sink(item.entity_type(), change),
         ) {
             (None, None) => {}
-            (Some(persister), None) => persister.persist_record(self.event_record(build()))?,
+            (Some(persister), None) => {
+                self.persist_record(persister, &self.event_record(build()))?;
+            }
             (None, Some(sink)) => {
-                let _ = sink.send(self.event_record(build()).event);
+                self.send_record_to_saga(sink, self.event_record(build()));
             }
             (Some(persister), Some(sink)) => {
                 let record = self.event_record(build());
-                let for_sink = record.event.clone();
-                persister.persist_record(record)?;
-                let _ = sink.send(for_sink);
+                self.persist_record(persister, &record)?;
+                self.send_record_to_saga(sink, record);
             }
         }
         Ok(())
     }
 
+    fn send_record_to_saga(&self, sink: &flume::Sender<MEvent>, record: super::EventRecord) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let deliveries = inventory::iter::<crate::saga::SagaRegistration>
+            .into_iter()
+            .filter(|registration| {
+                registration.event_entity_type == record.event.item_type.as_ref()
+                    && registration.event_change_type == record.event.change_type
+            })
+            .count();
+        #[cfg(target_arch = "wasm32")]
+        let deliveries = 0;
+        let tx = record.event.tx.clone();
+        self.registry
+            .transactions
+            .queue(tx.clone(), record.provenance, deliveries);
+        if sink.send(record.event).is_err() {
+            for _ in 0..deliveries {
+                drop(self.registry.transactions.receive(&tx));
+            }
+        }
+    }
+
+    pub(crate) fn flush_history_writes(&self) -> Result<(), String> {
+        self.persisters.flush_all()
+    }
+
+    pub(crate) fn require_undo_backend(&self, entity_type: &str) -> Result<(), String> {
+        let identity = self
+            .history_replay()
+            .and_then(|provider| provider.history_identity())
+            .ok_or("history provider has no durable backend identity")?;
+        if self.persisters.resolve(entity_type).is_some_and(|backend| {
+            backend.supports_provenance() && backend.history_identity().as_ref() == Some(&identity)
+        }) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{entity_type} does not write the configured attributed history"
+            ))
+        }
+    }
+
     pub(crate) fn operation_owner(&self) -> *const () {
         Arc::as_ptr(&self.causal_counters).cast()
+    }
+
+    fn persist_record(
+        &self,
+        backend: Arc<dyn crate::server::Persister>,
+        record: &super::EventRecord,
+    ) -> Result<(), PersistError> {
+        backend.persist_record(record.clone())?;
+        self.registry.transactions.recorded(record, backend);
+        Ok(())
     }
 
     fn persist_dyn(
@@ -2381,7 +2476,7 @@ impl MykoServerContext {
         build: impl FnOnce() -> MEvent,
     ) -> Result<(), PersistError> {
         if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            persister.persist_record(self.event_record(build()))?;
+            self.persist_record(persister, &self.event_record(build()))?;
         }
         Ok(())
     }
@@ -2393,7 +2488,7 @@ impl MykoServerContext {
         build: impl FnOnce() -> MEvent,
     ) {
         if let Some(sink) = self.matching_event_sink(entity_type, change) {
-            let _ = sink.send(self.event_record(build()).event);
+            self.send_record_to_saga(sink, self.event_record(build()));
         }
     }
 
@@ -4101,6 +4196,8 @@ mod tests {
         let other = make_ctx();
         let provenance = super::super::OperationProvenance {
             request_tx: "request".into(),
+            actor_user_id: None,
+            undo_of_tx: None,
             unverified_client_id: None,
             command_id: "test".into(),
             lineage: Vec::new(),
@@ -4133,6 +4230,8 @@ mod tests {
         let ctx = make_ctx();
         let provenance = super::super::OperationProvenance {
             request_tx: "caller-request".into(),
+            actor_user_id: None,
+            undo_of_tx: None,
             unverified_client_id: None,
             command_id: "test".into(),
             lineage: Vec::new(),

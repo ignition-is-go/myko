@@ -51,6 +51,7 @@ pub fn myko_saga_impl(attr: &TokenStream, input_struct: &ItemStruct) -> TokenStr
                                     event.change_type,
                                     event.tx
                                 );
+                                let causation = ctx.begin_event(&event);
                                 let item = match #krate::serde_json::from_value::<<#struct_name as #krate::saga::SagaHandler>::EventItem>(event.item.clone()) {
                                     Ok(item) => item,
                                     Err(err) => {
@@ -71,7 +72,7 @@ pub fn myko_saga_impl(attr: &TokenStream, input_struct: &ItemStruct) -> TokenStr
                                 } else {
                                     #krate::tracing::debug!("{} emitted no command", #struct_name_str);
                                 }
-                                out.map(|command| #krate::saga::CausedSagaCommand::new(command, tx))
+                                out.map(|command| #krate::saga::CausedSagaCommand::from_causation(command, tx, causation))
                             }
                         }),
                 )

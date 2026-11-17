@@ -7,8 +7,10 @@
 	const events = client.watchReport(new EventsForTransaction({ transactionId: tx }));
 </script>
 
-{#if $events}
-	{#each $events as event (event)}
+{#if $events && 'Err' in $events}
+	<p role="alert">{$events.Err}</p>
+{:else if $events && 'Ok' in $events}
+	{#each $events.Ok as event (event)}
 		<div class="div">
 			<p>{event.itemType}</p>
 			<p>{event.changeType}</p>

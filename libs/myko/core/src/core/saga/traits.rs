@@ -37,11 +37,28 @@ pub trait SagaCommand: Send + Sync + 'static {
 pub struct CausedSagaCommand<C> {
     command: C,
     tx: Arc<str>,
+    causation: Option<crate::store::CommandCausation>,
 }
 
 impl<C> CausedSagaCommand<C> {
+    pub const fn from_causation(
+        command: C,
+        tx: Arc<str>,
+        causation: crate::store::CommandCausation,
+    ) -> Self {
+        Self {
+            command,
+            tx,
+            causation: Some(causation),
+        }
+    }
+
     pub const fn new(command: C, tx: Arc<str>) -> Self {
-        Self { command, tx }
+        Self {
+            command,
+            tx,
+            causation: None,
+        }
     }
 }
 
@@ -49,6 +66,9 @@ impl<C: SagaCommand> SagaCommand for CausedSagaCommand<C> {
     fn execute_boxed(self: Box<Self>, mut ctx: CommandContext) -> Result<(), CommandError> {
         // The stream may outlive its event handler and run on another thread.
         Arc::make_mut(&mut ctx.req).tx = self.tx;
+        if let Some(causation) = &self.causation {
+            ctx.inherit_causation(causation);
+        }
         Box::new(self.command).execute_boxed(ctx)
     }
 

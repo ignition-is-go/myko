@@ -1,97 +1,112 @@
-# Operation provenance on Myko 6
+# Authenticated transaction history and undo
 
-This is the first increment toward user-scoped undo and entity-tree restoration.
-It adds correlation evidence to existing event persistence, using current Myko 6.
-No code from the unfinished Myko 7 rewrite is required.
+`tx` identifies the originating command and all of its causal work. Queries,
+reports, nested commands, emitted events, synchronous relationship cascades, and
+macro-declared saga commands preserve it. No additional operation ID is generated.
+Standalone server mutations without command context receive their own tx.
+Request/response and subscription routing retain their existing identifiers.
 
-## Recorded evidence
+## Attribution
 
-Command contexts retain their originating request transaction. All synchronous
-command emission methods, including raw imports, mixed batches, replacements,
-graph reconciliation, and relationship cascades, carry provenance to persistence.
-Queued causal mutations capture their own metadata before their caller's scope
-ends. Scope guards restore previous attribution on return or unwinding and are
-isolated by server instance and thread.
+`CommandContext` captures the stable application user from the live authenticated
+`RequestContext`/`AuthSession`. The optional durable `EventRecord.provenance`
+envelope records `actorUserId`, `requestTx`, `commandId`, lineage, connection
+attribution, and, for a compensation, `undoOfTx`. A connection ID is never a user.
+Neither request arguments nor inbound raw-event JSON can establish this metadata.
+Legacy and unattributed records stay unknown rather than becoming system users.
 
-The envelope records the originating request transaction, command ID, request
-lineage, and optional **unverified connection ID**.
-Connection attribution is not an authenticated user identity. The originating
-command context supplies the command ID and lineage; these are not a complete
-nested execution trace. Events emitted by a command carry the originating
-`RequestContext.tx` in `MEvent.tx`, including custom persisters and the saga event
-sink. Nested commands, synchronous relationship cascades, and queued causal
-mutations preserve it. Raw imports emitted by a command use that command's tx,
-not a label supplied inside the imported event. The transaction is correlation,
-not an authorization boundary or proof of an atomic commit.
+Clones and nested commands retain their context. Queued causal mutations retain
+metadata before the caller's scope ends. Macro-declared sagas carry an opaque
+`CommandCausation` token across their asynchronous command stream: this preserves
+the originating user for audit without granting that user's authentication or
+permissions to an internal saga. Handwritten sagas must retain
+`ctx.begin_event(&event)` with `CausedSagaCommand::from_causation(...)` to participate
+in the same contract. A transaction with undrained saga deliveries is not eligible
+for undo. Dropped/failed delivery paths release their reservations.
 
-## Transaction propagation
+## Durable history
 
-The originating command's `tx` follows its queries, reports, nested commands,
-and emitted events. Query and report contexts already forward the request;
-command event construction must retain that tx instead of minting a fresh one
-for every write. A constructor may still generate a fresh tx for a standalone
-server mutation with no originating command scope.
+PostgreSQL preserves provenance in the existing JSONB event envelope. Legacy
+`MEvent` readers ignore the additive field. `Persister::persist_record` still
+forwards the event to legacy persisters, but such backends cannot support undo.
 
-`RequestContext::child` preserves tx. Client command-response callbacks and live
-query/view/report subscription cancellation continue using their existing tx
-values; event propagation does not change their routing. `tx` is the causal
-grouping identity; no separate execution identifier is generated. It is neither
-authentication nor an atomic-transaction receipt.
+The provider exposes `transaction_history(tx)` and
+`latest_user_transaction(user)`. A repeatable-read snapshot contains every event
+in the transaction, each touched entity's state immediately before its first
+write, its final write, and evidence of subsequent changes. Reads and decoding
+fail explicitly; missing or malformed history never becomes an empty successful
+reversal plan. `EventsForTransaction` now returns `Result<Vec<MEvent>, String>`
+and checks the authenticated caller owns the entire transaction.
 
-Macro-declared sagas retain the triggering event's tx in an explicit command
-wrapper across their asynchronous stream. Their reads and subsequent writes
-therefore remain in that causal transaction. Handwritten saga pipelines can use
-`CausedSagaCommand::new(command, event.tx.clone())` for the same contract; commands
-with no declared originating event start an independent internal transaction.
-This does not propagate authenticated user authority or prove that asynchronous
-work has finished.
+A producer barrier acknowledges all prior queued events. The local runtime tracks
+active command contexts and outstanding saga deliveries. Once that causal work
+finishes, PostgreSQL stores a completion record in `<events_table>_transactions`,
+separate from entity state, containing the existing tx, user and first/last event
+IDs. A later write with the same tx invalidates the completion. User lookup is
+indexed by `(user_id, first_id DESC)`, so late saga writes cannot reorder an older
+user action above a newer action. Incomplete transactions remain ineligible after
+restart, even though their partial events remain readable for diagnosis.
 
-## Compatibility and storage
+## Undo commands
 
-`MEvent`, its Rust struct literals, and its JSON/CBOR wire shape remain unchanged.
-`EventRecord` flattens the original event and adds optional `provenance` in durable
-JSON. Old event readers ignore that extra member. Old records deserialize with
-`provenance: None`; absence means unknown provenance, not a trusted system actor.
-Inbound raw events cannot establish trusted provenance through this envelope.
+- `UndoMyLastTransaction {}` selects the authenticated user's latest completed,
+  original, unreversed transaction, returning `None` when none exists.
+- `UndoTransaction { transaction_id }` reverses a specified transaction owned by
+  the authenticated user. It rejects unknown/mixed authors, active/incomplete
+  transactions, an invalid or identical undo tx, and an already reversed target.
 
-`Persister::persist_record` defaults to forwarding the original event to existing
-`persist` implementations with the originating command tx already applied. Such
-persisters discard the sidecar and report `supports_provenance() == false`. A custom persister must override both
-methods to retain it. Applications must inspect that capability for each routed
-backend before relying on metadata. Null, blackhole, and peer persisters do not
-retain provenance.
+For every affected entity, undo restores its previous payload or absence. Deleted
+entities reclaim their original IDs. Granular entities allow another user's rename
+to survive a position undo. Uncompensated later revisions reject the whole plan,
+even when they wrote an equal value. Both durable revisions and normalized live
+state are checked. Compensated later edits are recognized so repeated undo can
+walk the user's stack after restart.
 
-PostgreSQL retains the envelope in its existing JSONB column, including retries;
-no SQL schema migration is needed. PostgreSQL rejects NUL-bearing provenance
-before enqueueing it, so invalid caller metadata cannot poison the retry queue;
-this does not undo state already changed before persistence was attempted. `load_records_after_id` reads envelopes without
-stripping metadata. Events remain indexed by `tx`; authenticated user lookup
-still needs an explicit API. This bounded, row-ID-based read is a scan
-primitive for incremental consumers, not a scalable interactive operation history
-or evidence that an operation is complete. An indexed query contract is a future
-increment. Existing history/replay APIs retain their `MEvent` contracts
-and therefore do not expose the sidecar. Peer replication and asynchronous saga
-work do not propagate the operation envelope across processes or tasks; saga
-commands retain their event tx separately.
+Validation also checks relationship/graph deletions, owning-parent fixups and the
+final dependency state. A cascade must not silently delete a newer child or rewrite
+an unplanned parent. Unknown types, missing dependencies, incompatible persistence
+routes, transient live divergence and history failures reject before inverse
+writes. A local read/write coordination gate excludes concurrent authoritative
+mutations during the check and application, while ordinary mutations remain
+concurrent with each other. Contexts without history avoid this gate.
 
-## Explicit limits and next steps
+The inverse writes are normal events under a new tx, with an on-log
+`TransactionUndo` receipt. Receipts remain effective even if their live entity is
+removed. Only receipts with server-stamped compensation provenance count;
+ordinary entity writes cannot forge them. Successful undo acknowledges persistence. An undo transaction itself is
+not selected or accepted for undo in this first version; redo and scene/time
+rollback remain separate API work. The history change representation and checked
+mixed replacement path provide their underlying primitives.
 
-This change supplies no atomicity, commit-before-response, authenticated actor,
-rollback, before-image, or undo guarantee. A failing command may already have
-changed state or queued events. Transient writes stay transient. Direct server
-mutations outside a command emission scope retain unknown provenance.
+## Scope and failure semantics
 
-Durability barriers remain tasks `lv-3f3a` and `lv-3a27`. Compaction remains
-`lv-54eb` and must preserve any history guarantees introduced later. Subsequent
-increments need verified actor attribution, complete operation boundaries,
-historical relationship/topology evidence, and conflict-checked append-only
-restore before user-scoped or subtree undo can be advertised.
+This is append-only causal reversal, not a general ACID command transaction or a
+distributed writer lock. Existing command mutations can change live state before
+persistence fails. The coordination gate makes conflict rejection all-or-nothing
+within one authoritative runtime; it does not provide serializable multi-server
+writes to a shared database. A failure/crash during inverse persistence may leave
+partial forward events. Without a durable completion they are not treated as a
+successful undo, and subsequent reversal fails closed against divergent state.
+
+All routed events of an eligible transaction must use the configured attributed
+history backend. Peer replication does not transport the sidecar or authenticated
+actor across processes. Complete log retention is required: compaction must preserve
+prior-state and completion evidence before undo history can be retained across it.
+No automatic event-history retention policy or force-overwrite option is introduced.
 
 ## Validation
 
-Run `cargo flux run test-operation-provenance` and
-`cargo flux run check-operation-provenance` with `RUST_TEST_THREADS=1`.
-Run `cargo flux run test-postgres-provenance` for the PostgreSQL regression.
-The task starts a disposable local PostgreSQL cluster on a private Unix socket,
-runs the persistence test, and removes the database when it exits. PostgreSQL
-server tools must be installed. The same task runs in the native CI quality gate.
+Use `RUST_TEST_THREADS=1` for all reactive tests:
+
+- `cargo flux run test-operation-provenance`
+- `cargo flux run check-operation-provenance`
+- `cargo flux run test-transaction-undo`
+- `cargo flux run lint-transaction-undo`
+- `cargo flux run test-postgres-provenance`
+- `cargo flux run check --selection transaction-clients`
+
+The PostgreSQL tasks create a disposable cluster on a private Unix socket and
+remove it on exit. The undo suite covers two-user granular edits across restart,
+strict conflicts without partial reversal, ownership, legacy/mixed actors,
+resurrection, relationship side effects, repeated undo, active/incomplete work,
+asynchronous saga attribution and competing undo attempts. It runs in native CI.

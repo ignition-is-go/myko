@@ -239,6 +239,35 @@ fn entity_history_window_source(
 /// to enable point-in-time snapshots without coupling myko to a
 /// specific persistence backend.
 pub trait HistoryReplayProvider: Send + Sync {
+    /// Opaque durable-history identity, compared internally with routed persisters.
+    fn history_identity(&self) -> Option<String> {
+        None
+    }
+
+    /// Check whether a transaction already has any durable events.
+    /// # Errors
+    /// Returns an error when the backend cannot establish freshness.
+    fn transaction_exists(&self, _tx: &str) -> Result<bool, String> {
+        Err("transaction history is unsupported".into())
+    }
+
+    /// Load one repeatable snapshot of a transaction, prior states and latest revisions.
+    /// # Errors
+    /// Returns an error when history is missing or unsupported.
+    fn transaction_history(&self, _tx: &str) -> Result<super::TransactionHistory, String> {
+        Err("transaction history is unsupported".into())
+    }
+
+    /// Select the latest original authored transaction not already reversed.
+    /// # Errors
+    /// Returns a backend error rather than an empty successful history.
+    fn latest_user_transaction(
+        &self,
+        _user: &crate::identity::UserId,
+    ) -> Result<Option<Arc<str>>, String> {
+        Err("user transaction history is unsupported".into())
+    }
+
     /// Subscribe to filtered durable replay followed by live committed changes.
     /// Poll the blocking subscription off the reactive thread.
     ///

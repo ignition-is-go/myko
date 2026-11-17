@@ -16,4 +16,8 @@ mkdir "$history_tmp/socket"
 export MYKO_PROVENANCE_TEST_POSTGRES="postgresql://postgres@localhost/postgres?host=$history_tmp/socket"
 export MYKO_HISTORY_TEST_URL="$MYKO_PROVENANCE_TEST_POSTGRES"
 export RUST_TEST_THREADS=1
-cargo test --locked --jobs 4 -p myko-server --lib "$@" -- --ignored --test-threads=1
+if [ "${1-}" = "--test" ]; then
+    cargo test --locked --jobs 4 -p myko-server "$@" -- --ignored --test-threads=1
+else
+    cargo test --locked --jobs 4 -p myko-server --lib "$@" -- --ignored --test-threads=1
+fi

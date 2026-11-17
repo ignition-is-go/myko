@@ -182,10 +182,37 @@ pub trait Persister: Send + Sync + 'static {
         self.persist(record.event)
     }
 
+    /// Opaque identity of the durable history this backend writes. It must
+    /// match the configured history provider before checked undo is allowed.
+    fn history_identity(&self) -> Option<String> {
+        None
+    }
+
     /// Whether `persist_record` retains its metadata. False means history through
     /// this backend cannot support provenance-based selection.
     fn supports_provenance(&self) -> bool {
         false
+    }
+
+    /// Record that the local causal transaction has no active commands or saga deliveries.
+    /// Enqueue synchronously without reentering command execution; this orders
+    /// completion before any subsequent reuse of the same tx.
+    /// # Errors
+    /// Returns an error if completion records are unsupported or cannot be queued.
+    fn complete_transaction(
+        &self,
+        _tx: &str,
+        _user: &crate::identity::UserId,
+    ) -> Result<(), String> {
+        Err("transaction completion is unsupported".into())
+    }
+
+    /// Wait until every previously enqueued event is durably committed.
+    /// Unsupported backends must fail rather than promise read-after-write safety.
+    /// # Errors
+    /// Returns an error when durable acknowledgement is unavailable or fails.
+    fn flush(&self) -> Result<(), String> {
+        Err("durable persistence acknowledgement is unsupported".into())
     }
 
     /// Startup healthcheck hook.
@@ -255,6 +282,17 @@ impl PersisterRouter {
             .get(entity_type)
             .cloned()
             .or_else(|| self.default.clone())
+    }
+
+    pub(crate) fn flush_all(&self) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for persister in self.default.iter().chain(self.overrides.values()) {
+            let key = Arc::as_ptr(persister).cast::<()>().addr();
+            if persister.supports_provenance() && seen.insert(key) {
+                persister.flush()?;
+            }
+        }
+        Ok(())
     }
 
     /// Get the shared health state from the default persister.

@@ -27,6 +27,7 @@ use super::EntityStore;
 /// let all_types = registry.entity_types();
 /// ```
 pub struct StoreRegistry {
+    pub(crate) transactions: super::transactions::TransactionCoordinator,
     // AHash on Arc<str> keys: ~1.6× faster than DashMap's default SipHash on
     // the lookup-by-entity-type hot path. Bench: dashmap_default 183 µs vs
     // dashmap_ahash 115 µs / 10k lookups.
@@ -38,8 +39,15 @@ impl StoreRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            transactions: super::transactions::TransactionCoordinator::default(),
             stores: DashMap::with_hasher(ahash::RandomState::new()),
         }
+    }
+
+    /// Coordinate a persistence consumer's store update with checked reversals.
+    #[doc(hidden)]
+    pub fn with_mutation<T>(&self, action: impl FnOnce() -> T) -> T {
+        self.transactions.coordinate(false, action)
     }
 
     /// Get or create an entity store for the given type.

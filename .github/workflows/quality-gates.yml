@@ -79,6 +79,8 @@ jobs:
           RUST_TEST_THREADS: "1"
       - name: Test PostgreSQL history persistence
         run: cargo flux run test-postgres-provenance
+      - name: Test authenticated transaction undo
+        run: cargo flux run test-transaction-undo
       - name: Test PostgreSQL history subscriptions
         run: cargo flux run test-history-feed
       - name: Verify myko-gpui is publishable

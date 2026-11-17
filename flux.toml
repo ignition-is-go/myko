@@ -2,6 +2,9 @@
 main = "production"
 dev = { channel = "canary", prerelease = true }
 
+[selections.transaction-clients]
+roots = ["@myko/core", "@myko/ui-svelte"]
+
 [tasks.check]
 workspace_batchable = true
 depends_on = ["gen"]
@@ -271,3 +274,9 @@ root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", 
 
 [tasks.test-delivery-websocket-auth]
 root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--test", "websocket_auth", "--", "--test-threads=1"]
+
+[tasks.test-transaction-undo]
+root = ["sh", "scripts/test-postgres-history.sh", "--test", "transaction_undo"]
+
+[tasks.lint-transaction-undo]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--test", "transaction_undo", "--no-deps", "--", "-D", "warnings"]
