@@ -686,9 +686,24 @@ impl RelationshipManager {
 
     fn index_belongs_to_child(&self, lookup: &BelongsToLookup, item: &Arc<dyn AnyItem>) {
         let child_id = item.id();
+        let parent_id = (lookup.extract_fk)(item.as_any());
+        // Payload-only SETs do not change relationship membership. Retain both
+        // indexes rather than removing and rebuilding the same parent link.
+        if let Some(parent_id) = &parent_id
+            && self
+                .belongs_to_parent_by_child
+                .get(&lookup.id)
+                .is_some_and(|parents| {
+                    parents
+                        .get(&child_id)
+                        .is_some_and(|previous| previous.value() == parent_id)
+                })
+        {
+            return;
+        }
         self.remove_belongs_to_child(lookup, &child_id);
 
-        let Some(parent_id) = (lookup.extract_fk)(item.as_any()) else {
+        let Some(parent_id) = parent_id else {
             return;
         };
 
@@ -918,18 +933,7 @@ impl RelationshipManager {
 
         for lookup in lookups {
             let combinations = Self::get_dependency_combinations(ctx, &lookup.dependencies);
-            let store = ctx.registry.get_or_create(lookup.local_type);
-            let existing_items = store.snapshot();
-            let mut existing_combinations: HashSet<Vec<Arc<str>>> = existing_items
-                .iter()
-                .filter_map(|(_, item)| {
-                    lookup
-                        .dependencies
-                        .iter()
-                        .map(|dependency| (dependency.extract_fk)(item.as_any()))
-                        .collect()
-                })
-                .collect();
+            let mut existing_combinations = Self::existing_ensure_for_combinations(ctx, lookup);
 
             for combo in combinations {
                 if !existing_combinations.contains(&combo)
@@ -1284,21 +1288,14 @@ impl RelationshipManager {
                 // Get all combinations of dependency entities
                 let combinations = Self::get_dependency_combinations(ctx, &lookup.dependencies);
 
-                // Snapshot once outside the combo loop
-                let store = ctx.registry.get_or_create(lookup.local_type);
-                let existing_items = store.snapshot();
-
+                let mut existing_combinations = Self::existing_ensure_for_combinations(ctx, lookup);
                 let mut created_count = 0_u64;
 
                 for combo in combinations {
-                    // Check if derived entity already exists
-                    let existing = Self::find_ensure_for_entity_in(
-                        &existing_items,
-                        &lookup.dependencies,
-                        &combo,
-                    );
-
-                    if existing.is_none() && self.ensure_combination(lookup, &combo, ctx)? {
+                    if !existing_combinations.contains(&combo)
+                        && self.ensure_combination(lookup, &combo, ctx)?
+                    {
+                        existing_combinations.insert(combo);
                         created_count = created_count.saturating_add(1);
                     }
                 }
@@ -1374,6 +1371,25 @@ impl RelationshipManager {
         }
 
         result
+    }
+
+    /// Snapshot dependency tuples once so checking C combinations does not scan N rows C times.
+    fn existing_ensure_for_combinations(
+        ctx: &MykoServerContext,
+        lookup: &EnsureForLookup,
+    ) -> HashSet<Vec<Arc<str>>> {
+        let store = ctx.registry.get_or_create(lookup.local_type);
+        store
+            .snapshot()
+            .iter()
+            .filter_map(|(_, item)| {
+                lookup
+                    .dependencies
+                    .iter()
+                    .map(|dependency| (dependency.extract_fk)(item.as_any()))
+                    .collect()
+            })
+            .collect()
     }
 
     /// Find an `EnsureFor` entity matching the given dependency IDs
@@ -1637,6 +1653,65 @@ mod cascade_tests {
             parent_id: parent_id.into(),
             name: format!("node-{id}"),
         }
+    }
+
+    #[test]
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "assertions report regression failures in this test"
+    )]
+    fn unchanged_parent_preserves_index_entry_then_reparent_and_detach_update_both_sides()
+    -> Result<(), Box<dyn std::error::Error>> {
+        fn parent(item: &dyn std::any::Any) -> Option<Arc<str>> {
+            let node = item.downcast_ref::<CascadeNode>()?;
+            (!node.parent_id.0.is_empty()).then(|| node.parent_id.0.clone())
+        }
+        let manager = RelationshipManager::new();
+        let lookup = super::BelongsToLookup {
+            id: u64::MAX,
+            local_type: "CascadeNode",
+            foreign_type: "CascadeNode",
+            extract_fk: parent,
+        };
+        let child: Arc<str> = "index-child".into();
+        let index = |node: CascadeNode| {
+            let item: Arc<dyn crate::item::AnyItem> = Arc::new(node);
+            manager.index_belongs_to_child(&lookup, &item);
+        };
+        let indexed_parent = || {
+            manager
+                .belongs_to_parent_by_child
+                .get(&lookup.id)
+                .and_then(|parents| parents.get(&child).map(|entry| entry.value().clone()))
+        };
+        let children = |parent: &str| {
+            manager
+                .belongs_to_children_by_parent
+                .get(&lookup.id)
+                .and_then(|parents| parents.get(parent).map(|entry| entry.value().clone()))
+                .unwrap_or_default()
+        };
+        index(make_node("index-child", "old-parent"));
+        let original = indexed_parent().ok_or("missing initial parent index")?;
+        for change in 0..128 {
+            let mut node = make_node("index-child", "old-parent");
+            node.name = format!("changed-{change}");
+            index(node);
+        }
+        let after = indexed_parent().ok_or("missing unchanged parent index")?;
+        assert!(
+            Arc::ptr_eq(&original, &after),
+            "payload updates must retain the existing FK entry"
+        );
+        assert!(children("old-parent").contains(&child));
+        index(make_node("index-child", "new-parent"));
+        assert_eq!(indexed_parent().as_deref(), Some("new-parent"));
+        assert!(children("old-parent").is_empty());
+        assert!(children("new-parent").contains(&child));
+        index(make_node("index-child", ""));
+        assert!(indexed_parent().is_none());
+        assert!(children("new-parent").is_empty());
+        Ok(())
     }
 
     fn exists(registry: &StoreRegistry, id: &str) -> bool {
@@ -2019,6 +2094,8 @@ mod ensure_for_cascade_tests {
             })
             .unwrap_or_default()
     }
+
+    mod startup_tests;
 
     #[test]
     fn startup_initialization_enforces_recursive_ensure_chain() {

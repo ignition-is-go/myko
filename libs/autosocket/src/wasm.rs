@@ -1,7 +1,11 @@
 use std::{cell::RefCell, rc::Rc, sync::Arc};
 
 use base64::Engine as _;
-use futures::future::{AbortHandle, Abortable};
+use futures::{
+    channel::oneshot,
+    future::{AbortHandle, Abortable, Either, select},
+};
+use gloo_timers::future::TimeoutFuture;
 
 use hyphae::{Cell, CellImmutable, CellMutable, Mutable};
 use send_wrapper::SendWrapper;
@@ -10,6 +14,8 @@ use wasm_bindgen::{JsCast, closure::Closure};
 use web_sys::{CloseEvent, ErrorEvent, MessageEvent, WebSocket};
 
 use crate::{CallbackGuard, FrameCallback, SocketConnectionStatus, SocketTransport, WsFrame};
+
+const CONNECT_TIMEOUT_MS: u32 = 10_000;
 
 type SharedInner = Rc<RefCell<WasmSocketInner>>;
 type SharedCallback = Rc<RefCell<CallbackRegistration>>;
@@ -25,6 +31,7 @@ struct WasmSocketInner {
     // previous callback alive until a later scheduling/teardown turn.
     retired_reconnects: Vec<Closure<dyn FnMut()>>,
     generation: u64,
+    attempt: u64,
     intended_addr: Option<String>,
     credentials: Option<Arc<dyn myko_auth::CredentialProvider>>,
     pending_auth: Option<AbortHandle>,
@@ -33,6 +40,10 @@ struct WasmSocketInner {
 impl WasmSocketInner {
     fn is_current(&self, generation: u64, addr: &str) -> bool {
         self.generation == generation && self.intended_addr.as_deref() == Some(addr)
+    }
+
+    fn is_current_attempt(&self, generation: u64, attempt: u64, addr: &str) -> bool {
+        self.is_current(generation, addr) && self.attempt == attempt
     }
 
     fn detach_socket(&mut self) {
@@ -130,6 +141,7 @@ impl WasmSocket {
                 reconnect_timeout: None,
                 retired_reconnects: Vec::new(),
                 generation: 0,
+                attempt: 0,
                 intended_addr: None,
                 credentials: None,
                 pending_auth: None,
@@ -150,12 +162,12 @@ impl WasmSocket {
         }
     }
 
-    fn disconnect(&self, status: SocketConnectionStatus) -> u64 {
+    fn disconnect(&self, addr: Option<String>) -> u64 {
         let mut inner = self.inner.borrow_mut();
         inner.generation = inner.generation.wrapping_add(1);
+        inner.intended_addr = addr;
         inner.cancel_reconnect();
         inner.detach_socket();
-        self.callbacks.actual_status.set(status);
         inner.generation
     }
 
@@ -194,27 +206,26 @@ impl SocketTransport for WasmSocket {
     }
 
     fn set_addr(&self, addr: Option<String>) {
+        let generation = self.disconnect(addr.clone());
         self.callbacks.intended_status.set(addr.clone().map_or(
             SocketConnectionStatus::Idle,
             SocketConnectionStatus::Connected,
         ));
-        let generation = self.disconnect(if addr.is_some() {
+        if self.inner.borrow().generation != generation {
+            return;
+        }
+        self.callbacks.actual_status.set(if addr.is_some() {
             SocketConnectionStatus::Disconnected
         } else {
             SocketConnectionStatus::Idle
         });
-        self.inner.borrow_mut().intended_addr.clone_from(&addr);
         if let Some(addr) = addr {
             self.connect(addr, generation);
         }
     }
 
     fn close(&self) {
-        self.callbacks
-            .intended_status
-            .set(SocketConnectionStatus::Idle);
-        self.disconnect(SocketConnectionStatus::Idle);
-        self.inner.borrow_mut().intended_addr = None;
+        self.set_addr(None);
     }
 
     fn intended_connection_state(&self) -> Cell<SocketConnectionStatus, CellImmutable> {
@@ -260,13 +271,18 @@ impl SocketTransport for WasmSocket {
 fn schedule_reconnect(
     addr: String,
     generation: u64,
+    attempt: u64,
     inner: SharedInner,
     status: Cell<SocketConnectionStatus, CellMutable>,
     incoming_tx: flume::Sender<WsFrame>,
     frame_callback: SharedCallback,
     auto_reconnect: bool,
 ) {
-    if !auto_reconnect || !inner.borrow().is_current(generation, &addr) {
+    if !auto_reconnect
+        || !inner
+            .borrow()
+            .is_current_attempt(generation, attempt, &addr)
+    {
         return;
     }
     let Some(window) = web_sys::window() else {
@@ -276,7 +292,10 @@ fn schedule_reconnect(
     inner.borrow_mut().retire_reconnect();
     let inner_for_timeout = Rc::clone(&inner);
     let closure = Closure::new(move || {
-        if !inner_for_timeout.borrow().is_current(generation, &addr) {
+        if !inner_for_timeout
+            .borrow()
+            .is_current_attempt(generation, attempt, &addr)
+        {
             return;
         }
         connect(
@@ -310,64 +329,99 @@ fn connect(
     auto_reconnect: bool,
     reconnecting: bool,
 ) {
-    if !inner.borrow().is_current(generation, &addr) {
-        return;
-    }
+    let attempt = {
+        let mut state = inner.borrow_mut();
+        if !state.is_current(generation, &addr) {
+            return;
+        }
+        state.attempt = state.attempt.wrapping_add(1);
+        state.attempt
+    };
     status.set(if reconnecting {
         SocketConnectionStatus::Reconnecting(addr.clone())
     } else {
         SocketConnectionStatus::Connecting(addr.clone())
     });
+    let current = inner
+        .borrow()
+        .is_current_attempt(generation, attempt, &addr);
+    if !current {
+        return;
+    }
     let provider = inner.borrow().credentials.clone();
     let (abort, registration) = AbortHandle::new_pair();
     if let Some(previous) = inner.borrow_mut().pending_auth.replace(abort) {
         previous.abort();
     }
     wasm_bindgen_futures::spawn_local(async move {
-        let attempt = async {
-            let bearer = if let Some(provider) = provider {
-                match provider
-                    .credentials()
-                    .await
-                    .map_err(|_| ())
-                    .and_then(|credentials| crate::connection_bearer(credentials).map_err(|_| ()))
-                {
-                    Ok(bearer) => Some(bearer),
-                    Err(()) => {
-                        if inner.borrow().is_current(generation, &addr) {
-                            status.set(SocketConnectionStatus::Disconnected);
-                            schedule_reconnect(
-                                addr,
-                                generation,
-                                inner,
-                                status,
-                                incoming_tx,
-                                frame_callback,
-                                auto_reconnect,
-                            );
-                        }
-                        return;
-                    }
+        let operation =
+            async {
+                let bearer =
+                    if let Some(provider) = provider {
+                        Some(provider.credentials().await.map_err(|_| ()).and_then(
+                            |credentials| crate::connection_bearer(credentials).map_err(|_| ()),
+                        )?)
+                    } else {
+                        None
+                    };
+                let current = inner
+                    .borrow()
+                    .is_current_attempt(generation, attempt, &addr);
+                if !current {
+                    return Ok(());
                 }
-            } else {
-                None
+                if let Some(opened) = connect_authenticated(
+                    addr.clone(),
+                    generation,
+                    attempt,
+                    Rc::clone(&inner),
+                    status.clone(),
+                    incoming_tx.clone(),
+                    Rc::clone(&frame_callback),
+                    auto_reconnect,
+                    bearer,
+                ) {
+                    let _ = opened.await;
+                }
+                Ok::<(), ()>(())
             };
-            if !inner.borrow().is_current(generation, &addr) {
+        // A TCP/HTTP upgrade can remain pending without producing a browser close
+        // event. Bound credentials and the upgrade together, before Myko is connected.
+        let completed = Abortable::new(
+            select(
+                Box::pin(operation),
+                Box::pin(TimeoutFuture::new(CONNECT_TIMEOUT_MS)),
+            ),
+            registration,
+        )
+        .await;
+        let failure = match &completed {
+            Ok(Either::Left((Err(()), _))) => Some("credentials"),
+            Ok(Either::Right(_)) => Some("timeout"),
+            _ => None,
+        };
+        drop(completed);
+        let Some(reason) = failure else { return };
+        {
+            let mut state = inner.borrow_mut();
+            if !state.is_current_attempt(generation, attempt, &addr) {
                 return;
             }
-            connect_authenticated(
-                addr,
-                generation,
-                inner,
-                status,
-                incoming_tx,
-                frame_callback,
-                auto_reconnect,
-                reconnecting,
-                bearer,
-            );
-        };
-        let _ = Abortable::new(attempt, registration).await;
+            state.pending_auth.take();
+            state.detach_socket();
+        }
+        warn!(reason, "WasmSocket: connection attempt failed");
+        status.set(SocketConnectionStatus::Disconnected);
+        schedule_reconnect(
+            addr,
+            generation,
+            attempt,
+            inner,
+            status,
+            incoming_tx,
+            frame_callback,
+            auto_reconnect,
+        );
     });
 }
 
@@ -375,22 +429,20 @@ fn connect(
 fn connect_authenticated(
     addr: String,
     generation: u64,
+    attempt: u64,
     inner: SharedInner,
     status: Cell<SocketConnectionStatus, CellMutable>,
     incoming_tx: flume::Sender<WsFrame>,
     frame_callback: SharedCallback,
     auto_reconnect: bool,
-    reconnecting: bool,
     bearer: Option<String>,
-) {
-    if !inner.borrow().is_current(generation, &addr) {
-        return;
+) -> Option<oneshot::Receiver<()>> {
+    if !inner
+        .borrow()
+        .is_current_attempt(generation, attempt, &addr)
+    {
+        return None;
     }
-    status.set(if reconnecting {
-        SocketConnectionStatus::Reconnecting(addr.clone())
-    } else {
-        SocketConnectionStatus::Connecting(addr.clone())
-    });
     info!("WasmSocket: connecting to {addr}");
 
     let socket = bearer.map_or_else(
@@ -405,24 +457,25 @@ fn connect_authenticated(
             WebSocket::new_with_str_sequence(&addr, protocols.as_ref())
         },
     );
-    let ws = match socket {
-        Ok(ws) => ws,
-        Err(_) => {
-            error!("WasmSocket: failed to create WebSocket");
-            if inner.borrow().is_current(generation, &addr) {
-                status.set(SocketConnectionStatus::Disconnected);
-                schedule_reconnect(
-                    addr,
-                    generation,
-                    inner,
-                    status,
-                    incoming_tx,
-                    frame_callback,
-                    auto_reconnect,
-                );
-            }
-            return;
+    let Ok(ws) = socket else {
+        error!("WasmSocket: failed to create WebSocket");
+        if inner
+            .borrow()
+            .is_current_attempt(generation, attempt, &addr)
+        {
+            status.set(SocketConnectionStatus::Disconnected);
+            schedule_reconnect(
+                addr,
+                generation,
+                attempt,
+                inner,
+                status,
+                incoming_tx,
+                frame_callback,
+                auto_reconnect,
+            );
         }
+        return None;
     };
     ws.set_binary_type(web_sys::BinaryType::Arraybuffer);
 
@@ -431,7 +484,10 @@ fn connect_authenticated(
     let incoming_message = incoming_tx.clone();
     let callback_message = Rc::clone(&frame_callback);
     let on_message = Closure::new(move |e: MessageEvent| {
-        if !inner_message.borrow().is_current(generation, &addr_message) {
+        if !inner_message
+            .borrow()
+            .is_current_attempt(generation, attempt, &addr_message)
+        {
             return;
         }
         let data = e.data();
@@ -461,7 +517,10 @@ fn connect_authenticated(
     let incoming_close = incoming_tx;
     let callback_close = Rc::clone(&frame_callback);
     let on_close = Closure::new(move |_: CloseEvent| {
-        if !inner_close.borrow().is_current(generation, &addr_close) {
+        if !inner_close
+            .borrow()
+            .is_current_attempt(generation, attempt, &addr_close)
+        {
             return;
         }
         warn!("WasmSocket: WebSocket closed");
@@ -469,6 +528,7 @@ fn connect_authenticated(
         schedule_reconnect(
             addr_close.clone(),
             generation,
+            attempt,
             Rc::clone(&inner_close),
             status_close.clone(),
             incoming_close.clone(),
@@ -478,26 +538,34 @@ fn connect_authenticated(
     });
     ws.set_onclose(Some(on_close.as_ref().unchecked_ref()));
 
+    let (opened_tx, opened_rx) = oneshot::channel();
+    let mut opened_tx = Some(opened_tx);
     let inner_open = Rc::clone(&inner);
     let addr_open = addr.clone();
     let status_open = status;
     let on_open = Closure::new(move || {
-        if !inner_open.borrow().is_current(generation, &addr_open) {
+        if !inner_open
+            .borrow()
+            .is_current_attempt(generation, attempt, &addr_open)
+        {
             return;
         }
         info!("WasmSocket: connected to {addr_open}");
         status_open.set(SocketConnectionStatus::Connected(addr_open.clone()));
+        if let Some(opened) = opened_tx.take() {
+            let _ = opened.send(());
+        }
     });
     ws.set_onopen(Some(on_open.as_ref().unchecked_ref()));
 
     let mut state = inner.borrow_mut();
-    if !state.is_current(generation, &addr) {
+    if !state.is_current_attempt(generation, attempt, &addr) {
         ws.set_onclose(None);
         ws.set_onmessage(None);
         ws.set_onerror(None);
         ws.set_onopen(None);
         let _ = ws.close();
-        return;
+        return None;
     }
     state.detach_socket();
     state.ws = Some(ws);
@@ -505,6 +573,7 @@ fn connect_authenticated(
     state.on_error = Some(on_error);
     state.on_close = Some(on_close);
     state.on_open = Some(on_open);
+    Some(opened_rx)
 }
 
 #[cfg(test)]
@@ -550,6 +619,44 @@ mod tests {
     }
 
     #[test]
+    fn closing_invalidates_pending_attempts_without_reconnecting() {
+        let socket = WasmSocket::with_auto_reconnect(false);
+        {
+            let mut inner = socket.inner.borrow_mut();
+            inner.generation = 4;
+            inner.attempt = 7;
+            inner.intended_addr = Some("ws://old".to_owned());
+        }
+        socket.close();
+        let inner = socket.inner.borrow();
+        assert!(!inner.is_current_attempt(4, 7, "ws://old"));
+        assert!(inner.intended_addr.is_none());
+        assert!(inner.pending_auth.is_none());
+        assert!(inner.reconnect_timeout.is_none());
+    }
+
+    #[test]
+    fn disconnect_status_callback_can_close_reentrantly() {
+        use hyphae::Watchable;
+
+        let socket = Arc::new(WasmSocket::with_auto_reconnect(false));
+        let weak = Arc::downgrade(&socket);
+        let _guard = socket.actual_connection_state().subscribe(move |signal| {
+            if let hyphae::Signal::Value(status) = signal
+                && matches!(**status, SocketConnectionStatus::Disconnected)
+                && let Some(socket) = weak.upgrade()
+            {
+                socket.close();
+            }
+        });
+        socket.set_addr(Some("ws://superseded".to_owned()));
+        let inner = socket.inner.borrow();
+        assert!(inner.intended_addr.is_none());
+        assert!(inner.pending_auth.is_none());
+        assert!(inner.ws.is_none());
+    }
+
+    #[test]
     fn generation_and_address_must_both_match() {
         let inner = WasmSocketInner {
             ws: None,
@@ -560,6 +667,7 @@ mod tests {
             reconnect_timeout: None,
             retired_reconnects: Vec::new(),
             generation: 4,
+            attempt: 7,
             intended_addr: Some("ws://new".into()),
             credentials: None,
             pending_auth: None,
@@ -567,5 +675,9 @@ mod tests {
         assert!(inner.is_current(4, "ws://new"));
         assert!(!inner.is_current(3, "ws://new"));
         assert!(!inner.is_current(4, "ws://old"));
+        assert!(inner.is_current_attempt(4, 7, "ws://new"));
+        assert!(!inner.is_current_attempt(4, 6, "ws://new"));
+        assert!(!inner.is_current_attempt(3, 7, "ws://new"));
+        assert!(!inner.is_current_attempt(4, 7, "ws://old"));
     }
 }

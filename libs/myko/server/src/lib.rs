@@ -41,8 +41,13 @@ use futures_util::StreamExt;
 pub use gateway_access::GatewayAccess;
 pub use myko::server::*;
 use myko::{
-    client::MykoClient, command::CommandContext, request::RequestContext, saga::SagaRegistration,
-    search::SearchIndex, store::StoreRegistry, wire::MEvent,
+    client::MykoClient,
+    command::CommandContext,
+    request::RequestContext,
+    saga::SagaRegistration,
+    search::SearchIndex,
+    store::StoreRegistry,
+    wire::{MEvent, MEventType},
 };
 pub use peer_persister::PeerPersister;
 pub use server_ownership::ServerOwnershipManager;
@@ -525,10 +530,15 @@ impl MykoServer {
                         history_replay,
                     },
                 )
+                .with_event_sink_filter(saga_event_matches)
             })
             .clone()
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "saga startup keeps channel and task ownership together"
+    )]
     fn start_saga_runtime(&self) {
         let registrations: Vec<_> = inventory::iter::<SagaRegistration>().collect();
         if registrations.is_empty() {
@@ -597,19 +607,22 @@ impl MykoServer {
                     let cmd_ctx = CommandContext::new(
                         Arc::from(command_name),
                         req,
-                        Arc::new(MykoServerContext::new(
-                            host_id,
-                            registry.clone(),
-                            handler_registry.clone(),
-                            relationship_manager.clone(),
-                            persisters.clone(),
-                            search_index.clone(),
-                            myko::server::MykoServerRuntime {
-                                peer_clients: peer_clients.clone(),
-                                event_sink: Some(saga_event_tx.clone()),
-                                history_replay: None,
-                            },
-                        )),
+                        Arc::new(
+                            MykoServerContext::new(
+                                host_id,
+                                registry.clone(),
+                                handler_registry.clone(),
+                                relationship_manager.clone(),
+                                persisters.clone(),
+                                search_index.clone(),
+                                myko::server::MykoServerRuntime {
+                                    peer_clients: peer_clients.clone(),
+                                    event_sink: Some(saga_event_tx.clone()),
+                                    history_replay: None,
+                                },
+                            )
+                            .with_event_sink_filter(saga_event_matches),
+                        ),
                     );
 
                     if let Err(err) = command.execute_boxed(cmd_ctx) {
@@ -954,6 +967,21 @@ impl MykoServer {
             });
         }
     }
+}
+
+// The dispatcher uses the same inventory metadata. Rejecting here avoids
+// serializing entities that no saga consumes while preserving durable delivery.
+fn saga_event_matches(entity_type: &str, change: MEventType) -> bool {
+    static INTERESTS: std::sync::OnceLock<Vec<(&'static str, MEventType)>> =
+        std::sync::OnceLock::new();
+    INTERESTS
+        .get_or_init(|| {
+            inventory::iter::<SagaRegistration>()
+                .map(|entry| (entry.event_entity_type, entry.event_change_type))
+                .collect()
+        })
+        .iter()
+        .any(|(ty, op)| *ty == entity_type && *op == change)
 }
 
 #[cfg(test)]

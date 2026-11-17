@@ -1,4 +1,4 @@
-//! Connection-scoped WebSocket counters.
+//! Connection-scoped WebSocket counters and delivery diagnostics.
 //!
 //! Full operation detail bypasses SDK cardinality aggregation; closed clients
 //! stay pending until a successful collector export.
@@ -18,6 +18,7 @@ use opentelemetry_proto::tonic::{
     },
 };
 
+pub mod delivery;
 pub(crate) mod export;
 
 const TOTAL: &str = "myko.ws.message.count";
@@ -156,6 +157,8 @@ struct Client {
     revision: u64,
     counters: BTreeMap<(&'static str, &'static str), OperationCounts>,
     bindings: BTreeMap<&'static str, BTreeMap<String, Arc<str>>>,
+    delivery: delivery::Values,
+    delivery_writers: usize,
 }
 
 #[derive(Debug, Default)]
@@ -175,6 +178,8 @@ impl Registry {
             revision: 0,
             counters: BTreeMap::new(),
             bindings: BTreeMap::new(),
+            delivery: delivery::Values::default(),
+            delivery_writers: 0,
         });
     }
 
@@ -184,7 +189,10 @@ impl Registry {
             client.closed = true;
             client.bindings.clear();
             // There is nothing to export for a completely idle connection.
-            if client.counters.is_empty() {
+            if client.counters.is_empty()
+                && client.delivery.is_empty()
+                && client.delivery_writers == 0
+            {
                 clients.remove(id);
             }
         }
@@ -224,7 +232,8 @@ impl Registry {
             .map(|(id, client)| ClientSnapshot {
                 id: id.clone(),
                 started: client.started,
-                closed: client.closed,
+                closed: client.closed && client.delivery_writers == 0,
+                delivery: client.delivery.clone(),
                 revision: client.revision,
                 counters: client
                     .counters
@@ -271,6 +280,7 @@ impl Registry {
             }
             if clients.get(&exported.id).is_some_and(|current| {
                 current.closed
+                    && current.delivery_writers == 0
                     && current.started == exported.started
                     && current.revision == exported.revision
             }) {
@@ -294,6 +304,7 @@ pub(crate) struct ClientSnapshot {
     pub(crate) id: String,
     started: u64,
     pub(crate) closed: bool,
+    delivery: delivery::Values,
     revision: u64,
     counters: BTreeMap<Key, Counts>,
 }
@@ -358,7 +369,11 @@ impl Snapshot {
             return false;
         };
         let mut by_name = BTreeMap::<_, Vec<NumberDataPoint>>::new();
+        let mut delivery = delivery::Points::default();
         for client in &self.clients {
+            client
+                .delivery
+                .append(&mut delivery, client.started, self.time);
             for point in client.points() {
                 let attributes = point
                     .labels
@@ -390,9 +405,6 @@ impl Snapshot {
                     });
             }
         }
-        if by_name.is_empty() {
-            return true;
-        }
         let metrics = by_name
             .into_iter()
             .map(|(name, data_points)| Metric {
@@ -404,7 +416,11 @@ impl Snapshot {
                 })),
                 ..Default::default()
             })
-            .collect();
+            .chain(delivery.metrics())
+            .collect::<Vec<_>>();
+        if metrics.is_empty() {
+            return true;
+        }
         resource.scope_metrics.push(ScopeMetrics {
             scope: Some(InstrumentationScope {
                 name: "myko-server".into(),

@@ -8,11 +8,12 @@ use std::{
 use gpui::{App, AppContext as _, Context, Entity, Subscription, Task};
 use hyphae_gpui::{CellEntity, CellEntityStatus, ToGpuiEntity as _};
 use myko::{
-    client::{ConnectionStatus, MykoClient},
+    client::{ConnectionStatus, ListWatch, MykoClient},
     common::with_id::{WithId, WithTypedId},
     core::{item::Eventable, view::ViewParams},
     hyphae::{
-        Cell, CellImmutable, CellMap, CellValue, MapDiff, Signal, SubscriptionGuard, Watchable as _,
+        Cell, CellImmutable, CellMap, CellValue, JoinExt as _, MapDiff, MapExt as _,
+        Materialize as _, Signal, SubscriptionGuard, Watchable as _,
     },
     query::QueryParams,
     report::{ReportIdStatic, ReportParams},
@@ -157,7 +158,6 @@ fn status_event<T>(entity: &CellEntity<ConnectionStatus>) -> Option<BridgeEvent<
 fn bridge_cell<S, T>(
     cell: &Cell<S, CellImmutable>,
     client: &MykoClient,
-    skip_seed: bool,
     reset_on_disconnect: bool,
     map: impl Fn(&S) -> Option<T> + Send + Sync + 'static,
     cx: &mut App,
@@ -200,7 +200,7 @@ where
         // reads or delivered by GPUI afterward; it cannot fall into a gap
         // between an initial read and observation registration.
         let mut initial_state = LoadState::Loading { stale: None };
-        if !skip_seed && let Some(event) = cell_event(value_entity.read(cx), map.as_ref()) {
+        if let Some(event) = cell_event(value_entity.read(cx), map.as_ref()) {
             apply_event(&mut initial_state, event);
         }
         if let Some(status_entity) = &status_entity
@@ -253,7 +253,6 @@ pub fn connection_status_in(myko: &crate::Myko, cx: &mut App) -> Entity<Remote<C
         &client.connection_status(),
         &client,
         false,
-        false,
         |status| Some(status.clone()),
         cx,
     )
@@ -266,7 +265,29 @@ pub fn connection_status_in(myko: &crate::Myko, cx: &mut App) -> Entity<Remote<C
 pub fn ping_ms(cx: &mut App) -> Entity<Remote<u64>> {
     let client = myko(cx).client().clone();
     let ping = client.ping_ms().clone().lock();
-    bridge_cell(&ping, &client, false, true, |ping| *ping, cx)
+    bridge_cell(&ping, &client, true, |ping| *ping, cx)
+}
+
+/// Rows once the server has answered, `None` while the list is only the
+/// client's local empty seed.
+///
+/// The client shares one list watch per identical subscription, so a bridge may
+/// attach after the answer arrived. Gating on readiness lets every bridge seed
+/// from the current value instead of waiting for a change that static data
+/// never produces.
+fn ready_items<T: CellValue>(watch: &ListWatch<T>) -> Cell<Option<Vec<T>>, CellImmutable> {
+    gate_on_ready(watch.items(), watch.ready())
+}
+
+fn gate_on_ready<T: CellValue>(
+    items: &Cell<Vec<T>, CellImmutable>,
+    ready: &Cell<bool, CellImmutable>,
+) -> Cell<Option<Vec<T>>, CellImmutable> {
+    items
+        .clone()
+        .join(ready.clone())
+        .map(|(items, ready)| ready.then(|| items.clone()))
+        .materialize()
 }
 
 pub fn live_query<Q>(query: Q, cx: &mut App) -> Entity<Remote<Vec<Arc<Q::Item>>>>
@@ -290,11 +311,10 @@ where
 {
     let client = myko.client().clone();
     bridge_cell(
-        &client.watch_query(query),
+        &ready_items(&client.watch_query_state(query)),
         &client,
         true,
-        true,
-        |items| Some(items.clone()),
+        Clone::clone,
         cx,
     )
 }
@@ -762,11 +782,10 @@ where
 {
     let client = myko(cx).client().clone();
     bridge_cell(
-        &client.watch_view(view),
+        &ready_items(&client.watch_view_state(view)),
         &client,
         true,
-        true,
-        |items| Some(items.clone()),
+        Clone::clone,
         cx,
     )
 }
@@ -790,7 +809,6 @@ where
     bridge_cell(
         &client.watch_report::<R, O>(report),
         &client,
-        true,
         true,
         Clone::clone,
         cx,
@@ -828,7 +846,6 @@ where
         &watch,
         &client,
         true,
-        true,
         |value| {
             value.as_ref().map(|value| {
                 serde_json::from_value(value.clone())
@@ -858,22 +875,22 @@ where
 {
     let client = myko(cx).client().clone();
     let cell = client.send_command::<C, R>(command);
-    bridge_cell(&cell, &client, true, false, Clone::clone, cx)
+    bridge_cell(&cell, &client, false, Clone::clone, cx)
 }
 
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use gpui::{AppContext as _, Subscription, TestAppContext};
+    use gpui::{AppContext as _, Entity, Subscription, TestAppContext};
     use myko::hyphae::{Cell, CellMap, Mutable as _};
 
     use super::{
-        BridgeEvent, ClientReportSpec, LoadState, Remote, build_store_with_status,
-        observe_crud_store, wrap_client_report,
+        BridgeEvent, ClientReportSpec, LoadState, Remote, bridge_cell, build_store_with_status,
+        gate_on_ready, observe_crud_store, wrap_client_report,
     };
     use crate::{CrudCommands, CrudController};
-    use myko::client::ConnectionStatus;
+    use myko::client::{ConnectionStatus, MykoClient};
 
     struct Probe {
         _observation: Subscription,
@@ -928,6 +945,100 @@ mod tests {
             remote.state(),
             LoadState::Error { message, .. } if message.as_ref() == "offline"
         ));
+    }
+
+    fn notification_count<T: Send + Sync + 'static>(
+        remote: &Entity<Remote<T>>,
+        cx: &mut TestAppContext,
+    ) -> (Arc<std::sync::atomic::AtomicUsize>, Entity<Probe>) {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let probe = cx.new({
+            let remote = remote.clone();
+            let count = count.clone();
+            move |cx| Probe {
+                _observation: cx.observe(&remote, move |_, _, _| {
+                    count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }),
+            }
+        });
+        (count, probe)
+    }
+
+    #[gpui::test]
+    fn late_bridge_on_answered_shared_report_is_ready_without_a_change(cx: &mut TestAppContext) {
+        use std::sync::atomic::Ordering;
+
+        let source = Cell::<Option<u32>, _>::new(None);
+        let shared = source.clone().lock();
+        let client = MykoClient::new();
+        let first = cx.update(|cx| bridge_cell(&shared, &client, false, Clone::clone, cx));
+        let (first_notifications, _probe) = notification_count(&first, cx);
+        assert!(first.read_with(cx, |remote, _| remote.is_loading()));
+
+        source.set(Some(5));
+        cx.run_until_parked();
+        assert_eq!(
+            first.read_with(cx, |remote, _| remote.ready().copied()),
+            Some(5)
+        );
+
+        let second = cx.update(|cx| bridge_cell(&shared, &client, false, Clone::clone, cx));
+        assert_eq!(
+            second.read_with(cx, |remote, _| remote.ready().copied()),
+            Some(5)
+        );
+        cx.run_until_parked();
+        assert_eq!(
+            second.read_with(cx, |remote, _| remote.ready().copied()),
+            Some(5)
+        );
+        assert_eq!(first_notifications.load(Ordering::SeqCst), 1);
+    }
+
+    #[gpui::test]
+    fn late_bridge_on_answered_shared_list_is_ready_and_seed_stays_loading(
+        cx: &mut TestAppContext,
+    ) {
+        use std::sync::atomic::Ordering;
+
+        let items = Cell::<Vec<u32>, _>::new(Vec::new());
+        let ready = Cell::new(false);
+        let items_read = items.clone().lock();
+        let ready_read = ready.clone().lock();
+        let client = MykoClient::new();
+        let bridge = |cx: &mut TestAppContext| {
+            cx.update(|cx| {
+                bridge_cell(
+                    &gate_on_ready(&items_read, &ready_read),
+                    &client,
+                    false,
+                    Clone::clone,
+                    cx,
+                )
+            })
+        };
+
+        // The local empty seed is not an answer.
+        let first = bridge(cx);
+        let (first_notifications, _probe) = notification_count(&first, cx);
+        cx.run_until_parked();
+        assert!(first.read_with(cx, |remote, _| remote.is_loading()));
+
+        items.set(vec![1, 2]);
+        ready.set(true);
+        cx.run_until_parked();
+        assert_eq!(
+            first.read_with(cx, |remote, _| remote.ready().cloned()),
+            Some(vec![1, 2])
+        );
+
+        let second = bridge(cx);
+        assert_eq!(
+            second.read_with(cx, |remote, _| remote.ready().cloned()),
+            Some(vec![1, 2])
+        );
+        cx.run_until_parked();
+        assert_eq!(first_notifications.load(Ordering::SeqCst), 1);
     }
 
     #[test]

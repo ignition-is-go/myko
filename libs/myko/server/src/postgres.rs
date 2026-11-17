@@ -32,6 +32,8 @@ use postgres::fallible_iterator::FallibleIterator;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
+mod history_feed;
+
 const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
 const PG_CATCH_UP_TIMEOUT_SECS_DEFAULT: u64 = 300;
 const PG_CATCH_UP_TIMEOUT_ENV: &str = "MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS";
@@ -305,6 +307,18 @@ impl PostgresHistoryReplayProvider {
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn subscribe_history(
+        &self,
+        filter: myko::server::HistoryFilter,
+    ) -> Result<Box<dyn myko::server::HistorySubscription>, String> {
+        validate_ident(&self.config.table)?;
+        validate_ident(&self.config.channel)?;
+        Ok(Box::new(history_feed::PostgresHistorySubscription::new(
+            self.config.clone(),
+            filter,
+        )))
+    }
+
     fn committed_history_event(&self) -> Cell<Option<Arc<CommittedHistoryEvent>>, CellImmutable> {
         self.committed.clone().lock()
     }
