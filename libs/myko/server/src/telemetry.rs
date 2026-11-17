@@ -3,7 +3,9 @@
 //! Shared initialization is re-exported from `myko-telemetry`; server-specific
 //! store metrics and allocator probes remain here.
 
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+use std::time::Duration;
 
 use hyphae::{Gettable, Materialize};
 use myko::store::StoreRegistry;
