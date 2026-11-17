@@ -304,6 +304,42 @@ type SharedTxNames = Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>;
 type SharedTxTimes = Arc<Mutex<HashMap<Arc<str>, Instant>>>;
 type SharedOutboundCommands = Arc<Mutex<HashMap<String, (String, Instant)>>>;
 
+/// Subscriptions the client asked for whose cells are still being built.
+///
+/// A subscription is built off the read loop and installed when the build
+/// reports back. The client can cancel before that. `ClientSession::cancel`
+/// finds nothing to remove at that point, so without this record the finished
+/// build would be installed for a transaction the client has already walked
+/// away from, and would keep running until the socket closed.
+#[derive(Clone, Default)]
+struct PendingSubscriptions(Arc<Mutex<std::collections::HashSet<Arc<str>>>>);
+
+impl PendingSubscriptions {
+    /// Record that a build for `tx` is starting. `false` if one already is.
+    fn begin(&self, tx: &Arc<str>) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(tx.clone())
+    }
+
+    /// The client no longer wants `tx`.
+    fn cancel(&self, tx: &Arc<str>) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(tx);
+    }
+
+    /// The build for `tx` finished. `true` if the client still wants it.
+    fn finish(&self, tx: &Arc<str>) -> bool {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(tx)
+    }
+}
+
 struct MessageContext<'a> {
     auth: &'a Option<AuthSession>,
     priority_tx: &'a mpsc::Sender<MykoMessage>,
@@ -311,6 +347,7 @@ struct MessageContext<'a> {
     query_ids_by_tx: &'a SharedTxNames,
     view_ids_by_tx: &'a SharedTxNames,
     subscribe_started_by_tx: &'a SharedTxTimes,
+    pending_subscriptions: &'a PendingSubscriptions,
     command_started_by_tx: &'a SharedTxTimes,
     outbound_commands_by_tx: &'a SharedOutboundCommands,
     command_tx: &'a mpsc::UnboundedSender<CommandJob>,
@@ -331,6 +368,7 @@ struct ReadLoopState {
     query_ids_by_tx: SharedTxNames,
     view_ids_by_tx: SharedTxNames,
     subscribe_started_by_tx: SharedTxTimes,
+    pending_subscriptions: PendingSubscriptions,
     command_started_by_tx: SharedTxTimes,
     outbound_commands_by_tx: SharedOutboundCommands,
     command_tx: mpsc::UnboundedSender<CommandJob>,
@@ -579,6 +617,7 @@ impl WsHandler {
                 query_ids_by_tx: &state.query_ids_by_tx,
                 view_ids_by_tx: &state.view_ids_by_tx,
                 subscribe_started_by_tx: &state.subscribe_started_by_tx,
+                pending_subscriptions: &state.pending_subscriptions,
                 command_started_by_tx: &state.command_started_by_tx,
                 outbound_commands_by_tx: &state.outbound_commands_by_tx,
                 command_tx: &state.command_tx,
@@ -713,6 +752,9 @@ impl WsHandler {
         {
             return true;
         }
+        if !state.pending_subscriptions.finish(&tx_id) {
+            return true;
+        }
         if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
             map.remove(&tx_id);
         }
@@ -793,6 +835,7 @@ impl WsHandler {
             tokio::select! {
                 _ = auth_interval.tick(), if state.auth.is_some() => {}
                 Some(tx) = denied_rx.recv() => {
+                    state.pending_subscriptions.cancel(&tx);
                     session.cancel(&tx);
                     let _ = state.view_delivery_tx.send(ViewDeliveryControl::Cancel(tx.clone()));
                     if let Ok(mut map) = state.query_ids_by_tx.lock() { map.remove(&tx); }
@@ -1457,6 +1500,7 @@ impl WsHandler {
                 query_ids_by_tx: query_ids_by_tx.clone(),
                 view_ids_by_tx: view_ids_by_tx.clone(),
                 subscribe_started_by_tx: subscribe_started_by_tx.clone(),
+                pending_subscriptions: PendingSubscriptions::default(),
                 command_started_by_tx: command_started_by_tx.clone(),
                 outbound_commands_by_tx: outbound_commands_by_tx.clone(),
                 command_tx: command_tx.clone(),
@@ -1513,6 +1557,9 @@ impl WsHandler {
                     let window_factory = query_data.window_cell_factory;
                     let window = wrapped.window;
                     let sender = message_context.subscribe_tx.clone();
+                    if !message_context.pending_subscriptions.begin(&tx_id) {
+                        return;
+                    }
                     WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
                         "query-subscription",
                         sender,
@@ -1632,6 +1679,9 @@ impl WsHandler {
                 let sender = message_context.subscribe_tx.clone();
                 let priority = message_context.priority_tx.clone();
                 let logger = message_context.drop_logger.clone();
+                if !message_context.pending_subscriptions.begin(&tx_id) {
+                    return;
+                }
                 WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
                     "view-subscription",
                     sender,
@@ -1757,6 +1807,7 @@ impl WsHandler {
                 if let Ok(mut map) = message_context.subscribe_started_by_tx.lock() {
                     map.remove(&tx);
                 }
+                message_context.pending_subscriptions.cancel(&tx);
                 session.cancel(&tx);
             }
             MykoMessage::QueryWindow(QueryWindowUpdate { tx, window }) => {
@@ -1785,6 +1836,7 @@ impl WsHandler {
                 if let Ok(mut map) = message_context.subscribe_started_by_tx.lock() {
                     map.remove(&tx);
                 }
+                message_context.pending_subscriptions.cancel(&tx);
                 session.cancel(&tx);
             }
             MykoMessage::ViewSampleRate(update) => {
@@ -1799,7 +1851,9 @@ impl WsHandler {
                 session.update_view_window(&Arc::from(tx), window);
             }
             MykoMessage::ReportCancel(CancelSubscription { tx }) => {
-                session.cancel(&Arc::from(tx));
+                let tx: Arc<str> = tx.into();
+                message_context.pending_subscriptions.cancel(&tx);
+                session.cancel(&tx);
             }
             _ => {}
         }
@@ -1836,6 +1890,9 @@ impl WsHandler {
                         );
                         let factory = data.cell_factory;
                         let sender = message_context.subscribe_tx.clone();
+                        if !message_context.pending_subscriptions.begin(&tx) {
+                            return;
+                        }
                         WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver(
                             "report-subscription",
                             sender,
@@ -2234,6 +2291,42 @@ mod tests {
     use tungstenite::{Error as WebSocketError, error::ProtocolError};
 
     use super::*;
+
+    #[test]
+    fn a_build_cancelled_before_it_finishes_is_not_wanted() {
+        let pending = PendingSubscriptions::default();
+        let tx: Arc<str> = "tx".into();
+
+        assert!(pending.begin(&tx));
+        pending.cancel(&tx);
+
+        assert!(!pending.finish(&tx));
+    }
+
+    #[test]
+    fn a_build_that_finishes_uncancelled_is_wanted_once() {
+        let pending = PendingSubscriptions::default();
+        let tx: Arc<str> = "tx".into();
+
+        assert!(pending.begin(&tx));
+        assert!(!pending.begin(&tx), "a second build for the same request");
+
+        assert!(pending.finish(&tx));
+        assert!(!pending.finish(&tx));
+    }
+
+    #[test]
+    fn a_cancel_does_not_affect_another_request() {
+        let pending = PendingSubscriptions::default();
+        let (kept, cancelled): (Arc<str>, Arc<str>) = ("kept".into(), "cancelled".into());
+
+        assert!(pending.begin(&kept));
+        assert!(pending.begin(&cancelled));
+        pending.cancel(&cancelled);
+
+        assert!(pending.finish(&kept));
+        assert!(!pending.finish(&cancelled));
+    }
 
     #[test]
     fn classifies_routine_websocket_disconnects() {
