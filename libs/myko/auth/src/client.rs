@@ -57,6 +57,7 @@ pub enum ClientAuth {
 ///
 /// The resulting identity is the client itself, with no user. Clones share one
 /// token cache, so reconnects reuse a valid token and renew it shortly before expiry.
+/// Applying a configuration builder starts a separate cache for that configuration.
 #[derive(Clone)]
 pub struct ClientCredentials {
     client_id: ClientId,
@@ -65,6 +66,7 @@ pub struct ClientCredentials {
     target: TargetResource,
     scopes: Vec<String>,
     http: reqwest::Client,
+    endpoint: Endpoint,
     state: Arc<Mutex<State>>,
 }
 
@@ -82,6 +84,7 @@ struct State {
     token: Option<CachedToken>,
 }
 
+#[derive(Clone)]
 enum Endpoint {
     Unresolved(IssuerUrl),
     Resolved(TokenUrl),
@@ -119,6 +122,7 @@ impl ClientCredentials {
             target: TargetResource::default(),
             scopes: Vec::new(),
             http: http_client()?,
+            endpoint: endpoint.clone(),
             state: Arc::new(Mutex::new(State {
                 endpoint,
                 token: None,
@@ -127,13 +131,15 @@ impl ClientCredentials {
     }
 
     #[must_use]
-    pub const fn with_client_auth(mut self, client_auth: ClientAuth) -> Self {
+    pub fn with_client_auth(mut self, client_auth: ClientAuth) -> Self {
+        self.reset_cache();
         self.client_auth = client_auth;
         self
     }
 
     #[must_use]
     pub fn with_target(mut self, target: TargetResource) -> Self {
+        self.reset_cache();
         self.target = target;
         self
     }
@@ -141,8 +147,17 @@ impl ClientCredentials {
     /// Restricts the requested token to these space-separated scopes.
     #[must_use]
     pub fn with_scope(mut self, scope: impl Into<String>) -> Self {
+        self.reset_cache();
         self.scopes = scope.into().split_whitespace().map(str::to_owned).collect();
         self
+    }
+
+    fn reset_cache(&mut self) {
+        // A reconfigured clone must never reuse a token issued for another scope or target.
+        self.state = Arc::new(Mutex::new(State {
+            endpoint: self.endpoint.clone(),
+            token: None,
+        }));
     }
 
     async fn get(&self) -> Result<Credentials, AuthError> {

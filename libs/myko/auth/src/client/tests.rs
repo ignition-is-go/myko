@@ -277,3 +277,55 @@ fn insecure_or_incomplete_configuration_is_rejected() {
         "secret"
     ));
 }
+
+#[tokio::test]
+async fn reconfigured_clones_do_not_share_tokens() -> Result {
+    let (origin, server) = serve(|_| {
+        vec![
+            token("original", "Bearer", 3600),
+            token("scoped", "Bearer", 3600),
+            token("targeted", "Bearer", 3600),
+            token("post", "Bearer", 3600),
+        ]
+    })
+    .await?;
+    let provider = ClientCredentials::new(
+        TokenEndpoint::Fixed(format!("{origin}token")),
+        "machine-1".into(),
+        "fixture-secret".into(),
+    )?;
+    assert_eq!(bearer_of(&provider).await?.as_deref(), Some("original"));
+    let scoped = provider.clone().with_scope("read");
+    assert_eq!(bearer_of(&scoped).await?.as_deref(), Some("scoped"));
+    let targeted = provider
+        .clone()
+        .with_target(TargetResource::Audience("other-api".into()));
+    assert_eq!(bearer_of(&targeted).await?.as_deref(), Some("targeted"));
+    let post = provider.clone().with_client_auth(ClientAuth::Post);
+    assert_eq!(bearer_of(&post).await?.as_deref(), Some("post"));
+    assert_eq!(bearer_of(&provider).await?.as_deref(), Some("original"));
+    let requests = server.await??;
+    assert_eq!(requests.len(), 4);
+    assert!(
+        requests
+            .get(1)
+            .ok_or("scope request")?
+            .body
+            .contains("scope=read")
+    );
+    assert!(
+        requests
+            .get(2)
+            .ok_or("target request")?
+            .body
+            .contains("audience=other-api")
+    );
+    assert!(
+        requests
+            .get(3)
+            .ok_or("auth request")?
+            .body
+            .contains("client_secret=fixture-secret")
+    );
+    Ok(())
+}

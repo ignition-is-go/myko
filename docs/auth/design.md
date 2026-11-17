@@ -249,7 +249,10 @@ client.set_credential_provider(Arc::new(credentials));
 `ClientAuth` selects `client_secret_basic`, the default, or `client_secret_post`.
 Endpoints must use HTTPS; plain HTTP is accepted only for loopback development hosts.
 The provider does not follow redirects, so the secret goes only to the configured endpoint.
-Clones share one token cache, which renews tokens shortly before expiry.
+Clones with the same configuration share one token cache, which renews tokens shortly before expiry.
+Changing a clone's scope, target, or client authentication starts a separate cache.
+Discovery requires OIDC provider metadata, including a JWKS endpoint; OAuth-only servers
+can use `TokenEndpoint::Fixed` with their documented token endpoint.
 
 With the `client-credentials` feature, `myko-auth0` provides `Auth0ClientCredentials`,
 which is `ClientCredentials` configured for Auth0's `oauth/token` endpoint,
