@@ -359,6 +359,27 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
         PostgresHistoryStore::new(self.config.clone())?.latest_user_transaction(user)
     }
 
+    fn user_transaction_page(
+        &self,
+        user: &myko::identity::UserId,
+        before_first_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<myko::server::UserTransaction>, String> {
+        PostgresHistoryStore::new(self.config.clone())?.user_transaction_page(
+            user,
+            before_first_id,
+            limit,
+        )
+    }
+
+    fn entity_event_at(
+        &self,
+        key: &myko::server::HistoryEntityKey,
+        row_id: i64,
+    ) -> Result<Option<MEvent>, String> {
+        PostgresHistoryStore::new(self.config.clone())?.entity_event_at(key, row_id)
+    }
+
     fn subscribe_history(
         &self,
         filter: myko::server::HistoryFilter,

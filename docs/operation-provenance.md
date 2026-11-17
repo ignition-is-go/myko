@@ -38,6 +38,14 @@ fail explicitly; missing or malformed history never becomes an empty successful
 reversal plan. `EventsForTransaction` now returns `Result<Vec<MEvent>, String>`
 and checks the authenticated caller owns the entire transaction.
 
+Domain commands can call `undo_latest_matching` with a trusted selection policy.
+It pages the caller's completed original transactions using `user_transaction_page`
+and a stable first-event cursor, without an arbitrary lookback cutoff. Selection,
+policy evaluation and reversal share the local mutation authority. A conflict in
+the first matching transaction is returned, never skipped. `entity_event_at`
+resolves historical ownership at a log revision, including tombstones, so domain
+policies need not infer ownership from today's live entities.
+
 A producer barrier acknowledges all prior queued events. The local runtime tracks
 active command contexts and outstanding saga deliveries. Once that causal work
 finishes, PostgreSQL stores a completion record in `<events_table>_transactions`,

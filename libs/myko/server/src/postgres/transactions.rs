@@ -131,15 +131,33 @@ impl PostgresHistoryStore {
         &self,
         user: &myko::identity::UserId,
     ) -> Result<Option<Arc<str>>, String> {
-        let mut client = connect_pg_client(&self.config, "latest_user_transaction")?;
+        Ok(self
+            .user_transaction_page(user, None, 1)?
+            .first()
+            .map(|row| row.transaction_id.clone()))
+    }
+
+    /// # Errors
+    /// Returns an error for invalid page bounds or unreadable history.
+    pub fn user_transaction_page(
+        &self,
+        user: &myko::identity::UserId,
+        before_first_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<myko::server::UserTransaction>, String> {
+        if !(1..=100).contains(&limit) {
+            return Err("transaction page size must be between 1 and 100".into());
+        }
+        let limit = i64::try_from(limit).map_err(|error| error.to_string())?;
+        let mut client = connect_pg_client(&self.config, "user_transaction_page")?;
         let table = qi(&self.config.table);
         let completions = qi(&format!("{}_transactions", self.config.table));
         let rows = client
             .query(
                 &format!(
                     "
-            SELECT c.tx FROM {completions} c
-            WHERE c.user_id = $1 AND c.last_id = (SELECT MAX(id) FROM {table} WHERE tx = c.tx)
+            SELECT c.tx, c.first_id FROM {completions} c
+            WHERE c.user_id = $1 AND ($2::bigint IS NULL OR c.first_id < $2) AND c.last_id = (SELECT MAX(id) FROM {table} WHERE tx = c.tx)
             AND NOT EXISTS (SELECT 1 FROM {table} e WHERE e.tx = c.tx AND e.event->'provenance'->>'undoOfTx' IS NOT NULL)
             AND NOT EXISTS (SELECT 1 FROM {table} u
                 JOIN {completions} finished ON finished.tx = u.event->'item'->>'undoTransactionId'
@@ -150,11 +168,34 @@ impl PostgresHistoryStore {
                 AND u.event->'provenance'->>'actorUserId' = finished.user_id
                 AND u.event->'item'->>'transactionId' = c.tx
                 AND finished.last_id = (SELECT MAX(id) FROM {table} WHERE tx = finished.tx))
-            ORDER BY c.first_id DESC LIMIT 1"
+            ORDER BY c.first_id DESC LIMIT $3"
                 ),
-                &[&user.as_ref()],
+                &[&user.as_ref(), &before_first_id, &limit],
             )
             .map_err(|error| error.to_string())?;
-        Ok(rows.first().map(|row| Arc::from(row.get::<_, String>(0))))
+        Ok(rows
+            .iter()
+            .map(|row| myko::server::UserTransaction {
+                transaction_id: Arc::from(row.get::<_, String>(0)),
+                first_id: row.get(1),
+            })
+            .collect())
+    }
+    /// # Errors
+    /// Returns an error for connection, query or historical payload failures.
+    pub fn entity_event_at(
+        &self,
+        key: &HistoryEntityKey,
+        row_id: i64,
+    ) -> Result<Option<myko::wire::MEvent>, String> {
+        let mut client = connect_pg_client(&self.config, "entity_event_at")?;
+        let row = client.query_opt(&format!(
+            "SELECT event::text FROM {} WHERE item_type = $1 AND item_id = $2 AND id <= $3 ORDER BY id DESC LIMIT 1",
+            qi(&self.config.table)), &[&key.item_type.as_ref(), &key.item_id.as_ref(), &row_id])
+            .map_err(|error| error.to_string())?;
+        row.map(|row| {
+            serde_json::from_str(&row.get::<_, String>(0)).map_err(|error| error.to_string())
+        })
+        .transpose()
     }
 }

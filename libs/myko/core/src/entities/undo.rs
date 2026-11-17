@@ -70,34 +70,65 @@ impl CommandHandler for UndoTransaction {
 
 impl CommandHandler for UndoMyLastTransaction {
     fn execute(self, ctx: CommandContext) -> Result<Option<UndoTransactionResult>, CommandError> {
-        let user = ctx.user_id()?.clone();
-        if ctx.tx().is_empty() || ctx.tx().contains('\0') {
-            return Err(failure(&ctx, "undo transaction ID is invalid"));
-        }
-        let registry = ctx.__server_ctx().registry.clone();
-        registry.transactions.coordinate(true, || {
-            ctx.__server_ctx()
-                .flush_history_writes()
-                .map_err(|error| failure(&ctx, error))?;
-            let provider = fresh_history(&ctx)?;
-            if registry.transactions.busy_user(&user, ctx.tx()) {
-                return Err(failure(
-                    &ctx,
-                    "user still has active commands or pending saga work",
-                ));
-            }
-            let Some(tx) = provider
-                .latest_user_transaction(&user)
-                .map_err(|error| failure(&ctx, error))?
-            else {
-                return Ok(None);
-            };
-            let history = provider
-                .transaction_history(&tx)
-                .map_err(|error| failure(&ctx, error))?;
-            reverse(ctx, &user, history).map(Some)
-        })
+        undo_latest_matching(ctx, |_, _| Ok(true))
     }
+}
+
+/// Reverse the caller's latest transaction selected by a trusted domain policy.
+///
+/// The policy runs under the same local authority lock as conflict validation
+/// and inverse writes. A matching conflict is returned, never skipped.
+/// # Errors
+/// Returns authentication, history, policy or reversal errors without forcing conflicts.
+pub fn undo_latest_matching(
+    ctx: CommandContext,
+    mut matches: impl FnMut(
+        &dyn crate::server::HistoryReplayProvider,
+        &TransactionHistory,
+    ) -> Result<bool, String>,
+) -> Result<Option<UndoTransactionResult>, CommandError> {
+    let user = ctx.user_id()?.clone();
+    if ctx.tx().is_empty() || ctx.tx().contains('\0') {
+        return Err(failure(&ctx, "undo transaction ID is invalid"));
+    }
+    let registry = ctx.__server_ctx().registry.clone();
+    registry.transactions.coordinate(true, || {
+        ctx.__server_ctx()
+            .flush_history_writes()
+            .map_err(|error| failure(&ctx, error))?;
+        let provider = fresh_history(&ctx)?;
+        if registry.transactions.busy_user(&user, ctx.tx()) {
+            return Err(failure(
+                &ctx,
+                "user still has active commands or pending saga work",
+            ));
+        }
+        let mut before = None;
+        loop {
+            let page = provider
+                .user_transaction_page(&user, before, 32)
+                .map_err(|error| failure(&ctx, error))?;
+            if page.is_empty() {
+                return Ok(None);
+            }
+            for candidate in page {
+                if before.is_some_and(|cursor| candidate.first_id >= cursor) {
+                    return Err(failure(&ctx, "transaction history cursor did not advance"));
+                }
+                before = Some(candidate.first_id);
+                let history = provider
+                    .transaction_history(&candidate.transaction_id)
+                    .map_err(|error| failure(&ctx, error))?;
+                // Validate ownership even for entries a domain policy would skip.
+                if history.author().map_err(|error| failure(&ctx, error))? != &user {
+                    return Err(failure(&ctx, "history returned another user's transaction"));
+                }
+                if matches(provider.as_ref(), &history).map_err(|error| failure(&ctx, error))? {
+                    return reverse(ctx, &user, history).map(Some);
+                }
+            }
+        }
+    })
 }
 
 fn fresh_history(

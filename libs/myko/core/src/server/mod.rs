@@ -67,4 +67,4 @@ pub use protocol::{message_to_cbor, message_to_json};
 pub use relationship_manager::RelationshipManager;
 
 mod transaction_history;
-pub use transaction_history::{TransactionChange, TransactionHistory};
+pub use transaction_history::{TransactionChange, TransactionHistory, UserTransaction};

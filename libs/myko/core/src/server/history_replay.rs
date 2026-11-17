@@ -268,6 +268,30 @@ pub trait HistoryReplayProvider: Send + Sync {
         Err("user transaction history is unsupported".into())
     }
 
+    /// Page original, completed, unreversed transactions in originating order.
+    /// # Errors
+    /// Returns an error when selection is unsupported or history cannot be read.
+    fn user_transaction_page(
+        &self,
+        _user: &crate::identity::UserId,
+        _before_first_id: Option<i64>,
+        _limit: usize,
+    ) -> Result<Vec<super::UserTransaction>, String> {
+        Err("user transaction paging is unsupported".into())
+    }
+
+    /// Read the last event for an entity at or before a durable log revision.
+    /// Includes tombstones, allowing callers to recover historical ownership.
+    /// # Errors
+    /// Returns an error when lookup is unsupported or history is unreadable.
+    fn entity_event_at(
+        &self,
+        _key: &HistoryEntityKey,
+        _row_id: i64,
+    ) -> Result<Option<MEvent>, String> {
+        Err("historical entity lookup is unsupported".into())
+    }
+
     /// Subscribe to filtered durable replay followed by live committed changes.
     /// Poll the blocking subscription off the reactive thread.
     ///

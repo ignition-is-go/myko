@@ -4,6 +4,13 @@ use std::sync::Arc;
 use super::{EventRecord, HistoryEntityKey};
 use crate::wire::MEvent;
 
+/// Stable keyset cursor for an original, completed user transaction.
+#[derive(Clone, Debug)]
+pub struct UserTransaction {
+    pub transaction_id: Arc<str>,
+    pub first_id: i64,
+}
+
 #[derive(Clone, Debug)]
 pub struct TransactionChange {
     pub key: HistoryEntityKey,
