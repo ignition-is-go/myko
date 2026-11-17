@@ -107,6 +107,7 @@ fn generate_get_all_query(
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                if let Some(source) = #krate::query::registered_entity_source(&ctx.query_context, <#name as #krate::prelude::Eventable>::ENTITY_NAME_STATIC, ctx.query.as_ref()) { return Some(source); }
                 // Registry stores are already partitioned by entity type, so returning
                 // the raw map avoids installing a no-op `select(|_| true)` runtime.
                 Some(
@@ -150,6 +151,7 @@ fn generate_get_by_ids_query(
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                if let Some(source) = #krate::query::registered_entity_source(&ctx.query_context, #name_str, ctx.query.as_ref()) { return Some(source); }
                 let ids: Vec<std::sync::Arc<str>> = ctx.query.ids.iter()
                     .map(|id| std::sync::Arc::<str>::from(id.clone()))
                     .collect();
@@ -370,7 +372,7 @@ fn generate_filter_query(
                 >>
             where Self: std::marker::Send + std::marker::Sync + 'static,
             {
-                let source = match ctx.query.0.query_route()? {
+                let source = if let Some(source) = #krate::query::registered_entity_source(&ctx.query_context, #name_str, ctx.query.as_ref()) { source } else { match ctx.query.0.query_route()? {
                     #krate::query::QueryRoute::Ids(ids) => {
                         let store = ctx.query_context.registry().get_or_create(#name_str);
                         #krate::query::build_ids_source_map(&store, &ids)
@@ -382,7 +384,7 @@ fn generate_filter_query(
                             #name_str, route.field_names, route.extract_fk, route.keys,
                         )
                     }
-                };
+                }};
                 Some(#krate::query::filter_query_over_source::<#query_ident>(
                     source, ctx.query.clone(), ctx.query_context.query_context.clone(),
                 ))
@@ -471,7 +473,7 @@ fn generate_get_by_id_report(
             {
                 use #krate::prelude::{Eventable, MapExt};
                 let id: std::sync::Arc<str> = self.id.clone().into();
-                let store = ctx.registry().get_or_create(#name::ENTITY_NAME_STATIC);
+                let store = ctx.entity_query_source(#name::ENTITY_NAME_STATIC, self);
                 store.get(&id).map(move |item| std::sync::Arc::new(
                     item.as_ref().and_then(|item| item.as_any().downcast_ref::<#name>())
                         .map(|typed| std::sync::Arc::new(typed.clone()))

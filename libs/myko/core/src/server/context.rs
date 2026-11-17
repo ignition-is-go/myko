@@ -1499,6 +1499,102 @@ impl MykoServerContext {
         self.submit_mutation_mode(items, change, origin, EdgeApplyMode::Authoritative)
     }
 
+    fn mutation_request(&self) -> Option<Arc<RequestContext>> {
+        self.current_provenance().map(|provenance| {
+            Arc::new(RequestContext::internal(
+                provenance.request_tx,
+                self.host_id,
+                "mutation",
+            ))
+        })
+    }
+
+    fn rewrite_plan(
+        &self,
+        upserts: &[Arc<dyn AnyItem>],
+        deletes: &[Arc<dyn AnyItem>],
+        origin: Origin,
+    ) -> Result<Option<super::MutationReplacement>, PersistError> {
+        if matches!(origin, Origin::Transient)
+            || self
+                .current_provenance()
+                .is_some_and(|provenance| provenance.undo_of_tx.is_some())
+        {
+            return Ok(None);
+        }
+        let proposal = super::ProposedState {
+            server: Some(self),
+            request: self.mutation_request(),
+            host_id: self.host_id,
+            registry: &self.registry,
+            upserts,
+            deletes,
+        };
+        let Some(mut plan) = proposal.rewrite().map_err(|message| PersistError {
+            entity_type: Arc::from("mutation"),
+            message,
+        })?
+        else {
+            return Ok(None);
+        };
+        for _ in 0..16 {
+            let proposal = super::ProposedState {
+                server: Some(self),
+                request: self.mutation_request(),
+                host_id: self.host_id,
+                registry: &self.registry,
+                upserts: &plan.upserts,
+                deletes: &plan.deletes,
+            };
+            match proposal.rewrite().map_err(|message| PersistError {
+                entity_type: Arc::from("mutation"),
+                message,
+            })? {
+                Some(next) => plan = next,
+                None => return Ok(Some(plan)),
+            }
+        }
+        Err(PersistError {
+            entity_type: Arc::from("mutation"),
+            message: "mutation representation rewrite did not converge".into(),
+        })
+    }
+
+    fn validate_mutation(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+    ) -> Result<(), PersistError> {
+        if change == MEventType::SET {
+            self.validate_plan(items, &[])
+        } else {
+            self.validate_plan(&[], items)
+        }
+    }
+
+    fn validate_plan(
+        &self,
+        upserts: &[Arc<dyn AnyItem>],
+        deletes: &[Arc<dyn AnyItem>],
+    ) -> Result<(), PersistError> {
+        super::ProposedState {
+            server: Some(self),
+            request: self.mutation_request(),
+            host_id: self.host_id,
+            registry: &self.registry,
+            upserts,
+            deletes,
+        }
+        .validate(
+            self.current_provenance()
+                .is_some_and(|provenance| provenance.undo_of_tx.is_some()),
+        )
+        .map_err(|message| PersistError {
+            entity_type: Arc::from("mutation"),
+            message,
+        })
+    }
+
     fn submit_mutation_mode(
         &self,
         items: Vec<Arc<dyn AnyItem>>,
@@ -1506,9 +1602,38 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
-        self.registry.transactions.coordinate(false, || {
-            self.submit_mutation_mode_coordinated(items, change, origin, mode)
-        })
+        self.registry.transactions.coordinate(
+            super::proposed_state::requires_authority(items.iter()),
+            || self.submit_mutation_mode_coordinated(items, change, origin, mode),
+        )
+    }
+
+    fn prepare_mutation(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<bool, PersistError> {
+        if matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import) {
+            let (upserts, deletes) = if change == MEventType::SET {
+                (items, &[][..])
+            } else {
+                (&[][..], items)
+            };
+            if let Some(plan) = self.rewrite_plan(upserts, deletes, origin)? {
+                self.submit_replace_mutation_inner_coordinated(
+                    plan.upserts,
+                    plan.deletes,
+                    origin,
+                    None,
+                    mode,
+                )?;
+                return Ok(true);
+            }
+            self.validate_mutation(items, change)?;
+        }
+        Ok(false)
     }
 
     fn submit_mutation_mode_coordinated(
@@ -1518,6 +1643,9 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
+        if self.prepare_mutation(&items, change, origin, mode)? {
+            return Ok(());
+        }
         let nested = CAUSAL_STATES.with(|slot| {
             slot.borrow()
                 .iter()
@@ -1631,14 +1759,18 @@ impl MykoServerContext {
         origin: Origin,
         expected_graph_generation: Option<u64>,
     ) -> Result<bool, PersistError> {
-        self.registry.transactions.coordinate(false, || {
-            self.submit_replace_mutation_inner_coordinated(
-                upserts,
-                deletes,
-                origin,
-                expected_graph_generation,
-            )
-        })
+        self.registry.transactions.coordinate(
+            super::proposed_state::requires_authority(upserts.iter().chain(&deletes)),
+            || {
+                self.submit_replace_mutation_inner_coordinated(
+                    upserts,
+                    deletes,
+                    origin,
+                    expected_graph_generation,
+                    EdgeApplyMode::Authoritative,
+                )
+            },
+        )
     }
 
     fn submit_replace_mutation_inner_coordinated(
@@ -1647,7 +1779,18 @@ impl MykoServerContext {
         deletes: Vec<Arc<dyn AnyItem>>,
         origin: Origin,
         expected_graph_generation: Option<u64>,
+        mode: EdgeApplyMode,
     ) -> Result<bool, PersistError> {
+        if let Some(plan) = self.rewrite_plan(&upserts, &deletes, origin)? {
+            return self.submit_replace_mutation_inner_coordinated(
+                plan.upserts,
+                plan.deletes,
+                origin,
+                expected_graph_generation,
+                mode,
+            );
+        }
+        self.validate_plan(&upserts, &deletes)?;
         if upserts.is_empty() && deletes.is_empty() {
             return Ok(true);
         }
@@ -1659,13 +1802,7 @@ impl MykoServerContext {
             if expected_graph_generation.is_some() {
                 return Ok(false);
             }
-            self.enqueue_causal_replace(
-                upserts,
-                deletes,
-                origin,
-                EdgeApplyMode::Authoritative,
-                None,
-            )?;
+            self.enqueue_causal_replace(upserts, deletes, origin, mode, None)?;
             return Ok(true);
         }
 
@@ -1684,13 +1821,7 @@ impl MykoServerContext {
         });
 
         let result = (|| {
-            self.enqueue_causal_replace(
-                upserts,
-                deletes,
-                origin,
-                EdgeApplyMode::Authoritative,
-                expected_graph_generation,
-            )?;
+            self.enqueue_causal_replace(upserts, deletes, origin, mode, expected_graph_generation)?;
             loop {
                 let pending = CAUSAL_STATES.with(|slot| {
                     let mut slot = slot.borrow_mut();
@@ -2582,6 +2713,21 @@ impl MykoServerContext {
         typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
     }
 
+    /// Build a live-filter query in the originating request context.
+    pub fn query_live_with_request<F>(
+        &self,
+        filter_cell: impl Watchable<F>,
+        request: Arc<RequestContext>,
+    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
+    where
+        F: LiveFilterQuery,
+        F::Item: WithTypedId,
+    {
+        let untyped =
+            crate::query::query_live_in_context(self.registry.clone(), request, filter_cell);
+        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+    }
+
     /// Run a reactive query and return a typed map keyed by canonical string ids.
     ///
     /// Prefer `query_map()` unless you specifically need string ids.
@@ -2817,8 +2963,17 @@ impl MykoServerContext {
         let query_context = Arc::new(QueryContext { req: request });
         let query = Arc::new(query);
 
-        store
-            .snapshot()
+        let source = crate::query::registered_entity_source(
+            &crate::query::QueryBuildContext::new(
+                query_context.clone(),
+                self.registry.clone(),
+                Some(Arc::new(self.clone())),
+            ),
+            &query_item_type,
+            query.as_ref(),
+        )
+        .map_or_else(|| store.snapshot(), |source| source.snapshot());
+        source
             .into_iter()
             .filter_map(|(_, item)| {
                 let typed_item =

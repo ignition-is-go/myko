@@ -83,6 +83,9 @@ use super::item::AnyItem;
 /// Type alias for a function that extracts an FK value from an entity
 pub type FkExtractor = fn(&dyn std::any::Any) -> Option<Arc<str>>;
 
+/// Extract runtime-typed, non-owning references from an entity payload.
+pub type ReferenceExtractor = fn(&dyn std::any::Any) -> Vec<crate::graph::EntityRef>;
+
 /// Type alias for a function that extracts an array of IDs from an entity
 pub type ArrayExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
 
@@ -347,4 +350,16 @@ mod tests {
             }
         ));
     }
+}
+
+/// Non-owning, runtime-typed references extracted from an entity payload.
+/// Targets are retained as unresolved intent when absent and are not owned or exported.
+pub struct ReferenceRegistration {
+    pub local_type: &'static str,
+    pub extract_refs: ReferenceExtractor,
+}
+inventory::collect!(ReferenceRegistration);
+
+pub fn iter_references() -> impl Iterator<Item = &'static ReferenceRegistration> {
+    inventory::iter::<ReferenceRegistration>()
 }

@@ -73,6 +73,26 @@ pub struct HistoryEntityKey {
     pub item_id: Arc<str>,
 }
 
+/// Physical representations contributing to one logical entity's history.
+pub struct EntityHistoryAliasRegistration {
+    pub logical_type: &'static str,
+    pub storage_types: &'static [&'static str],
+}
+inventory::collect!(EntityHistoryAliasRegistration);
+
+#[must_use]
+pub fn history_storage_types(kind: &str) -> Vec<String> {
+    let mut kinds = vec![kind.to_owned()];
+    for alias in inventory::iter::<EntityHistoryAliasRegistration> {
+        if alias.logical_type == kind {
+            kinds.extend(alias.storage_types.iter().map(|kind| (*kind).to_owned()));
+        }
+    }
+    kinds.sort();
+    kinds.dedup();
+    kinds
+}
+
 /// A committed `PostgreSQL` history row observed through the backend's notify stream.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommittedHistoryEvent {
@@ -175,7 +195,11 @@ fn entity_history_window_source(
         let Some(committed) = committed.as_ref() else {
             return;
         };
-        if committed.key != key_for_commits {
+        if committed.key.item_id != key_for_commits.item_id
+            || !history_storage_types(&key_for_commits.item_type)
+                .iter()
+                .any(|kind| kind.as_str() == committed.key.item_type.as_ref())
+        {
             return;
         }
         let _dispatch = dispatch_for_commits

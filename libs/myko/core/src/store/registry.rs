@@ -69,6 +69,39 @@ impl StoreRegistry {
         self.stores.get(entity_type).map(|r| r.clone())
     }
 
+    /// Fork stores touched by a proposal while sharing untouched, read-only stores.
+    #[must_use]
+    pub fn overlay(
+        &self,
+        upserts: &[Arc<dyn crate::item::AnyItem>],
+        deletes: &[Arc<dyn crate::item::AnyItem>],
+    ) -> Arc<Self> {
+        let view = Self::new();
+        for store in &self.stores {
+            view.stores
+                .insert(store.key().clone(), store.value().clone());
+        }
+        let types: std::collections::HashSet<_> = upserts
+            .iter()
+            .chain(deletes)
+            .map(|item| item.entity_type())
+            .collect();
+        for kind in types {
+            let copy = Arc::new(crate::store::EntityStore::new());
+            if let Some(original) = self.get(kind) {
+                copy.insert_many(original.snapshot());
+            }
+            for item in deletes.iter().filter(|item| item.entity_type() == kind) {
+                copy.remove(&item.id());
+            }
+            for item in upserts.iter().filter(|item| item.entity_type() == kind) {
+                copy.insert(item.id(), item.clone());
+            }
+            view.stores.insert(Arc::from(kind), copy);
+        }
+        Arc::new(view)
+    }
+
     /// List all registered entity types.
     #[must_use]
     pub fn entity_types(&self) -> Vec<Arc<str>> {

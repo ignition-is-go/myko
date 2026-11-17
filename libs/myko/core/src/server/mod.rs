@@ -57,8 +57,8 @@ pub use history_feed::{
     HistoryFeedRow, HistoryFilter, HistoryResetReason, HistorySubscription, HistoryUpdate,
 };
 pub use history_replay::{
-    CommittedHistoryEvent, EntityHistory, HistoryEntityKey, HistoryEvent, HistoryPage,
-    HistoryReplayProvider,
+    CommittedHistoryEvent, EntityHistory, EntityHistoryAliasRegistration, HistoryEntityKey,
+    HistoryEvent, HistoryPage, HistoryReplayProvider, history_storage_types,
 };
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,
@@ -66,5 +66,9 @@ pub use persister::{
 pub use protocol::{message_to_cbor, message_to_json};
 pub use relationship_manager::RelationshipManager;
 
+mod proposed_state;
 mod transaction_history;
+pub use proposed_state::{
+    MutationReplacement, MutationRewriterRegistration, MutationValidatorRegistration, ProposedState,
+};
 pub use transaction_history::{TransactionChange, TransactionHistory, UserTransaction};

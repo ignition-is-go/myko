@@ -205,7 +205,8 @@ pub trait Querying: ServerScoped {
         F: LiveFilterQuery,
         F::Item: WithTypedId,
     {
-        self.__server_ctx().query_live(filter_cell)
+        self.__server_ctx()
+            .query_live_with_request(filter_cell, self.__request().clone())
     }
 }
 

@@ -20,6 +20,21 @@ pub(super) fn validate(
         .map(|item| (item.entity_type(), item.id()))
         .collect();
     for parent in deletes {
+        for registration in crate::relationship::iter_references() {
+            if let Some(store) = ctx.__server_ctx().registry.get(registration.local_type) {
+                for (id, item) in store.snapshot() {
+                    if (registration.extract_refs)(item.as_any())
+                        .iter()
+                        .any(|target| {
+                            target.entity_type.as_ref() == parent.entity_type()
+                                && target.id == parent.id()
+                        })
+                    {
+                        require_planned(ctx, &planned, registration.local_type, &id)?;
+                    }
+                }
+            }
+        }
         for registration in iter_relations() {
             for (kind, id) in related_children(ctx, parent.as_ref(), &registration.relation) {
                 require_planned(ctx, &planned, kind, &id)?;
@@ -164,6 +179,21 @@ fn validate_final_state(
                     .is_some_and(|store| store.get_value(id).is_some()))
     };
     for item in upserts {
+        for registration in crate::relationship::iter_references()
+            .filter(|registration| registration.local_type == item.entity_type())
+        {
+            for target in (registration.extract_refs)(item.as_any()) {
+                if !exists(&target.entity_type, &target.id) {
+                    return Err(failure(
+                        ctx,
+                        format!(
+                            "undo has a missing reference {}:{}",
+                            target.entity_type, target.id
+                        ),
+                    ));
+                }
+            }
+        }
         for registration in iter_relations() {
             let dependencies: Vec<_> = match &registration.relation {
                 Relation::BelongsTo {

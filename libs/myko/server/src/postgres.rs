@@ -271,19 +271,20 @@ impl PostgresHistoryStore {
         item_id: &str,
         window: &QueryWindow,
     ) -> Result<HistoryPage, String> {
+        let item_types = myko::server::history_storage_types(item_type);
         let mut client = connect_pg_client(&self.config, "history(entity)")?;
         let count_sql = format!(
-            "SELECT COUNT(*)::bigint FROM {} WHERE item_type = $1 AND item_id = $2",
+            "SELECT COUNT(*)::bigint FROM {} WHERE item_type = ANY($1) AND item_id = $2",
             qi(&self.config.table)
         );
         let total_count: i64 = client
-            .query_one(&count_sql, &[&item_type, &item_id])
+            .query_one(&count_sql, &[&item_types, &item_id])
             .map_err(|e| format!("history count query failed: {e}"))?
             .get(0);
         let total_count = usize::try_from(total_count)
             .map_err(|_| "history row count does not fit usize".to_string())?;
         let sql = format!(
-            "SELECT id, created_at, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
+            "SELECT id, created_at, event::text FROM {} WHERE item_type = ANY($1) AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
             qi(&self.config.table)
         );
         let limit = i64::try_from(window.limit)
@@ -291,7 +292,7 @@ impl PostgresHistoryStore {
         let offset = i64::try_from(window.offset)
             .map_err(|_| "history page offset is too large".to_string())?;
         let rows = client
-            .query(&sql, &[&item_type, &item_id, &limit, &offset])
+            .query(&sql, &[&item_types, &item_id, &limit, &offset])
             .map_err(|e| format!("history query failed: {e}"))?;
         let events = rows
             .into_iter()

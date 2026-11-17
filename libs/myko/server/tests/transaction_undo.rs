@@ -772,3 +772,109 @@ fn late_causal_writes_do_not_reorder_the_originating_user_actions() -> anyhow::R
     anyhow::ensure!(fixture.position("a")?.x == Some(3.0) && fixture.position("b")?.x.is_none());
     Ok(())
 }
+
+mod reference {
+    use myko::prelude::*;
+    use std::sync::Arc;
+    #[myko_item]
+    pub struct UndoReference {
+        pub target_type: Arc<str>,
+        pub target_id: Arc<str>,
+    }
+}
+use reference::*;
+myko::submit! { myko::relationship::ReferenceRegistration {
+    local_type: UndoReference::ENTITY_NAME_STATIC,
+    extract_refs: |item| item.downcast_ref::<UndoReference>().map_or_else(Vec::new, |item| {
+        vec![myko::graph::EntityRef::new(item.target_type.clone(), item.target_id.clone())]
+    }),
+} }
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn non_owning_reference_survives_target_deletion_and_blocks_missing_target_restoration()
+-> anyhow::Result<()> {
+    let mut fixture = Fixture::new()?;
+    fixture.seed()?;
+    let reference = UndoReference {
+        id: "ref".into(),
+        target_type: UndoNode::ENTITY_NAME_STATIC.into(),
+        target_id: "a".into(),
+    };
+    fixture.server.set(&reference)?;
+    fixture
+        .context("alice", "retarget")
+        .emit_set(&UndoReference {
+            target_id: "b".into(),
+            ..reference
+        })
+        .map_err(command_error)?;
+    fixture
+        .context("bob", "remove-a")
+        .emit_del(&fixture.node("a")?)
+        .map_err(command_error)?;
+    fixture.restart()?;
+    anyhow::ensure!(
+        fixture
+            .item::<UndoReference>(UndoReference::ENTITY_NAME_STATIC, "ref")?
+            .target_id
+            .as_ref()
+            == "b"
+    );
+    let error = UndoTransaction {
+        transaction_id: "retarget".into(),
+    }
+    .execute(fixture.context("alice", "reject-ref-undo"))
+    .err()
+    .ok_or_else(|| anyhow::anyhow!("missing reference was restored"))?;
+    anyhow::ensure!(error.message.contains("missing reference"));
+    anyhow::ensure!(
+        !fixture
+            .provider
+            .transaction_exists("reject-ref-undo")
+            .map_err(anyhow::Error::msg)?
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn undo_target_creation_cannot_break_a_later_non_owning_reference() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.seed()?;
+    fixture
+        .context("alice", "create-target")
+        .emit_set(&UndoScene {
+            id: "shared".into(),
+            name: "Shared".into(),
+        })
+        .map_err(command_error)?;
+    fixture
+        .context("bob", "add-reference")
+        .emit_set(&UndoReference {
+            id: "ref".into(),
+            target_type: UndoScene::ENTITY_NAME_STATIC.into(),
+            target_id: "shared".into(),
+        })
+        .map_err(command_error)?;
+    anyhow::ensure!(
+        UndoTransaction {
+            transaction_id: "create-target".into()
+        }
+        .execute(fixture.context("alice", "reject-delete-target"))
+        .is_err()
+    );
+    fixture
+        .context("bob", "ordinary-delete")
+        .emit_del(&UndoScene {
+            id: "shared".into(),
+            name: "Shared".into(),
+        })
+        .map_err(command_error)?;
+    anyhow::ensure!(
+        fixture
+            .item::<UndoReference>(UndoReference::ENTITY_NAME_STATIC, "ref")
+            .is_ok()
+    );
+    Ok(())
+}

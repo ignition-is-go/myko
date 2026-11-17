@@ -191,6 +191,16 @@ fn reverse(
     }
     let (mut upserts, deletes) = prepare_changes(&ctx, &history)?;
     dependencies::validate(&ctx, &upserts, &deletes)?;
+    crate::server::ProposedState {
+        server: Some(ctx.__server_ctx().as_ref()),
+        request: Some(ctx.req.clone()),
+        host_id: ctx.req.host_id,
+        registry: &ctx.__server_ctx().registry,
+        upserts: &upserts,
+        deletes: &deletes,
+    }
+    .validate(true)
+    .map_err(|error| failure(&ctx, error))?;
     let count = upserts.len().saturating_add(deletes.len());
     let target = history.transaction_id;
     let result = UndoTransactionResult {
