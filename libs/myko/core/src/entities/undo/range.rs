@@ -183,10 +183,7 @@ fn log_entry(
     let first = history.records.first();
     let command = first
         .and_then(|record| record.provenance.as_ref())
-        .map_or_else(
-            || Arc::from("Edit"),
-            |p| p.lineage.first().unwrap_or(&p.command_id).clone(),
-        );
+        .map_or_else(|| Arc::from("Edit"), |p| p.command_id.clone());
     let mut kinds: Vec<Arc<str>> = history
         .changes
         .iter()

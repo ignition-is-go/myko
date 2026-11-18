@@ -228,12 +228,14 @@ fn validate_target(
     if history.transaction_id.as_ref() == ctx.tx() {
         return Err(failure(ctx, "undo requires a fresh transaction ID"));
     }
-    let excluded: Vec<_> = history
+    let mut excluded: Vec<_> = history
         .changes
         .iter()
         .filter(|change| !crate::item::is_undoable_entity(&change.key.item_type))
         .map(|change| change.key.item_type.as_ref())
         .collect();
+    excluded.sort_unstable();
+    excluded.dedup();
     if !excluded.is_empty() {
         return Err(failure(
             ctx,
