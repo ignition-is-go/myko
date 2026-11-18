@@ -1,7 +1,7 @@
 //! Checked multi-transaction reversal and inspectable, user-scoped history.
 use super::{
-    Changes, TransactionUndo, contains_undoable_changes, dependencies, failure, fresh_history,
-    prepare_changes_with, validate_target,
+    Changes, TransactionUndo, UndoReadContext, contains_undoable_changes, dependencies, failure,
+    fresh_history, prepare_changes_with, validate_target,
 };
 use crate::{
     command::{CommandContext, CommandError, CommandHandler},
@@ -72,14 +72,14 @@ type Policy<'a> =
     &'a mut dyn FnMut(&dyn HistoryReplayProvider, &TransactionHistory) -> Result<bool, String>;
 
 fn candidates(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     limit: usize,
     matches: Policy<'_>,
 ) -> Result<Vec<(i64, TransactionHistory)>, CommandError> {
     if !(1..=100).contains(&limit) {
         return Err(failure(ctx, "undo history limit must be between 1 and 100"));
     }
-    let user = ctx.user_id()?;
+    let user = ctx.undo_actor()?;
     let provider = fresh_history(ctx)?;
     let mut before = None;
     let mut selected = Vec::new();
@@ -117,11 +117,11 @@ fn candidates(
 }
 
 fn extend(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     history: &TransactionHistory,
     overlay: &mut Overlay,
 ) -> Result<usize, CommandError> {
-    validate_target(ctx, ctx.user_id()?, history)?;
+    validate_target(ctx, ctx.undo_actor()?, history)?;
     let (upserts, deletes) = prepare_changes_with(ctx, history, |key| {
         overlay.get(key).cloned().unwrap_or_else(|| {
             ctx.__server_ctx()
@@ -142,7 +142,7 @@ fn extend(
     }
     Ok(count)
 }
-fn changes(ctx: &CommandContext, overlay: &Overlay) -> Changes {
+fn changes(ctx: &impl UndoReadContext, overlay: &Overlay) -> Changes {
     let mut upserts = Vec::new();
     let mut deletes = Vec::new();
     for (key, value) in overlay {
@@ -162,13 +162,13 @@ fn changes(ctx: &CommandContext, overlay: &Overlay) -> Changes {
     }
     (upserts, deletes)
 }
-fn check(ctx: &CommandContext, plan: &Changes) -> Result<(), CommandError> {
+fn check(ctx: &impl UndoReadContext, plan: &Changes) -> Result<(), CommandError> {
     dependencies::validate(ctx, &plan.0, &plan.1)?;
     crate::server::ProposedState {
         server: Some(ctx.__server_ctx().as_ref()),
-        request: Some(ctx.req.clone()),
+        request: Some(ctx.__request().clone()),
         registry: &ctx.__server_ctx().registry,
-        host_id: ctx.req.host_id,
+        host_id: ctx.host_id(),
         upserts: &plan.0,
         deletes: &plan.1,
     }
@@ -233,11 +233,11 @@ fn log_entry(
 /// # Errors
 /// Returns authentication, persistence or history-selection errors.
 pub fn undo_log_matching(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     limit: usize,
     mut matches: impl FnMut(&dyn HistoryReplayProvider, &TransactionHistory) -> Result<bool, String>,
 ) -> Result<UndoLogPage, CommandError> {
-    ctx.user_id()?;
+    ctx.undo_actor()?;
     let registry = ctx.__server_ctx().registry.clone();
     registry.transactions.coordinate(true, || {
         ctx.__server_ctx()

@@ -1195,3 +1195,58 @@ fn entity_opt_in_excludes_presence_and_blocks_mixed_transactions_without_partial
     }
     Ok(())
 }
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn live_history_revision_includes_completion_and_unattributed_writes_but_not_preview_reads()
+-> anyhow::Result<()> {
+    use myko::{entities::undo::undo_log_matching, report::ReportContext};
+    let f = Fixture::new()?;
+    f.seed()?;
+    let reader = ReportContext::new(f.context("alice", "watch").req, f.server.clone());
+    let before = f.server.undo_history_revision();
+    let write = f.context("alice", "in-flight");
+    write
+        .emit_set(&UndoPosition {
+            id: "a".into(),
+            node_id: "a".into(),
+            x: Some(1.0),
+        })
+        .map_err(command_error)?;
+    let after_write = f.server.undo_history_revision();
+    anyhow::ensure!(after_write > before);
+    anyhow::ensure!(
+        undo_log_matching(&reader, 20, |_, _| Ok(true))
+            .map_err(command_error)?
+            .entries
+            .is_empty()
+    );
+    anyhow::ensure!(f.server.undo_history_revision() == after_write);
+    drop(write);
+    let after_completion = f.server.undo_history_revision();
+    anyhow::ensure!(after_completion > after_write);
+    anyhow::ensure!(
+        undo_log_matching(&reader, 20, |_, _| Ok(true))
+            .map_err(command_error)?
+            .entries
+            .len()
+            == 1
+    );
+    anyhow::ensure!(f.server.undo_history_revision() == after_completion);
+    f.server.set(&UndoPosition {
+        id: "a".into(),
+        node_id: "a".into(),
+        x: Some(2.0),
+    })?;
+    let after_internal = f.server.undo_history_revision();
+    anyhow::ensure!(after_internal > after_completion);
+    f.context("alice", "preview-only")
+        .emit_set_transient(&UndoPosition {
+            id: "a".into(),
+            node_id: "a".into(),
+            x: Some(3.0),
+        })
+        .map_err(command_error)?;
+    anyhow::ensure!(f.server.undo_history_revision() == after_internal);
+    Ok(())
+}

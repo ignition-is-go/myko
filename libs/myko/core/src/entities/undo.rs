@@ -45,10 +45,35 @@ pub struct UndoTransaction {
 #[myko_command(Option<UndoTransactionResult>)]
 pub struct UndoLastTransaction {}
 
-fn failure(ctx: &CommandContext, error: impl std::fmt::Display) -> CommandError {
+/// Read-only capabilities shared by command previews and live history reports.
+/// This does not grant event publishing or register a command activity.
+pub trait UndoReadContext: RequestScoped + ServerScoped + Sized {
+    /// Operation name used when reporting a planning error.
+    fn undo_operation(&self) -> &str;
+    /// Resolve the authenticated author without granting mutation capabilities.
+    /// # Errors
+    /// Returns an authentication error when no verified user is available.
+    fn undo_actor(&self) -> Result<&crate::identity::UserId, CommandError> {
+        self.__request()
+            .user_id()
+            .map_err(|error| failure(self, error))
+    }
+}
+impl UndoReadContext for CommandContext {
+    fn undo_operation(&self) -> &str {
+        &self.command_id
+    }
+}
+impl UndoReadContext for ReportContext {
+    fn undo_operation(&self) -> &'static str {
+        "Undo history preview"
+    }
+}
+
+fn failure(ctx: &impl UndoReadContext, error: impl std::fmt::Display) -> CommandError {
     CommandError::new(
         ctx.tx().to_owned(),
-        ctx.command_id.to_string(),
+        ctx.undo_operation().to_owned(),
         error.to_string(),
     )
 }
@@ -139,7 +164,7 @@ pub fn undo_latest_matching(
 }
 
 fn fresh_history(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
 ) -> Result<Arc<dyn crate::server::HistoryReplayProvider>, CommandError> {
     if ctx.tx().is_empty() || ctx.tx().contains('\0') {
         return Err(failure(ctx, "undo transaction ID is invalid"));
@@ -218,7 +243,7 @@ pub fn contains_undoable_changes(history: &TransactionHistory) -> bool {
 }
 
 fn validate_target(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     user: &crate::identity::UserId,
     history: &TransactionHistory,
 ) -> Result<(), CommandError> {
@@ -296,7 +321,7 @@ fn prepare_changes(
 }
 
 fn prepare_changes_with(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     history: &TransactionHistory,
     current: impl Fn(&crate::server::HistoryEntityKey) -> Option<Arc<dyn AnyItem>>,
 ) -> Result<Changes, CommandError> {

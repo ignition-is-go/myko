@@ -4,7 +4,7 @@ use std::{
     collections::HashMap,
     sync::{
         Arc, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -18,6 +18,7 @@ thread_local! {
 pub struct TransactionCoordinator {
     gate: RwLock<()>,
     history_enabled: AtomicBool,
+    revision: Arc<AtomicU64>,
     active: Arc<Mutex<HashMap<Arc<str>, Activity>>>,
 }
 
@@ -40,6 +41,7 @@ pub struct CommandCausation {
 pub struct CommandActivity {
     states: Arc<Mutex<HashMap<Arc<str>, Activity>>>,
     tx: Arc<str>,
+    revision: Arc<AtomicU64>,
 }
 
 impl Drop for CommandActivity {
@@ -48,6 +50,7 @@ impl Drop for CommandActivity {
             .states
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut completed = false;
         if let Some(state) = states.get_mut(&self.tx) {
             state.commands = state.commands.saturating_sub(1);
             if state.commands == 0
@@ -55,13 +58,18 @@ impl Drop for CommandActivity {
                 && let Some(state) = states.remove(&self.tx)
                 && !state.invalid
                 && let Some((backend, user)) = state.completion
-                && let Err(error) = backend.complete_transaction(&self.tx, &user)
             {
-                tracing::error!(%error, "transaction completion could not be persisted");
+                if let Err(error) = backend.complete_transaction(&self.tx, &user) {
+                    tracing::error!(%error, "transaction completion could not be persisted");
+                }
+                completed = true;
             }
         }
         // Completion must be enqueued before a new context can reuse this tx.
         drop(states);
+        if completed {
+            self.revision.fetch_add(1, Ordering::Release);
+        }
     }
 }
 
@@ -75,6 +83,10 @@ impl Drop for Held {
 }
 
 impl TransactionCoordinator {
+    pub(crate) fn history_revision(&self) -> u64 {
+        self.revision.load(Ordering::Acquire)
+    }
+
     pub(crate) fn enable_history(&self) {
         self.history_enabled.store(true, Ordering::Release);
     }
@@ -137,6 +149,7 @@ impl TransactionCoordinator {
         Arc::new(CommandActivity {
             states: self.active.clone(),
             tx,
+            revision: self.revision.clone(),
         })
     }
 
@@ -165,6 +178,9 @@ impl TransactionCoordinator {
         record: &crate::server::EventRecord,
         backend: Arc<dyn crate::server::Persister>,
     ) {
+        if self.history_enabled.load(Ordering::Acquire) && backend.supports_provenance() {
+            self.revision.fetch_add(1, Ordering::Release);
+        }
         if record.provenance.is_none() {
             return;
         }

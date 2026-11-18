@@ -1,7 +1,7 @@
 //! Prevent reversal cascades from deleting entities introduced by later work.
-use super::failure;
+use super::{UndoReadContext, failure};
 use crate::{
-    command::{CommandContext, CommandError},
+    command::CommandError,
     item::AnyItem,
     prelude::*,
     relationship::{Relation, iter_relations},
@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::{collections::HashSet, sync::Arc};
 
 pub(super) fn validate(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     upserts: &[Arc<dyn AnyItem>],
     deletes: &[Arc<dyn AnyItem>],
 ) -> Result<(), CommandError> {
@@ -77,7 +77,7 @@ pub(super) fn validate(
 }
 
 fn require_planned(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     planned: &HashSet<(&str, Arc<str>)>,
     kind: &str,
     id: &Arc<str>,
@@ -93,7 +93,7 @@ fn require_planned(
 }
 
 fn related_children(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     parent: &dyn AnyItem,
     relation: &Relation,
 ) -> Vec<(&'static str, Arc<str>)> {
@@ -138,7 +138,7 @@ fn related_children(
 }
 
 fn by_foreign_key(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     kind: &'static str,
     extract: crate::relationship::FkExtractor,
     parent: &Arc<str>,
@@ -157,7 +157,7 @@ fn by_foreign_key(
 }
 
 fn validate_final_state(
-    ctx: &CommandContext,
+    ctx: &impl UndoReadContext,
     upserts: &[Arc<dyn AnyItem>],
     deletes: &[Arc<dyn AnyItem>],
 ) -> Result<(), CommandError> {

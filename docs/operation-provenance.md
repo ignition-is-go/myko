@@ -118,6 +118,21 @@ not selected or accepted for undo in this first version; redo and scene/time
 rollback remain separate API work. The history change representation and checked
 mixed replacement path provide their underlying primitives.
 
+## Live undo previews
+
+`undo_log_matching` accepts either a command or report context through
+`UndoReadContext`. The read-only path does not construct command activities or
+acquire event-publishing capabilities, so a mounted preview cannot make its user
+appear busy to actual undo commands.
+
+`MykoServerContext::undo_history_revision()` is a local invalidation generation.
+Attributed-history writes (including unattributed records on that backend) advance
+it, and completion advances it again after the durable marker is enqueued. Read-only
+previews and transient/blackholed writes do not advance it. A subscribing report
+can sample this cheap generation outside mutation/activity locks, deduplicate it,
+and rebuild only changed previews. Reconnect creates an initial preview against
+retained history; this counter is not a persisted cursor or a distributed lock.
+
 ## Scope and failure semantics
 
 This is append-only causal reversal, not a general ACID command transaction or a
