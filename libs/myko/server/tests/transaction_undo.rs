@@ -4,7 +4,7 @@ use myko::{
     command::CommandContext,
     entities::{
         framework_reports::EventsForTransaction,
-        undo::{TransactionUndo, UndoMyLastTransaction, UndoTransaction},
+        undo::{TransactionUndo, UndoLastTransaction, UndoTransaction},
     },
     prelude::*,
     request::RequestContext,
@@ -255,7 +255,7 @@ fn alice_undoes_move_after_restart_and_preserves_bobs_rename() -> anyhow::Result
         .emit_set(&node)
         .map_err(command_error)?;
     fixture.restart()?;
-    let result = UndoMyLastTransaction {}
+    let result = UndoLastTransaction {}
         .execute(fixture.context("alice", "alice-undo"))
         .map_err(command_error)?
         .ok_or_else(|| anyhow::anyhow!("missing undo result"))?;
@@ -266,12 +266,12 @@ fn alice_undoes_move_after_restart_and_preserves_bobs_rename() -> anyhow::Result
     fixture.restart()?;
     anyhow::ensure!(fixture.position("a")?.x.is_none() && fixture.node("a")?.name == "Bob's name");
     anyhow::ensure!(
-        UndoMyLastTransaction {}
+        UndoLastTransaction {}
             .execute(fixture.context("alice", "nothing-left"))
             .map_err(command_error)?
             .is_none()
     );
-    let bob = UndoMyLastTransaction {}
+    let bob = UndoLastTransaction {}
         .execute(fixture.context("bob", "bob-undo"))
         .map_err(command_error)?;
     anyhow::ensure!(bob.is_some() && fixture.node("a")?.name == "a");
@@ -327,7 +327,7 @@ fn undo_enforces_authenticated_author_for_reads_and_writes() -> anyhow::Result<(
     );
     let mut anonymous = fixture.context("alice", "anonymous-undo");
     Arc::make_mut(&mut anonymous.req).auth = None;
-    anyhow::ensure!(UndoMyLastTransaction {}.execute(anonymous).is_err());
+    anyhow::ensure!(UndoLastTransaction {}.execute(anonymous).is_err());
     let bob = fixture
         .context("bob", "bob-history")
         .exec_report(EventsForTransaction {
@@ -410,12 +410,12 @@ fn sequential_undo_walks_the_users_stack_after_restart() -> anyhow::Result<()> {
     fixture.seed()?;
     fixture.moved("alice", "first", &[("a", 1.0)])?;
     fixture.moved("alice", "second", &[("a", 2.0)])?;
-    UndoMyLastTransaction {}
+    UndoLastTransaction {}
         .execute(fixture.context("alice", "undo-second"))
         .map_err(command_error)?;
     anyhow::ensure!(fixture.position("a")?.x == Some(1.0));
     fixture.restart()?;
-    UndoMyLastTransaction {}
+    UndoLastTransaction {}
         .execute(fixture.context("alice", "undo-first"))
         .map_err(command_error)?;
     anyhow::ensure!(fixture.position("a")?.x.is_none());
@@ -699,7 +699,7 @@ fn active_and_invalid_undo_requests_publish_no_inverse_writes() -> anyhow::Resul
     fixture.moved("alice", "move", &[("a", 1.0)])?;
     let active = fixture.context("alice", "still-reading");
     anyhow::ensure!(
-        UndoMyLastTransaction {}
+        UndoLastTransaction {}
             .execute(fixture.context("alice", "reject-active"))
             .is_err()
     );
@@ -733,7 +733,7 @@ fn ordinary_entity_writes_cannot_forge_undo_receipts() -> anyhow::Result<()> {
         })
         .map_err(command_error)?;
     anyhow::ensure!(!fixture.records("move")?.already_undone);
-    let result = UndoMyLastTransaction {}
+    let result = UndoLastTransaction {}
         .execute(fixture.context("alice", "real-undo"))
         .map_err(command_error)?
         .ok_or_else(|| anyhow::anyhow!("forged receipt hid original transaction"))?;
@@ -764,7 +764,7 @@ fn late_causal_writes_do_not_reorder_the_originating_user_actions() -> anyhow::R
         })
         .map_err(command_error)?;
     drop(early);
-    let result = UndoMyLastTransaction {}
+    let result = UndoLastTransaction {}
         .execute(fixture.context("alice", "undo-later"))
         .map_err(command_error)?
         .ok_or_else(|| anyhow::anyhow!("missing latest transaction"))?;
@@ -909,14 +909,14 @@ fn startup_boundary_is_durable_and_excludes_old_transactions_without_rewriting_h
     anyhow::ensure!(
         !begin_undo_history(&fixture.server, "migration-v1").map_err(anyhow::Error::msg)?
     );
-    let result = UndoMyLastTransaction {}
+    let result = UndoLastTransaction {}
         .execute(fixture.context("alice", "undo-new"))
         .map_err(command_error)?
         .ok_or_else(|| anyhow::anyhow!("new edit not undoable"))?;
     anyhow::ensure!(result.transaction_id.as_ref() == "after-migration");
     anyhow::ensure!(fixture.position("a")?.x == Some(1.0));
     anyhow::ensure!(
-        UndoMyLastTransaction {}
+        UndoLastTransaction {}
             .execute(fixture.context("alice", "no-old-history"))
             .map_err(command_error)?
             .is_none()

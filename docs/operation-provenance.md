@@ -57,7 +57,7 @@ restart, even though their partial events remain readable for diagnosis.
 
 ## Undo commands
 
-- `UndoMyLastTransaction {}` selects the authenticated user's latest completed,
+- `UndoLastTransaction {}` selects the authenticated user's latest completed,
   original, unreversed transaction, returning `None` when none exists.
 - `UndoTransaction { transaction_id }` reverses a specified transaction owned by
   the authenticated user. It rejects unknown/mixed authors, active/incomplete

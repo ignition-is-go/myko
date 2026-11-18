@@ -41,7 +41,7 @@ pub struct UndoTransaction {
 /// Undo the authenticated user's latest original transaction that has not
 /// already been reversed. Returns None when there is no eligible history.
 #[myko_command(Option<UndoTransactionResult>)]
-pub struct UndoMyLastTransaction {}
+pub struct UndoLastTransaction {}
 
 fn failure(ctx: &CommandContext, error: impl std::fmt::Display) -> CommandError {
     CommandError::new(
@@ -71,7 +71,7 @@ impl CommandHandler for UndoTransaction {
     }
 }
 
-impl CommandHandler for UndoMyLastTransaction {
+impl CommandHandler for UndoLastTransaction {
     fn execute(self, ctx: CommandContext) -> Result<Option<UndoTransactionResult>, CommandError> {
         undo_latest_matching(ctx, |_, _| Ok(true))
     }
