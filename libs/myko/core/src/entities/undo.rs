@@ -13,6 +13,8 @@ use crate::{
 
 mod boundary;
 pub use boundary::*;
+mod range;
+pub use range::*;
 
 /// An immutable log receipt. Removing its live row does not remove the receipt
 /// from history or make the original transaction eligible a second time.
@@ -126,7 +128,9 @@ pub fn undo_latest_matching(
                 if history.author().map_err(|error| failure(&ctx, error))? != &user {
                     return Err(failure(&ctx, "history returned another user's transaction"));
                 }
-                if matches(provider.as_ref(), &history).map_err(|error| failure(&ctx, error))? {
+                if contains_undoable_changes(&history)
+                    && matches(provider.as_ref(), &history).map_err(|error| failure(&ctx, error))?
+                {
                     return reverse(ctx, &user, history).map(Some);
                 }
             }
@@ -137,6 +141,9 @@ pub fn undo_latest_matching(
 fn fresh_history(
     ctx: &CommandContext,
 ) -> Result<Arc<dyn crate::server::HistoryReplayProvider>, CommandError> {
+    if ctx.tx().is_empty() || ctx.tx().contains('\0') {
+        return Err(failure(ctx, "undo transaction ID is invalid"));
+    }
     let provider = ctx
         .__server_ctx()
         .history_replay()
@@ -156,48 +163,7 @@ fn reverse(
     user: &crate::identity::UserId,
     history: TransactionHistory,
 ) -> Result<UndoTransactionResult, CommandError> {
-    if history.author().map_err(|error| failure(&ctx, error))? != user {
-        return Err(failure(&ctx, "cannot undo another user's transaction"));
-    }
-    if history.transaction_id.as_ref() == ctx.tx() {
-        return Err(failure(&ctx, "undo requires a fresh transaction ID"));
-    }
-    if history.predates_undo_boundary {
-        return Err(failure(
-            &ctx,
-            "transaction predates the start of undo history",
-        ));
-    }
-    if !history.complete {
-        return Err(failure(
-            &ctx,
-            "transaction has no durable completion record",
-        ));
-    }
-    if history.already_undone
-        || history.records.iter().any(|record| {
-            record
-                .provenance
-                .as_ref()
-                .is_some_and(|p| p.undo_of_tx.is_some())
-        })
-    {
-        return Err(failure(
-            &ctx,
-            "transaction is already reversed or is itself an undo",
-        ));
-    }
-    if ctx
-        .__server_ctx()
-        .registry
-        .transactions
-        .busy(&history.transaction_id)
-    {
-        return Err(failure(
-            &ctx,
-            "transaction still has active commands or pending saga work",
-        ));
-    }
+    validate_target(&ctx, user, &history)?;
     let (mut upserts, deletes) = prepare_changes(&ctx, &history)?;
     dependencies::validate(&ctx, &upserts, &deletes)?;
     crate::server::ProposedState {
@@ -242,11 +208,95 @@ fn reverse(
     Ok(result)
 }
 
+/// Whether a transaction contains any explicitly opted-in authored state.
+#[must_use]
+pub fn contains_undoable_changes(history: &TransactionHistory) -> bool {
+    history
+        .changes
+        .iter()
+        .any(|change| crate::item::is_undoable_entity(&change.key.item_type))
+}
+
+fn validate_target(
+    ctx: &CommandContext,
+    user: &crate::identity::UserId,
+    history: &TransactionHistory,
+) -> Result<(), CommandError> {
+    if history.author().map_err(|error| failure(ctx, error))? != user {
+        return Err(failure(ctx, "cannot undo another user's transaction"));
+    }
+    if history.transaction_id.as_ref() == ctx.tx() {
+        return Err(failure(ctx, "undo requires a fresh transaction ID"));
+    }
+    let excluded: Vec<_> = history
+        .changes
+        .iter()
+        .filter(|change| !crate::item::is_undoable_entity(&change.key.item_type))
+        .map(|change| change.key.item_type.as_ref())
+        .collect();
+    if !excluded.is_empty() {
+        return Err(failure(
+            ctx,
+            format!(
+                "transaction includes entities not opted into undo: {}",
+                excluded.join(", ")
+            ),
+        ));
+    }
+    if history.predates_undo_boundary {
+        return Err(failure(
+            ctx,
+            "transaction predates the start of undo history",
+        ));
+    }
+    if !history.complete {
+        return Err(failure(ctx, "transaction has no durable completion record"));
+    }
+    if history.already_undone
+        || history.records.iter().any(|record| {
+            record
+                .provenance
+                .as_ref()
+                .is_some_and(|p| p.undo_of_tx.is_some())
+        })
+    {
+        return Err(failure(
+            ctx,
+            "transaction is already reversed or is itself an undo",
+        ));
+    }
+    if ctx
+        .__server_ctx()
+        .registry
+        .transactions
+        .busy(&history.transaction_id)
+    {
+        return Err(failure(
+            ctx,
+            "transaction still has active commands or pending saga work",
+        ));
+    }
+    Ok(())
+}
+
 type Changes = (Vec<Arc<dyn AnyItem>>, Vec<Arc<dyn AnyItem>>);
 
 fn prepare_changes(
     ctx: &CommandContext,
     history: &TransactionHistory,
+) -> Result<Changes, CommandError> {
+    prepare_changes_with(ctx, history, |key| {
+        ctx.__server_ctx()
+            .registry
+            .get(&key.item_type)
+            .and_then(|store| store.get_value(&key.item_id))
+    })
+}
+
+fn prepare_changes_with(
+    ctx: &CommandContext,
+    history: &TransactionHistory,
+    current: impl Fn(&crate::server::HistoryEntityKey) -> Option<Arc<dyn AnyItem>>,
 ) -> Result<Changes, CommandError> {
     let mut upserts = Vec::<Arc<dyn AnyItem>>::new();
     let mut deletes = Vec::<Arc<dyn AnyItem>>::new();
@@ -255,11 +305,7 @@ fn prepare_changes(
         ctx.__server_ctx()
             .require_undo_backend(&change.key.item_type)
             .map_err(|error| failure(ctx, error))?;
-        let current = ctx
-            .__server_ctx()
-            .registry
-            .get(&change.key.item_type)
-            .and_then(|store| store.get_value(&change.key.item_id));
+        let current = current(&change.key);
         let expected = (change.last.change_type == MEventType::SET)
             .then(|| {
                 ctx.__server_ctx()

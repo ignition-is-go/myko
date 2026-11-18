@@ -289,6 +289,21 @@ pub trait HistoryReplayProvider: Send + Sync {
         Err("transaction history is unsupported".into())
     }
 
+    /// Load history ignoring newer transactions already included in a checked undo range.
+    /// # Errors
+    /// Returns an error when range planning is unsupported or history cannot be read.
+    fn transaction_history_excluding(
+        &self,
+        tx: &str,
+        ignored: &[Arc<str>],
+    ) -> Result<super::TransactionHistory, String> {
+        if ignored.is_empty() {
+            self.transaction_history(tx)
+        } else {
+            Err("transaction range planning is unsupported".into())
+        }
+    }
+
     /// Select the latest original authored transaction not already reversed.
     /// # Errors
     /// Returns a backend error rather than an empty successful history.

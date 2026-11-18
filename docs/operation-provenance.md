@@ -55,6 +55,22 @@ indexed by `(user_id, first_id DESC)`, so late saga writes cannot reorder an old
 user action above a newer action. Incomplete transactions remain ineligible after
 restart, even though their partial events remain readable for diagnosis.
 
+## Entity opt-in
+
+Entity definitions explicitly opt into reversal with `#[myko_item(undoable)]`
+(or `undoable = true`, compatible with other item options). The generated
+`UndoableRegistration` metadata is separate from parser registration; unmarked
+entities default to false (`is_undoable_entity` reads the registration). Unknown and unregistered
+types are excluded. Presence, navigation, external/executor state and runtime
+status should remain unmarked; this is a framework-enforced policy, not a UI filter.
+
+Latest/log selection skips transactions containing only excluded entity types.
+A transaction mixing opted-in and excluded entities remains visible but is blocked
+as a whole. Explicit transaction undo enforces the same rule. New excluded writes
+still participate in revision and dependency conflict checks; opting out never
+makes those later writes safe to overwrite. The flag is current entity metadata,
+not a client-supplied event field or permission bypass.
+
 ## Undo commands
 
 - `UndoLastTransaction {}` selects the authenticated user's latest completed,
@@ -62,6 +78,22 @@ restart, even though their partial events remain readable for diagnosis.
 - `UndoTransaction { transaction_id }` reverses a specified transaction owned by
   the authenticated user. It rejects unknown/mixed authors, active/incomplete
   transactions, an invalid or identical undo tx, and an already reversed target.
+
+- `GetUndoTransactions { limit }` previews up to 100 eligible user transactions,
+  newest first. Each entry reports the safety of undoing the entire prefix through
+  it, including metadata for uncompensated later revisions (transaction, verified
+  author, entity and timestamp, without value payloads).
+- `UndoTransactions { transaction_ids }` checks that the supplied newest-first IDs
+  remain a contiguous eligible prefix, then preflights their combined inverse.
+  Duplicate IDs, empty/oversized ranges and stale selections fail before writes.
+
+Domain adapters share one policy between `undo_log_matching` and
+`undo_range_matching`. Newer selected actions are excluded from older revision
+checks, but intervening foreign actions remain conflicts. A virtual entity overlay
+checks each original against the state produced by reversing newer selections.
+The final dependency/representation checks run against the combined plan; older
+selected edits can restore dependencies missing from a shorter prefix. Each
+original gets its own durable receipt under the one compensation transaction.
 
 For every affected entity, undo restores its previous payload or absence. Deleted
 entities reclaim their original IDs. Granular entities allow another user's rename

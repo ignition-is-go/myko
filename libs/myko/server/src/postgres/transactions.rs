@@ -22,6 +22,26 @@ fn decode_records(rows: Vec<postgres::Row>) -> Result<Vec<EventRecord>, String> 
         })
         .collect()
 }
+fn blocking_record_query(table: &str, completions: &str) -> String {
+    format!(
+        "
+        SELECT later.event::text AS event FROM {table} later
+        WHERE later.item_type = b.item_type AND later.item_id = b.item_id
+        AND later.id > b.last_id AND later.tx <> ALL($2::text[])
+        AND NOT EXISTS (
+            SELECT 1 FROM {table} receipt JOIN {completions} finished
+            ON finished.tx = receipt.event->'item'->>'undoTransactionId'
+            WHERE finished.last_id = (SELECT MAX(id) FROM {table} WHERE tx = finished.tx)
+            AND receipt.item_type = 'TransactionUndo' AND receipt.change_type = 'SET'
+            AND receipt.event->'provenance'->>'undoOfTx' = receipt.event->'item'->>'transactionId'
+            AND receipt.event->'provenance'->>'requestTx' = receipt.tx
+            AND receipt.event->'item'->>'undoTransactionId' = receipt.tx
+            AND receipt.event->'provenance'->>'actorUserId' = finished.user_id
+            AND (receipt.event->'item'->>'transactionId' = later.tx
+                OR receipt.event->'item'->>'undoTransactionId' = later.tx)
+        ) ORDER BY later.id DESC LIMIT 1"
+    )
+}
 impl PostgresHistoryStore {
     /// # Errors
     /// Returns errors reading the durable migration boundary.
@@ -59,6 +79,16 @@ impl PostgresHistoryStore {
     /// # Errors
     /// Returns an error for unreadable, absent or malformed durable history.
     pub fn transaction_history(&self, tx: &str) -> Result<TransactionHistory, String> {
+        self.transaction_history_excluding(tx, &[])
+    }
+
+    /// # Errors
+    /// Returns snapshot/history errors while excluding a trusted newer undo range.
+    pub fn transaction_history_excluding(
+        &self,
+        tx: &str,
+        ignored: &[Arc<str>],
+    ) -> Result<TransactionHistory, String> {
         let mut client = connect_pg_client(&self.config, "transaction_history")?;
         let mut snapshot = client.transaction().map_err(|error| error.to_string())?;
         snapshot
@@ -76,27 +106,15 @@ impl PostgresHistoryStore {
         if records.is_empty() {
             return Err("transaction was not found".into());
         }
+        let ignored: Vec<&str> = ignored.iter().map(AsRef::as_ref).collect();
+        let conflict = blocking_record_query(&table, &completions);
         let rows = snapshot.query(&format!("
             WITH bounds AS (
                 SELECT item_type, item_id, MIN(id) first_id, MAX(id) last_id
                 FROM {table} WHERE tx = $1 GROUP BY item_type, item_id
             )
             SELECT b.item_type, b.item_id, b.last_id, previous.event::text, final.event::text, latest.id,
-                EXISTS (SELECT 1 FROM {table} later WHERE later.item_type = b.item_type
-                    AND later.item_id = b.item_id AND later.id > b.last_id
-                    AND NOT EXISTS (
-                        SELECT 1 FROM {table} receipt
-                        JOIN {completions} finished ON finished.tx = receipt.event->'item'->>'undoTransactionId'
-                        WHERE finished.last_id = (SELECT MAX(id) FROM {table} WHERE tx = finished.tx)
-                        AND receipt.item_type = 'TransactionUndo'
-                        AND receipt.change_type = 'SET'
-                AND receipt.event->'provenance'->>'undoOfTx' = receipt.event->'item'->>'transactionId'
-                AND receipt.event->'provenance'->>'requestTx' = receipt.tx
-                AND receipt.event->'item'->>'undoTransactionId' = receipt.tx
-                AND receipt.event->'provenance'->>'actorUserId' = finished.user_id
-                        AND (receipt.event->'item'->>'transactionId' = later.tx
-                            OR receipt.event->'item'->>'undoTransactionId' = later.tx)
-                    ))
+                blocking.event IS NOT NULL, blocking.event
             FROM bounds b
             JOIN {table} final ON final.id = b.last_id
             LEFT JOIN LATERAL (
@@ -105,8 +123,10 @@ impl PostgresHistoryStore {
             ) previous ON TRUE
             JOIN LATERAL (
                 SELECT id FROM {table} e WHERE e.item_type = b.item_type
-                AND e.item_id = b.item_id ORDER BY e.id DESC LIMIT 1
-            ) latest ON TRUE ORDER BY b.item_type, b.item_id"), &[&tx])
+                AND e.item_id = b.item_id ORDER BY id DESC LIMIT 1
+            ) latest ON TRUE
+            LEFT JOIN LATERAL ({conflict}) blocking ON TRUE
+            ORDER BY b.item_type, b.item_id"), &[&tx, &ignored])
             .map_err(|error| error.to_string())?;
         let mut changes = Vec::with_capacity(rows.len());
         for row in rows {
@@ -122,6 +142,11 @@ impl PostgresHistoryStore {
                 last_id: row.get(2),
                 latest_id: row.get(5),
                 has_conflict: row.get(6),
+                blocking_record: row
+                    .get::<_, Option<String>>(7)
+                    .map(|value| serde_json::from_str(&value))
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
             });
         }
         let undone: bool = snapshot

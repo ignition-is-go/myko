@@ -19,6 +19,7 @@ pub struct TransactionChange {
     pub last_id: i64,
     pub latest_id: i64,
     pub has_conflict: bool,
+    pub blocking_record: Option<EventRecord>,
 }
 
 #[derive(Clone, Debug)]

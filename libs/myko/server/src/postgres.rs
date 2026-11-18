@@ -357,6 +357,14 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
         PostgresHistoryStore::new(self.config.clone())?.transaction_history(tx)
     }
 
+    fn transaction_history_excluding(
+        &self,
+        tx: &str,
+        ignored: &[Arc<str>],
+    ) -> Result<myko::server::TransactionHistory, String> {
+        PostgresHistoryStore::new(self.config.clone())?.transaction_history_excluding(tx, ignored)
+    }
+
     fn latest_user_transaction(
         &self,
         user: &myko::identity::UserId,

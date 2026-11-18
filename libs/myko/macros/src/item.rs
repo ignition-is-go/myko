@@ -11,6 +11,7 @@ use crate::{DeriveCtx, relationship, setter};
 
 #[derive(Default)]
 pub struct ItemArgs {
+    pub undoable: bool,
     pub ingest_buffer_ms: Option<u64>,
     pub post_deserialize: Option<ExprPath>,
 }
@@ -21,8 +22,19 @@ impl Parse for ItemArgs {
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
+            if ident == "undoable" {
+                args.undoable = if input.peek(Token![=]) {
+                    input.parse::<Token![=]>()?;
+                    input.parse::<syn::LitBool>()?.value
+                } else {
+                    true
+                };
+                if !input.is_empty() {
+                    input.parse::<Token![,]>()?;
+                }
+                continue;
+            }
             input.parse::<Token![=]>()?;
-
             if ident == "ingest_buffer_ms" {
                 let value: LitInt = input.parse()?;
                 args.ingest_buffer_ms = Some(value.base10_parse()?);
@@ -546,6 +558,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
 }
 
 struct PreparedItem {
+    undoable: bool,
     input_struct: ItemStruct,
     relationships: relationship::RelationshipInfo,
     setters: Vec<setter::SetterField>,
@@ -647,6 +660,7 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> syn::Result<Pr
         }
     });
     Ok(PreparedItem {
+        undoable: args.undoable,
         input_struct,
         relationships,
         setters,
@@ -746,6 +760,7 @@ fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> Toke
 }
 
 struct ItemExpansion {
+    undoable: bool,
     name: syn::Ident,
     name_str: String,
     id_type_ident: syn::Ident,
@@ -763,6 +778,7 @@ struct ItemExpansion {
 
 fn expand_item(input: ItemExpansion) -> TokenStream {
     let ItemExpansion {
+        undoable,
         name,
         name_str,
         id_type_ident,
@@ -779,6 +795,11 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
     } = input;
     let krate = &ctx.krate;
     let id_type = generate_id_type(&name, &id_type_ident, &ctx);
+    let undo_registration = undoable.then(|| {
+        quote! {
+            #krate::submit! { #krate::item::UndoableRegistration { entity_type: #name_str } }
+        }
+    });
     let entity_description =
         crate::operation_contract::entity_description_tokens(&input_struct, krate);
     quote! {
@@ -794,6 +815,7 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
         #[cfg(not(target_arch = "wasm32"))]
         #krate::submit! { #krate::auth::EntityScopeRegistration { entity_type: #name_str } }
         #ingest_registration
+        #undo_registration
 
         impl #krate::item::Eventable for #name {
             const ENTITY_NAME_STATIC: &'static str = #name_str;
@@ -895,6 +917,7 @@ pub fn myko_item_impl(args: &ItemArgs, mut input_struct: ItemStruct) -> TokenStr
 #[allow(clippy::too_many_lines)]
 fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
     let PreparedItem {
+        undoable,
         input_struct,
         relationships: rel_info,
         setters: setter_fields,
@@ -1050,6 +1073,7 @@ fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
 
     let server_owned_impls = generate_server_owned_impls(&rel_info, krate);
     expand_item(ItemExpansion {
+        undoable,
         name: name.clone(),
         name_str,
         id_type_ident,

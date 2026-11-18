@@ -4,7 +4,10 @@ use myko::{
     command::CommandContext,
     entities::{
         framework_reports::EventsForTransaction,
-        undo::{TransactionUndo, UndoLastTransaction, UndoTransaction},
+        undo::{
+            GetUndoTransactions, TransactionUndo, UndoLastTransaction, UndoTransaction,
+            UndoTransactions,
+        },
     },
     prelude::*,
     request::RequestContext,
@@ -29,7 +32,7 @@ use std::{
 mod scene {
     use myko::prelude::*;
 
-    #[myko_item]
+    #[myko_item(undoable)]
     pub struct UndoScene {
         pub name: String,
     }
@@ -39,7 +42,7 @@ pub use scene::*;
 mod node {
     use super::{UndoScene, UndoSceneId};
     use myko::prelude::*;
-    #[myko_item]
+    #[myko_item(undoable)]
     pub struct UndoNode {
         #[belongs_to(UndoScene)]
         pub scene_id: UndoSceneId,
@@ -51,7 +54,7 @@ pub use node::*;
 mod position {
     use super::{UndoNode, UndoNodeId};
     use myko::prelude::*;
-    #[myko_item]
+    #[myko_item(undoable)]
     pub struct UndoPosition {
         #[ensure_for(UndoNode)]
         pub node_id: UndoNodeId,
@@ -64,7 +67,7 @@ pub use position::*;
 mod value {
     use super::{UndoNode, UndoNodeId};
     use myko::prelude::*;
-    #[myko_item]
+    #[myko_item(undoable)]
     pub struct UndoValue {
         #[belongs_to(UndoNode)]
         pub node_id: UndoNodeId,
@@ -486,7 +489,7 @@ fn concurrent_undo_applies_once() -> anyhow::Result<()> {
 mod trigger {
     use super::UndoNodeId;
     use myko::prelude::*;
-    #[myko_item]
+    #[myko_item(undoable)]
     pub struct UndoTrigger {
         pub node_id: UndoNodeId,
     }
@@ -624,7 +627,7 @@ fn mixed_authors_and_legacy_history_are_not_undo_authority() -> anyhow::Result<(
 mod owned {
     use super::UndoNodeId;
     use myko::prelude::*;
-    #[myko_item]
+    #[myko_item(undoable)]
     pub struct UndoGroup {
         #[owns_many(UndoNode)]
         pub nodes: Vec<UndoNodeId>,
@@ -776,7 +779,7 @@ fn late_causal_writes_do_not_reorder_the_originating_user_actions() -> anyhow::R
 mod reference {
     use myko::prelude::*;
     use std::sync::Arc;
-    #[myko_item]
+    #[myko_item(undoable)]
     pub struct UndoReference {
         pub target_type: Arc<str>,
         pub target_id: Arc<str>,
@@ -929,5 +932,266 @@ fn startup_boundary_is_durable_and_excludes_old_transactions_without_rewriting_h
     .ok_or_else(|| anyhow::anyhow!("old edit was undoable"))?;
     anyhow::ensure!(error.message.contains("predates"));
     anyhow::ensure!(fixture.records("before-migration")?.records.len() == 1);
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn range_undo_reverses_overlapping_edits_and_persists_all_receipts() -> anyhow::Result<()> {
+    let mut fixture = Fixture::new()?;
+    fixture.seed()?;
+    fixture.moved("alice", "first", &[("a", 1.0)])?;
+    fixture.moved("alice", "second", &[("a", 2.0), ("b", 3.0)])?;
+    let page = GetUndoTransactions { limit: 20 }
+        .execute(fixture.context("alice", "log"))
+        .map_err(command_error)?;
+    anyhow::ensure!(page.entries.len() == 2);
+    anyhow::ensure!(
+        page.entries
+            .iter()
+            .all(|entry| entry.blocked_reason.is_none())
+    );
+    let result = UndoTransactions {
+        transaction_ids: vec!["second".into(), "first".into()],
+    }
+    .execute(fixture.context("alice", "undo-range"))
+    .map_err(command_error)?;
+    anyhow::ensure!(result.transactions_undone == 2);
+    anyhow::ensure!(fixture.position("a")?.x.is_none() && fixture.position("b")?.x.is_none());
+    fixture.restart()?;
+    anyhow::ensure!(
+        fixture.records("first")?.already_undone && fixture.records("second")?.already_undone
+    );
+    anyhow::ensure!(fixture.position("a")?.x.is_none());
+    let page = GetUndoTransactions { limit: 20 }
+        .execute(fixture.context("alice", "empty-log"))
+        .map_err(command_error)?;
+    anyhow::ensure!(page.entries.is_empty());
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn foreign_edit_blocks_older_prefix_and_is_visible_without_partial_writes() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.seed()?;
+    fixture.moved("alice", "alice-first", &[("a", 1.0)])?;
+    fixture.moved("bob", "bob-between", &[("a", 2.0)])?;
+    fixture.moved("alice", "alice-second", &[("a", 3.0)])?;
+    let page = GetUndoTransactions { limit: 20 }
+        .execute(fixture.context("alice", "log"))
+        .map_err(command_error)?;
+    anyhow::ensure!(page.entries.len() == 2);
+    let first = page
+        .entries
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing latest edit"))?;
+    anyhow::ensure!(first.blocked_reason.is_none());
+    let older = page
+        .entries
+        .get(1)
+        .ok_or_else(|| anyhow::anyhow!("missing older edit"))?;
+    anyhow::ensure!(older.blocked_reason.is_some());
+    let blocker = older
+        .conflicts
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("missing blocker"))?;
+    anyhow::ensure!(blocker.transaction_id.as_ref() == "bob-between" && blocker.is_other_user);
+    anyhow::ensure!(blocker.user_id.as_deref() == Some("profile:bob"));
+    anyhow::ensure!(
+        blocker.entity_type.as_ref() == "UndoPosition" && blocker.entity_id.as_ref() == "a"
+    );
+    let rejected = UndoTransactions {
+        transaction_ids: vec!["alice-second".into(), "alice-first".into()],
+    }
+    .execute(fixture.context("alice", "rejected-range"));
+    anyhow::ensure!(rejected.is_err() && fixture.position("a")?.x == Some(3.0));
+    anyhow::ensure!(!fixture.records("alice-second")?.already_undone);
+    anyhow::ensure!(
+        fixture
+            .provider
+            .transaction_history("rejected-range")
+            .is_err()
+    );
+    UndoTransactions {
+        transaction_ids: vec!["alice-second".into()],
+    }
+    .execute(fixture.context("alice", "undo-latest"))
+    .map_err(command_error)?;
+    anyhow::ensure!(fixture.position("a")?.x == Some(2.0));
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn range_revalidates_stale_and_invalid_selections() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.seed()?;
+    fixture.moved("alice", "first", &[("a", 1.0)])?;
+    let _ = GetUndoTransactions { limit: 20 }
+        .execute(fixture.context("alice", "log"))
+        .map_err(command_error)?;
+    fixture.moved("alice", "newer", &[("b", 2.0)])?;
+    for ids in [
+        vec!["first"],
+        vec!["newer", "newer"],
+        vec![],
+        vec!["foreign"],
+    ] {
+        let result = UndoTransactions {
+            transaction_ids: ids.into_iter().map(Arc::from).collect(),
+        }
+        .execute(fixture.context("alice", &uuid::Uuid::new_v4().to_string()));
+        anyhow::ensure!(result.is_err());
+    }
+    anyhow::ensure!(fixture.position("a")?.x == Some(1.0) && fixture.position("b")?.x == Some(2.0));
+    anyhow::ensure!(
+        !fixture.records("first")?.already_undone && !fixture.records("newer")?.already_undone
+    );
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn older_prefix_can_restore_a_dependency_missing_from_latest_undo() -> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.seed()?;
+    let reference = UndoReference {
+        id: "ref".into(),
+        target_type: UndoNode::ENTITY_NAME_STATIC.into(),
+        target_id: "a".into(),
+    };
+    fixture.server.set(&reference)?;
+    fixture
+        .context("alice", "delete-a")
+        .emit_del(&fixture.node("a")?)
+        .map_err(command_error)?;
+    fixture
+        .context("alice", "retarget-b")
+        .emit_set(&UndoReference {
+            target_id: "b".into(),
+            ..reference
+        })
+        .map_err(command_error)?;
+    let page = GetUndoTransactions { limit: 20 }
+        .execute(fixture.context("alice", "log"))
+        .map_err(command_error)?;
+    anyhow::ensure!(
+        page.entries
+            .first()
+            .is_some_and(|e| e.blocked_reason.is_some())
+    );
+    anyhow::ensure!(
+        page.entries
+            .get(1)
+            .is_some_and(|e| e.blocked_reason.is_none())
+    );
+    UndoTransactions {
+        transaction_ids: vec!["retarget-b".into(), "delete-a".into()],
+    }
+    .execute(fixture.context("alice", "restore-both"))
+    .map_err(command_error)?;
+    anyhow::ensure!(fixture.node("a").is_ok());
+    anyhow::ensure!(
+        fixture
+            .item::<UndoReference>(UndoReference::ENTITY_NAME_STATIC, "ref")?
+            .target_id
+            .as_ref()
+            == "a"
+    );
+    Ok(())
+}
+
+mod excluded_state {
+    use myko::prelude::*;
+    #[myko_item]
+    pub struct UndoPresence {
+        pub value: String,
+    }
+}
+mod excluded_status {
+    use myko::prelude::*;
+    #[myko_item(undoable = false, ingest_buffer_ms = 10)]
+    pub struct ExcludedStatus {
+        pub value: String,
+    }
+}
+use excluded_state::*;
+use excluded_status::*;
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn entity_opt_in_excludes_presence_and_blocks_mixed_transactions_without_partial_undo()
+-> anyhow::Result<()> {
+    let fixture = Fixture::new()?;
+    fixture.seed()?;
+    fixture.moved("alice", "edit", &[("a", 1.0)])?;
+    let presence = UndoPresence {
+        id: "presence".into(),
+        value: "online".into(),
+    };
+    fixture
+        .context("alice", "presence-only")
+        .emit_set(&presence)
+        .map_err(command_error)?;
+    let page = GetUndoTransactions { limit: 20 }
+        .execute(fixture.context("alice", "log"))
+        .map_err(command_error)?;
+    anyhow::ensure!(
+        page.entries.len() == 1
+            && page
+                .entries
+                .first()
+                .is_some_and(|e| e.transaction_id.as_ref() == "edit")
+    );
+    anyhow::ensure!(
+        UndoTransaction {
+            transaction_id: "presence-only".into()
+        }
+        .execute(fixture.context("alice", "reject-presence"))
+        .is_err()
+    );
+    {
+        let ctx = fixture.context("alice", "mixed");
+        ctx.emit_set(&UndoPosition {
+            id: "b".into(),
+            node_id: "b".into(),
+            x: Some(2.0),
+        })
+        .map_err(command_error)?;
+        ctx.emit_set(&UndoPresence {
+            value: "away".into(),
+            ..presence
+        })
+        .map_err(command_error)?;
+    }
+    let page = GetUndoTransactions { limit: 20 }
+        .execute(fixture.context("alice", "mixed-log"))
+        .map_err(command_error)?;
+    anyhow::ensure!(page.entries.first().is_some_and(|e| {
+        e.blocked_reason
+            .as_ref()
+            .is_some_and(|reason| reason.contains("not opted into undo"))
+    }));
+    anyhow::ensure!(
+        UndoTransactions {
+            transaction_ids: vec!["mixed".into()]
+        }
+        .execute(fixture.context("alice", "reject-mixed"))
+        .is_err()
+    );
+    anyhow::ensure!(fixture.position("b")?.x == Some(2.0));
+    anyhow::ensure!(
+        fixture
+            .item::<UndoPresence>(UndoPresence::ENTITY_NAME_STATIC, "presence")?
+            .value
+            == "away"
+    );
+    for kind in [
+        UndoPresence::ENTITY_NAME_STATIC,
+        ExcludedStatus::ENTITY_NAME_STATIC,
+    ] {
+        anyhow::ensure!(!myko::item::is_undoable_entity(kind));
+    }
     Ok(())
 }
