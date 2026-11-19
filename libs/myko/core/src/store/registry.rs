@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use dashmap::DashMap;
 
-use super::EntityStore;
+use super::{EntityStore, settled_writes::SettledWrites};
 
 /// Central registry holding all entity stores.
 ///
@@ -31,6 +31,8 @@ pub struct StoreRegistry {
     // the lookup-by-entity-type hot path. Bench: dashmap_default 183 µs vs
     // dashmap_ahash 115 µs / 10k lookups.
     stores: DashMap<Arc<str>, Arc<EntityStore>, ahash::RandomState>,
+    /// The write queue of each store whose writes are applied by a settle.
+    settled_writes: DashMap<Arc<str>, Arc<SettledWrites>, ahash::RandomState>,
 }
 
 impl StoreRegistry {
@@ -39,6 +41,7 @@ impl StoreRegistry {
     pub fn new() -> Self {
         Self {
             stores: DashMap::with_hasher(ahash::RandomState::new()),
+            settled_writes: DashMap::with_hasher(ahash::RandomState::new()),
         }
     }
 
@@ -52,6 +55,19 @@ impl StoreRegistry {
         self.stores
             .entry(key.clone())
             .or_insert_with(|| Arc::new(EntityStore::new().with_name(format!("store:{key}"))))
+            .clone()
+    }
+
+    /// The queue that applies a write to this type's store when the settle
+    /// carrying the write fires.
+    pub(crate) fn settled_writes(&self, entity_type: &str) -> Arc<SettledWrites> {
+        if let Some(writes) = self.settled_writes.get(entity_type) {
+            return writes.clone();
+        }
+        let store = self.get_or_create(entity_type);
+        self.settled_writes
+            .entry(entity_type.into())
+            .or_insert_with(|| Arc::new(SettledWrites::new(&store)))
             .clone()
     }
 

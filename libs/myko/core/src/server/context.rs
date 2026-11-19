@@ -49,7 +49,7 @@ use crate::{
     report::{ReportContext, ReportHandler, ReportId},
     request::{RequestCacheScope, RequestContext},
     search::SearchIndex,
-    store::StoreRegistry,
+    store::{StoreRegistry, StoreWrite},
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
     wire::{MEvent, MEventType},
 };
@@ -994,7 +994,7 @@ impl MykoServerContext {
         crate::server::entity_set_stats::record_del(entity_type);
 
         // Reduce: remove from store
-        self.registry.get_or_create(entity_type).remove(&id_arc);
+        self.write_store(entity_type, StoreWrite::Remove(id_arc));
 
         // Search: remove from index
         self.search_index.remove_entity(entity_type, id);
@@ -1918,6 +1918,20 @@ impl MykoServerContext {
         }
     }
 
+    /// Write to the store of `entity_type`.
+    ///
+    /// The store changes now, and tells its subscribers when the event set
+    /// being built settles. For a `#[myko_sequential]` type the store changes
+    /// when that settle fires instead, so that every event of one key reaches
+    /// subscribers. Until then a read of the store does not see the write.
+    fn write_store(&self, entity_type: &str, write: StoreWrite) {
+        if self.handler_registry.is_sequential(entity_type) {
+            self.registry.settled_writes(entity_type).push(write);
+        } else {
+            write.apply(&self.registry.get_or_create(entity_type));
+        }
+    }
+
     /// Single-item store reduce — **no allocation**. Records the stat and applies
     /// the store insert/remove for one item. Paired with
     /// `apply_effects(slice::from_ref(&item), …)` by the single-item entry points
@@ -1935,15 +1949,13 @@ impl MykoServerContext {
         match change {
             MEventType::SET => {
                 crate::server::entity_set_stats::record_set(entity_type);
-                self.registry
-                    .get_or_create(entity_type)
-                    .insert(item.id(), item.clone());
+                self.write_store(entity_type, StoreWrite::Insert(item.id(), item.clone()));
                 self.relationship_manager
                     .release_ensure_reservation_for_item(item.as_ref());
             }
             MEventType::DEL => {
                 crate::server::entity_set_stats::record_del(entity_type);
-                self.registry.get_or_create(entity_type).remove(&item.id());
+                self.write_store(entity_type, StoreWrite::Remove(item.id()));
             }
         }
     }
@@ -2065,7 +2077,6 @@ impl MykoServerContext {
             self.causal_epoch(),
             || -> Result<(), PersistError> {
                 for (entity_type, group) in &by_type {
-                    let store = self.registry.get_or_create(entity_type);
                     match change {
                         MEventType::SET => {
                             let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
@@ -2074,7 +2085,7 @@ impl MykoServerContext {
                                 crate::server::entity_set_stats::record_set(entity_type);
                                 entries.push((item.id(), item.clone()));
                             }
-                            store.insert_many(entries);
+                            self.write_store(entity_type, StoreWrite::InsertMany(entries));
                         }
                         MEventType::DEL => {
                             let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
@@ -2082,7 +2093,7 @@ impl MykoServerContext {
                                 crate::server::entity_set_stats::record_del(entity_type);
                                 ids.push(item.id());
                             }
-                            store.remove_many(ids);
+                            self.write_store(entity_type, StoreWrite::RemoveMany(ids));
                         }
                     }
                 }
@@ -2262,7 +2273,6 @@ impl MykoServerContext {
             self.causal_epoch(),
             || -> Result<(), PersistError> {
                 for (entity_type, (type_deletes, type_upserts)) in &by_type {
-                    let store = self.registry.get_or_create(entity_type);
                     let mut changes =
                         Vec::with_capacity(type_deletes.len().saturating_add(type_upserts.len()));
                     for item in type_deletes {
@@ -2300,7 +2310,7 @@ impl MykoServerContext {
                                 ),
                         );
                     }
-                    store.apply_batch(changes);
+                    self.write_store(entity_type, StoreWrite::Batch(changes));
                 }
 
                 for item in &effective_deletes {

@@ -219,6 +219,12 @@ impl HandlerRegistry {
             .map_or(SettleKey::Shared, |key| key(&event.item))
     }
 
+    /// Whether the entity type declares `#[myko_sequential]`.
+    #[must_use]
+    pub fn is_sequential(&self, entity_type: &str) -> bool {
+        self.item_sequential_keys.contains_key(entity_type)
+    }
+
     /// Split a wire batch into the event sets its sequential keys allow.
     #[must_use]
     pub fn sequential_sets(&self, events: Vec<MEvent>) -> Vec<SequentialSet> {

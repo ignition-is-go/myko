@@ -535,6 +535,10 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 /// can settle at the same time. Mark several fields to key on the tuple of
 /// their values. An event whose `Option` field is `None` settles alone.
 ///
+/// The store of such an item changes when the event's settle fires, not when
+/// the event is submitted. A read of the store between the two does not see
+/// the event.
+///
 /// ```ignore
 /// #[myko_item]
 /// pub struct Reading {

@@ -26,6 +26,8 @@
 
 mod entity_store;
 mod registry;
+mod settled_writes;
 
 pub use entity_store::{EntityDiffCell, EntityEntriesCell, EntityStore};
 pub use registry::StoreRegistry;
+pub(crate) use settled_writes::StoreWrite;
