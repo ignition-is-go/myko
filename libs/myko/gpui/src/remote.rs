@@ -890,7 +890,7 @@ mod tests {
         gate_on_ready, observe_crud_store, wrap_client_report,
     };
     use crate::{CrudCommands, CrudController};
-    use myko::client::{ConnectionStatus, MykoClient};
+    use myko::client::ConnectionStatus;
 
     struct Probe {
         _observation: Subscription,
@@ -973,7 +973,7 @@ mod tests {
 
         let source = Cell::<Option<u32>, _>::new(None);
         let shared = source.clone().lock();
-        let client = MykoClient::new();
+        let client = crate::client::offline_client();
         let first = cx.update(|cx| bridge_cell(&shared, &client, false, Clone::clone, cx));
         let (first_notifications, _probe) = notification_count(&first, cx);
         assert!(first.read_with(cx, |remote, _| remote.is_loading()));
@@ -1009,7 +1009,7 @@ mod tests {
         let ready = Cell::new(false);
         let items_read = items.clone().lock();
         let ready_read = ready.clone().lock();
-        let client = MykoClient::new();
+        let client = crate::client::offline_client();
         let bridge = |cx: &mut TestAppContext| {
             cx.update(|cx| {
                 bridge_cell(

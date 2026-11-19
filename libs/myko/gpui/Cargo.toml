@@ -22,6 +22,7 @@ gpui_platform = { workspace = true, features = ["wayland", "x11"] }
 uuid.workspace = true
 
 [dev-dependencies]
+autosocket.workspace = true
 myko = { workspace = true, features = ["demo"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]

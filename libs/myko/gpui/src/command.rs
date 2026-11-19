@@ -936,7 +936,7 @@ mod tests {
         let _serial = crate::test_serial();
         let seen = Arc::new(Mutex::new(Vec::<super::CommandLifecycle>::new()));
         let subscription = cx.update(|cx| {
-            crate::provide_myko("ws://127.0.0.1:9", cx);
+            cx.set_global(crate::Myko::offline());
             let seen = seen.clone();
             super::on_command_lifecycle(cx, move |event, _cx| {
                 seen.lock()
