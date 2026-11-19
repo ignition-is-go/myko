@@ -1839,7 +1839,10 @@ impl MykoServerContext {
     }
 
     /// Settle the store reduce that `writes` makes, releasing `authority`
-    /// before waiting for it.
+    /// once the writes are queued and before waiting for them.
+    ///
+    /// Two emitters therefore queue their diffs in the order they changed the
+    /// stores.
     ///
     /// A write can sleep until another thread has settled it. A subscriber
     /// callback on that thread that mutates the graph takes the authority, so
@@ -1849,11 +1852,9 @@ impl MykoServerContext {
         writes: impl FnOnce() -> R,
     ) -> R {
         match authority {
-            Some(authority) => crate::core::locked_writes::locked_writes(move || {
-                let result = writes();
-                drop(authority);
-                result
-            }),
+            Some(authority) => {
+                crate::core::locked_writes::locked_writes_under(authority, writes)
+            }
             None => hyphae::batch(writes),
         }
     }

@@ -27,11 +27,26 @@ impl Drop for Exit {
 /// returns. A nested call does not wait, because the outer call may still
 /// hold its lock.
 pub fn locked_writes<R>(f: impl FnOnce() -> R) -> R {
+    locked_writes_under((), f)
+}
+
+/// [`locked_writes`] for a lock the caller already holds, passed as `lock`.
+///
+/// `lock` is released after the writes of `f` are queued and before they are
+/// waited on. Two threads therefore queue their writes in the order they held
+/// the lock, and a subscriber is told of the changes in the order they were
+/// made. Releasing inside `f` would let the second thread queue first.
+///
+/// A call nested in an event set that is still being built cannot keep that
+/// order: its writes are queued when the outer set closes, after `lock` is
+/// released.
+pub fn locked_writes_under<L, R>(lock: L, f: impl FnOnce() -> R) -> R {
     DEPTH.set(DEPTH.get().saturating_add(1));
     let result = {
         let _exit = Exit;
         hyphae::enqueue(&[], None, f)
     };
+    drop(lock);
     if DEPTH.get() == 0 {
         hyphae::flush();
     }
