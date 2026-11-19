@@ -1916,8 +1916,9 @@ impl WsHandler {
             MykoMessage::Event(mut event) => {
                 event.sanitize_null_bytes();
                 normalize_incoming_event(&mut event, &session.client_id, ctx.host_id);
+                let key = ctx.handler_registry.settle_key(&event);
                 // A reader must not stall behind another connection's settle.
-                if let Err(error) = hyphae::submit(&[], None, || ctx.apply_event(event)) {
+                if let Err(error) = hyphae::submit(&[key], None, || ctx.apply_event(event)) {
                     tracing::error!(
                         "Failed to apply event from client {}: {error}",
                         session.client_id
@@ -1930,12 +1931,16 @@ impl WsHandler {
                     event.sanitize_null_bytes();
                     normalize_incoming_event(event, &session.client_id, ctx.host_id);
                 }
-                if let Err(error) = hyphae::submit(&[], None, || ctx.apply_event_batch(events)) {
-                    tracing::error!(
-                        "Failed to apply event batch from client {}: {}",
-                        session.client_id,
-                        error
-                    );
+                for set in ctx.handler_registry.sequential_sets(events) {
+                    let applied =
+                        hyphae::submit(&set.keys, None, || ctx.apply_event_batch(set.events));
+                    if let Err(error) = applied {
+                        tracing::error!(
+                            "Failed to apply event batch from client {}: {}",
+                            session.client_id,
+                            error
+                        );
+                    }
                 }
                 drop(ctx);
             }
@@ -2896,6 +2901,91 @@ mod tests {
         assert_eq!(
             MykoProtocol::from(outgoing_format.load(Ordering::SeqCst)),
             MykoProtocol::CBOR,
+        );
+    }
+
+    mod burst {
+        use myko::prelude::*;
+
+        #[myko_item]
+        pub struct BurstReading {
+            #[myko_sequential]
+            pub lane: String,
+            pub value: i64,
+        }
+    }
+
+    #[test]
+    fn event_batch_delivers_every_event_of_one_key_while_another_settle_runs() {
+        use hyphae::{Materialize, Mutable, Signal, Watchable};
+
+        let server = crate::MykoServer::builder().build();
+        let context = Arc::new(server.ctx());
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let sink = seen.clone();
+        let cell = context
+            .registry
+            .get_or_create("BurstReading")
+            .get(&Arc::from("reading"))
+            .materialize();
+        let _reading = cell.subscribe(move |signal| {
+            if let Signal::Value(item) = signal
+                && let Some(item) = item.as_ref()
+                && let Some(reading) =
+                    myko::item::AnyItem::as_any(item.as_ref()).downcast_ref::<burst::BurstReading>()
+            {
+                sink.lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(reading.value);
+            }
+        });
+
+        let gate = Cell::new(false);
+        let (entered, wait_entered) = std::sync::mpsc::channel();
+        let (release, wait_release) = std::sync::mpsc::channel::<()>();
+        let wait_release = Mutex::new(wait_release);
+        let _gate = gate.subscribe(move |signal| {
+            if let Signal::Value(open) = signal
+                && **open
+            {
+                let _ = entered.send(());
+                let _ = wait_release
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .recv();
+            }
+        });
+        let settling = std::thread::spawn(move || gate.set(true));
+        assert!(wait_entered.recv().is_ok());
+
+        let events = (1..=3)
+            .map(|value| {
+                let reading = burst::BurstReading {
+                    id: "reading".into(),
+                    lane: "a".into(),
+                    value,
+                };
+                MEvent::from_item(&reading, MEventType::SET, "test")
+            })
+            .collect();
+        let mut session = ClientSession::new("test".into(), SubscriptionWriter);
+        with_subscription_context(&SubscriptionBuilds::default(), |messages| {
+            WsHandler::handle_message(
+                &mut session,
+                context.clone(),
+                messages,
+                MykoMessage::EventBatch(events),
+            );
+        });
+        assert!(release.send(()).is_ok());
+        assert!(settling.join().is_ok());
+        hyphae::flush();
+
+        assert_eq!(
+            *seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![1, 2, 3]
         );
     }
 }
