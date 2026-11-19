@@ -452,6 +452,7 @@ mod tests {
 
     #[gpui::test]
     fn capabilities_and_pending_slots_are_enforced(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let calls = Arc::new(AtomicUsize::new(0));
         let writer = Cell::new(None::<Result<u32, String>>);
         let commands = CrudCommands::<u32, u32, String, u32, bool, String>::new().with_create({
@@ -480,6 +481,7 @@ mod tests {
 
     #[gpui::test]
     fn row_operations_are_independent(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let rename_writer = Cell::new(None::<Result<u32, String>>);
         let delete_writer = Cell::new(None::<Result<String, String>>);
         let commands = CrudCommands::<u32, (), (), bool, u32, String>::new()
@@ -523,6 +525,7 @@ mod tests {
 
     #[gpui::test]
     fn command_updates_notify_only_the_affected_row(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let first_writer = Cell::new(None::<Result<u32, String>>);
         let second_writer = Cell::new(None::<Result<u32, String>>);
         let commands = CrudCommands::<u32, (), (), bool, u32, String>::new().with_rename({
@@ -596,6 +599,7 @@ mod tests {
 
     #[gpui::test]
     fn removed_keys_prune_action_slots_without_replacing_retained_rows(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let writer = Cell::new(None::<Result<u32, String>>);
         let commands = CrudCommands::<u32, (), (), bool, u32, String>::new().with_rename({
             let cell = writer.lock();

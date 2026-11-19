@@ -1311,20 +1311,34 @@ mod tests {
                     .recv_timeout(std::time::Duration::from_secs(5))
                     .is_ok()
             );
+            // The first write's callback is paused inside the settle. A waiting
+            // write would sleep behind it, so these are only queued.
             if reset {
-                source.remove_many(vec!["a".into()]);
+                hyphae::submit(&[], None, || {
+                    source.remove_many(vec!["a".into()]);
+                });
             } else {
-                source.insert("b".into(), make_entity("b", "second"));
-                session
-                    .update_query_cursor_window(&"ordered-tx".into(), QueryCursorWindow::first(1));
-                session.update_query_window(
-                    &"ordered-tx".into(),
-                    Some(QueryWindow {
-                        offset: 0,
-                        limit: 1,
-                    }),
-                );
-                session.update_query_window(&"ordered-tx".into(), None);
+                hyphae::submit(&[], None, || {
+                    source.insert("b".into(), make_entity("b", "second"));
+                });
+                hyphae::submit(&[], None, || {
+                    session.update_query_cursor_window(
+                        &"ordered-tx".into(),
+                        QueryCursorWindow::first(1),
+                    );
+                });
+                hyphae::submit(&[], None, || {
+                    session.update_query_window(
+                        &"ordered-tx".into(),
+                        Some(QueryWindow {
+                            offset: 0,
+                            limit: 1,
+                        }),
+                    );
+                });
+                hyphae::submit(&[], None, || {
+                    session.update_query_window(&"ordered-tx".into(), None);
+                });
             }
             let (release, changed) = released.as_ref();
             *release
@@ -1332,10 +1346,15 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
             changed.notify_one();
             assert!(first.join().is_ok());
+            // Another thread may be the one settling the queued writes.
+            hyphae::flush();
             let expected = if reset {
                 vec![0, 1, 0]
             } else {
-                vec![0, 1, 2, 3, 4, 0]
+                // The window updates reach the delivery queue directly. The
+                // queued insert of "b" settles after the paused callback
+                // returns, so it follows the reset as sequence 1.
+                vec![0, 1, 2, 3, 0, 1]
             };
             assert_eq!(
                 *sequences
@@ -1389,13 +1408,17 @@ mod tests {
                 .recv_timeout(std::time::Duration::from_secs(5))
                 .is_ok()
         );
-        snapshots.set(snapshot(Vec::new(), None));
+        // The first write's callback is paused inside the settle. A waiting
+        // write would sleep behind it, so this one is only queued.
+        hyphae::submit(&[], None, || snapshots.set(snapshot(Vec::new(), None)));
         let (release, changed) = released.as_ref();
         *release
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = true;
         changed.notify_one();
         assert!(first.join().is_ok());
+        // Another thread may be the one settling the queued write.
+        hyphae::flush();
         assert_eq!(
             *sequences
                 .lock()

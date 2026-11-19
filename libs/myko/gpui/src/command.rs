@@ -589,6 +589,7 @@ mod tests {
 
     #[gpui::test]
     fn pending_is_synchronous_and_terminal_transition_is_one_shot(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let writer = Cell::new(None::<Result<u32, String>>);
         let cell = writer.clone().lock();
         let command = cx.update(|cx| command_from_cell(&cell, cx));
@@ -614,6 +615,7 @@ mod tests {
 
     #[gpui::test]
     fn terminal_transition_is_emitted_once_as_a_typed_event(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let writer = Cell::new(None::<Result<u32, String>>);
         let cell = writer.clone().lock();
         let command = cx.update(|cx| command_from_cell(&cell, cx));
@@ -653,6 +655,7 @@ mod tests {
 
     #[gpui::test]
     fn slot_pending_guard_is_lazy(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let writer = Cell::new(None::<Result<u32, String>>);
         let cell = writer.lock();
         let owner = cx.new(|_| SlotOwner {
@@ -681,6 +684,7 @@ mod tests {
 
     #[gpui::test]
     fn slot_can_restart_after_terminal_state(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let first_writer = Cell::new(None::<Result<u32, String>>);
         let first = first_writer.clone().lock();
         let second_writer = Cell::new(None::<Result<u32, String>>);
@@ -712,6 +716,7 @@ mod tests {
 
     #[gpui::test]
     fn slot_notifications_are_isolated_to_the_owning_entity(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let first_writer = Cell::new(None::<Result<u32, String>>);
         let first = first_writer.clone().lock();
         let second_writer = Cell::new(None::<Result<u32, String>>);
@@ -763,6 +768,7 @@ mod tests {
 
     #[gpui::test]
     fn hooks_run_once_on_events_and_not_during_render(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let writer = Cell::new(None::<Result<u32, String>>);
         let cell = writer.clone().lock();
         let command = cx.update(|cx| command_from_cell(&cell, cx));
@@ -819,6 +825,7 @@ mod tests {
 
     #[gpui::test]
     fn seeded_failure_is_deferred_until_after_construction(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let cell = Cell::new(Some(Err::<u32, _>("encode".to_string()))).lock();
         let command = cx.update(|cx| {
             let command = command_from_cell(&cell, cx);
@@ -834,6 +841,7 @@ mod tests {
 
     #[gpui::test]
     fn tracker_retains_overlapping_commands_without_suppressing_them(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let first_writer = Cell::new(None::<Result<u32, String>>);
         let second_writer = Cell::new(None::<Result<u32, String>>);
         let (first, second) = cx.update(|cx| {
@@ -876,6 +884,7 @@ mod tests {
 
     #[gpui::test]
     fn tracker_failure_callback_ignores_success_and_reports_errors(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let success_writer = Cell::new(None::<Result<u32, String>>);
         let failure_writer = Cell::new(None::<Result<u32, String>>);
         let (success, failure) = cx.update(|cx| {
@@ -924,6 +933,7 @@ mod tests {
 
     #[gpui::test]
     fn lifecycle_events_reach_the_foreground_in_order_until_dropped(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let seen = Arc::new(Mutex::new(Vec::<super::CommandLifecycle>::new()));
         let subscription = cx.update(|cx| {
             crate::provide_myko("ws://127.0.0.1:9", cx);

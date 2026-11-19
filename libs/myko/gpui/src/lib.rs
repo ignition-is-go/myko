@@ -36,3 +36,15 @@ pub use remote::{
     observe_query_store, observe_remote, ping_ms, send_command,
 };
 pub use render::{RemoteRender, render_remote, render_remote_list};
+
+/// Runs this crate's tests one at a time.
+///
+/// A subscriber callback runs on whichever thread is delivering writes, and
+/// GPUI's test scheduler rejects a wake-up from any thread but its own. Two
+/// tests in one process could otherwise wake each other's scheduler.
+#[cfg(test)]
+pub(crate) fn test_serial() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}

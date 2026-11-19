@@ -919,6 +919,7 @@ mod tests {
 
     #[test]
     fn client_report_wrapper_preserves_typed_identity_parameters_and_transaction() {
+        let _serial = crate::test_serial();
         let wrapped = wrap_client_report(&ServiceHealth);
         assert_eq!(wrapped.report_id, stringify!(ServiceHealth));
         assert_eq!(wrapped.report.get("detail"), Some(&serde_json::json!(true)));
@@ -933,6 +934,7 @@ mod tests {
 
     #[test]
     fn loading_and_errors_retain_the_last_ready_value() {
+        let _serial = crate::test_serial();
         let mut remote = state(42);
 
         remote.apply(BridgeEvent::Loading);
@@ -967,6 +969,7 @@ mod tests {
     #[gpui::test]
     fn late_bridge_on_answered_shared_report_is_ready_without_a_change(cx: &mut TestAppContext) {
         use std::sync::atomic::Ordering;
+        let _serial = crate::test_serial();
 
         let source = Cell::<Option<u32>, _>::new(None);
         let shared = source.clone().lock();
@@ -1000,6 +1003,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use std::sync::atomic::Ordering;
+        let _serial = crate::test_serial();
 
         let items = Cell::<Vec<u32>, _>::new(Vec::new());
         let ready = Cell::new(false);
@@ -1043,6 +1047,7 @@ mod tests {
 
     #[test]
     fn a_new_value_replaces_stale_state() {
+        let _serial = crate::test_serial();
         let mut remote = state(1);
         remote.apply(BridgeEvent::Loading);
         remote.apply(BridgeEvent::Value(std::sync::Arc::new(2)));
@@ -1053,6 +1058,7 @@ mod tests {
 
     #[gpui::test]
     fn crud_store_observation_prunes_initial_and_removed_members(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let source = CellMap::new();
         source.insert(Arc::<str>::from("one"), Arc::new(1_u32));
         source.insert(Arc::<str>::from("two"), Arc::new(2_u32));
@@ -1115,6 +1121,7 @@ mod tests {
     #[gpui::test]
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn source_readiness_waits_for_same_value_map_snapshot(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let source = CellMap::new();
         source.insert(Arc::<str>::from("same-key"), Arc::new(7_u32));
         let source_read = source.lock();
@@ -1140,6 +1147,7 @@ mod tests {
 
     #[gpui::test]
     fn reconnect_snapshot_is_published_with_readiness(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let source = CellMap::new();
         source.insert(Arc::<str>::from("task"), Arc::new(1_u32));
         let source_read = source.clone().lock();
@@ -1206,6 +1214,7 @@ mod tests {
     #[gpui::test]
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn empty_response_is_ready_after_the_authoritative_snapshot(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let source = CellMap::<Arc<str>, Arc<u32>>::new();
         let source_read = source.lock();
         let ready = Cell::new(true).lock();
@@ -1221,6 +1230,7 @@ mod tests {
     #[gpui::test]
     fn row_updates_do_not_notify_the_collection_or_sibling_rows(cx: &mut TestAppContext) {
         use std::sync::atomic::{AtomicUsize, Ordering};
+        let _serial = crate::test_serial();
 
         let source = CellMap::new();
         let one = Arc::<str>::from("one");
@@ -1302,6 +1312,7 @@ mod tests {
     #[gpui::test]
     #[allow(clippy::needless_pass_by_ref_mut)]
     fn reconnect_requires_a_new_response_after_connected(cx: &mut TestAppContext) {
+        let _serial = crate::test_serial();
         let source = CellMap::new();
         let key = Arc::<str>::from("task");
         source.insert(key.clone(), Arc::new(1_u32));
