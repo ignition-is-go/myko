@@ -236,7 +236,8 @@ impl QueryTraceEmitter {
             .saturating_sub(self.started_at_ms)
             .try_into()
             .unwrap_or_default();
-        trace.set(Some(QueryTrace {
+        // Each trace is an event. `set` keeps only the last value of a settle.
+        trace.notify(hyphae::Signal::value(Some(QueryTrace {
             query_id: self.query_id.clone(),
             tx: self.tx.clone(),
             epoch,
@@ -245,7 +246,7 @@ impl QueryTraceEmitter {
             row_count,
             watch_elapsed_ms,
             error_kind,
-        }));
+        })));
     }
 }
 
@@ -2081,8 +2082,7 @@ impl MykoClient {
         let ready_weak = ready.downgrade();
         let ready_read = ready.clone().lock();
         let trace = Cell::<Option<QueryTrace>, CellMutable>::new(None)
-            .with_name(format!("query_trace:{query_id}"))
-            .no_coalesce();
+            .with_name(format!("query_trace:{query_id}"));
         let trace_read = trace.clone().lock();
         let epoch = Arc::new(AtomicU64::new(0));
         let trace_emitter = QueryTraceEmitter {
