@@ -536,6 +536,11 @@ impl UndoListEngine {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::indexing_slicing,
+    clippy::needless_pass_by_value
+)]
 mod tests {
     use super::*;
     use hyphae::Gettable;
