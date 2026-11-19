@@ -2,7 +2,7 @@
 endpoint_env = "CARGO_FLUX_S3_ENDPOINT"
 bucket_env = "CARGO_FLUX_S3_BUCKET"
 prefix = "rust/v1/flux"
-timeout_seconds = 600
+timeout_seconds = 1800
 
 [channels]
 main = "production"
