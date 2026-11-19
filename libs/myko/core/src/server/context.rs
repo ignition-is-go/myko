@@ -1964,10 +1964,7 @@ impl MykoServerContext {
                     .map_err(|error| Self::graph_error(item.as_ref(), error))?;
             }
             let persist_result = if origin.should_produce() {
-                match change {
-                    MEventType::SET => self.persist_set_dyn(&item),
-                    MEventType::DEL => self.persist_del_dyn(&item),
-                }
+                self.persist_mutation(&item, change, old.as_ref())
             } else {
                 Ok(())
             };
@@ -2169,10 +2166,13 @@ impl MykoServerContext {
                                 .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                         }
                         if origin.should_produce() {
-                            match change {
-                                MEventType::SET => self.persist_set_dyn(item)?,
-                                MEventType::DEL => self.persist_del_dyn(item)?,
-                            }
+                            self.persist_mutation(
+                                item,
+                                change,
+                                old_by_key
+                                    .get(&(item.entity_type(), item.id()))
+                                    .and_then(Option::as_ref),
+                            )?;
                         }
                     }
                 }
@@ -2372,7 +2372,13 @@ impl MykoServerContext {
                         .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
                 if origin.should_produce() {
-                    self.persist_del_dyn(item)?;
+                    self.persist_mutation(
+                        item,
+                        MEventType::DEL,
+                        old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .and_then(Option::as_ref),
+                    )?;
                 }
             }
             for item in upserts {
@@ -2385,7 +2391,13 @@ impl MykoServerContext {
                         .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
                 if origin.should_produce() {
-                    self.persist_set_dyn(item)?;
+                    self.persist_mutation(
+                        item,
+                        MEventType::SET,
+                        old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .and_then(Option::as_ref),
+                    )?;
                 }
             }
             if !graph_watch_changes.is_empty()
@@ -2601,14 +2613,39 @@ impl MykoServerContext {
         Ok(())
     }
 
-    fn persist_dyn(
+    fn persist_mutation(
         &self,
         item: &Arc<dyn AnyItem>,
-        build: impl FnOnce() -> MEvent,
+        change: MEventType,
+        old: Option<&Arc<dyn AnyItem>>,
     ) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            self.persist_record(persister, &self.event_record(build()))?;
-        }
+        let Some(backend) = self.persisters.resolve(item.entity_type()) else {
+            return Ok(());
+        };
+        let event = match change {
+            MEventType::SET => {
+                MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+            }
+            MEventType::DEL => MEvent::del_from_any(item, &self.host_id_str),
+        };
+        let record = self.event_record(event);
+        let preview = (backend.wants_undo_preview()
+            && crate::item::is_undoable_entity(item.entity_type())
+            && record
+                .provenance
+                .as_ref()
+                .is_some_and(|p| p.actor_user_id.is_some()))
+        .then(|| {
+            let before = old.map(|item| item.to_value());
+            let after = (change == MEventType::SET).then_some(&record.event.item);
+            Arc::new(crate::entities::undo::UndoPreviewInput::capture(
+                &super::HistoryEntityKey::new(item.entity_type(), item.id()),
+                before.as_ref(),
+                after,
+            ))
+        });
+        backend.persist_record_with_preview(record.clone(), preview)?;
+        self.registry.transactions.recorded(&record, backend);
         Ok(())
     }
 
@@ -2621,16 +2658,6 @@ impl MykoServerContext {
         if let Some(sink) = self.matching_event_sink(entity_type, change) {
             self.send_record_to_saga(sink, self.event_record(build()));
         }
-    }
-
-    fn persist_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.persist_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
-    }
-
-    fn persist_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.persist_dyn(item, || {
-            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
-        })
     }
 
     fn send_del_to_sink(&self, item: &Arc<dyn AnyItem>) {

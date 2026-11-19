@@ -158,6 +158,7 @@ fn change(row: &postgres::Row) -> UndoListChange {
         undo: row.get::<_, Option<String>>(8).is_some(),
         receipt: None,
         label: row.get(9),
+        preview: None,
     }
 }
 fn compensated(table: &str, completions: &str, transaction: &str) -> String {
@@ -301,6 +302,86 @@ fn hydrate(
             }
         }
     }
+    hydrate_diffs(&mut snapshot, &table, &mut seeds)?;
     snapshot.commit().map_err(|e| e.to_string())?;
     Ok((cutoff, seeds, more))
+}
+
+fn hydrate_diffs(
+    snapshot: &mut postgres::Transaction<'_>,
+    table: &str,
+    seeds: &mut [UndoListSeed],
+) -> Result<(), String> {
+    use myko::entities::undo::{UNDO_DIFF_ENTITIES, UndoPreviewAccumulator, UndoPreviewInput};
+    let mut txs = Vec::new();
+    let mut types = Vec::new();
+    let mut ids = Vec::new();
+    let mut accumulators = HashMap::new();
+    for seed in seeds.iter_mut() {
+        let mut keys: Vec<_> = seed
+            .keys
+            .keys()
+            .filter(|key| myko::item::is_undoable_entity(&key.item_type))
+            .collect();
+        keys.sort();
+        seed.entry.diffs_complete =
+            !seed.mixed && !seed.entry.details_truncated && keys.len() <= UNDO_DIFF_ENTITIES;
+        for key in keys.into_iter().take(UNDO_DIFF_ENTITIES) {
+            txs.push(seed.entry.transaction_id.to_string());
+            types.push(key.item_type.to_string());
+            ids.push(key.item_id.to_string());
+        }
+        accumulators.insert(
+            seed.entry.transaction_id.clone(),
+            UndoPreviewAccumulator::default(),
+        );
+    }
+    let rows=snapshot.query(&format!("WITH states AS MATERIALIZED (
+        SELECT k.tx,k.kind,k.item,
+            COALESCE(previous.change_type='SET',false) bp, final.change_type='SET' ap,
+            CASE WHEN previous.change_type='SET' THEN previous.event->'item' END b,
+            CASE WHEN final.change_type='SET' THEN final.event->'item' END a
+        FROM unnest($1::text[],$2::text[],$3::text[]) k(tx,kind,item)
+        CROSS JOIN LATERAL (SELECT MIN(id) first_id,MAX(id) last_id FROM {table} WHERE tx=k.tx AND item_type=k.kind AND item_id=k.item) bounds
+        JOIN {table} final ON final.id=bounds.last_id
+        LEFT JOIN LATERAL (SELECT change_type,event FROM {table} WHERE item_type=k.kind AND item_id=k.item AND id<bounds.first_id ORDER BY id DESC LIMIT 1) previous ON true
+    ), sized AS MATERIALIZED (
+        SELECT *, COALESCE(octet_length(b::text),0) bl,COALESCE(octet_length(a::text),0) al FROM states
+    ), budgeted AS (
+        SELECT *, SUM(CASE WHEN bl<=16384 AND al<=16384 THEN bl+al ELSE 0 END) OVER(PARTITION BY tx ORDER BY kind,item) total FROM sized
+    ) SELECT tx,kind,item,bp,ap,
+        CASE WHEN bl<=16384 AND al<=16384 AND total<=65536 THEN b::text END,
+        CASE WHEN bl<=16384 AND al<=16384 AND total<=65536 THEN a::text END,
+        bl<=16384 AND al<=16384 AND total<=65536 FROM budgeted"), &[&txs,&types,&ids]).map_err(|error|error.to_string())?;
+    for row in rows {
+        let tx: String = row.get(0);
+        let key = HistoryEntityKey::new(row.get::<_, String>(1), row.get::<_, String>(2));
+        let Some(accumulator) = accumulators.get_mut(tx.as_str()) else {
+            continue;
+        };
+        if !row.get::<_, bool>(7) {
+            accumulator.record(&key, None);
+            continue;
+        }
+        let before = row
+            .get::<_, Option<String>>(5)
+            .map(|text| serde_json::from_str(&text))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let after = row
+            .get::<_, Option<String>>(6)
+            .map(|text| serde_json::from_str(&text))
+            .transpose()
+            .map_err(|error| error.to_string())?;
+        let input = UndoPreviewInput::capture(&key, before.as_ref(), after.as_ref());
+        accumulator.record(&key, Some(&input));
+    }
+    for seed in seeds {
+        if let Some(accumulator) = accumulators.remove(&seed.entry.transaction_id) {
+            let (diffs, complete) = accumulator.finish();
+            seed.entry.entity_diffs = Arc::new(diffs);
+            seed.entry.diffs_complete &= complete;
+        }
+    }
+    Ok(())
 }

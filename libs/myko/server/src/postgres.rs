@@ -508,9 +508,15 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
 }
 
 enum ProducerRequest {
-    Event(EventRecord),
+    Event(
+        EventRecord,
+        Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ),
     Barrier(flume::Sender<()>),
-    Complete { tx: String, user: String },
+    Complete {
+        tx: String,
+        user: String,
+    },
 }
 
 /// Handle to the `PostgreSQL` producer.
@@ -536,7 +542,14 @@ impl PostgresProducerHandle {
         })
     }
 
-    fn produce_record(&self, mut record: EventRecord) -> Result<(), PersistError> {
+    fn produce_record(&self, record: EventRecord) -> Result<(), PersistError> {
+        self.produce_record_with_preview(record, None)
+    }
+    fn produce_record_with_preview(
+        &self,
+        mut record: EventRecord,
+        preview: Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ) -> Result<(), PersistError> {
         // Caller labels are untrusted. PostgreSQL JSONB cannot encode NUL,
         // and retrying such a sidecar would poison an otherwise valid batch.
         if record.provenance.as_ref().is_some_and(|provenance| {
@@ -568,7 +581,11 @@ impl PostgresProducerHandle {
             event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
         }
         let entity_type = event.item_type.clone();
-        if self.sender.send(ProducerRequest::Event(record)).is_ok() {
+        if self
+            .sender
+            .send(ProducerRequest::Event(record, preview))
+            .is_ok()
+        {
             self.health.record_enqueue();
             Ok(())
         } else {
@@ -583,6 +600,17 @@ impl PostgresProducerHandle {
 }
 
 impl Persister for PostgresProducerHandle {
+    fn wants_undo_preview(&self) -> bool {
+        true
+    }
+    fn persist_record_with_preview(
+        &self,
+        record: EventRecord,
+        preview: Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ) -> Result<(), PersistError> {
+        self.produce_record_with_preview(record, preview)
+    }
+
     fn history_identity(&self) -> Option<String> {
         Some(format!(
             "postgres:{}:{}",
@@ -677,18 +705,25 @@ fn run_producer_loop(
     let undo_list = undo_list::Source::shared(config);
     let mut client: Option<Client> = None;
     let mut batch = Vec::<EventRecord>::new();
+    let mut previews = Vec::new();
     let mut pending: Option<ProducerRequest> = None;
     loop {
         if batch.is_empty() && pending.is_none() {
             match rx.recv() {
-                Ok(ProducerRequest::Event(record)) => batch.push(record),
+                Ok(ProducerRequest::Event(record, preview)) => {
+                    batch.push(record);
+                    previews.push(preview);
+                }
                 Ok(request) => pending = Some(request),
                 Err(_) => break,
             }
         }
         while pending.is_none() && batch.len() < PG_PRODUCER_MAX_BATCH {
             match rx.try_recv() {
-                Ok(ProducerRequest::Event(record)) => batch.push(record),
+                Ok(ProducerRequest::Event(record, preview)) => {
+                    batch.push(record);
+                    previews.push(preview);
+                }
                 Ok(request) => pending = Some(request),
                 Err(_) => break,
             }
@@ -701,7 +736,8 @@ fn run_producer_loop(
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = if let Some(client) = client.as_mut() {
-            insert_event_batch(client, config, &batch).and_then(|changes| {
+            insert_event_batch(client, config, &batch).and_then(|mut changes| {
+                for (change, preview) in changes.iter_mut().zip(&previews) { change.preview.clone_from(preview); }
                 undo_list.records(&mut sequence, changes);
                 if let Some(ProducerRequest::Complete { tx, user }) = &pending {
                     let completions = qi(&format!("{}_transactions", config.table));
@@ -723,6 +759,7 @@ fn run_producer_loop(
             Ok(()) => {
                 health.record_success_batch(u64::try_from(batch.len()).unwrap_or(u64::MAX));
                 batch.clear();
+                previews.clear();
                 if let Some(ProducerRequest::Barrier(reply)) = pending.take() {
                     let _ = reply.send(());
                 }

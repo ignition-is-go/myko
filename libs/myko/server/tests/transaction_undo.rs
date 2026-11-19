@@ -1242,6 +1242,19 @@ fn live_undo_metadata_waits_for_completion_and_tracks_foreign_writes() -> anyhow
             .as_ref()
             .is_some_and(|page| page.entries.len() == 1)
     })?;
+    let snapshot = stream.get();
+    let entry = snapshot
+        .page
+        .as_ref()
+        .and_then(|page| page.entries.first())
+        .ok_or_else(|| anyhow::anyhow!("missing live diff"))?;
+    anyhow::ensure!(entry.diffs_complete);
+    anyhow::ensure!(entry.entity_diffs.iter().flat_map(|diff| &diff.fields).any(
+        |field| field.path == "/x"
+            && field.before.as_deref() == Some("null")
+            && field.after.as_deref() == Some("1.0")
+    ));
+
     let foreign = f.context("bob", "foreign");
     foreign
         .emit_set(&UndoPosition {
@@ -1314,6 +1327,19 @@ fn cold_metadata_hydrates_200_transactions_and_refills_after_undo() -> anyhow::R
             .is_some_and(|entry| entry.transaction_id.as_ref() == "edit-205")
     );
     anyhow::ensure!(page.entries.iter().all(|entry| entry.validation_deferred));
+    anyhow::ensure!(page.entries.first().is_some_and(|entry| {
+        entry.diffs_complete
+            && entry
+                .entity_diffs
+                .iter()
+                .flat_map(|diff| &diff.fields)
+                .any(|field| {
+                    field.path == "/x"
+                        && field.before.as_deref() == Some("204.0")
+                        && field.after.as_deref() == Some("205.0")
+                })
+    }));
+
     UndoTransactions {
         transaction_ids: vec!["edit-205".into()],
     }
@@ -1321,5 +1347,97 @@ fn cold_metadata_hydrates_200_transactions_and_refills_after_undo() -> anyhow::R
     .map_err(command_error)?;
     wait("edit-5")?;
     anyhow::ensure!(f.position("a")?.x == Some(204.0));
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn live_field_diffs_coalesce_writes_and_keep_deleted_entity_fields() -> anyhow::Result<()> {
+    use myko::hyphae::Gettable;
+    let f = Fixture::new()?;
+    f.seed()?;
+    let stream = f
+        .provider
+        .undo_list_source(&"profile:alice".into())
+        .map_err(anyhow::Error::msg)?;
+    for _ in 0..500 {
+        if stream.get().page.is_some() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let ctx = f.context("alice", "compound");
+    ctx.emit_set(&UndoPosition {
+        id: "a".into(),
+        node_id: "a".into(),
+        x: Some(1.0),
+    })
+    .map_err(command_error)?;
+    ctx.emit_set(&UndoPosition {
+        id: "a".into(),
+        node_id: "a".into(),
+        x: Some(2.0),
+    })
+    .map_err(command_error)?;
+    ctx.emit_set(&UndoValue {
+        id: "temporary".into(),
+        node_id: "a".into(),
+        value: "removed contents".into(),
+    })
+    .map_err(command_error)?;
+    drop(ctx);
+    f.context("alice", "delete-value")
+        .emit_del(&UndoValue {
+            id: "temporary".into(),
+            node_id: "a".into(),
+            value: String::new(),
+        })
+        .map_err(command_error)?;
+    f.backend.flush().map_err(anyhow::Error::msg)?;
+    for _ in 0..500 {
+        if stream
+            .get()
+            .page
+            .as_ref()
+            .is_some_and(|page| page.entries.len() == 2)
+        {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let value = stream.get();
+    let entries = &value
+        .page
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing diff list"))?
+        .entries;
+    let compound = entries
+        .iter()
+        .find(|entry| entry.transaction_id.as_ref() == "compound")
+        .ok_or_else(|| anyhow::anyhow!("missing compound transaction"))?;
+    anyhow::ensure!(compound.diffs_complete);
+    anyhow::ensure!(
+        compound
+            .entity_diffs
+            .iter()
+            .flat_map(|diff| &diff.fields)
+            .any(|field| field.path == "/x"
+                && field.before.as_deref() == Some("null")
+                && field.after.as_deref() == Some("2.0"))
+    );
+    let deleted = entries
+        .iter()
+        .find(|entry| entry.transaction_id.as_ref() == "delete-value")
+        .ok_or_else(|| anyhow::anyhow!("missing deletion"))?;
+    anyhow::ensure!(deleted.diffs_complete);
+    anyhow::ensure!(
+        deleted
+            .entity_diffs
+            .iter()
+            .any(|diff| diff.kind == "Deleted"
+                && diff.fields.iter().any(|field| field.path == "/value"
+                    && field.before.as_deref() == Some("\"removed contents\"")
+                    && field.after.is_none()))
+    );
     Ok(())
 }

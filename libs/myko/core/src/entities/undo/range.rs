@@ -34,6 +34,10 @@ pub struct UndoLogEntry {
     pub entity_types: Vec<Arc<str>>,
     pub entities_changed: usize,
     #[serde(default)]
+    pub entity_diffs: Arc<Vec<super::UndoEntityDiff>>,
+    #[serde(default)]
+    pub diffs_complete: bool,
+    #[serde(default)]
     pub validation_deferred: bool,
     #[serde(default)]
     pub details_truncated: bool,
@@ -230,6 +234,8 @@ fn log_entry(
             .unwrap_or_default(),
         entity_types: kinds,
         entities_changed: history.changes.len(),
+        entity_diffs: Arc::new(Vec::new()),
+        diffs_complete: false,
         validation_deferred: false,
         details_truncated: false,
         affected_entities: Vec::new(),

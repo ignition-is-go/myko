@@ -182,6 +182,22 @@ pub trait Persister: Send + Sync + 'static {
         self.persist(record.event)
     }
 
+    /// Whether this backend consumes transient field-diff previews.
+    fn wants_undo_preview(&self) -> bool {
+        false
+    }
+
+    /// Queue display-only data alongside an event; never persist the preview.
+    /// # Errors
+    /// Returns the same queue errors as `persist_record`.
+    fn persist_record_with_preview(
+        &self,
+        record: super::EventRecord,
+        _preview: Option<Arc<crate::entities::undo::UndoPreviewInput>>,
+    ) -> Result<(), PersistError> {
+        self.persist_record(record)
+    }
+
     /// Opaque identity of the durable history this backend writes. It must
     /// match the configured history provider before checked undo is allowed.
     fn history_identity(&self) -> Option<String> {

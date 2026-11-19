@@ -1,4 +1,4 @@
-//! Disposable, bounded metadata projection. No entity payloads or inverse plans.
+//! Bounded transaction metadata and field previews. Inverse plans stay fresh.
 use super::{UndoConflict, UndoLogEntry, UndoLogPage};
 use crate::{
     prelude::*,
@@ -23,7 +23,7 @@ pub struct UndoLogSnapshot {
     pub error: Option<String>,
 }
 
-/// Small committed-event description; payloads are discarded by the producer.
+/// Committed metadata with optional bounded, transient display snapshots.
 #[derive(Clone, Debug)]
 pub struct UndoListChange {
     pub row_id: i64,
@@ -36,6 +36,7 @@ pub struct UndoListChange {
     pub receipt: Option<Arc<str>>,
     pub label: Option<String>,
     pub attributed: bool,
+    pub preview: Option<Arc<super::UndoPreviewInput>>,
 }
 impl UndoListChange {
     #[must_use]
@@ -60,6 +61,7 @@ impl UndoListChange {
         .then(|| original.map(Arc::from))
         .flatten();
         Self {
+            preview: None,
             row_id,
             transaction_id: tx.clone(),
             key: HistoryEntityKey::new(
@@ -89,7 +91,7 @@ impl UndoListChange {
     }
 }
 
-/// Bounded metadata loaded once for an actor; no before-images are loaded.
+/// Metadata and display diffs hydrated for an actor; never cached undo plans.
 pub struct UndoListSeed {
     pub entry: UndoLogEntry,
     pub keys: HashMap<HistoryEntityKey, i64>,
@@ -139,6 +141,7 @@ struct Accumulator {
     truncated: bool,
     receipts: HashSet<Arc<str>>,
     label: Option<String>,
+    previews: super::UndoPreviewAccumulator,
 }
 impl Accumulator {
     fn new(first: &UndoListChange) -> Self {
@@ -153,9 +156,13 @@ impl Accumulator {
             truncated: false,
             receipts: HashSet::new(),
             label: None,
+            previews: super::UndoPreviewAccumulator::default(),
         }
     }
     fn add(&mut self, change: &UndoListChange) {
+        if crate::item::is_undoable_entity(&change.key.item_type) {
+            self.previews.record(&change.key, change.preview.as_deref());
+        }
         self.valid &= change.attributed && change.user_id == self.first.user_id;
         self.opted |= crate::item::is_undoable_entity(&change.key.item_type);
         self.mixed |= !crate::item::is_undoable_entity(&change.key.item_type);
@@ -178,6 +185,8 @@ impl Accumulator {
         }
     }
     fn finish(self, first_id: i64) -> Cached {
+        let (entity_diffs, diffs_complete) = self.previews.finish();
+        let diffs_complete = diffs_complete && !self.mixed;
         let mut kinds: Vec<_> = self.kinds.into_iter().collect();
         kinds.sort();
         let affected_entities = self
@@ -197,6 +206,8 @@ impl Accumulator {
                 entities_changed: self.keys.len(),
                 blocked_reason: None,
                 conflicts: Vec::new(),
+                entity_diffs: Arc::new(entity_diffs),
+                diffs_complete,
                 validation_deferred: true,
                 details_truncated: self.truncated,
                 affected_entities,
@@ -391,7 +402,15 @@ impl UndoListEngine {
         }
         let originals = pending.receipts.clone();
         let insert = pending.opted && !pending.undo;
-        let cached = insert.then(|| pending.finish(first));
+        let missing_prefix = pending.first.row_id != first;
+        let cached = insert.then(|| {
+            let mut row = pending.finish(first);
+            if missing_prefix {
+                row.entry.diffs_complete = false;
+                row.entry.details_truncated = true;
+            }
+            row
+        });
         let mut refill = Vec::new();
         let mut dirty = HashSet::new();
         for (user_id, user) in &mut self.users {
@@ -533,6 +552,7 @@ mod tests {
             receipt: None,
             label: None,
             attributed: true,
+            preview: None,
         }
     }
     fn publish(values: Vec<UndoListPublication>) {

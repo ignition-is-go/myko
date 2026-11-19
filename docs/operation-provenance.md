@@ -127,8 +127,8 @@ appear busy to actual undo commands.
 
 The PostgreSQL backend exposes a shared per-user `undo_list_source`: a disposable
 in-memory projection of the latest 200 completed, opted-in transactions. It
-hydrates metadata from existing history once, then consumes producer commits and
-completion notifications. No timer, full preview rebuild, before-image lookup, or
+hydrates metadata and bounded field previews from existing history once, then
+consumes producer commits and completion notifications. No timer, full preview rebuild, before-image lookup, or
 new durable summary table is involved in ordinary list updates. Opening the UI
 reveals its already mounted subscription.
 
@@ -138,6 +138,24 @@ repeatable-read hydration snapshot is coordinated with local commit sequencing,
 so queued events are neither missed nor applied twice across hydration. Cache
 eviction does not expire durable history. Successful undo can refill older rows;
 the apply path still reads fresh history and checks the complete selected range.
+
+Field previews are transient data carried by `persist_record_with_preview`,
+not serialized event/provenance fields. Authoritative mutation paths already hold
+the prior entity; they capture display data before it is released, and the
+producer forwards it only after successful persistence. The projection coalesces
+first-before/final-after snapshots until transaction completion. Nested object
+fields and array indices use JSON Pointer paths. Absent values remain distinct
+from explicit JSON null. Create/delete operations retain their field data.
+
+Display limits are 32 entities, 128 changed fields and 32 KiB of field text per
+transaction, with 512-byte value previews and a 64-KiB pending snapshot budget.
+Missing, oversized or incomplete input is marked partial, never presented as a
+complete inverse. Cold hydration reads bounded first-before/final-after values
+from existing log rows once; live updates perform no additional database reads.
+Immutable diff vectors are shared across cached snapshots. A list adapter can
+omit those vectors and serve a deduplicated per-transaction detail stream from
+the same cell, avoiding retransmission of 200 full diffs on every edit. The event
+schema and durable tables are unchanged.
 
 ## Scope and failure semantics
 

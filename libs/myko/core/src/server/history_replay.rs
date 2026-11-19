@@ -67,7 +67,7 @@ pub struct HistoryPage {
 }
 
 /// Typed identity of an entity whose durable event history is queried.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HistoryEntityKey {
     pub item_type: Arc<str>,
     pub item_id: Arc<str>,
