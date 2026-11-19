@@ -871,7 +871,12 @@ mod tests {
         let info = collect_relationships(&item)?;
         let tokens = generate_registrations("Example", &info).to_string();
         for name in ["id", "owner", "children", "sessionKey"] {
-            assert!(tokens.contains(&format!("field_name_json : \"{name}\"")));
+            if !tokens.contains(&format!("field_name_json : \"{name}\"")) {
+                return Err(syn::Error::new_spanned(
+                    &item,
+                    format!("missing identifier registration for {name}"),
+                ));
+            }
         }
         Ok(())
     }
