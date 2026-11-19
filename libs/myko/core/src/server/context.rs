@@ -410,9 +410,6 @@ pub struct MykoServerContext {
     view_cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>>,
     /// Top-level cache for reactive report cells with short-lived strong retention.
     report_cache: Arc<DashMap<String, Arc<dyn ReportCacheEntryDyn>, ahash::RandomState>>,
-    /// Per-key coordination for concurrent report/query/view computation.
-    /// Prevents duplicate computation when multiple threads request the same key.
-    compute_gates: Arc<DashMap<String, Arc<std::sync::Mutex<()>>, ahash::RandomState>>,
     /// Optional ingest buffers keyed by entity type for opt-in burst smoothing.
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>, ahash::RandomState>>,
     /// Optional history replay provider for point-in-time snapshots.
@@ -469,7 +466,6 @@ impl MykoServerContext {
             query_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             view_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             report_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
-            compute_gates: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
             graph_index,
@@ -2575,7 +2571,7 @@ impl MykoServerContext {
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        self.compute_or_cache(&key, &self.query_cache, || {
+        Self::compute_or_cache(&key, &self.query_cache, || {
             let query_req = QueryRequest::with_tx(query, request.tx.clone());
             let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
             Q::cell_factory(
@@ -2649,50 +2645,36 @@ impl MykoServerContext {
         adopted.unwrap_or(built)
     }
 
-    /// Compute-gate + double-checked caching shared by `query_map_untyped` and
-    /// `view_map_untyped`. Returns the cached untyped map on a fast-path or
-    /// post-gate hit; otherwise runs `build` exactly once under the per-key
-    /// compute gate, caches the result, and releases the gate.
+    /// Caching shared by `query_map_untyped` and `view_map_untyped`. Returns
+    /// the cached untyped map, or runs `compute` and caches the result.
     ///
-    /// `build` is the only per-caller difference — each caller keeps its exact
-    /// request-wrap and `cell_factory` invocation (queries pass
-    /// `Some(server_ctx)`, views pass `server_ctx`) inside the closure.
+    /// `compute` subscribes and makes waiting writes, and a subscriber callback
+    /// on the settling thread asks for the same keys, so it runs with no lock
+    /// held. Callers that race on a missing key each build a map, and all
+    /// return the one that reached the cache first.
     fn compute_or_cache(
-        &self,
         key: &str,
         cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
         compute: impl FnOnce() -> FilteredCellMap,
     ) -> FilteredCellMap {
-        // Fast path
         if let Some(cell) = Self::try_get_cached(cache, key) {
             return cell;
         }
-
-        let gate = self
-            .compute_gates
-            .entry(key.to_string())
-            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
-            .clone();
-        let _lock = gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Re-check after gate
-        if let Some(cell) = Self::try_get_cached(cache, key) {
-            return cell;
-        }
-
         let computed = compute();
-        cache.insert(key.to_string(), MapCacheEntry::new(&computed));
-        // The gate's only job was deduping concurrent first-computation; once
-        // the cache entry above is visible, any racing caller's re-check will
-        // hit it directly, gate or no gate. Removing it here — rather than
-        // never, which is a compute_gates memory leak that grows with every
-        // distinct query/param combination ever computed — is safe regardless
-        // of ordering relative to `_lock`'s drop, since a fresh gate + a cache
-        // hit on re-check behaves identically to blocking on the old gate.
-        self.compute_gates.remove(key);
-        computed
+        let cached = match cache.entry(key.to_owned()) {
+            dashmap::Entry::Occupied(mut entry) => {
+                let existing = entry.get().get();
+                if existing.is_none() {
+                    entry.insert(MapCacheEntry::new(&computed));
+                }
+                existing
+            }
+            dashmap::Entry::Vacant(entry) => {
+                entry.insert(MapCacheEntry::new(&computed));
+                None
+            }
+        };
+        cached.unwrap_or(computed)
     }
 
     /// Build a reactive view cell map (type-erased for framework internals).
@@ -2708,7 +2690,7 @@ impl MykoServerContext {
             &request,
             V::request_cache_scope(),
         );
-        self.compute_or_cache(&key, &self.view_cache, || {
+        Self::compute_or_cache(&key, &self.view_cache, || {
             let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
             let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
             V::cell_factory(
@@ -2812,29 +2794,6 @@ impl MykoServerContext {
             return cell;
         }
 
-        // NOTE(ts): Per-key gate prevents duplicate computation when multiple threads
-        // request the same report concurrently. First thread computes, others wait.
-        let gate = self
-            .compute_gates
-            .entry(key.clone())
-            .or_insert_with(|| Arc::new(std::sync::Mutex::new(())))
-            .clone();
-        let _lock = gate
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Re-check after acquiring the gate — another thread may have computed while we waited.
-        if let Some(cell) = self.try_get_cached_report::<R>(&key) {
-            crate::server::report_cache_stats::record_hit_after_gate(&report_id);
-            tracing::trace!(
-                target: "myko::server::context::report_cache",
-                "report_cache HIT_AFTER_GATE report_id={} key={}",
-                report_id,
-                key,
-            );
-            return cell;
-        }
-
         // Emit MISS_COMPUTE *before* compute() so the analyze pass can correlate
         // the miss with the work that follows even if compute panics or hangs.
         // Payload is only serialized when the trace target is enabled.
@@ -2869,13 +2828,31 @@ impl MykoServerContext {
         // — query/view result maps can't be named at this seam the same way).
         #[cfg(feature = "profiling")]
         let built = built.with_name(report_id.as_ref());
-        self.report_cache
-            .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
-        // See the matching comment in `query_map_untyped` — the gate is only
-        // needed to dedupe concurrent first-computation, not after the cache
-        // entry above is visible.
-        self.compute_gates.remove(&key);
-
+        // The build ran with no lock held, because it makes waiting writes and
+        // a subscriber callback on the settling thread asks for the same
+        // reports. Callers that race on a missing key each build a cell, and
+        // all return the one that reached the cache first.
+        let cached = match self.report_cache.entry(key) {
+            dashmap::Entry::Occupied(mut entry) => {
+                let existing = entry
+                    .get()
+                    .as_any()
+                    .downcast_ref::<ReportCacheEntry<Arc<R::Output>>>()
+                    .and_then(ReportCacheEntry::get);
+                if existing.is_none() {
+                    entry.insert(Arc::new(ReportCacheEntry::new(&built)));
+                }
+                existing
+            }
+            dashmap::Entry::Vacant(entry) => {
+                entry.insert(Arc::new(ReportCacheEntry::new(&built)));
+                None
+            }
+        };
+        if let Some(cached) = cached {
+            crate::server::report_cache_stats::record_hit_after_gate(&report_id);
+            return cached;
+        }
         crate::server::report_cache_stats::record_miss(&report_id);
 
         built
@@ -3987,38 +3964,6 @@ mod tests {
         assert_eq!(server.get().windback, None);
     }
 
-    #[test]
-    fn compute_gates_does_not_leak_after_cache_populates() {
-        // compute_gates only exists to dedupe concurrent first-computation
-        // (see the comment on the removal call in query_map_untyped); once
-        // the corresponding cache entry lands, the gate must not linger —
-        // otherwise every distinct (kind, id, param-hash) ever computed
-        // leaves a permanent entry, unbounded over the process lifetime.
-        use crate::{entities::server::GetPeerServers, request::RequestContext};
-
-        let _serial = scheduler_test_serial();
-        let ctx = make_ctx();
-        let request = Arc::new(RequestContext::internal(
-            Arc::<str>::from(Uuid::new_v4().to_string()),
-            ctx.host_id,
-            "test",
-        ));
-
-        // First call: cache miss — populates compute_gates transiently, then
-        // must remove it once query_cache is populated.
-        let _ = ctx.query_map_untyped(GetPeerServers {}, request.clone());
-        assert!(
-            ctx.compute_gates.is_empty(),
-            "compute_gates must be empty once the query cache is populated, got {:?}",
-            ctx.compute_gates
-        );
-
-        // Second call: cache hit on the fast path — must not touch
-        // compute_gates at all.
-        let _ = ctx.query_map_untyped(GetPeerServers {}, request);
-        assert!(ctx.compute_gates.is_empty());
-    }
-
     struct ClientStatusTestWriter;
 
     impl crate::server::WsWriter for ClientStatusTestWriter {
@@ -4102,45 +4047,77 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compute_gates_does_not_leak_after_report_cache_populates() {
-        // Same invariant as compute_gates_does_not_leak_after_cache_populates,
-        // exercised through the report() call site's independent gate-removal
-        // (a separate line, since it inserts into report_cache instead of
-        // query_cache — verified both were fixed, not just the query one).
-        use crate::{
-            entities::client::{ClientId, ClientStatus},
-            request::RequestContext,
-        };
+    /// Run `build` on one thread while another thread is settling and its
+    /// subscriber callback runs `in_callback`. `build` receives a function to
+    /// call once it is about to make its waiting write; `in_callback` starts
+    /// after that call, or after `head_start` when `build` cannot make it.
+    /// Panics if the two do not both finish.
+    fn build_while_a_callback_runs(
+        head_start: Option<std::time::Duration>,
+        in_callback: impl Fn() + Send + Sync + 'static,
+        build: impl FnOnce(&dyn Fn()) + Send + 'static,
+    ) {
+        use std::{sync::mpsc, time::Duration};
 
-        let _serial = scheduler_test_serial();
-        let ctx = make_ctx();
-        let request = Arc::new(RequestContext::internal(
-            Arc::<str>::from(Uuid::new_v4().to_string()),
-            ctx.host_id,
-            "test",
-        ));
+        use hyphae::{Cell, Mutable, Watchable};
 
-        let report = ClientStatus {
-            client_id: ClientId::from(Arc::<str>::from("test-client")),
-        };
-        let _ = ctx.report(report.clone(), request.clone());
+        let (in_callback_tx, in_callback_rx) = mpsc::channel::<()>();
+        let (building_tx, building_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
+
+        let trigger = Cell::new(0u32);
+        let building_rx = std::sync::Mutex::new(building_rx);
+        let _guard = trigger.subscribe(move |signal| {
+            if !matches!(signal, hyphae::Signal::Value(value) if **value == 1) {
+                return;
+            }
+            let _ = in_callback_tx.send(());
+            let building = building_rx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recv_timeout(head_start.unwrap_or(Duration::from_secs(10)));
+            assert!(head_start.is_some() || building.is_ok(), "the build starts");
+            in_callback();
+        });
+
+        let settler_done = done_tx.clone();
+        let settler = std::thread::spawn(move || {
+            trigger.set(1);
+            let _ = settler_done.send(());
+        });
         assert!(
-            ctx.compute_gates.is_empty(),
-            "compute_gates must be empty once the report cache is populated, got {:?}",
-            ctx.compute_gates
+            in_callback_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the callback runs"
         );
+        let builder = std::thread::spawn(move || {
+            build(&|| {
+                let _ = building_tx.send(());
+            });
+            let _ = done_tx.send(());
+        });
 
-        let _ = ctx.report(report, request);
-        assert!(ctx.compute_gates.is_empty());
+        for _ in 0..2 {
+            assert!(
+                done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+                "a lock held across the build's write deadlocks it with the settle"
+            );
+        }
+        assert!(settler.join().is_ok());
+        assert!(builder.join().is_ok());
+    }
+
+    /// A map whose construction waits for the settle in progress.
+    fn map_built_with_a_waiting_write() -> super::FilteredCellMap {
+        use hyphae::CellMap;
+
+        let _ = CellMap::<Arc<str>, u32>::new().insert(Arc::from("row"), 1);
+        CellMap::<Arc<str>, super::AnyItemArc>::new().lock()
     }
 
     #[test]
     fn a_typed_projection_is_built_while_a_settling_callback_reads_the_cache() {
-        use std::{sync::mpsc, time::Duration};
-
         use dashmap::DashMap;
-        use hyphae::{Cell, CellMap, Mutable, Watchable};
+        use hyphae::CellMap;
 
         use super::{AnyItemArc, MapCacheEntry};
 
@@ -4162,57 +4139,111 @@ mod tests {
             );
         }
 
-        let (in_callback_tx, in_callback_rx) = mpsc::channel::<()>();
-        let (projecting_tx, projecting_rx) = mpsc::channel::<()>();
-        let (done_tx, done_rx) = mpsc::channel::<&'static str>();
-
-        let trigger = Cell::new(0u32);
         let callback_cache = cache.clone();
-        let projecting_rx = std::sync::Mutex::new(projecting_rx);
-        let _guard = trigger.subscribe(move |signal| {
-            if !matches!(signal, hyphae::Signal::Value(value) if **value == 1) {
-                return;
-            }
-            let _ = in_callback_tx.send(());
-            let projecting = projecting_rx
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .recv_timeout(Duration::from_secs(10));
-            assert!(projecting.is_ok(), "the projection starts");
-            for key in &dead_keys {
-                assert!(MykoServerContext::try_get_cached(&callback_cache, key).is_none());
-            }
-        });
-
-        let settler_done = done_tx.clone();
-        let settler = std::thread::spawn(move || {
-            trigger.set(1);
-            let _ = settler_done.send("settler");
-        });
-
-        assert!(
-            in_callback_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
-            "the callback runs"
+        build_while_a_callback_runs(
+            None,
+            move || {
+                for key in &dead_keys {
+                    assert!(MykoServerContext::try_get_cached(&callback_cache, key).is_none());
+                }
+            },
+            move |building| {
+                let typed =
+                    MykoServerContext::typed_projection(&cache, "live", &untyped, |_source| {
+                        building();
+                        let typed = CellMap::<Arc<str>, u32>::new();
+                        typed.insert(Arc::from("row"), 1);
+                        typed.lock()
+                    });
+                assert_eq!(typed.get_value(&Arc::from("row")), Some(1));
+            },
         );
-        let projector = std::thread::spawn(move || {
-            let typed = MykoServerContext::typed_projection(&cache, "live", &untyped, |_source| {
-                let _ = projecting_tx.send(());
-                let typed = CellMap::<Arc<str>, u32>::new();
-                // Waits for the settle the other thread holds.
-                typed.insert(Arc::from("row"), 1);
-                typed.lock()
-            });
-            assert_eq!(typed.get_value(&Arc::from("row")), Some(1));
-            let _ = done_tx.send("projector");
-        });
+    }
 
-        for _ in 0..2 {
-            assert!(
-                done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
-                "a cache lock held across the projection's write deadlocks it with the settle"
-            );
-        }
-        assert!(settler.join().is_ok());
-        assert!(projector.join().is_ok());
+    #[test]
+    fn a_query_map_is_built_while_a_settling_callback_asks_for_the_same_key() {
+        use dashmap::DashMap;
+
+        use super::MapCacheEntry;
+
+        let _serial = scheduler_test_serial();
+        let cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>> =
+            Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+
+        let callback_cache = cache.clone();
+        let from_callback = Arc::new(std::sync::Mutex::new(None));
+        let kept = from_callback.clone();
+        build_while_a_callback_runs(
+            None,
+            move || {
+                let map = MykoServerContext::compute_or_cache(
+                    "key",
+                    &callback_cache,
+                    map_built_with_a_waiting_write,
+                );
+                *kept
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(map);
+            },
+            move |building| {
+                let _map = MykoServerContext::compute_or_cache("key", &cache, || {
+                    building();
+                    map_built_with_a_waiting_write()
+                });
+            },
+        );
+    }
+
+    #[test]
+    fn racing_builds_of_one_key_return_the_map_cached_first() {
+        use dashmap::DashMap;
+        use hyphae::CellMap;
+
+        use super::{AnyItemArc, MapCacheEntry};
+
+        let cache: DashMap<String, MapCacheEntry, ahash::RandomState> =
+            DashMap::with_hasher(ahash::RandomState::new());
+        let id: Arc<str> = Arc::from("first");
+        let item: AnyItemArc = Arc::new(BufferedTestItem {
+            id: id.clone(),
+            value: 1,
+        });
+        let first = CellMap::from_entries(vec![(id.clone(), item)]).lock();
+        let winner = MykoServerContext::compute_or_cache("key", &cache, || {
+            // Another caller finishes its build of the same key first.
+            let cached = MykoServerContext::compute_or_cache("key", &cache, || first.clone());
+            assert!(cached.contains_key(&id));
+            CellMap::<Arc<str>, AnyItemArc>::new().lock()
+        });
+        assert!(winner.contains_key(&id));
+    }
+
+    #[test]
+    fn a_report_is_built_while_a_settling_callback_asks_for_the_same_report() {
+        use std::time::Duration;
+
+        use crate::{entities::server::ServerStats, request::RequestContext};
+
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            ctx.host_id,
+            "test",
+        ));
+        // Its build makes waiting writes: it builds two queries.
+        let report = ServerStats {};
+
+        let (callback_ctx, callback_report, callback_request) =
+            (ctx.clone(), report.clone(), request.clone());
+        build_while_a_callback_runs(
+            Some(Duration::from_millis(300)),
+            move || {
+                let _ = callback_ctx.report(callback_report.clone(), callback_request.clone());
+            },
+            move |_building| {
+                let _ = ctx.report(report, request);
+            },
+        );
     }
 }
