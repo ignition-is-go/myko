@@ -346,7 +346,7 @@ pub struct MykoServer {
     server_ownership_guard: std::sync::Mutex<Option<hyphae::SubscriptionGuard>>,
     /// Memoized server context. Built once on first `ctx()` and shared by
     /// every caller — the caches (`query_cache`/`view_cache`/`report_cache`/
-    /// `compute_gates`/`ingest_buffers`) and the `peer_clients_tick` cell are
+    /// `ingest_buffers`) and the `peer_clients_tick` cell are
     /// then genuinely process-wide, so N connections subscribing to the same
     /// query share one reactive cell graph instead of N copies, cache sweeps
     /// actually reach live entries, and every peer-death watcher observes the
