@@ -315,39 +315,59 @@ impl MapCacheEntry {
         self.weak.upgrade().map(hyphae::CellMap::lock)
     }
 
-    /// Get or create a typed projection of this untyped map.
-    ///
-    /// `F` is called at most once per projection type to create the typed map
-    /// from the untyped source. Subsequent calls return the cached projection.
-    fn get_or_create_typed<K, V, F>(&self, create: F) -> Option<CellMap<K, V, CellImmutable>>
+    fn live_typed<K, V>(
+        typed: &HashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>,
+    ) -> Option<CellMap<K, V, CellImmutable>>
     where
         K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
         V: hyphae::traits::CellValue + 'static,
-        F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     {
-        let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
-        let source = self.weak.upgrade()?.lock();
+        typed
+            .get(&std::any::TypeId::of::<WeakCellMap<K, V>>())?
+            .downcast_ref::<WeakCellMap<K, V>>()?
+            .upgrade()
+            .map(hyphae::CellMap::lock)
+    }
+
+    /// The cached typed projection of this untyped map, if one is alive.
+    fn typed<K, V>(&self) -> Option<CellMap<K, V, CellImmutable>>
+    where
+        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
+        V: hyphae::traits::CellValue + 'static,
+    {
+        self.weak.upgrade()?;
+        Self::live_typed(
+            &self
+                .typed
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+
+    /// Cache `built` as the typed projection unless a live one is already
+    /// cached, and return the cached one. `None` when the untyped map is gone.
+    fn adopt_typed<K, V>(
+        &self,
+        built: &CellMap<K, V, CellImmutable>,
+    ) -> Option<CellMap<K, V, CellImmutable>>
+    where
+        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
+        V: hyphae::traits::CellValue + 'static,
+    {
+        self.weak.upgrade()?;
         let mut typed = self
             .typed
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-
-        // Try to upgrade an existing weak ref
-        if let Some(entry) = typed.get(&type_key) {
-            if let Some(weak) = entry.downcast_ref::<WeakCellMap<K, V>>()
-                && let Some(strong) = weak.upgrade()
-            {
-                return Some(strong.lock());
-            }
-            // Dead — remove stale entry
-            typed.remove(&type_key);
+        if let Some(existing) = Self::live_typed(&typed) {
+            return Some(existing);
         }
-
-        // Create from the untyped source
-        let built = create(source);
-        typed.insert(type_key, Box::new(built.downgrade()));
+        typed.insert(
+            std::any::TypeId::of::<WeakCellMap<K, V>>(),
+            Box::new(built.downgrade()),
+        );
         drop(typed);
-        Some(built)
+        Some(built.clone())
     }
 }
 
@@ -2592,10 +2612,12 @@ impl MykoServerContext {
 
     /// Shared typed-projection retrieval for `query_map` and `query_map_by_str`.
     ///
-    /// Returns the cached typed projection under `key`; if a concurrent cache
-    /// sweep evicted the untyped entry between computing `untyped` and this
-    /// lookup, re-inserts it from `untyped` and retries. `project` builds the
-    /// typed map from the untyped source and is the only per-caller difference.
+    /// Returns the typed projection cached under `key`, or builds one with
+    /// `project` and caches it. `project` subscribes and makes a waiting
+    /// write, and a subscriber callback on the settling thread reads this
+    /// cache, so it runs with no cache lock held. Two callers that race each
+    /// build a projection, and both return the one that reached the cache
+    /// first.
     fn typed_projection<K, V>(
         cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
         key: &str,
@@ -2606,20 +2628,24 @@ impl MykoServerContext {
         K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
         V: hyphae::traits::CellValue + 'static,
     {
-        if let Some(entry) = cache.get(key)
-            && let Some(typed) = entry.value().get_or_create_typed(&project)
-        {
+        let cached = cache.get(key).and_then(|entry| entry.value().typed());
+        if let Some(typed) = cached {
             return typed;
         }
-        // Concurrent cache sweep may have evicted the entry — re-insert and retry
+        let built = project(untyped.clone());
+        let adopted = cache
+            .get(key)
+            .and_then(|entry| entry.value().adopt_typed(&built));
+        if let Some(typed) = adopted {
+            return typed;
+        }
+        // A cache sweep evicted the entry, or it holds a map that has since
+        // died.
         cache.insert(key.to_owned(), MapCacheEntry::new(untyped));
-        if let Some(entry) = cache.get(key)
-            && let Some(typed) = entry.value().get_or_create_typed(&project)
-        {
-            return typed;
-        }
-        tracing::error!(%key, "typed projection cache entry disappeared after insertion");
-        project(untyped.clone())
+        let adopted = cache
+            .get(key)
+            .and_then(|entry| entry.value().adopt_typed(&built));
+        adopted.unwrap_or(built)
     }
 
     /// Compute-gate + double-checked caching shared by `query_map_untyped` and
@@ -2715,18 +2741,9 @@ impl MykoServerContext {
             V::request_cache_scope(),
         );
         let untyped = self.view_map_untyped(view, request);
-        if let Some(entry) = self.view_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "MykoServerContext::view")
-            })
-        {
-            return typed;
-        }
-        tracing::error!(
-            view_id = %V::view_id_static(),
-            "view cache entry disappeared after construction; using an uncached projection"
-        );
-        typed_map_arc_from_any_item(untyped, "MykoServerContext::view fallback")
+        Self::typed_projection(&self.view_cache, &key, &untyped, |source| {
+            typed_map_arc_from_any_item(source, "MykoServerContext::view")
+        })
     }
 
     /// Run a one-shot (non-reactive) query.
@@ -4115,5 +4132,86 @@ mod tests {
 
         let _ = ctx.report(report, request);
         assert!(ctx.compute_gates.is_empty());
+    }
+
+    #[test]
+    fn a_typed_projection_is_built_while_a_settling_callback_reads_the_cache() {
+        use std::{sync::mpsc, time::Duration};
+
+        use dashmap::DashMap;
+        use hyphae::{Cell, CellMap, Mutable, Watchable};
+
+        use super::{AnyItemArc, MapCacheEntry};
+
+        let _serial = scheduler_test_serial();
+        let cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>> = Arc::new(
+            DashMap::with_hasher_and_shard_amount(ahash::RandomState::new(), 2),
+        );
+        let untyped = CellMap::<Arc<str>, AnyItemArc>::new().lock();
+        cache.insert("live".to_owned(), MapCacheEntry::new(&untyped));
+
+        // Looking up a dead entry evicts it, which takes its shard
+        // exclusively. With two shards, some of these share the shard of
+        // "live".
+        let dead_keys: Vec<String> = (0..64).map(|n| format!("dead-{n}")).collect();
+        for key in &dead_keys {
+            cache.insert(
+                key.clone(),
+                MapCacheEntry::new(&CellMap::<Arc<str>, AnyItemArc>::new().lock()),
+            );
+        }
+
+        let (in_callback_tx, in_callback_rx) = mpsc::channel::<()>();
+        let (projecting_tx, projecting_rx) = mpsc::channel::<()>();
+        let (done_tx, done_rx) = mpsc::channel::<&'static str>();
+
+        let trigger = Cell::new(0u32);
+        let callback_cache = cache.clone();
+        let projecting_rx = std::sync::Mutex::new(projecting_rx);
+        let _guard = trigger.subscribe(move |signal| {
+            if !matches!(signal, hyphae::Signal::Value(value) if **value == 1) {
+                return;
+            }
+            let _ = in_callback_tx.send(());
+            let projecting = projecting_rx
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .recv_timeout(Duration::from_secs(10));
+            assert!(projecting.is_ok(), "the projection starts");
+            for key in &dead_keys {
+                assert!(MykoServerContext::try_get_cached(&callback_cache, key).is_none());
+            }
+        });
+
+        let settler_done = done_tx.clone();
+        let settler = std::thread::spawn(move || {
+            trigger.set(1);
+            let _ = settler_done.send("settler");
+        });
+
+        assert!(
+            in_callback_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+            "the callback runs"
+        );
+        let projector = std::thread::spawn(move || {
+            let typed = MykoServerContext::typed_projection(&cache, "live", &untyped, |_source| {
+                let _ = projecting_tx.send(());
+                let typed = CellMap::<Arc<str>, u32>::new();
+                // Waits for the settle the other thread holds.
+                typed.insert(Arc::from("row"), 1);
+                typed.lock()
+            });
+            assert_eq!(typed.get_value(&Arc::from("row")), Some(1));
+            let _ = done_tx.send("projector");
+        });
+
+        for _ in 0..2 {
+            assert!(
+                done_rx.recv_timeout(Duration::from_secs(10)).is_ok(),
+                "a cache lock held across the projection's write deadlocks it with the settle"
+            );
+        }
+        assert!(settler.join().is_ok());
+        assert!(projector.join().is_ok());
     }
 }
