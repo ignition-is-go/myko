@@ -471,12 +471,10 @@ fn ingest<T: Eventable>(ctx: &MykoServerContext, change: MEventType, items: &[T]
     let _ = hyphae::submit(&[], None, || ctx.apply_event_batch(events));
 }
 
-// The authority orders the two readers' store changes, but each reader queues
-// its diffs when its whole event set closes, which is after it released the
-// authority. Passes on v6.17.1, where the authority was held until the diffs
-// were delivered.
+// Each reader queues its event set when the set closes, which is after it
+// released the authority. A store tells its subscribers what it holds when
+// the set is applied, so the order the sets arrive in does not matter.
 #[test]
-#[ignore = "open on the settle core: a reader's event set is queued after the authority is released"]
 fn wire_edge_batches_racing_wire_edge_deletes_agree_with_the_projection() {
     let ctx = make_ctx();
     let mirror = mirror_edges(&ctx);
@@ -508,8 +506,9 @@ fn notes(round: usize) -> Vec<RaceNote> {
         .collect()
 }
 
+// Nothing orders two writers of a type the graph does not coordinate. The
+// store's diffs still follow its data (myko lv-fb7b).
 #[test]
-#[ignore = "myko lv-fb7b: nothing orders two writers' diffs of a type the graph does not coordinate"]
 fn wire_batches_racing_wire_deletes_of_a_plain_type_agree_with_a_subscriber() {
     let ctx = make_ctx();
     let mirror = mirror(&ctx, "RaceNote");
