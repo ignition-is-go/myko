@@ -1747,6 +1747,10 @@ impl MykoServerContext {
     /// Single authoritative mutation. Reduction, projection, and persistence
     /// enqueue occur inside one closed Hyphae batch; downstream effects drain
     /// only after persistence has been attempted.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the authority spans the preflight and the reduce; `settle_reduce` releases it"
+    )]
     fn emit_one(
         &self,
         item: Arc<dyn AnyItem>,
@@ -1758,7 +1762,7 @@ impl MykoServerContext {
             .graph_index
             .as_ref()
             .filter(|graph| graph.coordinates(item.as_ref(), change));
-        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        let authority = coordinated_graph.map(|graph| graph.lock_authority());
         let old = self.canonical_item(item.as_ref());
         let mut graph_cascades = Vec::new();
         if let Some(graph) = coordinated_graph {
@@ -1777,7 +1781,7 @@ impl MykoServerContext {
                 .map_err(|error| Self::graph_error(item.as_ref(), error))?;
         }
 
-        hyphae::batch(|| -> Result<(), PersistError> {
+        Self::settle_reduce(authority, || -> Result<(), PersistError> {
             self.reduce_one(&item, change);
             if let Some(graph) = coordinated_graph {
                 let new = (change == MEventType::SET).then_some(item.as_ref());
@@ -1812,6 +1816,26 @@ impl MykoServerContext {
         let result = self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade);
         drop(item);
         result
+    }
+
+    /// Settle the store reduce that `writes` makes, releasing `authority`
+    /// before waiting for it.
+    ///
+    /// A write can sleep until another thread has settled it. A subscriber
+    /// callback on that thread that mutates the graph takes the authority, so
+    /// holding it across the wait would deadlock the two.
+    fn settle_reduce<R>(
+        authority: Option<std::sync::MutexGuard<'_, ()>>,
+        writes: impl FnOnce() -> R,
+    ) -> R {
+        match authority {
+            Some(authority) => crate::core::locked_writes::locked_writes(move || {
+                let result = writes();
+                drop(authority);
+                result
+            }),
+            None => hyphae::batch(writes),
+        }
     }
 
     /// Single-item store reduce — **no allocation**. Records the stat and applies
@@ -1853,6 +1877,10 @@ impl MykoServerContext {
     /// single-item entry points deliberately do **not** — they call
     /// `reduce_one` + `apply_effects` directly to avoid the grouping/Vec cost.
     #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the authority spans the preflight and the reduce; `settle_reduce` releases it"
+    )]
     fn emit_grouped(
         &self,
         items: &[Arc<dyn AnyItem>],
@@ -1882,7 +1910,7 @@ impl MykoServerContext {
                 .flatten()
                 .any(|item| graph.coordinates(item.as_ref(), change))
         });
-        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        let authority = coordinated_graph.map(|graph| graph.lock_authority());
         if change == MEventType::SET
             && let Some(graph) = coordinated_graph
         {
@@ -1952,7 +1980,7 @@ impl MykoServerContext {
         // window — running effects outside the batch means that recursive call
         // opens its own fresh window instead of joining (and colliding with)
         // this one.
-        hyphae::batch(|| -> Result<(), PersistError> {
+        Self::settle_reduce(authority, || -> Result<(), PersistError> {
             for (entity_type, group) in &by_type {
                 let store = self.registry.get_or_create(entity_type);
                 match change {
@@ -2024,6 +2052,10 @@ impl MykoServerContext {
     /// Every entity type emits one `MapDiff::Batch`, even when that type has
     /// both deletions and upserts.
     #[allow(clippy::too_many_lines)]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the authority spans the preflight and the reduce; `settle_reduce` releases it"
+    )]
     fn emit_replace_grouped(
         &self,
         upserts: &[Arc<dyn AnyItem>],
@@ -2053,7 +2085,7 @@ impl MykoServerContext {
                     .iter()
                     .any(|item| graph.coordinates(item.as_ref(), MEventType::SET))
         });
-        let _authority = coordinated_graph.map(|graph| graph.lock_authority());
+        let authority = coordinated_graph.map(|graph| graph.lock_authority());
         if let (Some(graph), Some(expected)) = (coordinated_graph, expected_graph_generation)
             && graph.generation() != expected
         {
@@ -2141,7 +2173,7 @@ impl MykoServerContext {
                 .push(item.clone());
         }
 
-        hyphae::batch(|| -> Result<(), PersistError> {
+        Self::settle_reduce(authority, || -> Result<(), PersistError> {
             for (entity_type, (type_deletes, type_upserts)) in &by_type {
                 let store = self.registry.get_or_create(entity_type);
                 let mut changes =

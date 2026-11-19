@@ -5,6 +5,7 @@ pub mod command;
 pub mod common;
 pub mod graph;
 pub mod item;
+pub(crate) mod locked_writes;
 pub mod query;
 pub mod reflection;
 pub mod relationship;

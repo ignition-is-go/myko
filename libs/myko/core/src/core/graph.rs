@@ -1113,36 +1113,38 @@ fn install_related_target_subscription(
     let output_for_target = output;
     let target_for_callback = target_id.clone();
     let guard = cell.subscribe(move |signal| {
-        let _dispatch_guard = dispatch_for_target.lock();
-        let Signal::Value(value) = signal else {
-            return;
-        };
-        let Some(state) = state_weak.upgrade() else {
-            return;
-        };
-        let is_current = {
-            let state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            state
-                .targets
-                .get(&target_for_callback)
-                .is_some_and(|target| target.generation == generation)
-        };
-        if !is_current {
-            return;
-        }
-        let Some(output) = output_for_target.upgrade() else {
-            return;
-        };
-        match value.as_ref() {
-            Some(item) => {
-                output.insert(target_for_callback.clone(), item.clone());
+        crate::core::locked_writes::locked_writes(|| {
+            let _dispatch_guard = dispatch_for_target.lock();
+            let Signal::Value(value) = signal else {
+                return;
+            };
+            let Some(state) = state_weak.upgrade() else {
+                return;
+            };
+            let is_current = {
+                let state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                state
+                    .targets
+                    .get(&target_for_callback)
+                    .is_some_and(|target| target.generation == generation)
+            };
+            if !is_current {
+                return;
             }
-            None => {
-                output.remove(&target_for_callback);
+            let Some(output) = output_for_target.upgrade() else {
+                return;
+            };
+            match value.as_ref() {
+                Some(item) => {
+                    output.insert(target_for_callback.clone(), item.clone());
+                }
+                None => {
+                    output.remove(&target_for_callback);
+                }
             }
-        }
+        });
     });
 
     let mut guard = Some(guard);
@@ -1233,26 +1235,28 @@ fn install_bulk_target_subscription(
     };
     let output_for_diffs = output_for_hydration.downgrade();
     let guard = store.subscribe_diffs(move |diff| {
-        let _dispatch_guard = dispatch_for_store.lock();
-        let Some(state) = state_weak.upgrade() else {
-            return;
-        };
-        let (upserts, removals) = {
-            let state = state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            if !state.bulk_targets {
+        crate::core::locked_writes::locked_writes(|| {
+            let _dispatch_guard = dispatch_for_store.lock();
+            let Some(state) = state_weak.upgrade() else {
                 return;
-            }
-            let mut upserts = Vec::new();
-            let mut removals = Vec::new();
-            collect_bulk_target_actions(diff, &state, &mut upserts, &mut removals);
-            (upserts, removals)
-        };
-        let Some(output) = output_for_diffs.upgrade() else {
-            return;
-        };
-        apply_related_output_actions(&output, removals, upserts);
+            };
+            let (upserts, removals) = {
+                let state = state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !state.bulk_targets {
+                    return;
+                }
+                let mut upserts = Vec::new();
+                let mut removals = Vec::new();
+                collect_bulk_target_actions(diff, &state, &mut upserts, &mut removals);
+                (upserts, removals)
+            };
+            let Some(output) = output_for_diffs.upgrade() else {
+                return;
+            };
+            apply_related_output_actions(&output, removals, upserts);
+        });
     });
 
     let mut guard = Some(guard);
@@ -1310,11 +1314,11 @@ where
     let store_for_edges = target_store.clone();
     let dispatch_for_edges = dispatch;
     let edge_guard = edges.subscribe_diffs(move |diff| {
-        let _dispatch_guard = dispatch_for_edges.lock();
         let Some(output) = output_for_edges.upgrade() else {
             return;
         };
-        let retired = hyphae::batch(|| {
+        let retired = crate::core::locked_writes::locked_writes(|| {
+            let _dispatch_guard = dispatch_for_edges.lock();
             let mut retired = Vec::new();
             let mut added = Vec::new();
             let mut bulk_guards = Vec::new();
@@ -3429,25 +3433,27 @@ impl GraphIndex {
         let selection_for_window = selection.clone();
         let select_for_window = select.clone();
         let set_window = move |next: Option<crate::wire::QueryWindow>| {
-            let _dispatch_guard = dispatch_for_window.lock();
-            let Some(graph) = graph_weak.upgrade() else {
-                return;
-            };
-            let next_snapshot = {
-                let _authority = graph.lock_authority();
-                let mut current = selection_for_window
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let next = GraphWindowSelection::Offset(next);
-                if *current == next {
+            crate::core::locked_writes::locked_writes(|| {
+                let _dispatch_guard = dispatch_for_window.lock();
+                let Some(graph) = graph_weak.upgrade() else {
                     return;
+                };
+                let next_snapshot = {
+                    let _authority = graph.lock_authority();
+                    let mut current = selection_for_window
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let next = GraphWindowSelection::Offset(next);
+                    if *current == next {
+                        return;
+                    }
+                    *current = next;
+                    select_for_window(&graph, &current)
+                };
+                if let Some(snapshots) = snapshots_weak.upgrade() {
+                    snapshots.set(Arc::new(next_snapshot));
                 }
-                *current = next;
-                select_for_window(&graph, &current)
-            };
-            if let Some(snapshots) = snapshots_weak.upgrade() {
-                snapshots.set(Arc::new(next_snapshot));
-            }
+            });
         };
 
         let snapshots_weak = snapshots.downgrade();
@@ -3456,25 +3462,27 @@ impl GraphIndex {
             if next.validate().is_err() {
                 return;
             }
-            let _dispatch_guard = dispatch.lock();
-            let Some(graph) = graph_weak.upgrade() else {
-                return;
-            };
-            let next_snapshot = {
-                let _authority = graph.lock_authority();
-                let mut current = selection
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let next = GraphWindowSelection::Cursor(next);
-                if *current == next {
+            crate::core::locked_writes::locked_writes(|| {
+                let _dispatch_guard = dispatch.lock();
+                let Some(graph) = graph_weak.upgrade() else {
                     return;
+                };
+                let next_snapshot = {
+                    let _authority = graph.lock_authority();
+                    let mut current = selection
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let next = GraphWindowSelection::Cursor(next);
+                    if *current == next {
+                        return;
+                    }
+                    *current = next;
+                    select(&graph, &current)
+                };
+                if let Some(snapshots) = snapshots_weak.upgrade() {
+                    snapshots.set(Arc::new(next_snapshot));
                 }
-                *current = next;
-                select(&graph, &current)
-            };
-            if let Some(snapshots) = snapshots_weak.upgrade() {
-                snapshots.set(Arc::new(next_snapshot));
-            }
+            });
         };
 
         Ok(crate::query::WindowedQuerySource::new_with_cursor(
@@ -3679,24 +3687,28 @@ impl GraphIndex {
             .registration(edge_type)
             .context("edge type is not registered")?;
         let store = self.registry.get_or_create(edge_type);
-        let _authority = self.lock_authority();
-        let initial_ids = initial_ids(self);
         let result = GraphWatchMap::new();
-        let entries = initial_ids
-            .into_iter()
-            .filter_map(|id| store.get_value(&id).map(|item| (id, item)))
-            .collect();
-        result.apply_diff_owned(GraphWatchDiff::Initial { entries });
-        let result_weak = result.downgrade();
-        let callback: Arc<GraphWatchCallback> = Arc::new(move |diff| {
-            let Some(result) = result_weak.upgrade() else {
-                return;
-            };
-            if let Some(diff) = Self::watch_diff_matching(registration, &matches_endpoints, diff) {
-                result.apply_diff_owned(diff);
-            }
+        let guard = crate::core::locked_writes::locked_writes(|| {
+            let _authority = self.lock_authority();
+            let initial_ids = initial_ids(self);
+            let entries = initial_ids
+                .into_iter()
+                .filter_map(|id| store.get_value(&id).map(|item| (id, item)))
+                .collect();
+            result.apply_diff_owned(GraphWatchDiff::Initial { entries });
+            let result_weak = result.downgrade();
+            let callback: Arc<GraphWatchCallback> = Arc::new(move |diff| {
+                let Some(result) = result_weak.upgrade() else {
+                    return;
+                };
+                if let Some(diff) =
+                    Self::watch_diff_matching(registration, &matches_endpoints, diff)
+                {
+                    result.apply_diff_owned(diff);
+                }
+            });
+            self.watch_router.subscribe_many(routes, &callback)
         });
-        let guard = self.watch_router.subscribe_many(routes, &callback);
         result.own(guard);
         Ok(result.lock())
     }

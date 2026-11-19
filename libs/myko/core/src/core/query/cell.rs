@@ -168,33 +168,35 @@ impl WindowedQuerySource {
         let selection_for_diffs = selection.clone();
         let dispatch_for_diffs = dispatch.clone();
         let guard = map.subscribe_diffs(move |diff| {
-            let _dispatch_guard = dispatch_for_diffs.lock();
-            let Some(snapshots) = snapshots_weak.upgrade() else {
-                return;
-            };
-            let current = snapshots.get();
-            if !affects_page(diff, &current.entries) {
-                return;
-            }
-            let entries = match diff {
-                MapDiff::Initial { entries } => entries.clone(),
-                MapDiff::Insert { .. }
-                | MapDiff::Update { .. }
-                | MapDiff::Remove { .. }
-                | MapDiff::Batch { .. } => {
-                    let Some(map) = map_weak.upgrade() else {
-                        return;
-                    };
-                    map.snapshot()
+            crate::core::locked_writes::locked_writes(|| {
+                let _dispatch_guard = dispatch_for_diffs.lock();
+                let Some(snapshots) = snapshots_weak.upgrade() else {
+                    return;
+                };
+                let current = snapshots.get();
+                if !affects_page(diff, &current.entries) {
+                    return;
                 }
-            };
-            let next = {
-                let selection = selection_for_diffs
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                snapshot(entries, &selection)
-            };
-            snapshots.set(Arc::new(next));
+                let entries = match diff {
+                    MapDiff::Initial { entries } => entries.clone(),
+                    MapDiff::Insert { .. }
+                    | MapDiff::Update { .. }
+                    | MapDiff::Remove { .. }
+                    | MapDiff::Batch { .. } => {
+                        let Some(map) = map_weak.upgrade() else {
+                            return;
+                        };
+                        map.snapshot()
+                    }
+                };
+                let next = {
+                    let selection = selection_for_diffs
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    snapshot(entries, &selection)
+                };
+                snapshots.set(Arc::new(next));
+            });
         });
         snapshots.own(guard);
 
@@ -206,50 +208,54 @@ impl WindowedQuerySource {
         let map_for_cursor = map.downgrade();
         let dispatch_for_cursor = dispatch;
         let set_window = move |next: Option<QueryWindow>| {
-            let _dispatch_guard = dispatch_for_window.lock();
-            let next_selection = {
-                let mut current = selection_for_window
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let next = WindowSelection::Offset(next);
-                if *current == next {
+            crate::core::locked_writes::locked_writes(|| {
+                let _dispatch_guard = dispatch_for_window.lock();
+                let next_selection = {
+                    let mut current = selection_for_window
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let next = WindowSelection::Offset(next);
+                    if *current == next {
+                        return;
+                    }
+                    *current = next;
+                    current.clone()
+                };
+                let Some(map) = map_weak.upgrade() else {
                     return;
+                };
+                let next_snapshot = snapshot(map.snapshot(), &next_selection);
+                if let Some(snapshots) = snapshots_weak.upgrade() {
+                    snapshots.set(Arc::new(next_snapshot));
                 }
-                *current = next;
-                current.clone()
-            };
-            let Some(map) = map_weak.upgrade() else {
-                return;
-            };
-            let next_snapshot = snapshot(map.snapshot(), &next_selection);
-            if let Some(snapshots) = snapshots_weak.upgrade() {
-                snapshots.set(Arc::new(next_snapshot));
-            }
+            });
         };
 
         let set_cursor_window = move |next: QueryCursorWindow| {
             if next.validate().is_err() {
                 return;
             }
-            let _dispatch_guard = dispatch_for_cursor.lock();
-            let next_selection = {
-                let mut current = selection
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let next = WindowSelection::Cursor(next);
-                if *current == next {
+            crate::core::locked_writes::locked_writes(|| {
+                let _dispatch_guard = dispatch_for_cursor.lock();
+                let next_selection = {
+                    let mut current = selection
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let next = WindowSelection::Cursor(next);
+                    if *current == next {
+                        return;
+                    }
+                    *current = next;
+                    current.clone()
+                };
+                let Some(map) = map_for_cursor.upgrade() else {
                     return;
+                };
+                let next_snapshot = snapshot(map.snapshot(), &next_selection);
+                if let Some(snapshots) = snapshots_for_cursor.upgrade() {
+                    snapshots.set(Arc::new(next_snapshot));
                 }
-                *current = next;
-                current.clone()
-            };
-            let Some(map) = map_for_cursor.upgrade() else {
-                return;
-            };
-            let next_snapshot = snapshot(map.snapshot(), &next_selection);
-            if let Some(snapshots) = snapshots_for_cursor.upgrade() {
-                snapshots.set(Arc::new(next_snapshot));
-            }
+            });
         };
 
         Self::new_with_cursor(snapshots.lock(), set_window, set_cursor_window)

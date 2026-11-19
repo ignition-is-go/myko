@@ -900,23 +900,25 @@ where
         let Some(result) = result_weak.upgrade() else {
             return;
         };
-        let _reconciliation = synchronization.reconciliation_gate.lock();
-        let mut state = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let current_generation = synchronization
-            .generation
-            .fetch_add(1, Ordering::Relaxed)
-            .saturating_add(1);
-        reconcile_live_query(
-            &registry,
-            host_id,
-            &result,
-            &mut state,
-            new_filter.as_ref(),
-            current_generation,
-            &synchronization,
-        );
+        crate::core::locked_writes::locked_writes(|| {
+            let _reconciliation = synchronization.reconciliation_gate.lock();
+            let mut state = state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let current_generation = synchronization
+                .generation
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
+            reconcile_live_query(
+                &registry,
+                host_id,
+                &result,
+                &mut state,
+                new_filter.as_ref(),
+                current_generation,
+                &synchronization,
+            );
+        });
     });
     drop(filter_cell);
     result.own(guard);
@@ -984,11 +986,13 @@ fn build_live_diff_callback<F: LiveFilterQuery>(
             }
             return;
         }
-        let _reconciliation = synchronization.reconciliation_gate.lock();
-        let Some(filter) = current_live_filter(&filter_state, &synchronization) else {
-            return;
-        };
-        apply_live_diff(&result, diff, &filter, scope);
+        crate::core::locked_writes::locked_writes(|| {
+            let _reconciliation = synchronization.reconciliation_gate.lock();
+            let Some(filter) = current_live_filter(&filter_state, &synchronization) else {
+                return;
+            };
+            apply_live_diff(&result, diff, &filter, scope);
+        });
     }
 }
 
