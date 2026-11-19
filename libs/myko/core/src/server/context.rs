@@ -2587,14 +2587,6 @@ impl MykoServerContext {
         }
     }
 
-    /// Local invalidation generation for durable undo previews.
-    /// Includes unattributed/foreign writes and completion-only changes. Readers
-    /// must still flush history and revalidate before publishing an inverse.
-    #[must_use]
-    pub fn undo_history_revision(&self) -> u64 {
-        self.registry.transactions.history_revision()
-    }
-
     pub(crate) fn operation_owner(&self) -> *const () {
         Arc::as_ptr(&self.causal_counters).cast()
     }

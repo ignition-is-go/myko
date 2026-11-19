@@ -34,6 +34,7 @@ use uuid::Uuid;
 
 mod history_feed;
 mod transactions;
+mod undo_list;
 
 const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
 const PG_CATCH_UP_TIMEOUT_SECS_DEFAULT: u64 = 300;
@@ -318,6 +319,7 @@ impl PostgresHistoryStore {
 
 /// `HistoryReplayProvider` backed by `PostgresHistoryStore`.
 pub struct PostgresHistoryReplayProvider {
+    undo_list: Arc<undo_list::Source>,
     config: PostgresConfig,
     committed: Cell<Option<Arc<CommittedHistoryEvent>>, CellMutable>,
 }
@@ -325,7 +327,9 @@ pub struct PostgresHistoryReplayProvider {
 impl PostgresHistoryReplayProvider {
     #[must_use]
     pub fn new(config: PostgresConfig) -> Self {
+        let undo_list = undo_list::Source::shared(&config);
         Self {
+            undo_list,
             config,
             committed: Cell::new(None),
         }
@@ -338,6 +342,12 @@ impl PostgresHistoryReplayProvider {
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn undo_list_source(
+        &self,
+        user: &myko::identity::UserId,
+    ) -> Result<Cell<Arc<myko::entities::undo::UndoLogSnapshot>, CellImmutable>, String> {
+        Ok(self.undo_list.watch(user.as_ref()))
+    }
     fn undo_boundary_exists(&self, id: &str) -> Result<bool, String> {
         PostgresHistoryStore::new(self.config.clone())?.undo_boundary_exists(id)
     }
@@ -664,6 +674,7 @@ fn run_producer_loop(
     rx: &flume::Receiver<ProducerRequest>,
     health: &Arc<PersistHealth>,
 ) {
+    let undo_list = undo_list::Source::shared(config);
     let mut client: Option<Client> = None;
     let mut batch = Vec::<EventRecord>::new();
     let mut pending: Option<ProducerRequest> = None;
@@ -685,14 +696,20 @@ fn run_producer_loop(
         if client.is_none() {
             client = connect_producer_client(config);
         }
+        let mut sequence = undo_list
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = if let Some(client) = client.as_mut() {
-            insert_event_batch(client, config, &batch).and_then(|()| {
+            insert_event_batch(client, config, &batch).and_then(|changes| {
+                undo_list.records(&mut sequence, changes);
                 if let Some(ProducerRequest::Complete { tx, user }) = &pending {
                     let completions = qi(&format!("{}_transactions", config.table));
                     let table = qi(&config.table);
-                    client.execute(&format!("INSERT INTO {completions} (tx, user_id, first_id, last_id)
+                    let completed = client.query_opt(&format!("INSERT INTO {completions} (tx, user_id, first_id, last_id)
                         SELECT $1, $2, MIN(id), MAX(id) FROM {table} WHERE tx = $1 HAVING MAX(id) IS NOT NULL
-                        ON CONFLICT (tx) DO UPDATE SET user_id = EXCLUDED.user_id, first_id = EXCLUDED.first_id, last_id = EXCLUDED.last_id"), &[tx, user])?;
+                        ON CONFLICT (tx) DO UPDATE SET user_id = EXCLUDED.user_id, first_id = EXCLUDED.first_id, last_id = EXCLUDED.last_id RETURNING first_id"), &[tx, user])?;
+                    if let Some(row) = completed { undo_list.complete(&mut sequence, tx, user, row.get(0)); }
                 }
                 Ok(())
             })
@@ -701,6 +718,7 @@ fn run_producer_loop(
             std::thread::sleep(Duration::from_secs(1));
             continue;
         };
+        drop(sequence);
         match result {
             Ok(()) => {
                 health.record_success_batch(u64::try_from(batch.len()).unwrap_or(u64::MAX));
@@ -758,13 +776,14 @@ fn invalidate_transaction_completions(
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 fn insert_event_batch(
     client: &mut Client,
     config: &PostgresConfig,
     events: &[EventRecord],
-) -> Result<(), ::postgres::Error> {
+) -> Result<Vec<myko::entities::undo::UndoListChange>, ::postgres::Error> {
     if events.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let table = qi(&config.table);
@@ -773,11 +792,11 @@ fn insert_event_batch(
     // NOTE(ts): Single event — skip transaction overhead.
     if events.len() == 1 {
         let Some(record) = events.first() else {
-            return Ok(());
+            return Ok(Vec::new());
         };
         let event = &record.event;
         let sql = format!(
-            "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb)"
+            "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb) RETURNING id"
         );
         let item_id = event
             .item
@@ -794,7 +813,7 @@ fn insert_event_batch(
         let created_at: &str = &event.created_at;
         let tx: &str = &event.tx;
         let source_id: Option<&str> = event.source_id.as_deref();
-        client.execute(
+        let row = client.query_one(
             &sql,
             &[
                 &item_type,
@@ -806,7 +825,10 @@ fn insert_event_batch(
                 &event_json,
             ],
         )?;
-        return Ok(());
+        return Ok(vec![myko::entities::undo::UndoListChange::from_record(
+            row.get(0),
+            record,
+        )]);
     }
 
     // NOTE(ts): Build a multi-row INSERT for the batch within a single transaction.
@@ -860,11 +882,16 @@ fn insert_event_batch(
     let param_refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
         params.iter().map(std::convert::AsRef::as_ref).collect();
 
+    sql.push_str(" RETURNING id");
     let mut txn = client.transaction()?;
-    txn.execute(&sql, &param_refs)?;
+    let rows = txn.query(&sql, &param_refs)?;
     txn.commit()?;
 
-    Ok(())
+    Ok(rows
+        .iter()
+        .zip(events)
+        .map(|(row, record)| myko::entities::undo::UndoListChange::from_record(row.get(0), record))
+        .collect())
 }
 
 /// Shared status for startup catch-up.

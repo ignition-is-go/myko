@@ -1198,13 +1198,26 @@ fn entity_opt_in_excludes_presence_and_blocks_mixed_transactions_without_partial
 
 #[test]
 #[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
-fn live_history_revision_includes_completion_and_unattributed_writes_but_not_preview_reads()
--> anyhow::Result<()> {
-    use myko::{entities::undo::undo_log_matching, report::ReportContext};
+fn live_undo_metadata_waits_for_completion_and_tracks_foreign_writes() -> anyhow::Result<()> {
+    use myko::hyphae::Gettable;
     let f = Fixture::new()?;
     f.seed()?;
-    let reader = ReportContext::new(f.context("alice", "watch").req, f.server.clone());
-    let before = f.server.undo_history_revision();
+    f.backend.flush().map_err(anyhow::Error::msg)?;
+    let stream = f
+        .provider
+        .undo_list_source(&"profile:alice".into())
+        .map_err(anyhow::Error::msg)?;
+    let wait =
+        |predicate: &dyn Fn(&myko::entities::undo::UndoLogSnapshot) -> bool| -> anyhow::Result<()> {
+            for _ in 0..500 {
+                if predicate(&stream.get()) {
+                    return Ok(());
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            anyhow::bail!("undo metadata did not converge: {:?}", stream.get());
+        };
+    wait(&|value| value.page.is_some())?;
     let write = f.context("alice", "in-flight");
     write
         .emit_set(&UndoPosition {
@@ -1213,40 +1226,100 @@ fn live_history_revision_includes_completion_and_unattributed_writes_but_not_pre
             x: Some(1.0),
         })
         .map_err(command_error)?;
-    let after_write = f.server.undo_history_revision();
-    anyhow::ensure!(after_write > before);
+    f.backend.flush().map_err(anyhow::Error::msg)?;
     anyhow::ensure!(
-        undo_log_matching(&reader, 20, |_, _| Ok(true))
-            .map_err(command_error)?
-            .entries
-            .is_empty()
+        stream
+            .get()
+            .page
+            .as_ref()
+            .is_some_and(|page| page.entries.is_empty())
     );
-    anyhow::ensure!(f.server.undo_history_revision() == after_write);
     drop(write);
-    let after_completion = f.server.undo_history_revision();
-    anyhow::ensure!(after_completion > after_write);
-    anyhow::ensure!(
-        undo_log_matching(&reader, 20, |_, _| Ok(true))
-            .map_err(command_error)?
-            .entries
-            .len()
-            == 1
-    );
-    anyhow::ensure!(f.server.undo_history_revision() == after_completion);
-    f.server.set(&UndoPosition {
-        id: "a".into(),
-        node_id: "a".into(),
-        x: Some(2.0),
+    f.backend.flush().map_err(anyhow::Error::msg)?;
+    wait(&|value| {
+        value
+            .page
+            .as_ref()
+            .is_some_and(|page| page.entries.len() == 1)
     })?;
-    let after_internal = f.server.undo_history_revision();
-    anyhow::ensure!(after_internal > after_completion);
-    f.context("alice", "preview-only")
-        .emit_set_transient(&UndoPosition {
+    let foreign = f.context("bob", "foreign");
+    foreign
+        .emit_set(&UndoPosition {
             id: "a".into(),
             node_id: "a".into(),
-            x: Some(3.0),
+            x: Some(2.0),
         })
         .map_err(command_error)?;
-    anyhow::ensure!(f.server.undo_history_revision() == after_internal);
+    drop(foreign);
+    f.backend.flush().map_err(anyhow::Error::msg)?;
+    wait(&|value| {
+        value.page.as_ref().is_some_and(|page| {
+            page.entries.first().is_some_and(|entry| {
+                entry
+                    .conflicts
+                    .iter()
+                    .any(|conflict| conflict.is_other_user)
+            })
+        })
+    })?;
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires an isolated MYKO_HISTORY_TEST_URL database"]
+fn cold_metadata_hydrates_200_transactions_and_refills_after_undo() -> anyhow::Result<()> {
+    use myko::hyphae::Gettable;
+    let f = Fixture::new()?;
+    f.seed()?;
+    for index in 1..=205 {
+        f.moved(
+            "alice",
+            &format!("edit-{index}"),
+            &[("a", f64::from(index))],
+        )?;
+    }
+    f.backend.flush().map_err(anyhow::Error::msg)?;
+    let stream = f
+        .provider
+        .undo_list_source(&"profile:alice".into())
+        .map_err(anyhow::Error::msg)?;
+    let wait = |oldest: &str| -> anyhow::Result<()> {
+        for _ in 0..500 {
+            let value = stream.get();
+            if let Some(error) = &value.error {
+                anyhow::bail!("{error}");
+            }
+            if value.page.as_ref().is_some_and(|page| {
+                page.entries.len() == 200
+                    && page
+                        .entries
+                        .last()
+                        .is_some_and(|entry| entry.transaction_id.as_ref() == oldest)
+            }) {
+                return Ok(());
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        anyhow::bail!("bounded metadata did not converge");
+    };
+    wait("edit-6")?;
+    let value = stream.get();
+    let page = value
+        .page
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("missing page"))?;
+    anyhow::ensure!(
+        page.entries
+            .first()
+            .is_some_and(|entry| entry.transaction_id.as_ref() == "edit-205")
+    );
+    anyhow::ensure!(page.entries.iter().all(|entry| entry.validation_deferred));
+    UndoTransactions {
+        transaction_ids: vec!["edit-205".into()],
+    }
+    .execute(f.context("alice", "undo"))
+    .map_err(command_error)?;
+    wait("edit-5")?;
+    anyhow::ensure!(f.position("a")?.x == Some(204.0));
     Ok(())
 }

@@ -3,7 +3,7 @@ use super::{PostgresHistoryStore, connect_pg_client, qi};
 use myko::server::{EventRecord, HistoryEntityKey, TransactionChange, TransactionHistory};
 use std::sync::Arc;
 
-const fn boundary_filter() -> &'static str {
+pub(super) const fn boundary_filter() -> &'static str {
     "item_type = 'UndoHistoryBoundary' AND change_type = 'SET' AND event->'provenance'->>'commandId' = 'myko:undo-history-boundary' AND event->'provenance'->>'actorUserId' IS NULL AND event->'provenance'->>'requestTx' = tx"
 }
 fn predates_boundary(
@@ -202,8 +202,8 @@ impl PostgresHistoryStore {
         before_first_id: Option<i64>,
         limit: usize,
     ) -> Result<Vec<myko::server::UserTransaction>, String> {
-        if !(1..=100).contains(&limit) {
-            return Err("transaction page size must be between 1 and 100".into());
+        if !(1..=200).contains(&limit) {
+            return Err("transaction page size must be between 1 and 200".into());
         }
         let limit = i64::try_from(limit).map_err(|error| error.to_string())?;
         let mut client = connect_pg_client(&self.config, "user_transaction_page")?;

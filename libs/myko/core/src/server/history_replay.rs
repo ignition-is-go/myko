@@ -351,6 +351,16 @@ pub trait HistoryReplayProvider: Send + Sync {
         Err("History subscriptions are not supported by this provider".to_string())
     }
 
+    /// Bounded, shared in-memory undo metadata for one authenticated actor.
+    /// # Errors
+    /// Returns an error when the backend has no live undo projection.
+    fn undo_list_source(
+        &self,
+        _user: &crate::identity::UserId,
+    ) -> Result<Cell<Arc<crate::entities::undo::UndoLogSnapshot>, CellImmutable>, String> {
+        Err("live undo metadata is unsupported".into())
+    }
+
     /// Latest committed history row observed through the backend notification stream.
     fn committed_history_event(&self) -> Cell<Option<Arc<CommittedHistoryEvent>>, CellImmutable> {
         Cell::new(None).lock()

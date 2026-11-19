@@ -125,13 +125,19 @@ mixed replacement path provide their underlying primitives.
 acquire event-publishing capabilities, so a mounted preview cannot make its user
 appear busy to actual undo commands.
 
-`MykoServerContext::undo_history_revision()` is a local invalidation generation.
-Attributed-history writes (including unattributed records on that backend) advance
-it, and completion advances it again after the durable marker is enqueued. Read-only
-previews and transient/blackholed writes do not advance it. A subscribing report
-can sample this cheap generation outside mutation/activity locks, deduplicate it,
-and rebuild only changed previews. Reconnect creates an initial preview against
-retained history; this counter is not a persisted cursor or a distributed lock.
+The PostgreSQL backend exposes a shared per-user `undo_list_source`: a disposable
+in-memory projection of the latest 200 completed, opted-in transactions. It
+hydrates metadata from existing history once, then consumes producer commits and
+completion notifications. No timer, full preview rebuild, before-image lookup, or
+new durable summary table is involved in ordinary list updates. Opening the UI
+reveals its already mounted subscription.
+
+The projection keeps bounded entity keys and known later writers. Oversized
+metadata is marked truncated; all rows defer full validation until apply. A
+repeatable-read hydration snapshot is coordinated with local commit sequencing,
+so queued events are neither missed nor applied twice across hydration. Cache
+eviction does not expire durable history. Successful undo can refill older rows;
+the apply path still reads fresh history and checks the complete selected range.
 
 ## Scope and failure semantics
 

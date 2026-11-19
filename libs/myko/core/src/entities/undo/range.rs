@@ -33,6 +33,12 @@ pub struct UndoLogEntry {
     pub created_at: Arc<str>,
     pub entity_types: Vec<Arc<str>>,
     pub entities_changed: usize,
+    #[serde(default)]
+    pub validation_deferred: bool,
+    #[serde(default)]
+    pub details_truncated: bool,
+    #[serde(default)]
+    pub affected_entities: Vec<crate::graph::EntityRef>,
     /// Whether undoing the entire prefix through this entry is currently blocked.
     pub blocked_reason: Option<String>,
     pub conflicts: Vec<UndoConflict>,
@@ -76,8 +82,8 @@ fn candidates(
     limit: usize,
     matches: Policy<'_>,
 ) -> Result<Vec<(i64, TransactionHistory)>, CommandError> {
-    if !(1..=100).contains(&limit) {
-        return Err(failure(ctx, "undo history limit must be between 1 and 100"));
+    if !(1..=200).contains(&limit) {
+        return Err(failure(ctx, "undo history limit must be between 1 and 200"));
     }
     let user = ctx.undo_actor()?;
     let provider = fresh_history(ctx)?;
@@ -224,6 +230,9 @@ fn log_entry(
             .unwrap_or_default(),
         entity_types: kinds,
         entities_changed: history.changes.len(),
+        validation_deferred: false,
+        details_truncated: false,
+        affected_entities: Vec::new(),
         blocked_reason,
         conflicts,
     }
