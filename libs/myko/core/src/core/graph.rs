@@ -3687,15 +3687,16 @@ impl GraphIndex {
             .registration(edge_type)
             .context("edge type is not registered")?;
         let store = self.registry.get_or_create(edge_type);
-        let result = GraphWatchMap::new();
-        let guard = crate::core::locked_writes::locked_writes(|| {
+        let (result, guard) = {
+            // The mutation pipeline takes the authority inside a settle, so
+            // the map is filled without a write.
             let _authority = self.lock_authority();
             let initial_ids = initial_ids(self);
             let entries = initial_ids
                 .into_iter()
                 .filter_map(|id| store.get_value(&id).map(|item| (id, item)))
                 .collect();
-            result.apply_diff_owned(GraphWatchDiff::Initial { entries });
+            let result = GraphWatchMap::from_entries(entries);
             let result_weak = result.downgrade();
             let callback: Arc<GraphWatchCallback> = Arc::new(move |diff| {
                 let Some(result) = result_weak.upgrade() else {
@@ -3707,8 +3708,9 @@ impl GraphIndex {
                     result.apply_diff_owned(diff);
                 }
             });
-            self.watch_router.subscribe_many(routes, &callback)
-        });
+            let guard = self.watch_router.subscribe_many(routes, &callback);
+            (result, guard)
+        };
         result.own(guard);
         Ok(result.lock())
     }
