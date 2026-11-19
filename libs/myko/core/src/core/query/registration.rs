@@ -837,6 +837,7 @@ struct LiveQueryState<F> {
     // a bucket subscription outlives many filter ticks.
     bucket_filter_refs: HashMap<CompoundKey, Arc<Mutex<LiveFilterGeneration<F>>>>,
     scan_guard: Option<SubscriptionGuard>,
+    source_override: Option<FilteredCellMap>,
     scan_filter_ref: Option<Arc<Mutex<LiveFilterGeneration<F>>>>,
     prev_route_field_names: Option<&'static [&'static str]>,
 }
@@ -859,6 +860,7 @@ impl<F> Default for LiveQueryState<F> {
             bucket_guards: HashMap::new(),
             bucket_filter_refs: HashMap::new(),
             scan_guard: None,
+            source_override: None,
             scan_filter_ref: None,
             prev_route_field_names: None,
         }
@@ -888,6 +890,26 @@ pub fn query_live<F>(
 where
     F: LiveFilterQuery,
 {
+    query_live_in_context(
+        registry,
+        Arc::new(crate::request::RequestContext::internal(
+            Uuid::new_v4().to_string().into(),
+            host_id,
+            "query",
+        )),
+        filter_cell,
+    )
+}
+
+/// Build a live query while preserving the originating request and transaction.
+pub fn query_live_in_context<F>(
+    registry: Arc<StoreRegistry>,
+    request: Arc<crate::request::RequestContext>,
+    filter_cell: impl Watchable<F>,
+) -> FilteredCellMap
+where
+    F: LiveFilterQuery,
+{
     let result: AnyItemMap = AnyItemMap::new();
     let state: Arc<Mutex<LiveQueryState<F>>> = Arc::new(Mutex::new(LiveQueryState::default()));
     let synchronization = Arc::new(LiveQuerySynchronization::default());
@@ -910,7 +932,7 @@ where
             .saturating_add(1);
         reconcile_live_query(
             &registry,
-            host_id,
+            &request,
             &result,
             &mut state,
             new_filter.as_ref(),
@@ -925,13 +947,25 @@ where
 
 fn reconcile_live_query<F: LiveFilterQuery>(
     registry: &Arc<StoreRegistry>,
-    host_id: Uuid,
+    request: &Arc<crate::request::RequestContext>,
     result: &AnyItemMap,
     state: &mut LiveQueryState<F>,
     new_filter: &F,
     current_generation: u64,
     synchronization: &Arc<LiveQuerySynchronization>,
 ) {
+    let host_id = request.host_id;
+    if reconcile_registered_live_source(
+        registry,
+        request,
+        result,
+        state,
+        new_filter,
+        current_generation,
+        synchronization,
+    ) {
+        return;
+    }
     if let Some(route) = new_filter.query_route() {
         reconcile_indexed_live_query(
             registry,
@@ -952,6 +986,49 @@ fn reconcile_live_query<F: LiveFilterQuery>(
             synchronization,
         );
     }
+}
+
+fn reconcile_registered_live_source<F: LiveFilterQuery>(
+    registry: &Arc<StoreRegistry>,
+    request: &Arc<crate::request::RequestContext>,
+    result: &AnyItemMap,
+    state: &mut LiveQueryState<F>,
+    filter: &F,
+    generation: u64,
+    synchronization: &Arc<LiveQuerySynchronization>,
+) -> bool {
+    if !super::has_entity_source(F::entity_type()) {
+        return false;
+    }
+    let context = super::QueryBuildContext::new(
+        Arc::new(super::QueryContext {
+            req: request.clone(),
+        }),
+        registry.clone(),
+        None,
+    );
+    let Some(source) = super::registered_entity_source(&context, F::entity_type(), filter) else {
+        return false;
+    };
+    state.scan_guard = None;
+    state.source_override = None;
+    state.bucket_guards.clear();
+    state.bucket_filter_refs.clear();
+    state.prev_route_field_names = None;
+    reconcile_full_scope_membership(result, filter, source.snapshot());
+    let filter_state = Arc::new(Mutex::new(LiveFilterGeneration {
+        generation,
+        filter: filter.clone(),
+    }));
+    state.scan_filter_ref = Some(filter_state.clone());
+    state.scan_guard = Some(source.subscribe_diffs(build_live_diff_callback(
+        result,
+        filter_state,
+        synchronization,
+        LiveDiffScope::FullStore,
+    )));
+    state.source_override = Some(source);
+    true
 }
 
 fn current_live_filter<F: LiveFilterQuery>(

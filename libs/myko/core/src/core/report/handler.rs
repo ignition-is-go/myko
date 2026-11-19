@@ -32,6 +32,28 @@ pub struct ReportContext {
 }
 
 impl ReportContext {
+    #[doc(hidden)]
+    #[must_use]
+    pub fn entity_query_source(
+        &self,
+        entity_type: &str,
+        query: &dyn std::any::Any,
+    ) -> crate::query::FilteredCellMap {
+        let context = crate::query::QueryBuildContext::new(
+            Arc::new(crate::query::QueryContext {
+                req: self.req.clone(),
+            }),
+            self.store_registry.clone(),
+            Some(self.server_ctx.clone()),
+        );
+        crate::query::registered_entity_source(&context, entity_type, query).unwrap_or_else(|| {
+            self.store_registry
+                .get_or_create(entity_type)
+                .as_ref()
+                .clone()
+                .lock()
+        })
+    }
     #[must_use]
     pub fn new(req: Arc<RequestContext>, server_ctx: Arc<MykoServerContext>) -> Self {
         let store_registry = server_ctx.registry.clone();

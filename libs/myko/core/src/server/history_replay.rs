@@ -67,10 +67,30 @@ pub struct HistoryPage {
 }
 
 /// Typed identity of an entity whose durable event history is queried.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HistoryEntityKey {
     pub item_type: Arc<str>,
     pub item_id: Arc<str>,
+}
+
+/// Physical representations contributing to one logical entity's history.
+pub struct EntityHistoryAliasRegistration {
+    pub logical_type: &'static str,
+    pub storage_types: &'static [&'static str],
+}
+inventory::collect!(EntityHistoryAliasRegistration);
+
+#[must_use]
+pub fn history_storage_types(kind: &str) -> Vec<String> {
+    let mut kinds = vec![kind.to_owned()];
+    for alias in inventory::iter::<EntityHistoryAliasRegistration> {
+        if alias.logical_type == kind {
+            kinds.extend(alias.storage_types.iter().map(|kind| (*kind).to_owned()));
+        }
+    }
+    kinds.sort();
+    kinds.dedup();
+    kinds
 }
 
 /// A committed `PostgreSQL` history row observed through the backend's notify stream.
@@ -175,7 +195,11 @@ fn entity_history_window_source(
         let Some(committed) = committed.as_ref() else {
             return;
         };
-        if committed.key != key_for_commits {
+        if committed.key.item_id != key_for_commits.item_id
+            || !history_storage_types(&key_for_commits.item_type)
+                .iter()
+                .any(|kind| kind.as_str() == committed.key.item_type.as_ref())
+        {
             return;
         }
         let _dispatch = dispatch_for_commits
@@ -239,6 +263,81 @@ fn entity_history_window_source(
 /// to enable point-in-time snapshots without coupling myko to a
 /// specific persistence backend.
 pub trait HistoryReplayProvider: Send + Sync {
+    /// Opaque durable-history identity, compared internally with routed persisters.
+    fn history_identity(&self) -> Option<String> {
+        None
+    }
+
+    /// Check a durable, internally authored undo boundary by migration id.
+    /// # Errors
+    /// Returns an error if boundary storage is unsupported or unavailable.
+    fn undo_boundary_exists(&self, _id: &str) -> Result<bool, String> {
+        Err("undo history boundaries are unsupported".into())
+    }
+
+    /// Check whether a transaction already has any durable events.
+    /// # Errors
+    /// Returns an error when the backend cannot establish freshness.
+    fn transaction_exists(&self, _tx: &str) -> Result<bool, String> {
+        Err("transaction history is unsupported".into())
+    }
+
+    /// Load one repeatable snapshot of a transaction, prior states and latest revisions.
+    /// # Errors
+    /// Returns an error when history is missing or unsupported.
+    fn transaction_history(&self, _tx: &str) -> Result<super::TransactionHistory, String> {
+        Err("transaction history is unsupported".into())
+    }
+
+    /// Load history ignoring newer transactions already included in a checked undo range.
+    /// # Errors
+    /// Returns an error when range planning is unsupported or history cannot be read.
+    fn transaction_history_excluding(
+        &self,
+        tx: &str,
+        ignored: &[Arc<str>],
+    ) -> Result<super::TransactionHistory, String> {
+        if ignored.is_empty() {
+            self.transaction_history(tx)
+        } else {
+            Err("transaction range planning is unsupported".into())
+        }
+    }
+
+    /// Select the latest original authored transaction not already reversed.
+    /// # Errors
+    /// Returns a backend error rather than an empty successful history.
+    fn latest_user_transaction(
+        &self,
+        _user: &crate::identity::UserId,
+    ) -> Result<Option<Arc<str>>, String> {
+        Err("user transaction history is unsupported".into())
+    }
+
+    /// Page original, completed, unreversed transactions in originating order.
+    /// # Errors
+    /// Returns an error when selection is unsupported or history cannot be read.
+    fn user_transaction_page(
+        &self,
+        _user: &crate::identity::UserId,
+        _before_first_id: Option<i64>,
+        _limit: usize,
+    ) -> Result<Vec<super::UserTransaction>, String> {
+        Err("user transaction paging is unsupported".into())
+    }
+
+    /// Read the last event for an entity at or before a durable log revision.
+    /// Includes tombstones, allowing callers to recover historical ownership.
+    /// # Errors
+    /// Returns an error when lookup is unsupported or history is unreadable.
+    fn entity_event_at(
+        &self,
+        _key: &HistoryEntityKey,
+        _row_id: i64,
+    ) -> Result<Option<MEvent>, String> {
+        Err("historical entity lookup is unsupported".into())
+    }
+
     /// Subscribe to filtered durable replay followed by live committed changes.
     /// Poll the blocking subscription off the reactive thread.
     ///
@@ -250,6 +349,16 @@ pub trait HistoryReplayProvider: Send + Sync {
     ) -> Result<Box<dyn super::HistorySubscription>, String> {
         let _ = filter;
         Err("History subscriptions are not supported by this provider".to_string())
+    }
+
+    /// Bounded, shared in-memory undo metadata for one authenticated actor.
+    /// # Errors
+    /// Returns an error when the backend has no live undo projection.
+    fn undo_list_source(
+        &self,
+        _user: &crate::identity::UserId,
+    ) -> Result<Cell<Arc<crate::entities::undo::UndoLogSnapshot>, CellImmutable>, String> {
+        Err("live undo metadata is unsupported".into())
     }
 
     /// Latest committed history row observed through the backend notification stream.

@@ -205,7 +205,8 @@ pub trait Querying: ServerScoped {
         F: LiveFilterQuery,
         F::Item: WithTypedId,
     {
-        self.__server_ctx().query_live(filter_cell)
+        self.__server_ctx()
+            .query_live_with_request(filter_cell, self.__request().clone())
     }
 }
 
@@ -261,6 +262,11 @@ pub trait Reporting: ServerScoped {
 /// convention.
 pub trait EventPublishing: ServerScoped {
     #[doc(hidden)]
+    fn __operation_provenance(&self) -> Option<crate::server::OperationProvenance> {
+        None
+    }
+
+    #[doc(hidden)]
     fn __command_id(&self) -> &Arc<str>;
 
     #[doc(hidden)]
@@ -281,6 +287,9 @@ pub trait EventPublishing: ServerScoped {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .set(&*item)
             .map_err(|e| self.__emit_err(e))
@@ -299,6 +308,9 @@ pub trait EventPublishing: ServerScoped {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .set_transient(&*item)
             .map_err(|e| self.__emit_err(e))
@@ -316,6 +328,9 @@ pub trait EventPublishing: ServerScoped {
         let anys = items
             .iter()
             .map(|item| -> Arc<dyn crate::item::AnyItem> { Arc::new(item.clone()) });
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .set_batch_any(anys)
             .map_err(|e| self.__emit_err(e))
@@ -330,6 +345,9 @@ pub trait EventPublishing: ServerScoped {
     where
         I: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
     {
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .set_batch_any(items)
             .map_err(|e| self.__emit_err(e))
@@ -344,6 +362,9 @@ pub trait EventPublishing: ServerScoped {
     where
         T: Eventable + Serialize + Clone + 'static,
     {
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .del(&*item)
             .map_err(|e| self.__emit_err(e))
@@ -363,6 +384,9 @@ pub trait EventPublishing: ServerScoped {
         let anys = items
             .into_iter()
             .map(|item| -> Arc<dyn crate::item::AnyItem> { Arc::new(item.clone()) });
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .del_batch_any(anys)
             .map_err(|e| self.__emit_err(e))
@@ -385,6 +409,9 @@ pub trait EventPublishing: ServerScoped {
             .iter()
             .cloned()
             .map(|item| -> Arc<dyn crate::item::AnyItem> { item });
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .replace_batch_any(upserts, deletes)
             .map_err(|e| self.__emit_err(e))
@@ -401,6 +428,9 @@ pub trait EventPublishing: ServerScoped {
         U: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
         D: IntoIterator<Item = Arc<dyn crate::item::AnyItem>>,
     {
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .replace_batch_any(upserts, deletes)
             .map_err(|e| self.__emit_err(e))
@@ -416,6 +446,9 @@ pub trait EventPublishing: ServerScoped {
     ///
     /// Returns an error when the requested operation cannot be completed.
     fn emit_event_batch(&self, events: Vec<MEvent>) -> Result<usize, CommandError> {
+        let _operation = self
+            .__operation_provenance()
+            .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
             .apply_events_immediate(events)
             .map_err(|e| self.__emit_err(e))

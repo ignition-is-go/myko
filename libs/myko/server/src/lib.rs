@@ -598,11 +598,7 @@ impl MykoServer {
                 while let Some(command) = command_stream.next().await {
                     let command_name = command.command_name();
                     tracing::debug!("Saga {} executing command {}", saga_name, command_name);
-                    let req = Arc::new(RequestContext::internal(
-                        Arc::from(Uuid::new_v4().to_string()),
-                        host_id,
-                        &format!("saga:{saga_name}"),
-                    ));
+                    let req = Self::saga_request_context(command.as_ref(), host_id, &saga_name);
 
                     let cmd_ctx = CommandContext::new(
                         Arc::from(command_name),
@@ -644,11 +640,15 @@ impl MykoServer {
 
         // NOTE(ts): Dispatcher fans out events to saga channels, filtering by
         // entity type and change type so each saga only receives relevant events.
+        let dispatch_context = myko::saga::SagaContext::new(self.host_id, self.registry.clone());
         let dispatcher = tokio::spawn(async move {
             while let Ok(event) = rx.recv_async().await {
                 for ch in &saga_channels {
-                    if &*event.item_type == ch.entity_type && event.change_type == ch.change_type {
-                        let _ = ch.tx.send(event.clone());
+                    if &*event.item_type == ch.entity_type
+                        && event.change_type == ch.change_type
+                        && ch.tx.send(event.clone()).is_err()
+                    {
+                        drop(dispatch_context.begin_event(&event));
                     }
                 }
             }
@@ -657,6 +657,21 @@ impl MykoServer {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(dispatcher);
+    }
+
+    fn saga_request_context(
+        command: &dyn myko::saga::SagaCommand,
+        host_id: Uuid,
+        saga_name: &str,
+    ) -> Arc<RequestContext> {
+        Arc::new(RequestContext::internal(
+            command
+                .originating_tx()
+                .cloned()
+                .unwrap_or_else(|| Arc::from(Uuid::new_v4().to_string())),
+            host_id,
+            &format!("saga:{saga_name}"),
+        ))
     }
 
     /// Create a Postgres-backed history store for replay/windback operations.

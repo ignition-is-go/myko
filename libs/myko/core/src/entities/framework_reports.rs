@@ -265,17 +265,20 @@ pub struct EventContainer {
 }
 
 /// Report that returns events for a specific transaction.
-#[myko_macros::myko_report(Vec<MEvent>)]
+#[myko_macros::myko_report(Result<Vec<MEvent>, String>)]
 pub struct EventsForTransaction {
     pub transaction_id: String,
 }
 
 impl ReportHandler for EventsForTransaction {
-    type Output = Vec<crate::wire::MEvent>;
+    type Output = Result<Vec<crate::wire::MEvent>, String>;
 
-    fn compute(&self, _ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        // TODO(ts): Query event store by transaction ID
-        Cell::new(Arc::new(Vec::new())).lock()
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        Cell::new(Arc::new(super::undo::own_history(
+            &ctx,
+            &self.transaction_id,
+        )))
+        .lock()
     }
 }
 

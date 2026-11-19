@@ -424,6 +424,16 @@ pub(crate) fn rust_type_to_ts(rust_type: &str) -> String {
             }
             // Handle Arc<T> -> unwrap to inner type
             "Arc" => return rust_type_to_ts(inner),
+            "Result" => {
+                let args = split_generic_args(inner);
+                if let [ok, error] = args.as_slice() {
+                    return format!(
+                        "{{ Ok: {} }} | {{ Err: {} }}",
+                        rust_type_to_ts(ok),
+                        rust_type_to_ts(error)
+                    );
+                }
+            }
             _ => {}
         }
     }
@@ -459,7 +469,6 @@ pub(crate) fn split_outer_generic(s: &str) -> Option<(&str, &str)> {
     Some((outer, inner))
 }
 
-#[cfg(feature = "codegen-ts")]
 pub(crate) fn split_generic_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut depth = 0usize;
@@ -880,6 +889,10 @@ mod tests {
         assert_eq!(rust_type_to_ts("Vec < u32 >"), "number[]");
         assert_eq!(rust_type_to_ts("Arc < str >"), "string");
         assert_eq!(rust_type_to_ts("bool"), "boolean");
+        assert_eq!(
+            rust_type_to_ts("Result < Vec < MEvent >, String >"),
+            "{ Ok: MEvent[] } | { Err: string }"
+        );
         // Rust module paths are not valid TypeScript type references; custom
         // types use the exported leaf binding name.
         assert_eq!(rust_type_to_ts("MyCrate :: Widget"), "Widget");

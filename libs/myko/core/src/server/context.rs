@@ -214,6 +214,7 @@ enum PendingMutationKind {
 }
 
 struct PendingMutation {
+    provenance: Option<super::OperationProvenance>,
     kind: PendingMutationKind,
     origin: Origin,
     mode: EdgeApplyMode,
@@ -433,6 +434,9 @@ impl MykoServerContext {
             && let Err(error) = graph.rebuild()
         {
             tracing::error!(%error, "initial graph projection rebuild failed");
+        }
+        if history_replay.is_some() {
+            registry.transactions.enable_history();
         }
         Self {
             host_id,
@@ -881,6 +885,16 @@ impl MykoServerContext {
     }
 
     pub(crate) fn del_by_id_with_origin(
+        &self,
+        entity_type: &str,
+        id: &str,
+        origin: Origin,
+    ) -> Result<(), PersistError> {
+        self.registry
+            .with_mutation(|| self.del_by_id_coordinated(entity_type, id, origin))
+    }
+
+    fn del_by_id_coordinated(
         &self,
         entity_type: &str,
         id: &str,
@@ -1346,6 +1360,7 @@ impl MykoServerContext {
                     .max_observed_depth
                     .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
                 state.queue.push_back(PendingMutation {
+                    provenance: self.current_provenance(),
                     kind: PendingMutationKind::Uniform {
                         items: accepted,
                         change,
@@ -1456,6 +1471,7 @@ impl MykoServerContext {
                     .max_observed_depth
                     .fetch_max(u64::try_from(depth).unwrap_or(u64::MAX), Ordering::Relaxed);
                 state.queue.push_back(PendingMutation {
+                    provenance: self.current_provenance(),
                     kind: PendingMutationKind::Replace {
                         upserts,
                         deletes,
@@ -1483,6 +1499,102 @@ impl MykoServerContext {
         self.submit_mutation_mode(items, change, origin, EdgeApplyMode::Authoritative)
     }
 
+    fn mutation_request(&self) -> Option<Arc<RequestContext>> {
+        self.current_provenance().map(|provenance| {
+            Arc::new(RequestContext::internal(
+                provenance.request_tx,
+                self.host_id,
+                "mutation",
+            ))
+        })
+    }
+
+    fn rewrite_plan(
+        &self,
+        upserts: &[Arc<dyn AnyItem>],
+        deletes: &[Arc<dyn AnyItem>],
+        origin: Origin,
+    ) -> Result<Option<super::MutationReplacement>, PersistError> {
+        if matches!(origin, Origin::Transient)
+            || self
+                .current_provenance()
+                .is_some_and(|provenance| provenance.undo_of_tx.is_some())
+        {
+            return Ok(None);
+        }
+        let proposal = super::ProposedState {
+            server: Some(self),
+            request: self.mutation_request(),
+            host_id: self.host_id,
+            registry: &self.registry,
+            upserts,
+            deletes,
+        };
+        let Some(mut plan) = proposal.rewrite().map_err(|message| PersistError {
+            entity_type: Arc::from("mutation"),
+            message,
+        })?
+        else {
+            return Ok(None);
+        };
+        for _ in 0..16 {
+            let proposal = super::ProposedState {
+                server: Some(self),
+                request: self.mutation_request(),
+                host_id: self.host_id,
+                registry: &self.registry,
+                upserts: &plan.upserts,
+                deletes: &plan.deletes,
+            };
+            match proposal.rewrite().map_err(|message| PersistError {
+                entity_type: Arc::from("mutation"),
+                message,
+            })? {
+                Some(next) => plan = next,
+                None => return Ok(Some(plan)),
+            }
+        }
+        Err(PersistError {
+            entity_type: Arc::from("mutation"),
+            message: "mutation representation rewrite did not converge".into(),
+        })
+    }
+
+    fn validate_mutation(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+    ) -> Result<(), PersistError> {
+        if change == MEventType::SET {
+            self.validate_plan(items, &[])
+        } else {
+            self.validate_plan(&[], items)
+        }
+    }
+
+    fn validate_plan(
+        &self,
+        upserts: &[Arc<dyn AnyItem>],
+        deletes: &[Arc<dyn AnyItem>],
+    ) -> Result<(), PersistError> {
+        super::ProposedState {
+            server: Some(self),
+            request: self.mutation_request(),
+            host_id: self.host_id,
+            registry: &self.registry,
+            upserts,
+            deletes,
+        }
+        .validate(
+            self.current_provenance()
+                .is_some_and(|provenance| provenance.undo_of_tx.is_some()),
+        )
+        .map_err(|message| PersistError {
+            entity_type: Arc::from("mutation"),
+            message,
+        })
+    }
+
     fn submit_mutation_mode(
         &self,
         items: Vec<Arc<dyn AnyItem>>,
@@ -1490,6 +1602,50 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
+        self.registry.transactions.coordinate(
+            super::proposed_state::requires_authority(items.iter()),
+            || self.submit_mutation_mode_coordinated(items, change, origin, mode),
+        )
+    }
+
+    fn prepare_mutation(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<bool, PersistError> {
+        if matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import) {
+            let (upserts, deletes) = if change == MEventType::SET {
+                (items, &[][..])
+            } else {
+                (&[][..], items)
+            };
+            if let Some(plan) = self.rewrite_plan(upserts, deletes, origin)? {
+                self.submit_replace_mutation_inner_coordinated(
+                    plan.upserts,
+                    plan.deletes,
+                    origin,
+                    None,
+                    mode,
+                )?;
+                return Ok(true);
+            }
+            self.validate_mutation(items, change)?;
+        }
+        Ok(false)
+    }
+
+    fn submit_mutation_mode_coordinated(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        if self.prepare_mutation(&items, change, origin, mode)? {
+            return Ok(());
+        }
         let nested = CAUSAL_STATES.with(|slot| {
             slot.borrow()
                 .iter()
@@ -1549,6 +1705,7 @@ impl MykoServerContext {
                     pending
                 });
                 let Some(pending) = pending else { break };
+                let _operation = self.restore_operation(pending.provenance);
                 match pending.kind {
                     PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
                         let Some(item) = items.into_iter().next() else {
@@ -1602,6 +1759,38 @@ impl MykoServerContext {
         origin: Origin,
         expected_graph_generation: Option<u64>,
     ) -> Result<bool, PersistError> {
+        self.registry.transactions.coordinate(
+            super::proposed_state::requires_authority(upserts.iter().chain(&deletes)),
+            || {
+                self.submit_replace_mutation_inner_coordinated(
+                    upserts,
+                    deletes,
+                    origin,
+                    expected_graph_generation,
+                    EdgeApplyMode::Authoritative,
+                )
+            },
+        )
+    }
+
+    fn submit_replace_mutation_inner_coordinated(
+        &self,
+        upserts: Vec<Arc<dyn AnyItem>>,
+        deletes: Vec<Arc<dyn AnyItem>>,
+        origin: Origin,
+        expected_graph_generation: Option<u64>,
+        mode: EdgeApplyMode,
+    ) -> Result<bool, PersistError> {
+        if let Some(plan) = self.rewrite_plan(&upserts, &deletes, origin)? {
+            return self.submit_replace_mutation_inner_coordinated(
+                plan.upserts,
+                plan.deletes,
+                origin,
+                expected_graph_generation,
+                mode,
+            );
+        }
+        self.validate_plan(&upserts, &deletes)?;
         if upserts.is_empty() && deletes.is_empty() {
             return Ok(true);
         }
@@ -1613,13 +1802,7 @@ impl MykoServerContext {
             if expected_graph_generation.is_some() {
                 return Ok(false);
             }
-            self.enqueue_causal_replace(
-                upserts,
-                deletes,
-                origin,
-                EdgeApplyMode::Authoritative,
-                None,
-            )?;
+            self.enqueue_causal_replace(upserts, deletes, origin, mode, None)?;
             return Ok(true);
         }
 
@@ -1638,13 +1821,7 @@ impl MykoServerContext {
         });
 
         let result = (|| {
-            self.enqueue_causal_replace(
-                upserts,
-                deletes,
-                origin,
-                EdgeApplyMode::Authoritative,
-                expected_graph_generation,
-            )?;
+            self.enqueue_causal_replace(upserts, deletes, origin, mode, expected_graph_generation)?;
             loop {
                 let pending = CAUSAL_STATES.with(|slot| {
                     let mut slot = slot.borrow_mut();
@@ -1660,6 +1837,7 @@ impl MykoServerContext {
                     pending
                 });
                 let Some(pending) = pending else { break };
+                let _operation = self.restore_operation(pending.provenance);
                 match pending.kind {
                     PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
                         let Some(item) = items.into_iter().next() else {
@@ -1786,10 +1964,7 @@ impl MykoServerContext {
                     .map_err(|error| Self::graph_error(item.as_ref(), error))?;
             }
             let persist_result = if origin.should_produce() {
-                match change {
-                    MEventType::SET => self.persist_set_dyn(&item),
-                    MEventType::DEL => self.persist_del_dyn(&item),
-                }
+                self.persist_mutation(&item, change, old.as_ref())
             } else {
                 Ok(())
             };
@@ -1991,10 +2166,13 @@ impl MykoServerContext {
                                 .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                         }
                         if origin.should_produce() {
-                            match change {
-                                MEventType::SET => self.persist_set_dyn(item)?,
-                                MEventType::DEL => self.persist_del_dyn(item)?,
-                            }
+                            self.persist_mutation(
+                                item,
+                                change,
+                                old_by_key
+                                    .get(&(item.entity_type(), item.id()))
+                                    .and_then(Option::as_ref),
+                            )?;
                         }
                     }
                 }
@@ -2194,7 +2372,13 @@ impl MykoServerContext {
                         .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
                 if origin.should_produce() {
-                    self.persist_del_dyn(item)?;
+                    self.persist_mutation(
+                        item,
+                        MEventType::DEL,
+                        old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .and_then(Option::as_ref),
+                    )?;
                 }
             }
             for item in upserts {
@@ -2207,7 +2391,13 @@ impl MykoServerContext {
                         .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
                 if origin.should_produce() {
-                    self.persist_set_dyn(item)?;
+                    self.persist_mutation(
+                        item,
+                        MEventType::SET,
+                        old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .and_then(Option::as_ref),
+                    )?;
                 }
             }
             if !graph_watch_changes.is_empty()
@@ -2352,28 +2542,110 @@ impl MykoServerContext {
             self.matching_event_sink(item.entity_type(), change),
         ) {
             (None, None) => {}
-            (Some(persister), None) => persister.persist(build())?,
+            (Some(persister), None) => {
+                self.persist_record(persister, &self.event_record(build()))?;
+            }
             (None, Some(sink)) => {
-                let _ = sink.send(build());
+                self.send_record_to_saga(sink, self.event_record(build()));
             }
             (Some(persister), Some(sink)) => {
-                let event = build();
-                let for_sink = event.clone();
-                persister.persist(event)?;
-                let _ = sink.send(for_sink);
+                let record = self.event_record(build());
+                self.persist_record(persister, &record)?;
+                self.send_record_to_saga(sink, record);
             }
         }
         Ok(())
     }
 
-    fn persist_dyn(
+    fn send_record_to_saga(&self, sink: &flume::Sender<MEvent>, record: super::EventRecord) {
+        #[cfg(not(target_arch = "wasm32"))]
+        let deliveries = inventory::iter::<crate::saga::SagaRegistration>
+            .into_iter()
+            .filter(|registration| {
+                registration.event_entity_type == record.event.item_type.as_ref()
+                    && registration.event_change_type == record.event.change_type
+            })
+            .count();
+        #[cfg(target_arch = "wasm32")]
+        let deliveries = 0;
+        let tx = record.event.tx.clone();
+        self.registry
+            .transactions
+            .queue(tx.clone(), record.provenance, deliveries);
+        if sink.send(record.event).is_err() {
+            for _ in 0..deliveries {
+                drop(self.registry.transactions.receive(&tx));
+            }
+        }
+    }
+
+    pub(crate) fn flush_history_writes(&self) -> Result<(), String> {
+        self.persisters.flush_all()
+    }
+
+    pub(crate) fn require_undo_backend(&self, entity_type: &str) -> Result<(), String> {
+        let identity = self
+            .history_replay()
+            .and_then(|provider| provider.history_identity())
+            .ok_or("history provider has no durable backend identity")?;
+        if self.persisters.resolve(entity_type).is_some_and(|backend| {
+            backend.supports_provenance() && backend.history_identity().as_ref() == Some(&identity)
+        }) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{entity_type} does not write the configured attributed history"
+            ))
+        }
+    }
+
+    pub(crate) fn operation_owner(&self) -> *const () {
+        Arc::as_ptr(&self.causal_counters).cast()
+    }
+
+    fn persist_record(
+        &self,
+        backend: Arc<dyn crate::server::Persister>,
+        record: &super::EventRecord,
+    ) -> Result<(), PersistError> {
+        backend.persist_record(record.clone())?;
+        self.registry.transactions.recorded(record, backend);
+        Ok(())
+    }
+
+    fn persist_mutation(
         &self,
         item: &Arc<dyn AnyItem>,
-        build: impl FnOnce() -> MEvent,
+        change: MEventType,
+        old: Option<&Arc<dyn AnyItem>>,
     ) -> Result<(), PersistError> {
-        if let Some(persister) = self.persisters.resolve(item.entity_type()) {
-            persister.persist(build())?;
-        }
+        let Some(backend) = self.persisters.resolve(item.entity_type()) else {
+            return Ok(());
+        };
+        let event = match change {
+            MEventType::SET => {
+                MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
+            }
+            MEventType::DEL => MEvent::del_from_any(item, &self.host_id_str),
+        };
+        let record = self.event_record(event);
+        let preview = (backend.wants_undo_preview()
+            && crate::item::is_undoable_entity(item.entity_type())
+            && record
+                .provenance
+                .as_ref()
+                .is_some_and(|p| p.actor_user_id.is_some()))
+        .then(|| {
+            let before = old.map(ToValue::to_value);
+            let after = (change == MEventType::SET).then_some(&record.event.item);
+            Arc::new(crate::entities::undo::UndoPreviewInput::capture(
+                &super::HistoryEntityKey::new(item.entity_type(), item.id()),
+                before.as_ref(),
+                after,
+            ))
+        });
+        backend.persist_record_with_preview(record.clone(), preview)?;
+        self.registry.transactions.recorded(&record, backend);
         Ok(())
     }
 
@@ -2384,18 +2656,8 @@ impl MykoServerContext {
         build: impl FnOnce() -> MEvent,
     ) {
         if let Some(sink) = self.matching_event_sink(entity_type, change) {
-            let _ = sink.send(build());
+            self.send_record_to_saga(sink, self.event_record(build()));
         }
-    }
-
-    fn persist_del_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.persist_dyn(item, || MEvent::del_from_any(item, &self.host_id_str))
-    }
-
-    fn persist_set_dyn(&self, item: &Arc<dyn AnyItem>) -> Result<(), PersistError> {
-        self.persist_dyn(item, || {
-            MEvent::set_from_value(item.entity_type(), item.to_value(), &self.host_id_str)
-        })
     }
 
     fn send_del_to_sink(&self, item: &Arc<dyn AnyItem>) {
@@ -2475,6 +2737,21 @@ impl MykoServerContext {
         F::Item: WithTypedId,
     {
         let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
+        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+    }
+
+    /// Build a live-filter query in the originating request context.
+    pub fn query_live_with_request<F>(
+        &self,
+        filter_cell: impl Watchable<F>,
+        request: Arc<RequestContext>,
+    ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
+    where
+        F: LiveFilterQuery,
+        F::Item: WithTypedId,
+    {
+        let untyped =
+            crate::query::query_live_in_context(self.registry.clone(), request, filter_cell);
         typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
     }
 
@@ -2713,8 +2990,17 @@ impl MykoServerContext {
         let query_context = Arc::new(QueryContext { req: request });
         let query = Arc::new(query);
 
-        store
-            .snapshot()
+        let source = crate::query::registered_entity_source(
+            &crate::query::QueryBuildContext::new(
+                query_context.clone(),
+                self.registry.clone(),
+                Some(Arc::new(self.clone())),
+            ),
+            &query_item_type,
+            query.as_ref(),
+        )
+        .map_or_else(|| store.snapshot(), |source| source.snapshot());
+        source
             .into_iter()
             .filter_map(|(_, item)| {
                 let typed_item =
@@ -4083,5 +4369,66 @@ mod tests {
 
         let _ = ctx.report(report, request);
         assert!(ctx.compute_gates.is_empty());
+    }
+
+    #[test]
+    fn operation_scopes_isolate_servers_threads_and_restore_on_unwind() {
+        let ctx = make_ctx();
+        let clone = ctx.clone();
+        let other = make_ctx();
+        let provenance = super::super::OperationProvenance {
+            request_tx: "request".into(),
+            actor_user_id: None,
+            undo_of_tx: None,
+            unverified_client_id: None,
+            command_id: "test".into(),
+            lineage: Vec::new(),
+        };
+        {
+            let _scope = ctx.operation_scope(provenance.clone());
+            assert_eq!(clone.current_provenance(), Some(provenance.clone()));
+            assert_eq!(other.current_provenance(), None);
+            std::thread::scope(|scope| {
+                let result = scope.spawn(|| ctx.current_provenance()).join();
+                assert!(matches!(result, Ok(None)));
+            });
+            {
+                let _unknown = ctx.restore_operation(None);
+                assert_eq!(ctx.current_provenance(), None);
+            }
+            assert_eq!(ctx.current_provenance(), Some(provenance.clone()));
+        }
+        assert_eq!(ctx.current_provenance(), None);
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _scope = ctx.operation_scope(provenance);
+            std::panic::resume_unwind(Box::new(()));
+        }));
+        assert!(result.is_err());
+        assert_eq!(ctx.current_provenance(), None);
+    }
+
+    #[test]
+    fn operation_envelope_propagates_command_transaction() {
+        let ctx = make_ctx();
+        let provenance = super::super::OperationProvenance {
+            request_tx: "caller-request".into(),
+            actor_user_id: None,
+            undo_of_tx: None,
+            unverified_client_id: None,
+            command_id: "test".into(),
+            lineage: Vec::new(),
+        };
+        let mut event = MEvent::set_from_value(
+            "ImmediateTestItem",
+            serde_json::json!({"id": "one", "value": 1}),
+            "source",
+        );
+        event.tx = "existing-event-transaction".into();
+        assert_eq!(ctx.event_record(event.clone()).event, event);
+        let _scope = ctx.operation_scope(provenance.clone());
+        let record = ctx.event_record(event.clone());
+        event.tx = provenance.request_tx.clone();
+        assert_eq!(record.event, event);
+        assert_eq!(record.provenance, Some(provenance));
     }
 }

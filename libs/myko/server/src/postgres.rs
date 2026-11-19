@@ -22,17 +22,19 @@ use myko::{
     hyphae::{Cell, CellImmutable, CellMutable, Mutable},
     item::AnyItem,
     server::{
-        CommittedHistoryEvent, HandlerRegistry, HistoryEntityKey, HistoryEvent, HistoryPage,
-        PersistError, PersistHealth, Persister,
+        CommittedHistoryEvent, EventRecord, HandlerRegistry, HistoryEntityKey, HistoryEvent,
+        HistoryPage, PersistError, PersistHealth, Persister,
     },
     store::StoreRegistry,
     wire::QueryWindow,
 };
 use postgres::fallible_iterator::FallibleIterator;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 mod history_feed;
+mod transactions;
+mod undo_list;
 
 const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
 const PG_CATCH_UP_TIMEOUT_SECS_DEFAULT: u64 = 300;
@@ -152,6 +154,35 @@ impl PostgresHistoryStore {
         Ok(Self { config })
     }
 
+    /// Read durable envelopes without discarding provenance. Legacy rows return
+    /// None; metadata is correlation evidence, never verified user identity.
+    ///
+    /// # Errors
+    /// Returns an error when `PostgreSQL` cannot be queried or a row is invalid.
+    pub fn load_records_after_id(
+        &self,
+        after_id: i64,
+        limit: i64,
+    ) -> Result<Vec<(i64, EventRecord)>, String> {
+        let mut client = connect_pg_client(&self.config, "history(load_records_after_id)")?;
+        let sql = format!(
+            "SELECT id, event::text FROM {} WHERE id > $1 ORDER BY id ASC LIMIT $2",
+            qi(&self.config.table)
+        );
+        client
+            .query(&sql, &[&after_id, &limit])
+            .map_err(|e| format!("history query failed: {e}"))?
+            .into_iter()
+            .map(|row| {
+                let id: i64 = row.get(0);
+                let json: String = row.get(1);
+                serde_json::from_str(&json)
+                    .map(|record| (id, record))
+                    .map_err(|e| format!("invalid history record id={id}: {e}"))
+            })
+            .collect()
+    }
+
     /// Read events with `id > after_id`, ascending.
     ///
     /// # Errors
@@ -241,19 +272,20 @@ impl PostgresHistoryStore {
         item_id: &str,
         window: &QueryWindow,
     ) -> Result<HistoryPage, String> {
+        let item_types = myko::server::history_storage_types(item_type);
         let mut client = connect_pg_client(&self.config, "history(entity)")?;
         let count_sql = format!(
-            "SELECT COUNT(*)::bigint FROM {} WHERE item_type = $1 AND item_id = $2",
+            "SELECT COUNT(*)::bigint FROM {} WHERE item_type = ANY($1) AND item_id = $2",
             qi(&self.config.table)
         );
         let total_count: i64 = client
-            .query_one(&count_sql, &[&item_type, &item_id])
+            .query_one(&count_sql, &[&item_types, &item_id])
             .map_err(|e| format!("history count query failed: {e}"))?
             .get(0);
         let total_count = usize::try_from(total_count)
             .map_err(|_| "history row count does not fit usize".to_string())?;
         let sql = format!(
-            "SELECT id, created_at, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
+            "SELECT id, created_at, event::text FROM {} WHERE item_type = ANY($1) AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
             qi(&self.config.table)
         );
         let limit = i64::try_from(window.limit)
@@ -261,7 +293,7 @@ impl PostgresHistoryStore {
         let offset = i64::try_from(window.offset)
             .map_err(|_| "history page offset is too large".to_string())?;
         let rows = client
-            .query(&sql, &[&item_type, &item_id, &limit, &offset])
+            .query(&sql, &[&item_types, &item_id, &limit, &offset])
             .map_err(|e| format!("history query failed: {e}"))?;
         let events = rows
             .into_iter()
@@ -287,6 +319,7 @@ impl PostgresHistoryStore {
 
 /// `HistoryReplayProvider` backed by `PostgresHistoryStore`.
 pub struct PostgresHistoryReplayProvider {
+    undo_list: Arc<undo_list::Source>,
     config: PostgresConfig,
     committed: Cell<Option<Arc<CommittedHistoryEvent>>, CellMutable>,
 }
@@ -294,7 +327,9 @@ pub struct PostgresHistoryReplayProvider {
 impl PostgresHistoryReplayProvider {
     #[must_use]
     pub fn new(config: PostgresConfig) -> Self {
+        let undo_list = undo_list::Source::shared(&config);
         Self {
+            undo_list,
             config,
             committed: Cell::new(None),
         }
@@ -307,6 +342,67 @@ impl PostgresHistoryReplayProvider {
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn undo_list_source(
+        &self,
+        user: &myko::identity::UserId,
+    ) -> Result<Cell<Arc<myko::entities::undo::UndoLogSnapshot>, CellImmutable>, String> {
+        Ok(self.undo_list.watch(user.as_ref()))
+    }
+    fn undo_boundary_exists(&self, id: &str) -> Result<bool, String> {
+        PostgresHistoryStore::new(self.config.clone())?.undo_boundary_exists(id)
+    }
+
+    fn history_identity(&self) -> Option<String> {
+        Some(format!(
+            "postgres:{}:{}",
+            self.config.url, self.config.table
+        ))
+    }
+
+    fn transaction_exists(&self, tx: &str) -> Result<bool, String> {
+        PostgresHistoryStore::new(self.config.clone())?.transaction_exists(tx)
+    }
+
+    fn transaction_history(&self, tx: &str) -> Result<myko::server::TransactionHistory, String> {
+        PostgresHistoryStore::new(self.config.clone())?.transaction_history(tx)
+    }
+
+    fn transaction_history_excluding(
+        &self,
+        tx: &str,
+        ignored: &[Arc<str>],
+    ) -> Result<myko::server::TransactionHistory, String> {
+        PostgresHistoryStore::new(self.config.clone())?.transaction_history_excluding(tx, ignored)
+    }
+
+    fn latest_user_transaction(
+        &self,
+        user: &myko::identity::UserId,
+    ) -> Result<Option<Arc<str>>, String> {
+        PostgresHistoryStore::new(self.config.clone())?.latest_user_transaction(user)
+    }
+
+    fn user_transaction_page(
+        &self,
+        user: &myko::identity::UserId,
+        before_first_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<myko::server::UserTransaction>, String> {
+        PostgresHistoryStore::new(self.config.clone())?.user_transaction_page(
+            user,
+            before_first_id,
+            limit,
+        )
+    }
+
+    fn entity_event_at(
+        &self,
+        key: &myko::server::HistoryEntityKey,
+        row_id: i64,
+    ) -> Result<Option<MEvent>, String> {
+        PostgresHistoryStore::new(self.config.clone())?.entity_event_at(key, row_id)
+    }
+
     fn subscribe_history(
         &self,
         filter: myko::server::HistoryFilter,
@@ -411,7 +507,17 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
     }
 }
 
-type ProducerRequest = MEvent;
+enum ProducerRequest {
+    Event(
+        EventRecord,
+        Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ),
+    Barrier(flume::Sender<()>),
+    Complete {
+        tx: String,
+        user: String,
+    },
+}
 
 /// Handle to the `PostgreSQL` producer.
 #[derive(Clone)]
@@ -429,12 +535,57 @@ impl PostgresProducerHandle {
     /// # Errors
     ///
     /// Returns an error when the producer thread is unavailable.
-    pub fn produce(&self, mut event: MEvent) -> Result<(), PersistError> {
+    pub fn produce(&self, event: MEvent) -> Result<(), PersistError> {
+        self.produce_record(EventRecord {
+            event,
+            provenance: None,
+        })
+    }
+
+    fn produce_record(&self, record: EventRecord) -> Result<(), PersistError> {
+        self.produce_record_with_preview(record, None)
+    }
+    fn produce_record_with_preview(
+        &self,
+        mut record: EventRecord,
+        preview: Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ) -> Result<(), PersistError> {
+        // Caller labels are untrusted. PostgreSQL JSONB cannot encode NUL,
+        // and retrying such a sidecar would poison an otherwise valid batch.
+        if record.provenance.as_ref().is_some_and(|provenance| {
+            provenance.request_tx.contains('\0')
+                || provenance
+                    .actor_user_id
+                    .as_ref()
+                    .is_some_and(|user| user.as_ref().contains('\0'))
+                || provenance
+                    .undo_of_tx
+                    .as_ref()
+                    .is_some_and(|tx| tx.contains('\0'))
+                || provenance.command_id.contains('\0')
+                || provenance
+                    .unverified_client_id
+                    .as_ref()
+                    .is_some_and(|id| id.contains('\0'))
+                || provenance.lineage.iter().any(|entry| entry.contains('\0'))
+        }) {
+            let message = "operation provenance contains unsupported null bytes".to_string();
+            self.health.record_dropped(message.clone());
+            return Err(PersistError {
+                entity_type: record.event.item_type,
+                message,
+            });
+        }
+        let event = &mut record.event;
         if event.source_id.is_none() {
             event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
         }
         let entity_type = event.item_type.clone();
-        if self.sender.send(event) == Ok(()) {
+        if self
+            .sender
+            .send(ProducerRequest::Event(record, preview))
+            .is_ok()
+        {
             self.health.record_enqueue();
             Ok(())
         } else {
@@ -449,6 +600,50 @@ impl PostgresProducerHandle {
 }
 
 impl Persister for PostgresProducerHandle {
+    fn wants_undo_preview(&self) -> bool {
+        true
+    }
+    fn persist_record_with_preview(
+        &self,
+        record: EventRecord,
+        preview: Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ) -> Result<(), PersistError> {
+        self.produce_record_with_preview(record, preview)
+    }
+
+    fn history_identity(&self) -> Option<String> {
+        Some(format!(
+            "postgres:{}:{}",
+            self.config.url, self.config.table
+        ))
+    }
+
+    fn complete_transaction(&self, tx: &str, user: &myko::identity::UserId) -> Result<(), String> {
+        self.sender
+            .send(ProducerRequest::Complete {
+                tx: tx.to_owned(),
+                user: user.to_string(),
+            })
+            .map_err(|_| "Postgres producer stopped".to_owned())
+    }
+
+    fn flush(&self) -> Result<(), String> {
+        let (tx, rx) = flume::bounded(1);
+        self.sender
+            .send(ProducerRequest::Barrier(tx))
+            .map_err(|_| "Postgres producer stopped".to_owned())?;
+        rx.recv_timeout(Duration::from_secs(10))
+            .map_err(|_| "timed out waiting for durable PostgreSQL persistence".to_owned())
+    }
+
+    fn persist_record(&self, record: EventRecord) -> Result<(), PersistError> {
+        self.produce_record(record)
+    }
+
+    fn supports_provenance(&self) -> bool {
+        true
+    }
+
     fn persist(&self, event: MEvent) -> Result<(), PersistError> {
         self.produce(event)
     }
@@ -507,87 +702,77 @@ fn run_producer_loop(
     rx: &flume::Receiver<ProducerRequest>,
     health: &Arc<PersistHealth>,
 ) {
+    let undo_list = undo_list::Source::shared(config);
     let mut client: Option<Client> = None;
-    let mut retry_batch: Vec<MEvent> = Vec::new();
-
+    let mut batch = Vec::<EventRecord>::new();
+    let mut previews = Vec::new();
+    let mut pending: Option<ProducerRequest> = None;
     loop {
-        // NOTE(ts): Collect a batch — start with any retry events, then drain the channel.
-        let mut batch: Vec<MEvent> = Vec::new();
-        if retry_batch.is_empty() {
+        if batch.is_empty() && pending.is_none() {
             match rx.recv() {
-                Ok(ev) => batch.push(ev),
-                Err(_) => break, // channel closed
-            }
-        } else {
-            std::mem::swap(&mut batch, &mut retry_batch);
-        }
-        // NOTE(ts): Drain additional ready events up to the batch limit.
-        while batch.len() < PG_PRODUCER_MAX_BATCH {
-            match rx.try_recv() {
-                Ok(ev) => batch.push(ev),
+                Ok(ProducerRequest::Event(record, preview)) => {
+                    batch.push(record);
+                    previews.push(preview);
+                }
+                Ok(request) => pending = Some(request),
                 Err(_) => break,
             }
         }
-
+        while pending.is_none() && batch.len() < PG_PRODUCER_MAX_BATCH {
+            match rx.try_recv() {
+                Ok(ProducerRequest::Event(record, preview)) => {
+                    batch.push(record);
+                    previews.push(preview);
+                }
+                Ok(request) => pending = Some(request),
+                Err(_) => break,
+            }
+        }
         if client.is_none() {
             client = connect_producer_client(config);
         }
-
-        let batch_len = batch.len();
-        let pending = rx.len();
-        if pending > 1000 {
-            trace!(
-                "Postgres producer backlog: {} pending events in channel",
-                pending
-            );
-        }
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
-                std::collections::BTreeMap::new();
-            for event in &batch {
-                let kind = match event.change_type {
-                    MEventType::SET => "SET",
-                    MEventType::DEL => "DEL",
-                };
-                let count = counts.entry((&*event.item_type, kind)).or_insert(0);
-                *count = count.saturating_add(1);
-            }
-            let summary: Vec<String> = counts
-                .iter()
-                .map(|((t, k), n)| format!("{t}:{k}={n}"))
-                .collect();
-            debug!(
-                "[pg-producer] batch_len={} pending_after={} kinds=[{}]",
-                batch_len,
-                pending,
-                summary.join(", ")
-            );
-        }
-        if let Some(c) = client.as_mut() {
-            match insert_event_batch(c, config, &batch) {
-                Ok(()) => {
-                    health.record_success_batch(u64::try_from(batch_len).unwrap_or(u64::MAX));
+        let mut sequence = undo_list
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = if let Some(client) = client.as_mut() {
+            insert_event_batch(client, config, &batch).and_then(|mut changes| {
+                for (change, preview) in changes.iter_mut().zip(&previews) { change.preview.clone_from(preview); }
+                undo_list.records(&mut sequence, changes);
+                if let Some(ProducerRequest::Complete { tx, user }) = &pending {
+                    let completions = qi(&format!("{}_transactions", config.table));
+                    let table = qi(&config.table);
+                    let completed = client.query_opt(&format!("INSERT INTO {completions} (tx, user_id, first_id, last_id)
+                        SELECT $1, $2, MIN(id), MAX(id) FROM {table} WHERE tx = $1 HAVING MAX(id) IS NOT NULL
+                        ON CONFLICT (tx) DO UPDATE SET user_id = EXCLUDED.user_id, first_id = EXCLUDED.first_id, last_id = EXCLUDED.last_id RETURNING first_id"), &[tx, user])?;
+                    if let Some(row) = completed { undo_list.complete(&mut sequence, tx, user, row.get(0)); }
                 }
-                Err(err) => {
-                    let msg =
-                        format_pg_error("insert_event_batch(producer)", Some(&config.url), &err);
-                    error!("{}", msg);
-                    health.record_error_no_dequeue(msg);
-                    client = None;
-                    retry_batch = batch;
-                    // NOTE(ts): Back off before retrying to avoid tight-looping on persistent failures.
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            }
+                Ok(())
+            })
         } else {
-            let msg = format!(
-                "Postgres producer connection failed (url: {})",
-                redact_pg_url(&config.url),
-            );
-            error!("{}", msg);
-            health.record_error_no_dequeue(msg);
-            retry_batch = batch;
+            health.record_error_no_dequeue("Postgres producer connection failed".into());
             std::thread::sleep(Duration::from_secs(1));
+            continue;
+        };
+        drop(sequence);
+        match result {
+            Ok(()) => {
+                health.record_success_batch(u64::try_from(batch.len()).unwrap_or(u64::MAX));
+                batch.clear();
+                previews.clear();
+                if let Some(ProducerRequest::Barrier(reply)) = pending.take() {
+                    let _ = reply.send(());
+                }
+            }
+            Err(error) => {
+                health.record_error_no_dequeue(format_pg_error(
+                    "persist transaction history",
+                    Some(&config.url),
+                    &error,
+                ));
+                client = None;
+                std::thread::sleep(Duration::from_secs(1));
+            }
         }
     }
 }
@@ -611,24 +796,44 @@ fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
     }
 }
 
+fn invalidate_transaction_completions(
+    client: &mut Client,
+    config: &PostgresConfig,
+    events: &[EventRecord],
+) -> Result<(), ::postgres::Error> {
+    let completions = qi(&format!("{}_transactions", config.table));
+    let transactions: Vec<_> = events
+        .iter()
+        .map(|record| record.event.tx.to_string())
+        .collect();
+    client.execute(
+        &format!("DELETE FROM {completions} WHERE tx = ANY($1)"),
+        &[&transactions],
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 fn insert_event_batch(
     client: &mut Client,
     config: &PostgresConfig,
-    events: &[MEvent],
-) -> Result<(), ::postgres::Error> {
+    events: &[EventRecord],
+) -> Result<Vec<myko::entities::undo::UndoListChange>, ::postgres::Error> {
     if events.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let table = qi(&config.table);
+    invalidate_transaction_completions(client, config, events)?;
 
     // NOTE(ts): Single event — skip transaction overhead.
     if events.len() == 1 {
-        let Some(event) = events.first() else {
-            return Ok(());
+        let Some(record) = events.first() else {
+            return Ok(Vec::new());
         };
+        let event = &record.event;
         let sql = format!(
-            "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb)"
+            "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb) RETURNING id"
         );
         let item_id = event
             .item
@@ -636,7 +841,7 @@ fn insert_event_batch(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let event_json = serde_json::to_string(record).unwrap_or_else(|_| "{}".to_string());
         let change_type = match event.change_type {
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
@@ -645,7 +850,7 @@ fn insert_event_batch(
         let created_at: &str = &event.created_at;
         let tx: &str = &event.tx;
         let source_id: Option<&str> = event.source_id.as_deref();
-        client.execute(
+        let row = client.query_one(
             &sql,
             &[
                 &item_type,
@@ -657,7 +862,10 @@ fn insert_event_batch(
                 &event_json,
             ],
         )?;
-        return Ok(());
+        return Ok(vec![myko::entities::undo::UndoListChange::from_record(
+            row.get(0),
+            record,
+        )]);
     }
 
     // NOTE(ts): Build a multi-row INSERT for the batch within a single transaction.
@@ -666,7 +874,8 @@ fn insert_event_batch(
     );
     let mut params: Vec<Box<dyn postgres::types::ToSql + Sync>> =
         Vec::with_capacity(events.len().saturating_mul(7));
-    for (i, event) in events.iter().enumerate() {
+    for (i, record) in events.iter().enumerate() {
+        let event = &record.event;
         if i > 0 {
             sql.push_str(", ");
         }
@@ -688,7 +897,7 @@ fn insert_event_batch(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let event_json = serde_json::to_string(record).unwrap_or_else(|_| "{}".to_string());
         let change_type = match event.change_type {
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
@@ -710,11 +919,16 @@ fn insert_event_batch(
     let param_refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
         params.iter().map(std::convert::AsRef::as_ref).collect();
 
+    sql.push_str(" RETURNING id");
     let mut txn = client.transaction()?;
-    txn.execute(&sql, &param_refs)?;
+    let rows = txn.query(&sql, &param_refs)?;
     txn.commit()?;
 
-    Ok(())
+    Ok(rows
+        .iter()
+        .zip(events)
+        .map(|(row, record)| myko::entities::undo::UndoListChange::from_record(row.get(0), record))
+        .collect())
 }
 
 /// Shared status for startup catch-up.
@@ -1094,6 +1308,17 @@ fn apply_remote_event(
     handler_registry: &Arc<HandlerRegistry>,
     registry: &Arc<StoreRegistry>,
 ) {
+    registry.with_mutation(|| {
+        apply_remote_event_coordinated(event, host_id, handler_registry, registry);
+    });
+}
+
+fn apply_remote_event_coordinated(
+    event: &MEvent,
+    host_id: &str,
+    handler_registry: &Arc<HandlerRegistry>,
+    registry: &Arc<StoreRegistry>,
+) {
     let is_my_event = event.source_id.as_deref().is_some_and(|id| id == host_id);
     if is_my_event {
         return;
@@ -1137,6 +1362,9 @@ fn ensure_schema(client: &mut Client, config: &PostgresConfig) -> Result<(), ::p
     let idx_item = qi(&format!("{}_item_type_item_id_idx", config.table));
     let idx_item_latest = qi(&format!("{}_item_latest_idx", config.table));
     let idx_created = qi(&format!("{}_created_at_idx", config.table));
+    let completions = qi(&format!("{}_transactions", config.table));
+    let idx_completed_user = qi(&format!("{}_completed_user_idx", config.table));
+    let idx_undo = qi(&format!("{}_undo_history_idx", config.table));
     let trigger_fn = qi(&format!("{}_notify_insert_fn", config.table));
     let trigger_name = qi(&format!("{}_notify_insert_trigger", config.table));
 
@@ -1152,10 +1380,19 @@ fn ensure_schema(client: &mut Client, config: &PostgresConfig) -> Result<(), ::p
             source_id TEXT,
             event JSONB NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS {completions} (
+            tx TEXT PRIMARY KEY,
+            user_id TEXT NOT NULL,
+            first_id BIGINT NOT NULL,
+            last_id BIGINT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS {idx_completed_user} ON {completions} (user_id, first_id DESC);
         CREATE INDEX IF NOT EXISTS {idx_tx} ON {table} (tx);
         CREATE INDEX IF NOT EXISTS {idx_item} ON {table} (item_type, item_id);
         CREATE INDEX IF NOT EXISTS {idx_item_latest} ON {table} (item_type, item_id, id DESC);
         CREATE INDEX IF NOT EXISTS {idx_created} ON {table} (created_at);
+        CREATE INDEX IF NOT EXISTS {idx_undo} ON {table} ((event->'item'->>'transactionId'))
+            WHERE item_type = 'TransactionUndo' AND change_type = 'SET';
         CREATE OR REPLACE FUNCTION {trigger_fn}() RETURNS trigger AS $$
         BEGIN
             PERFORM pg_notify('{channel}', NEW.id::text);
@@ -1392,5 +1629,219 @@ mod tests {
     fn postgres_catch_up_timeout_rejects_negative_and_invalid_values() {
         assert!(parse_postgres_catch_up_timeout(Some("-1")).is_err());
         assert!(parse_postgres_catch_up_timeout(Some("forever")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    use myko::server::OperationProvenance;
+
+    #[test]
+    #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]
+    fn command_transaction_survives_cascades_and_durable_history() -> anyhow::Result<()> {
+        use myko::{
+            command::CommandContext,
+            entities::{
+                client::Client as ConnectedClient,
+                server::{Server, ServerId},
+            },
+            prelude::EventPublishing,
+            request::RequestContext,
+            search::SearchIndex,
+            server::{
+                MykoServerContext, MykoServerRuntime, RelationshipManager,
+                persister::PersisterRouter,
+            },
+        };
+
+        let config = PostgresConfig {
+            url: std::env::var("MYKO_PROVENANCE_TEST_POSTGRES")?,
+            table: "transaction_test_events".into(),
+            channel: "transaction_test_events".into(),
+        };
+        let mut client = Client::connect(&config.url, NoTls)?;
+        ensure_schema(&mut client, &config)?;
+        client.batch_execute("TRUNCATE transaction_test_events RESTART IDENTITY")?;
+        let host_id = Uuid::new_v4();
+        let producer = PostgresProducer::new(&config, host_id).map_err(anyhow::Error::msg)?;
+        let mut router = PersisterRouter::default();
+        router.set_default(Some(Arc::new(producer.handle())));
+        let server = Arc::new(MykoServerContext::new(
+            host_id,
+            Arc::new(StoreRegistry::new()),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(router),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        ));
+        let request = Arc::new(RequestContext::from_client(
+            "originating-command-tx".into(),
+            "connection".into(),
+            host_id,
+        ));
+        let ctx = CommandContext::new("EditTree".into(), request, server);
+        let parent = Server {
+            id: "parent".into(),
+            version: "test".into(),
+            address: "test".into(),
+            port: 0,
+            started_at: "test".into(),
+        };
+        ctx.emit_set(&parent)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        ctx.emit_set(&ConnectedClient {
+            id: "child".into(),
+            server_id: ServerId::from(Arc::<str>::from("parent")),
+            address: None,
+            windback: None,
+        })
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+        ctx.emit_del(&parent)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+
+        let history = PostgresHistoryStore::new(config).map_err(anyhow::Error::msg)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let records = loop {
+            let records = history
+                .load_records_after_id(0, 10)
+                .map_err(anyhow::Error::msg)?;
+            if records.len() == 4 {
+                break records;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "command events were not persisted"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        anyhow::ensure!(
+            records
+                .iter()
+                .all(|(_, record)| record.event.tx.as_ref() == "originating-command-tx")
+        );
+        anyhow::ensure!(
+            records
+                .iter()
+                .any(|(_, record)| record.event.change_type == MEventType::DEL
+                    && record.event.item_type.as_ref() == "Client")
+        );
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM transaction_test_events WHERE tx = $1",
+                &[&"originating-command-tx"],
+            )?
+            .get(0);
+        anyhow::ensure!(
+            count == 4,
+            "the indexed transaction must group every command and cascade event"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]
+    fn durable_envelopes_survive_single_batch_and_background_producer() -> anyhow::Result<()> {
+        let url = std::env::var("MYKO_PROVENANCE_TEST_POSTGRES")?;
+        let config = PostgresConfig {
+            url: url.clone(),
+            table: "provenance_test_events".into(),
+            channel: "provenance_test_events".into(),
+        };
+        let mut client = Client::connect(&url, NoTls)?;
+        ensure_schema(&mut client, &config)?;
+        client.batch_execute("TRUNCATE provenance_test_events RESTART IDENTITY")?;
+        let make = |id: &str| -> anyhow::Result<EventRecord> {
+            Ok(EventRecord {
+                event: serde_json::from_value(serde_json::json!({
+                    "item": {"id": id}, "itemType": "TestEntity", "changeType": "SET",
+                    "createdAt": "2026-11-05T00:00:00Z", "tx": "legacy-event-tx", "sourceId": null
+                }))?,
+                provenance: Some(OperationProvenance {
+                    request_tx: "untrusted-request-label".into(),
+                    actor_user_id: None,
+                    undo_of_tx: None,
+                    unverified_client_id: Some("connection-only".into()),
+                    command_id: "EditTree".into(),
+                    lineage: vec!["client".into()],
+                }),
+            })
+        };
+        let single = make("single")?;
+        insert_event_batch(&mut client, &config, std::slice::from_ref(&single))?;
+        let batch = vec![
+            make("batch-one")?,
+            EventRecord {
+                event: make("legacy")?.event,
+                provenance: None,
+            },
+        ];
+        insert_event_batch(&mut client, &config, &batch)?;
+        let producer =
+            PostgresProducer::new(&config, Uuid::new_v4()).map_err(anyhow::Error::msg)?;
+        let handle = producer.handle();
+        anyhow::ensure!(handle.supports_provenance());
+        let mut invalid = make("invalid")?;
+        if let Some(provenance) = &mut invalid.provenance {
+            provenance.request_tx = "untrusted\0label".into();
+        }
+        anyhow::ensure!(
+            handle.persist_record(invalid).is_err(),
+            "invalid metadata must fail before enqueue, without poisoning subsequent writes"
+        );
+        handle.persist_record(make("worker")?)?;
+        let history = PostgresHistoryStore::new(config.clone()).map_err(anyhow::Error::msg)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let rows = loop {
+            let rows = history
+                .load_records_after_id(0, 10)
+                .map_err(anyhow::Error::msg)?;
+            if rows.len() == 4 {
+                break rows;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "producer did not persist the record"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        anyhow::ensure!(rows.first().map(|(_, record)| record) == Some(&single));
+        anyhow::ensure!(rows.iter().any(|(_, record)| {
+            record
+                .event
+                .item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                == Some("legacy")
+                && record.provenance.is_none()
+        }));
+        anyhow::ensure!(rows.iter().any(|(_, record)| {
+            record
+                .event
+                .item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                == Some("worker")
+                && record.provenance == single.provenance
+                && record.event.source_id.is_some()
+        }));
+        let old_rows = history.load_after_id(0, 10).map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            old_rows.len() == rows.len(),
+            "legacy history reader still accepts envelopes"
+        );
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM provenance_test_events WHERE tx = 'legacy-event-tx'",
+                &[],
+            )?
+            .get(0);
+        anyhow::ensure!(count == 4, "indexed tx column agrees with envelope");
+        Ok(())
     }
 }

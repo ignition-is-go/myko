@@ -1,0 +1,98 @@
+//! Synchronous operation correlation, deliberately separate from wire events.
+
+use std::{cell::RefCell, marker::PhantomData, rc::Rc, sync::Arc};
+
+use serde::{Deserialize, Serialize};
+
+use super::MykoServerContext;
+use crate::wire::MEvent;
+
+/// Server-created correlation metadata. This is neither authentication nor an
+/// atomic transaction: handlers may fail after publishing some events.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OperationProvenance {
+    /// Originating command transaction; never an authorization boundary.
+    pub request_tx: Arc<str>,
+    /// Verified application user at the originating command; absent on legacy/internal writes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_user_id: Option<crate::identity::UserId>,
+    /// Original transaction reversed by this append-only compensation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_of_tx: Option<Arc<str>>,
+    /// Connection attribution only, not a verified user/principal.
+    pub unverified_client_id: Option<Arc<str>>,
+    pub command_id: Arc<str>,
+    pub lineage: Vec<Arc<str>>,
+}
+
+/// Additive durable JSON envelope.
+///
+/// Legacy records have no provenance; absence
+/// must not be interpreted as an internal or authenticated actor.
+/// `MEvent` remains unchanged for existing Rust callers and wire consumers.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventRecord {
+    #[serde(flatten)]
+    pub event: MEvent,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance: Option<OperationProvenance>,
+}
+
+thread_local! {
+    static OPERATIONS: RefCell<Vec<(*const (), Option<OperationProvenance>)>> = const { RefCell::new(Vec::new()) };
+}
+
+pub struct OperationScope<'a> {
+    _owner: &'a MykoServerContext,
+    _not_send: PhantomData<Rc<()>>,
+}
+
+impl Drop for OperationScope<'_> {
+    fn drop(&mut self) {
+        OPERATIONS.with(|operations| {
+            operations.borrow_mut().pop();
+        });
+    }
+}
+
+impl MykoServerContext {
+    pub(crate) fn operation_scope(&self, provenance: OperationProvenance) -> OperationScope<'_> {
+        self.restore_operation(Some(provenance))
+    }
+
+    pub(crate) fn restore_operation(
+        &self,
+        provenance: Option<OperationProvenance>,
+    ) -> OperationScope<'_> {
+        OPERATIONS.with(|operations| {
+            operations
+                .borrow_mut()
+                .push((self.operation_owner(), provenance));
+        });
+        OperationScope {
+            _owner: self,
+            _not_send: PhantomData,
+        }
+    }
+
+    pub(crate) fn current_provenance(&self) -> Option<OperationProvenance> {
+        OPERATIONS.with(|operations| {
+            operations
+                .borrow()
+                .iter()
+                .rev()
+                .find(|(owner, _)| *owner == self.operation_owner())
+                .and_then(|(_, provenance)| provenance.clone())
+        })
+    }
+
+    pub(crate) fn event_record(&self, mut event: MEvent) -> EventRecord {
+        let provenance = self.current_provenance();
+        if let Some(provenance) = &provenance {
+            event.tx = provenance.request_tx.clone();
+        }
+        EventRecord { event, provenance }
+    }
+}

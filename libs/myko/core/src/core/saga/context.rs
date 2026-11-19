@@ -40,6 +40,13 @@ pub struct SagaContext {
 }
 
 impl SagaContext {
+    /// Retain causal attribution while handling one delivered event. Keep the
+    /// returned token with an emitted command until it executes or is discarded.
+    #[must_use]
+    pub fn begin_event(&self, event: &crate::wire::MEvent) -> crate::store::CommandCausation {
+        self.registry.transactions.receive(&event.tx)
+    }
+
     /// Create a new `SagaContext`
     #[must_use]
     pub const fn new(host_id: Uuid, registry: Arc<StoreRegistry>) -> Self {

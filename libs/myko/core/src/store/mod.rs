@@ -26,6 +26,8 @@
 
 mod entity_store;
 mod registry;
+pub(crate) mod transactions;
+pub use transactions::CommandCausation;
 
 pub use entity_store::{EntityDiffCell, EntityEntriesCell, EntityStore};
 pub use registry::StoreRegistry;

@@ -5,7 +5,9 @@ mod context;
 mod filter;
 mod registration;
 mod request;
+mod source;
 mod traits;
+pub use source::{EntityQuerySourceRegistration, has_entity_source, registered_entity_source};
 
 // Re-export all public types
 pub use crate::server::{EntityHistory, HistoryEvent};
@@ -21,7 +23,8 @@ pub use registration::{
     QueryRuntimePerIdMetrics, QueryWindowCellFactory, UNION_KEYS_WARN_THRESHOLD,
     build_belongs_to_source_map, build_belongs_to_union_source_map, build_ids_source_map,
     cartesian_product, filter_query_over_source, filter_typed_source, query_live,
-    query_runtime_metrics, query_runtime_metrics_by_id, sweep_all_belongs_to_source_indexes,
+    query_live_in_context, query_runtime_metrics, query_runtime_metrics_by_id,
+    sweep_all_belongs_to_source_indexes,
 };
 pub use request::QueryRequest;
 pub use traits::{

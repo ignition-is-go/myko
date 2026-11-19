@@ -58,6 +58,7 @@ opentelemetry = "0.32.0"
 myko-telemetry = { version = "6.17.1", path = "../telemetry" }
 
 [dev-dependencies]
+anyhow.workspace = true
 prost = "0.14"
 opentelemetry-proto = { version = "0.32", default-features = false, features = ["gen-tonic-messages", "metrics"] }
 # Demo entities belong to examples, not the published server runtime.

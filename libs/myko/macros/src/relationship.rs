@@ -807,6 +807,44 @@ fn generate_search_registrations(local_type: &str, info: &RelationshipInfo) -> V
 /// Generate relationship registration code.
 pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> TokenStream {
     let mut registrations = generate_belongs_to_registrations(local_type, info);
+    let krate = crate::myko_path();
+    let mut id_fields = std::collections::BTreeSet::from(["id".to_string()]);
+    id_fields.extend(
+        info.belongs_to
+            .iter()
+            .map(|field| field.field_name_json.clone()),
+    );
+    id_fields.extend(
+        info.owns_many
+            .iter()
+            .map(|field| to_camel_case(&field.field_name)),
+    );
+    id_fields.extend(
+        info.ensure_for_fields
+            .iter()
+            .map(|field| field.field_name_json.clone()),
+    );
+    id_fields.extend(
+        info.client_id_field
+            .iter()
+            .map(|field| field.field_name_json.clone()),
+    );
+    id_fields.extend(
+        info.server_owned_field
+            .iter()
+            .map(|field| field.field_name_json.clone()),
+    );
+    id_fields.extend(
+        info.fallback_to_id_fields
+            .iter()
+            .map(|field| field.field_name_json.clone()),
+    );
+    registrations.extend(id_fields.into_iter().map(|field_name|quote! {
+        #krate::submit! {
+            #krate::relationship::IdFieldRegistration { entity_type: #local_type, field_name_json: #field_name }
+        }
+    }));
+
     registrations.extend(generate_owns_many_registrations(local_type, info));
     registrations.extend(generate_ensure_for_registration(local_type, info));
     registrations.extend(generate_marker_registrations(local_type, info));
@@ -820,6 +858,28 @@ pub fn generate_registrations(local_type: &str, info: &RelationshipInfo) -> Toke
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registers_relationship_id_fields_even_without_id_suffixes() -> syn::Result<()> {
+        let item: ItemStruct = syn::parse_quote! {
+            struct Example {
+                #[belongs_to(Parent)] pub owner: ParentId,
+                #[owns_many(Child)] pub children: Vec<ChildId>,
+                #[ensure_for(Session)] pub session_key: SessionId,
+            }
+        };
+        let info = collect_relationships(&item)?;
+        let tokens = generate_registrations("Example", &info).to_string();
+        for name in ["id", "owner", "children", "sessionKey"] {
+            if !tokens.contains(&format!("field_name_json : \"{name}\"")) {
+                return Err(syn::Error::new_spanned(
+                    &item,
+                    format!("missing identifier registration for {name}"),
+                ));
+            }
+        }
+        Ok(())
+    }
 
     fn relationship_error(item: &ItemStruct) -> String {
         collect_relationships(item)
