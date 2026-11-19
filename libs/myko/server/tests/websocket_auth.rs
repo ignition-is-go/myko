@@ -1,7 +1,7 @@
 #![allow(clippy::panic_in_result_fn)]
 use futures_util::{SinkExt, StreamExt, future::BoxFuture};
 use myko::common::to_value::ToValue;
-use myko::prelude::{EventPublishing, Querying, RegistryScoped, RequestScoped};
+use myko::prelude::{EventPublishing, Querying, RequestScoped};
 use myko::{
     entities::demo::{DemoStatusId, DemoTask, DemoTaskId},
     server::{PersistError, Persister},
