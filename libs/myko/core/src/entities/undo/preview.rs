@@ -93,6 +93,7 @@ struct Walker {
     truncated: bool,
 }
 impl Walker {
+    #[allow(clippy::too_many_lines)]
     fn visit(&mut self, path: &str, before: Option<&Value>, after: Option<&Value>, depth: usize) {
         if self.remaining == 0
             || self.fields.len() >= FIELDS

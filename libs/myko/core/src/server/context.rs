@@ -2636,7 +2636,7 @@ impl MykoServerContext {
                 .as_ref()
                 .is_some_and(|p| p.actor_user_id.is_some()))
         .then(|| {
-            let before = old.map(|item| item.to_value());
+            let before = old.map(ToValue::to_value);
             let after = (change == MEventType::SET).then_some(&record.event.item);
             Arc::new(crate::entities::undo::UndoPreviewInput::capture(
                 &super::HistoryEntityKey::new(item.entity_type(), item.id()),
