@@ -274,16 +274,14 @@ impl BelongsToSourceIndex {
     }
 
     fn build_backfilled_bucket(members: Option<&HashMap<Arc<str>, AnyItemArc>>) -> AnyItemMap {
-        let map = AnyItemMap::new();
-        if let Some(members) = members {
-            map.apply_diff_owned(MapDiff::Initial {
-                entries: members
-                    .iter()
-                    .map(|(id, item)| (id.clone(), item.clone()))
-                    .collect(),
-            });
-        }
-        map
+        // The caller holds `mutation_gate`, which `apply_diff` takes inside a
+        // settle, so the bucket is filled without a write.
+        AnyItemMap::from_entries(members.map_or_else(Vec::new, |members| {
+            members
+                .iter()
+                .map(|(id, item)| (id.clone(), item.clone()))
+                .collect()
+        }))
     }
 
     /// Drop bucket entries nobody's subscribed to anymore. `route_to_live_bucket`
