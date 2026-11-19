@@ -22,18 +22,20 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: "4"
+      CI_NATIVE_CACHE_CONFIGURED: ${{ (secrets.CI_CACHE_S3_ACCESS_KEY_ID || secrets.CI_CACHE_ACCESS_KEY) != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
           fetch-tags: true
           persist-credentials: false
-      - uses: ignition-is-go/pulse-actions/actions/setup-rust@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
+      - uses: ignition-is-go/pulse-actions/actions/setup-rust@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
         with:
           components: rustfmt, clippy
           cache-shared-key: ci-native
           # Remote compiler-cache timeouts exhausted the native job's hour limit.
           # Keep the Cargo target cache; native builds do not use sccache.
+          cache-save-if: ${{ env.CI_NATIVE_CACHE_CONFIGURED != 'true' }}
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
       - name: Install GPUI Linux dependencies
         run: |
@@ -41,22 +43,23 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential pkg-config libssl-dev libfontconfig-dev libwayland-dev libx11-xcb-dev libxkbcommon-x11-dev postgresql libpq-dev
       - run: bun install --frozen-lockfile
-      - name: Check for cargo-binstall
-        id: cargo-binstall
-        shell: bash
-        run: |
-          if command -v cargo-binstall >/dev/null 2>&1; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install cargo-binstall
-        if: steps.cargo-binstall.outputs.available != 'true'
-        uses: cargo-bins/cargo-binstall@e00d2c94cc0067b77737821097a62d91c0301baa # v1.21.1
+      - name: Set up Cargo Flux and ROSE cache
+        uses: ignition-is-go/cargo-flux@ae2ffa5f4420add3ab3c98665a4b5c0374bf2a5b
         with:
-          version: "1.21.1"
-      - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --version 0.11.5 --no-confirm --force
+          version: 0.12.0
+          cache: ${{ env.CI_NATIVE_CACHE_CONFIGURED == 'true' && 's3' || '' }}
+          cache-endpoint: ${{ vars.CI_CACHE_S3_ENDPOINT || secrets.CI_CACHE_ENDPOINT }}
+          cache-bucket: ${{ vars.CI_CACHE_S3_BUCKET || secrets.CI_CACHE_BUCKET }}
+          cache-access-key-id: ${{ secrets.CI_CACHE_S3_ACCESS_KEY_ID || secrets.CI_CACHE_ACCESS_KEY }}
+          cache-secret-access-key: ${{ secrets.CI_CACHE_S3_SECRET_ACCESS_KEY || secrets.CI_CACHE_SECRET_KEY }}
+      - name: Restore ROSE compiler snapshot
+        id: compiler-snapshot
+        if: env.CI_NATIVE_CACHE_CONFIGURED == 'true'
+        uses: ignition-is-go/pulse-actions/actions/flux-target-cache@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
+        with:
+          operation: restore
+          scope: native
+          plugin: cargo
       - name: Verify publication ordering and recovery
         run: cargo flux run test-publish
       - name: Check Rust formatting
@@ -98,6 +101,12 @@ jobs:
           cargo check -p myko --all-targets --no-default-features --features typegen
           cargo check -p myko --all-targets --no-default-features --features codegen-ts
           cargo check -p myko-server --all-targets --no-default-features
+      - name: Save ROSE snapshot and clean local Cargo targets
+        if: success() && steps.compiler-snapshot.outputs.state != ''
+        uses: ignition-is-go/pulse-actions/actions/flux-target-cache@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
+        with:
+          operation: save
+          state: ${{ steps.compiler-snapshot.outputs.state }}
       - uses: ignition-is-go/pulse-actions/actions/report-resources@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
         if: always()
 
@@ -111,7 +120,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-      - uses: ignition-is-go/pulse-actions/actions/setup-rust@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
+      - uses: ignition-is-go/pulse-actions/actions/setup-rust@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
         with:
           targets: wasm32-unknown-unknown
           linux-dependencies: build
@@ -120,25 +129,35 @@ jobs:
           compiler-cache-bucket: ${{ secrets.CI_CACHE_BUCKET }}
           compiler-cache-access-key: ${{ secrets.CI_CACHE_ACCESS_KEY }}
           compiler-cache-secret-key: ${{ secrets.CI_CACHE_SECRET_KEY }}
-      - name: Check for cargo-binstall
-        id: cargo-binstall
-        shell: bash
-        run: |
-          if command -v cargo-binstall >/dev/null 2>&1; then
-            echo "available=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "available=false" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install cargo-binstall
-        if: steps.cargo-binstall.outputs.available != 'true'
-        uses: cargo-bins/cargo-binstall@e00d2c94cc0067b77737821097a62d91c0301baa # v1.21.1
+          cache-save-if: ${{ env.CI_NATIVE_CACHE_CONFIGURED != 'true' }}
+      - name: Set up Cargo Flux and ROSE cache
+        uses: ignition-is-go/cargo-flux@ae2ffa5f4420add3ab3c98665a4b5c0374bf2a5b
         with:
-          version: "1.21.1"
-      - name: Install or update cargo-flux
-        run: cargo binstall cargo-flux --version 0.11.5 --no-confirm --force
+          version: 0.12.0
+          cache: ${{ env.CI_NATIVE_CACHE_CONFIGURED == 'true' && 's3' || '' }}
+          cache-endpoint: ${{ vars.CI_CACHE_S3_ENDPOINT || secrets.CI_CACHE_ENDPOINT }}
+          cache-bucket: ${{ vars.CI_CACHE_S3_BUCKET || secrets.CI_CACHE_BUCKET }}
+          cache-access-key-id: ${{ secrets.CI_CACHE_S3_ACCESS_KEY_ID || secrets.CI_CACHE_ACCESS_KEY }}
+          cache-secret-access-key: ${{ secrets.CI_CACHE_S3_SECRET_ACCESS_KEY || secrets.CI_CACHE_SECRET_KEY }}
+      - name: Restore ROSE compiler snapshot
+        id: compiler-snapshot
+        if: env.CI_NATIVE_CACHE_CONFIGURED == 'true'
+        uses: ignition-is-go/pulse-actions/actions/flux-target-cache@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
+        with:
+          operation: restore
+          scope: wasm
+          plugin: cargo
       - name: Check WebAssembly targets
         run: cargo flux run check-wasm
         env:
           RUSTC_BOOTSTRAP: "1"
+      - name: Save ROSE snapshot and clean local Cargo targets
+        if: success() && steps.compiler-snapshot.outputs.state != ''
+        uses: ignition-is-go/pulse-actions/actions/flux-target-cache@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8
+        with:
+          operation: save
+          state: ${{ steps.compiler-snapshot.outputs.state }}
       - uses: ignition-is-go/pulse-actions/actions/report-resources@2c94ebf4fedd47f0c36d491e0dee5ad446a071b5 # v1.0.0
         if: always()
+    env:
+      CI_NATIVE_CACHE_CONFIGURED: ${{ (secrets.CI_CACHE_S3_ACCESS_KEY_ID || secrets.CI_CACHE_ACCESS_KEY) != '' }}
