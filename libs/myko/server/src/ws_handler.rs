@@ -1916,7 +1916,8 @@ impl WsHandler {
             MykoMessage::Event(mut event) => {
                 event.sanitize_null_bytes();
                 normalize_incoming_event(&mut event, &session.client_id, ctx.host_id);
-                if let Err(error) = ctx.apply_event(event) {
+                // A reader must not stall behind another connection's settle.
+                if let Err(error) = hyphae::submit(&[], None, || ctx.apply_event(event)) {
                     tracing::error!(
                         "Failed to apply event from client {}: {error}",
                         session.client_id
@@ -1929,7 +1930,7 @@ impl WsHandler {
                     event.sanitize_null_bytes();
                     normalize_incoming_event(event, &session.client_id, ctx.host_id);
                 }
-                if let Err(error) = ctx.apply_event_batch(events) {
+                if let Err(error) = hyphae::submit(&[], None, || ctx.apply_event_batch(events)) {
                     tracing::error!(
                         "Failed to apply event batch from client {}: {}",
                         session.client_id,
