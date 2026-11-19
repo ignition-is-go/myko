@@ -860,7 +860,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registers_relationship_id_fields_even_without_id_suffixes() {
+    fn registers_relationship_id_fields_even_without_id_suffixes() -> syn::Result<()> {
         let item: ItemStruct = syn::parse_quote! {
             struct Example {
                 #[belongs_to(Parent)] pub owner: ParentId,
@@ -868,11 +868,12 @@ mod tests {
                 #[ensure_for(Session)] pub session_key: SessionId,
             }
         };
-        let info = collect_relationships(&item).unwrap_or_else(|error| panic!("{error}"));
+        let info = collect_relationships(&item)?;
         let tokens = generate_registrations("Example", &info).to_string();
         for name in ["id", "owner", "children", "sessionKey"] {
             assert!(tokens.contains(&format!("field_name_json : \"{name}\"")));
         }
+        Ok(())
     }
 
     fn relationship_error(item: &ItemStruct) -> String {
