@@ -119,7 +119,7 @@ impl CommandHandler for SnakeEcho {
 }
 
 mod computation_record {
-    use myko::prelude::{EventPublishing, Querying, RegistryScoped, RequestScoped};
+    use myko::prelude::{EventPublishing, Querying, RequestScoped};
 
     #[myko::myko_item]
     pub struct ComputationRecord {
@@ -128,7 +128,7 @@ mod computation_record {
 }
 
 mod computation_reference {
-    use myko::prelude::{EventPublishing, Querying, RegistryScoped, RequestScoped};
+    use myko::prelude::{EventPublishing, Querying, RequestScoped};
 
     use super::computation_record::ComputationRecordId;
 
