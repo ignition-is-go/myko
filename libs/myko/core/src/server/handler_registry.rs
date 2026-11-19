@@ -5,13 +5,19 @@
 
 use std::sync::Arc;
 
+use hyphae::SettleKey;
+
 use crate::{
     command::CommandHandlerRegistration,
     graph::GraphQueryRegistration,
-    item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
+    item::{
+        IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration,
+        SequentialKeyFn, SequentialRegistration, SequentialSet,
+    },
     query::{QueryCellFactory, QueryParseFn, QueryRegistration, QueryWindowCellFactory},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
     view::{ViewCellFactory, ViewParseFn, ViewRegistration},
+    wire::MEvent,
 };
 
 // AHash on the dispatch maps below: every wire-routed command/query/view/
@@ -70,6 +76,8 @@ pub struct HandlerRegistry {
     item_parsers: AMap<Arc<str>, ItemParseFn>,
     /// Optional ingest buffering policy by entity type name
     item_buffer_policies: AMap<Arc<str>, IngestBufferPolicy>,
+    /// Sequential key functions by entity type name
+    item_sequential_keys: AMap<Arc<str>, SequentialKeyFn>,
     /// Query data by query id
     query_data: AMap<Arc<str>, StoredQueryData>,
     /// View data by view id
@@ -83,6 +91,7 @@ impl HandlerRegistry {
     pub fn new() -> Self {
         let mut item_parsers = AMap::default();
         let mut item_buffer_policies = AMap::default();
+        let mut item_sequential_keys = AMap::default();
         let mut query_data = AMap::default();
         let mut view_data = AMap::default();
         let mut report_data = AMap::default();
@@ -100,6 +109,10 @@ impl HandlerRegistry {
                 registration.policy
             );
             item_buffer_policies.insert(registration.entity_type.into(), registration.policy);
+        }
+
+        for registration in inventory::iter::<SequentialRegistration> {
+            item_sequential_keys.insert(registration.entity_type.into(), registration.key);
         }
 
         // Collect query registrations
@@ -175,6 +188,7 @@ impl HandlerRegistry {
         Self {
             item_parsers,
             item_buffer_policies,
+            item_sequential_keys,
             query_data,
             view_data,
             report_data,
@@ -194,6 +208,21 @@ impl HandlerRegistry {
             .get(entity_type)
             .copied()
             .unwrap_or(IngestBufferPolicy::None)
+    }
+
+    /// The settle key of a wire event: shared unless its entity type declares
+    /// `#[myko_sequential]`.
+    #[must_use]
+    pub fn settle_key(&self, event: &MEvent) -> SettleKey {
+        self.item_sequential_keys
+            .get(event.item_type.as_ref())
+            .map_or(SettleKey::Shared, |key| key(&event.item))
+    }
+
+    /// Split a wire batch into the event sets its sequential keys allow.
+    #[must_use]
+    pub fn sequential_sets(&self, events: Vec<MEvent>) -> Vec<SequentialSet> {
+        SequentialSet::split(events, |event| self.settle_key(event))
     }
 
     /// Get query registration data by query id.

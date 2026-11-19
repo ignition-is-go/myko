@@ -885,9 +885,17 @@ pub fn myko_item_impl(args: &ItemArgs, mut input_struct: ItemStruct) -> TokenStr
             Ok(queries) => queries,
             Err(error) => return error.to_compile_error(),
         };
+    let sequential = match crate::sequential::take_registration(
+        &mut input_struct,
+        args.ingest_buffer_ms.is_some(),
+        &DeriveCtx::new(),
+    ) {
+        Ok(registration) => registration,
+        Err(error) => return error.to_compile_error(),
+    };
     let expanded = prepare_item(args, input_struct)
         .map_or_else(|err| err.to_compile_error(), expand_prepared_item);
-    quote!(#expanded #registration #queries #external_events)
+    quote!(#expanded #registration #queries #external_events #sequential)
 }
 
 #[allow(clippy::too_many_lines)]

@@ -22,6 +22,7 @@ mod query;
 mod relationship;
 mod report;
 mod saga;
+mod sequential;
 mod setter;
 mod view;
 
@@ -526,6 +527,36 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 ///
 /// ## `#[default_value(expr)]`
 /// Sets a default value for the field when auto-creating via `ensure_for`.
+///
+/// ## `#[myko_sequential]`
+/// Two events of this item that arrive over a connection with equal values in
+/// the marked field never settle together. Each one reaches subscribers on its
+/// own, in arrival order. Events with different values can share a settle and
+/// can settle at the same time. Mark several fields to key on the tuple of
+/// their values. An event whose `Option` field is `None` settles alone.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Reading {
+///     #[myko_sequential]
+///     pub sensor_id: String,
+///     pub value: f64,
+/// }
+/// ```
+///
+/// On the struct, `#[myko_sequential(with = path)]` names a function
+/// `fn(&Item) -> Option<K>` with `K: Hash` that computes the key from the
+/// whole item. `None` makes the event settle alone. Put the attribute below
+/// `#[myko_item]`. This form parses the item one extra time.
+///
+/// ```ignore
+/// #[myko_item]
+/// #[myko_sequential(with = reading_lane)]
+/// pub struct Reading {
+///     pub sensor_id: String,
+///     pub value: f64,
+/// }
+/// ```
 ///
 /// # Requirements
 ///
