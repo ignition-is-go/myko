@@ -1,0 +1,7 @@
+¶ditem©dbodyy"Reproduces on v6.17.1 (73d601f3) with registry hyphae 3.1.11 (36 of 50 runs) and on branch hyphae-settle-core (13 of 30). Test file libs/myko/core/tests/graph_concurrent_emitters_test.rs, ignored test wire_batches_racing_wire_deletes_of_a_plain_type_agree_with_a_subscriber.
+
+Two threads apply wire events for the same id of a plain entity type (one SETs, one DELs). Afterwards a subscribe_diffs subscriber that replays every diff holds an id the store does not, or the reverse (seen: told insert, insert, remove while the store still has the row).
+
+Cause: CellMap changes its data when insert/remove is called, but inside hyphae::batch the diff is queued when the batch closes. Every myko store write is inside a batch. Two threads can therefore change the data in one order and queue their diffs in the other. Queries, views and client subscriptions are built from the diffs, so they stay wrong until the row is written again.
+
+Graph-coordinated types were protected on v6.17.1 because the graph authority was held across the batch. Plain types never were.gcreatedx2026-11-19T18:25:58.763544ZlcreatedByDevxtrevor.a.sargent@gmail.compcreatedByMachinegmalcolmbidx fb7b3db145fb4b16bc6a05d306406510flabelsÅkconcurrencyhprioritybP2iprojectIdx de9416570df4447d8687b0103b13ae27etitlexgConcurrent writers of one store key can leave diff subscribers holding a different state than the storejchangeTypecSEThitemTypedTaskicreatedAtx2026-11-19T18:25:58.763802Zbtxx$d0484fb7-4aac-4e99-84c6-884e95f306c4hsourceIdgmalcolm
