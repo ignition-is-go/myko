@@ -222,19 +222,101 @@ struct PendingMutation {
 }
 
 struct CausalState {
-    // Cloned contexts share counters; distinct servers must never share a queue.
-    owner: Arc<CausalCounters>,
     root_tx: Uuid,
     queue: VecDeque<PendingMutation>,
     seen: SeenTransitions,
     derived_count: usize,
+    /// A call is applying the queue. Any other call only adds to it.
+    draining: bool,
     current_depth: Option<usize>,
     current_mode: Option<EdgeApplyMode>,
     current_chain: Vec<String>,
 }
 
+/// One root mutation and the mutations derived from it.
+///
+/// A subscriber callback that mutates while one of the root's writes is
+/// delivered may run on any thread, and after the root's own call has
+/// returned. It finds the root through the epoch of that write.
+struct CausalRoot {
+    // Cloned contexts share counters; distinct servers must never share a queue.
+    owner: Arc<CausalCounters>,
+    /// Tags the root's writes. `None` when the root began inside a settle,
+    /// where its writes inherit the epoch of the write being delivered.
+    epoch: Option<hyphae::Epoch>,
+    state: Mutex<CausalState>,
+}
+
+impl CausalRoot {
+    fn state(&self) -> std::sync::MutexGuard<'_, CausalState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Become the call that applies the queue, unless one already is.
+    fn claim_drain(&self) -> bool {
+        let mut state = self.state();
+        !std::mem::replace(&mut state.draining, true)
+    }
+
+    /// Take the next queued mutation and make it the current one. An empty
+    /// queue ends the drain in the same step, so a mutation queued later
+    /// finds no drain and starts one.
+    fn next_pending(&self) -> Option<PendingMutation> {
+        let mut state = self.state();
+        let Some(pending) = state.queue.pop_front() else {
+            state.draining = false;
+            return None;
+        };
+        state.current_depth = Some(pending.depth);
+        state.current_mode = Some(pending.mode);
+        state.current_chain.clone_from(&pending.chain);
+        drop(state);
+        Some(pending)
+    }
+}
+
+/// Ends a drain that stopped on an error or a panic, with what it left queued.
+struct Drain<'a>(&'a CausalRoot);
+
+impl Drop for Drain<'_> {
+    fn drop(&mut self) {
+        let mut state = self.0.state();
+        if state.draining {
+            state.draining = false;
+            state.queue.clear();
+        }
+    }
+}
+
 thread_local! {
-    static CAUSAL_STATES: RefCell<Vec<CausalState>> = const { RefCell::new(Vec::new()) };
+    /// The roots this thread is draining.
+    static CAUSAL_STATES: RefCell<Vec<Arc<CausalRoot>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The roots whose writes carry an epoch, for a callback on another thread.
+static CAUSAL_ROOTS_BY_EPOCH: std::sync::LazyLock<
+    DashMap<hyphae::Epoch, Arc<CausalRoot>, ahash::RandomState>,
+> = std::sync::LazyLock::new(|| DashMap::with_hasher(ahash::RandomState::new()));
+
+/// The root a thread began, until its call returns or unwinds.
+///
+/// The root itself lives on while an event set that carries its epoch is
+/// queued or settling, so that a late callback still finds it.
+struct BegunRoot {
+    root: Arc<CausalRoot>,
+    _epoch: Option<hyphae::settle::EpochScope>,
+}
+
+impl Drop for BegunRoot {
+    fn drop(&mut self) {
+        CAUSAL_STATES.with(|roots| {
+            roots
+                .borrow_mut()
+                .retain(|root| !Arc::ptr_eq(root, &self.root));
+        });
+    }
 }
 
 /// Weak-ref report cache entry. The cell stays alive as long as someone is
@@ -1270,6 +1352,115 @@ impl MykoServerContext {
         }
     }
 
+    /// The root that a mutation made now belongs to: one this thread is
+    /// draining, or the one whose write is settling around this callback.
+    fn causal_root(&self) -> Option<Arc<CausalRoot>> {
+        let draining = CAUSAL_STATES.with(|roots| {
+            roots
+                .borrow()
+                .iter()
+                .find(|root| Arc::ptr_eq(&root.owner, &self.causal_counters))
+                .cloned()
+        });
+        draining.or_else(|| {
+            let epoch = hyphae::settle::current_epoch()?;
+            let root = CAUSAL_ROOTS_BY_EPOCH.get(&epoch)?.clone();
+            Arc::ptr_eq(&root.owner, &self.causal_counters).then_some(root)
+        })
+    }
+
+    /// The epoch for a write of the root this thread is draining.
+    fn causal_epoch(&self) -> Option<hyphae::Epoch> {
+        CAUSAL_STATES.with(|roots| {
+            roots
+                .borrow()
+                .iter()
+                .find(|root| Arc::ptr_eq(&root.owner, &self.causal_counters))
+                .and_then(|root| root.epoch)
+        })
+    }
+
+    fn begin_causal_root(&self) -> BegunRoot {
+        self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
+        // Inside a settle the root's writes are queued behind this callback
+        // and inherit the epoch being delivered, if there is one. A callback
+        // they fire therefore finds that epoch's root, not this one.
+        let scope = (!hyphae::settle::is_settling()).then(|| {
+            let finished = Arc::new(std::sync::OnceLock::<hyphae::Epoch>::new());
+            let epoch = finished.clone();
+            let scope = hyphae::Epoch::scoped(move || {
+                if let Some(epoch) = finished.get() {
+                    CAUSAL_ROOTS_BY_EPOCH.remove(epoch);
+                }
+            });
+            let _ = epoch.set(scope.epoch());
+            scope
+        });
+        let epoch = scope.as_ref().map(hyphae::settle::EpochScope::epoch);
+        let root = Arc::new(CausalRoot {
+            owner: self.causal_counters.clone(),
+            epoch,
+            state: Mutex::new(CausalState {
+                root_tx: Uuid::new_v4(),
+                queue: VecDeque::new(),
+                seen: SeenTransitions::default(),
+                derived_count: 0,
+                draining: false,
+                current_depth: None,
+                current_mode: None,
+                current_chain: Vec::new(),
+            }),
+        });
+        CAUSAL_STATES.with(|roots| roots.borrow_mut().push(root.clone()));
+        if let Some(epoch) = epoch {
+            CAUSAL_ROOTS_BY_EPOCH.insert(epoch, root.clone());
+        }
+        BegunRoot {
+            root,
+            _epoch: scope,
+        }
+    }
+
+    /// Apply the root's queue until it is empty, unless another call is
+    /// already doing so. `false` when a conditional replacement did not
+    /// apply.
+    fn drain_causal(&self, root: &CausalRoot) -> Result<bool, PersistError> {
+        if !root.claim_drain() {
+            return Ok(true);
+        }
+        let _drain = Drain(root);
+        while let Some(pending) = root.next_pending() {
+            match pending.kind {
+                PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
+                    let Some(item) = items.into_iter().next() else {
+                        continue;
+                    };
+                    self.emit_one(item, change, pending.origin, pending.mode)?;
+                }
+                PendingMutationKind::Uniform { items, change } => {
+                    self.emit_grouped(&items, change, pending.origin, pending.mode)?;
+                }
+                PendingMutationKind::Replace {
+                    upserts,
+                    deletes,
+                    expected_graph_generation,
+                } => {
+                    let applied = self.emit_replace_grouped(
+                        &upserts,
+                        &deletes,
+                        pending.origin,
+                        pending.mode,
+                        expected_graph_generation,
+                    )?;
+                    if !applied {
+                        return Ok(false);
+                    }
+                }
+            }
+        }
+        Ok(true)
+    }
+
     fn enqueue_causal(
         &self,
         items: Vec<Arc<dyn AnyItem>>,
@@ -1287,17 +1478,14 @@ impl MykoServerContext {
             .causal_limits
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        CAUSAL_STATES.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            let Some(state) = slot
-                .iter_mut()
-                .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
-            else {
-                return Err(Self::causal_error(
-                    first.as_ref(),
-                    "internal causal state was not initialized".to_string(),
-                ));
-            };
+        let Some(root) = self.causal_root() else {
+            return Err(Self::causal_error(
+                first.as_ref(),
+                "internal causal state was not initialized".to_string(),
+            ));
+        };
+        let mut state = root.state();
+        {
             let mode = state.current_mode.unwrap_or(requested_mode);
             let depth = state
                 .current_depth
@@ -1372,8 +1560,9 @@ impl MykoServerContext {
                     chain,
                 });
             }
-            Ok(())
-        })
+        }
+        drop(state);
+        Ok(())
     }
 
     #[allow(clippy::too_many_lines)]
@@ -1392,17 +1581,14 @@ impl MykoServerContext {
             .causal_limits
             .read()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        CAUSAL_STATES.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            let Some(state) = slot
-                .iter_mut()
-                .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
-            else {
-                return Err(Self::causal_error(
-                    first.as_ref(),
-                    "internal causal state was not initialized".to_string(),
-                ));
-            };
+        let Some(root) = self.causal_root() else {
+            return Err(Self::causal_error(
+                first.as_ref(),
+                "internal causal state was not initialized".to_string(),
+            ));
+        };
+        let mut state = root.state();
+        {
             let mode = state.current_mode.unwrap_or(requested_mode);
             let depth = state
                 .current_depth
@@ -1483,8 +1669,9 @@ impl MykoServerContext {
                     chain,
                 });
             }
-            Ok(())
-        })
+        }
+        drop(state);
+        Ok(())
     }
 
     /// Submit into the active root's FIFO queue, or establish and drain a new
@@ -1506,13 +1693,9 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
-        let nested = CAUSAL_STATES.with(|slot| {
-            slot.borrow()
-                .iter()
-                .any(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
-        });
-        if nested {
-            return self.enqueue_causal(items, change, origin, mode);
+        if let Some(root) = self.causal_root() {
+            self.enqueue_causal(items, change, origin, mode)?;
+            return self.drain_causal(&root).map(|_applied| ());
         }
         let needs_causal_root = origin.should_cascade(change)
             && items.iter().any(|item| {
@@ -1534,70 +1717,11 @@ impl MykoServerContext {
             };
         }
 
-        self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
-        CAUSAL_STATES.with(|slot| {
-            slot.borrow_mut().push(CausalState {
-                owner: self.causal_counters.clone(),
-                root_tx: Uuid::new_v4(),
-                queue: VecDeque::new(),
-                seen: SeenTransitions::default(),
-                derived_count: 0,
-                current_depth: None,
-                current_mode: None,
-                current_chain: Vec::new(),
-            });
-        });
-
-        let result = (|| {
-            self.enqueue_causal(items, change, origin, mode)?;
-            loop {
-                let pending = CAUSAL_STATES.with(|slot| {
-                    let mut slot = slot.borrow_mut();
-                    let state = slot
-                        .iter_mut()
-                        .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))?;
-                    let pending = state.queue.pop_front();
-                    if let Some(pending) = &pending {
-                        state.current_depth = Some(pending.depth);
-                        state.current_mode = Some(pending.mode);
-                        state.current_chain.clone_from(&pending.chain);
-                    }
-                    pending
-                });
-                let Some(pending) = pending else { break };
-                match pending.kind {
-                    PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
-                        let Some(item) = items.into_iter().next() else {
-                            continue;
-                        };
-                        self.emit_one(item, change, pending.origin, pending.mode)?;
-                    }
-                    PendingMutationKind::Uniform { items, change } => {
-                        self.emit_grouped(&items, change, pending.origin, pending.mode)?;
-                    }
-                    PendingMutationKind::Replace {
-                        upserts,
-                        deletes,
-                        expected_graph_generation,
-                    } => {
-                        let applied = self.emit_replace_grouped(
-                            &upserts,
-                            &deletes,
-                            pending.origin,
-                            pending.mode,
-                            expected_graph_generation,
-                        )?;
-                        debug_assert!(applied, "unconditional replacement must apply");
-                    }
-                }
-            }
-            Ok(())
-        })();
-        CAUSAL_STATES.with(|slot| {
-            slot.borrow_mut()
-                .retain(|state| !Arc::ptr_eq(&state.owner, &self.causal_counters));
-        });
-        result
+        let root = self.begin_causal_root();
+        self.enqueue_causal(items, change, origin, mode)?;
+        let applied = self.drain_causal(&root.root)?;
+        debug_assert!(applied, "unconditional replacement must apply");
+        Ok(())
     }
 
     fn submit_replace_mutation(
@@ -1621,11 +1745,7 @@ impl MykoServerContext {
         if upserts.is_empty() && deletes.is_empty() {
             return Ok(true);
         }
-        if CAUSAL_STATES.with(|slot| {
-            slot.borrow()
-                .iter()
-                .any(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))
-        }) {
+        if let Some(root) = self.causal_root() {
             if expected_graph_generation.is_some() {
                 return Ok(false);
             }
@@ -1636,81 +1756,19 @@ impl MykoServerContext {
                 EdgeApplyMode::Authoritative,
                 None,
             )?;
+            self.drain_causal(&root)?;
             return Ok(true);
         }
 
-        self.causal_counters.roots.fetch_add(1, Ordering::Relaxed);
-        CAUSAL_STATES.with(|slot| {
-            slot.borrow_mut().push(CausalState {
-                owner: self.causal_counters.clone(),
-                root_tx: Uuid::new_v4(),
-                queue: VecDeque::new(),
-                seen: SeenTransitions::default(),
-                derived_count: 0,
-                current_depth: None,
-                current_mode: None,
-                current_chain: Vec::new(),
-            });
-        });
-
-        let result = (|| {
-            self.enqueue_causal_replace(
-                upserts,
-                deletes,
-                origin,
-                EdgeApplyMode::Authoritative,
-                expected_graph_generation,
-            )?;
-            loop {
-                let pending = CAUSAL_STATES.with(|slot| {
-                    let mut slot = slot.borrow_mut();
-                    let state = slot
-                        .iter_mut()
-                        .find(|state| Arc::ptr_eq(&state.owner, &self.causal_counters))?;
-                    let pending = state.queue.pop_front();
-                    if let Some(pending) = &pending {
-                        state.current_depth = Some(pending.depth);
-                        state.current_mode = Some(pending.mode);
-                        state.current_chain.clone_from(&pending.chain);
-                    }
-                    pending
-                });
-                let Some(pending) = pending else { break };
-                match pending.kind {
-                    PendingMutationKind::Uniform { items, change } if items.len() == 1 => {
-                        let Some(item) = items.into_iter().next() else {
-                            continue;
-                        };
-                        self.emit_one(item, change, pending.origin, pending.mode)?;
-                    }
-                    PendingMutationKind::Uniform { items, change } => {
-                        self.emit_grouped(&items, change, pending.origin, pending.mode)?;
-                    }
-                    PendingMutationKind::Replace {
-                        upserts,
-                        deletes,
-                        expected_graph_generation,
-                    } => {
-                        let applied = self.emit_replace_grouped(
-                            &upserts,
-                            &deletes,
-                            pending.origin,
-                            pending.mode,
-                            expected_graph_generation,
-                        )?;
-                        if !applied {
-                            return Ok(false);
-                        }
-                    }
-                }
-            }
-            Ok(true)
-        })();
-        CAUSAL_STATES.with(|slot| {
-            slot.borrow_mut()
-                .retain(|state| !Arc::ptr_eq(&state.owner, &self.causal_counters));
-        });
-        result
+        let root = self.begin_causal_root();
+        self.enqueue_causal_replace(
+            upserts,
+            deletes,
+            origin,
+            EdgeApplyMode::Authoritative,
+            expected_graph_generation,
+        )?;
+        self.drain_causal(&root.root)
     }
 
     /// Return the graph projection when this application registered graph metadata.
@@ -1797,36 +1855,40 @@ impl MykoServerContext {
                 .map_err(|error| Self::graph_error(item.as_ref(), error))?;
         }
 
-        Self::settle_reduce(authority, || -> Result<(), PersistError> {
-            self.reduce_one(&item, change);
-            if let Some(graph) = coordinated_graph {
-                let new = (change == MEventType::SET).then_some(item.as_ref());
-                graph
-                    .apply(old.as_deref(), new)
-                    .map_err(|error| Self::graph_error(item.as_ref(), error))?;
-            }
-            let persist_result = if origin.should_produce() {
-                match change {
-                    MEventType::SET => self.persist_set_dyn(&item),
-                    MEventType::DEL => self.persist_del_dyn(&item),
-                }
-            } else {
-                Ok(())
-            };
-            let watch_result = coordinated_graph
-                .filter(|graph| {
-                    graph.has_watch_subscribers()
-                        && graph.registration(item.entity_type()).is_some()
-                })
-                .map_or(Ok(()), |graph| {
-                    let new = (change == MEventType::SET).then(|| item.clone());
+        Self::settle_reduce(
+            authority,
+            self.causal_epoch(),
+            || -> Result<(), PersistError> {
+                self.reduce_one(&item, change);
+                if let Some(graph) = coordinated_graph {
+                    let new = (change == MEventType::SET).then_some(item.as_ref());
                     graph
-                        .publish_watch_change(old.clone(), new)
-                        .map_err(|error| Self::graph_error(item.as_ref(), error))
-                });
-            persist_result?;
-            watch_result
-        })?;
+                        .apply(old.as_deref(), new)
+                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                }
+                let persist_result = if origin.should_produce() {
+                    match change {
+                        MEventType::SET => self.persist_set_dyn(&item),
+                        MEventType::DEL => self.persist_del_dyn(&item),
+                    }
+                } else {
+                    Ok(())
+                };
+                let watch_result = coordinated_graph
+                    .filter(|graph| {
+                        graph.has_watch_subscribers()
+                            && graph.registration(item.entity_type()).is_some()
+                    })
+                    .map_or(Ok(()), |graph| {
+                        let new = (change == MEventType::SET).then(|| item.clone());
+                        graph
+                            .publish_watch_change(old.clone(), new)
+                            .map_err(|error| Self::graph_error(item.as_ref(), error))
+                    });
+                persist_result?;
+                watch_result
+            },
+        )?;
 
         self.apply_effects(std::slice::from_ref(&item), change, origin, true)?;
         let result = self.submit_mutation(graph_cascades, MEventType::DEL, Origin::Cascade);
@@ -1845,13 +1907,14 @@ impl MykoServerContext {
     /// holding it across the wait would deadlock the two.
     fn settle_reduce<R>(
         authority: Option<std::sync::MutexGuard<'_, ()>>,
+        epoch: Option<hyphae::Epoch>,
         writes: impl FnOnce() -> R,
     ) -> R {
         match authority {
             Some(authority) => {
-                crate::core::locked_writes::locked_writes_under(authority, writes)
+                crate::core::locked_writes::locked_writes_under(authority, epoch, writes)
             }
-            None => hyphae::batch(writes),
+            None => hyphae::batch_with(&[], epoch, writes),
         }
     }
 
@@ -1997,66 +2060,70 @@ impl MykoServerContext {
         // window — running effects outside the batch means that recursive call
         // opens its own fresh window instead of joining (and colliding with)
         // this one.
-        Self::settle_reduce(authority, || -> Result<(), PersistError> {
-            for (entity_type, group) in &by_type {
-                let store = self.registry.get_or_create(entity_type);
-                match change {
-                    MEventType::SET => {
-                        let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
-                            Vec::with_capacity(group.len());
-                        for item in group {
-                            crate::server::entity_set_stats::record_set(entity_type);
-                            entries.push((item.id(), item.clone()));
+        Self::settle_reduce(
+            authority,
+            self.causal_epoch(),
+            || -> Result<(), PersistError> {
+                for (entity_type, group) in &by_type {
+                    let store = self.registry.get_or_create(entity_type);
+                    match change {
+                        MEventType::SET => {
+                            let mut entries: Vec<(Arc<str>, Arc<dyn AnyItem>)> =
+                                Vec::with_capacity(group.len());
+                            for item in group {
+                                crate::server::entity_set_stats::record_set(entity_type);
+                                entries.push((item.id(), item.clone()));
+                            }
+                            store.insert_many(entries);
                         }
-                        store.insert_many(entries);
-                    }
-                    MEventType::DEL => {
-                        let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
-                        for item in group {
-                            crate::server::entity_set_stats::record_del(entity_type);
-                            ids.push(item.id());
+                        MEventType::DEL => {
+                            let mut ids: Vec<Arc<str>> = Vec::with_capacity(group.len());
+                            for item in group {
+                                crate::server::entity_set_stats::record_del(entity_type);
+                                ids.push(item.id());
+                            }
+                            store.remove_many(ids);
                         }
-                        store.remove_many(ids);
                     }
                 }
-            }
 
-            // Canonical state is now locally visible inside the closed batch.
-            // Keep projection and durability enqueue ahead of reactive drain.
-            let mutation_result = (|| -> Result<(), PersistError> {
-                for group in by_type.values() {
-                    for item in group {
-                        if let Some(graph) = coordinated_graph {
-                            let old = old_by_key
-                                .get(&(item.entity_type(), item.id()))
-                                .and_then(Option::as_deref);
-                            let new = (change == MEventType::SET).then_some(item.as_ref());
-                            graph
-                                .apply(old, new)
-                                .map_err(|error| Self::graph_error(item.as_ref(), error))?;
-                        }
-                        if origin.should_produce() {
-                            match change {
-                                MEventType::SET => self.persist_set_dyn(item)?,
-                                MEventType::DEL => self.persist_del_dyn(item)?,
+                // Canonical state is now locally visible inside the closed batch.
+                // Keep projection and durability enqueue ahead of reactive drain.
+                let mutation_result = (|| -> Result<(), PersistError> {
+                    for group in by_type.values() {
+                        for item in group {
+                            if let Some(graph) = coordinated_graph {
+                                let old = old_by_key
+                                    .get(&(item.entity_type(), item.id()))
+                                    .and_then(Option::as_deref);
+                                let new = (change == MEventType::SET).then_some(item.as_ref());
+                                graph
+                                    .apply(old, new)
+                                    .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                            }
+                            if origin.should_produce() {
+                                match change {
+                                    MEventType::SET => self.persist_set_dyn(item)?,
+                                    MEventType::DEL => self.persist_del_dyn(item)?,
+                                }
                             }
                         }
                     }
-                }
-                Ok(())
-            })();
-            let watch_result = if graph_watch_changes.is_empty() {
-                Ok(())
-            } else if let Some(graph) = coordinated_graph {
-                graph
-                    .publish_watch_changes(graph_watch_changes)
-                    .map_err(|error| Self::graph_error(first_item.as_ref(), error))
-            } else {
-                Ok(())
-            };
-            mutation_result?;
-            watch_result
-        })?;
+                    Ok(())
+                })();
+                let watch_result = if graph_watch_changes.is_empty() {
+                    Ok(())
+                } else if let Some(graph) = coordinated_graph {
+                    graph
+                        .publish_watch_changes(graph_watch_changes)
+                        .map_err(|error| Self::graph_error(first_item.as_ref(), error))
+                } else {
+                    Ok(())
+                };
+                mutation_result?;
+                watch_result
+            },
+        )?;
 
         // Effects: search + cascade + produce, per same-type group.
         for group in by_type.values() {
@@ -2190,84 +2257,88 @@ impl MykoServerContext {
                 .push(item.clone());
         }
 
-        Self::settle_reduce(authority, || -> Result<(), PersistError> {
-            for (entity_type, (type_deletes, type_upserts)) in &by_type {
-                let store = self.registry.get_or_create(entity_type);
-                let mut changes =
-                    Vec::with_capacity(type_deletes.len().saturating_add(type_upserts.len()));
-                for item in type_deletes {
-                    let Some(old_value) = old_by_key
-                        .get(&(item.entity_type(), item.id()))
-                        .cloned()
-                        .flatten()
-                    else {
-                        continue;
-                    };
-                    crate::server::entity_set_stats::record_del(entity_type);
-                    changes.push(MapDiff::Remove {
-                        key: item.id(),
-                        old_value,
-                    });
-                }
-                for item in type_upserts {
-                    crate::server::entity_set_stats::record_set(entity_type);
-                    let key = item.id();
-                    changes.push(
-                        old_by_key
-                            .get(&(item.entity_type(), key.clone()))
+        Self::settle_reduce(
+            authority,
+            self.causal_epoch(),
+            || -> Result<(), PersistError> {
+                for (entity_type, (type_deletes, type_upserts)) in &by_type {
+                    let store = self.registry.get_or_create(entity_type);
+                    let mut changes =
+                        Vec::with_capacity(type_deletes.len().saturating_add(type_upserts.len()));
+                    for item in type_deletes {
+                        let Some(old_value) = old_by_key
+                            .get(&(item.entity_type(), item.id()))
                             .cloned()
                             .flatten()
-                            .map_or_else(
-                                || MapDiff::Insert {
-                                    key: key.clone(),
-                                    value: item.clone(),
-                                },
-                                |old_value| MapDiff::Update {
-                                    key: key.clone(),
-                                    old_value,
-                                    new_value: item.clone(),
-                                },
-                            ),
-                    );
+                        else {
+                            continue;
+                        };
+                        crate::server::entity_set_stats::record_del(entity_type);
+                        changes.push(MapDiff::Remove {
+                            key: item.id(),
+                            old_value,
+                        });
+                    }
+                    for item in type_upserts {
+                        crate::server::entity_set_stats::record_set(entity_type);
+                        let key = item.id();
+                        changes.push(
+                            old_by_key
+                                .get(&(item.entity_type(), key.clone()))
+                                .cloned()
+                                .flatten()
+                                .map_or_else(
+                                    || MapDiff::Insert {
+                                        key: key.clone(),
+                                        value: item.clone(),
+                                    },
+                                    |old_value| MapDiff::Update {
+                                        key: key.clone(),
+                                        old_value,
+                                        new_value: item.clone(),
+                                    },
+                                ),
+                        );
+                    }
+                    store.apply_batch(changes);
                 }
-                store.apply_batch(changes);
-            }
 
-            for item in &effective_deletes {
-                if let Some(graph) = coordinated_graph {
-                    let old = old_by_key
-                        .get(&(item.entity_type(), item.id()))
-                        .and_then(Option::as_deref);
+                for item in &effective_deletes {
+                    if let Some(graph) = coordinated_graph {
+                        let old = old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .and_then(Option::as_deref);
+                        graph
+                            .apply(old, None)
+                            .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                    }
+                    if origin.should_produce() {
+                        self.persist_del_dyn(item)?;
+                    }
+                }
+                for item in upserts {
+                    if let Some(graph) = coordinated_graph {
+                        let old = old_by_key
+                            .get(&(item.entity_type(), item.id()))
+                            .and_then(Option::as_deref);
+                        graph
+                            .apply(old, Some(item.as_ref()))
+                            .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                    }
+                    if origin.should_produce() {
+                        self.persist_set_dyn(item)?;
+                    }
+                }
+                if !graph_watch_changes.is_empty()
+                    && let Some(graph) = coordinated_graph
+                {
                     graph
-                        .apply(old, None)
-                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
+                        .publish_watch_changes(graph_watch_changes)
+                        .map_err(|error| Self::graph_error(first_item.as_ref(), error))?;
                 }
-                if origin.should_produce() {
-                    self.persist_del_dyn(item)?;
-                }
-            }
-            for item in upserts {
-                if let Some(graph) = coordinated_graph {
-                    let old = old_by_key
-                        .get(&(item.entity_type(), item.id()))
-                        .and_then(Option::as_deref);
-                    graph
-                        .apply(old, Some(item.as_ref()))
-                        .map_err(|error| Self::graph_error(item.as_ref(), error))?;
-                }
-                if origin.should_produce() {
-                    self.persist_set_dyn(item)?;
-                }
-            }
-            if !graph_watch_changes.is_empty()
-                && let Some(graph) = coordinated_graph
-            {
-                graph
-                    .publish_watch_changes(graph_watch_changes)
-                    .map_err(|error| Self::graph_error(first_item.as_ref(), error))?;
-            }
-            Ok(())
-        })?;
+                Ok(())
+            },
+        )?;
 
         for (type_deletes, type_upserts) in by_type.values() {
             self.apply_effects(type_deletes, MEventType::DEL, origin, true)?;
@@ -4245,5 +4316,105 @@ mod tests {
                 let _ = ctx.report(report, request);
             },
         );
+    }
+
+    /// A store whose first row makes its subscriber set a second row, and the
+    /// thread that subscriber ran on.
+    fn store_with_a_derived_mutation(
+        ctx: &MykoServerContext,
+    ) -> (
+        Arc<crate::store::EntityStore>,
+        Arc<std::sync::Mutex<Option<std::thread::ThreadId>>>,
+        hyphae::SubscriptionGuard,
+    ) {
+        let store = ctx.registry.get_or_create("ImmediateTestItem");
+        let callback_ctx = ctx.clone();
+        let callback_store = store.clone();
+        let derived = AtomicBool::new(false);
+        let ran_on = Arc::new(std::sync::Mutex::new(None));
+        let callback_ran_on = ran_on.clone();
+        let guard = store.subscribe_keys(move |_| {
+            if callback_store.snapshot().is_empty() || derived.swap(true, Ordering::SeqCst) {
+                return;
+            }
+            *callback_ran_on
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(std::thread::current().id());
+            assert!(
+                callback_ctx
+                    .set(&ImmediateTestItem {
+                        id: Arc::from("derived"),
+                        value: 2,
+                    })
+                    .is_ok(),
+                "derived mutation"
+            );
+        });
+        (store, ran_on, guard)
+    }
+
+    /// Fires every node on a settle pool thread while it lives.
+    struct ForcedSettlePool {
+        workers: usize,
+        wave_min: usize,
+    }
+
+    impl ForcedSettlePool {
+        fn new() -> Self {
+            Self {
+                workers: hyphae::settle::set_workers(1),
+                wave_min: hyphae::settle::set_wave_min(1),
+            }
+        }
+    }
+
+    impl Drop for ForcedSettlePool {
+        fn drop(&mut self) {
+            hyphae::settle::set_workers(self.workers);
+            hyphae::settle::set_wave_min(self.wave_min);
+        }
+    }
+
+    #[test]
+    fn a_mutation_from_a_callback_on_a_pool_thread_joins_its_root() {
+        let _serial = scheduler_test_serial();
+        let _pool = ForcedSettlePool::new();
+        let ctx = make_ctx();
+        let (store, ran_on, _subscription) = store_with_a_derived_mutation(&ctx);
+
+        assert!(
+            ctx.replace_batch_any([immediate_item("root", 1)], [])
+                .is_ok(),
+            "root mutation"
+        );
+
+        let ran_on = *ran_on
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(ran_on.is_some_and(|thread| thread != std::thread::current().id()));
+        assert_eq!(store.snapshot().len(), 2);
+        assert_eq!(ctx.causal_diagnostics().roots, 1);
+        assert_eq!(ctx.causal_diagnostics().derived_mutations, 1);
+    }
+
+    #[test]
+    fn a_mutation_from_a_callback_delivered_after_its_root_returned_joins_it() {
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let (store, _ran_on, _subscription) = store_with_a_derived_mutation(&ctx);
+
+        hyphae::submit(&[], None, || {
+            assert!(
+                ctx.replace_batch_any([immediate_item("root", 1)], [])
+                    .is_ok(),
+                "root mutation"
+            );
+        });
+        hyphae::flush();
+
+        assert_eq!(store.snapshot().len(), 2);
+        assert_eq!(ctx.causal_diagnostics().roots, 1);
+        assert_eq!(ctx.causal_diagnostics().derived_mutations, 1);
     }
 }
