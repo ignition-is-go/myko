@@ -1,7 +1,7 @@
-//! Tests for `query_map` cache cleanup when used inside `switch_map`.
+//! Tests for `query_map` row cleanup when the query is a reactive key.
 //!
-//! Validates that the myko query cache and hyphae `switch_map` correctly
-//! clean up cell factories and subscriptions. These tests were written
+//! Validates that a `query_map_at` lookup into the shared query family
+//! releases each row it leaves and tears every row down once dropped. These tests were written
 //! while investigating a 47 GB memory leak in a downstream server triggered
 //! by `CuePlayback` state changes. The tests prove the cache layer is clean —
 //! the actual leak is in the O(n^2) reactive fan-out of the `CueEngine`
@@ -13,7 +13,7 @@ use std::sync::Arc;
 
 use myko::{
     bench_entities::{BenchItem, BenchItemQuery, GetBenchItemsByQuery, SwitchMapReport},
-    hyphae::{Cell, Gettable, Materialize, Mutable, SwitchMapExt},
+    hyphae::{Cell, Gettable, MapExt, Materialize, Mutable},
     query::StringFilter,
     search::SearchIndex,
     server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
@@ -63,17 +63,15 @@ fn insert_bench_item(ctx: &MykoServerContext, id: &str, category: &str, value: i
     assert!(ctx.apply_event_batch(vec![event]).is_ok());
 }
 
-/// Verify that `query_map` results created inside `switch_map` are reclaimable
-/// after the `switch_map` moves to a new inner chain.
+/// Verify that rows a `query_map_at` lookup leaves are reclaimable after it
+/// moves to a new key.
 ///
 /// This reproduces the `CuePaused` pattern:
 /// ```rust,ignore
-/// playbacks.switch_map(|playbacks| {
-///     ctx.query_map(GetCuesByIds { ids: cue_ids }, req).items().map(...)
-/// })
+/// ctx.query_map_at(playbacks.map(|p| GetCuesByIds { ids: cue_ids(p) }))
 /// ```
 #[test]
-fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
+fn query_map_at_changing_key_rows_become_reclaimable() {
     let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
@@ -86,30 +84,26 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
 
     let categories = ["alpha", "beta", "gamma"];
 
-    // Outer signal that triggers switch_map re-creation (simulates playback list changing)
+    // Outer signal that changes the query key (simulates playback list changing)
     let selector = Cell::new(0usize);
-    let ctx_clone = ctx.clone();
-
-    let switched = selector
+    let key = selector
         .clone()
-        .switch_map(move |idx| {
+        .map(move |idx| {
             let category = idx
                 .checked_rem(categories.len())
                 .and_then(|index| categories.get(index))
                 .copied()
                 .unwrap_or_default()
                 .to_string();
-            let request = ctx_clone.new_server_transaction();
-            // Each different category produces a different cache key (different payload_hash)
-            let query_result = ctx_clone.query_map(
-                GetBenchItemsByQuery(BenchItemQuery {
-                    category: Some(StringFilter::Eq(category.into())),
-                    ..Default::default()
-                }),
-                request,
-            );
-            query_result.items().materialize()
+            GetBenchItemsByQuery(BenchItemQuery {
+                category: Some(StringFilter::Eq(category.into())),
+                ..Default::default()
+            })
         })
+        .materialize();
+    let switched = ctx
+        .query_map_at(key, ctx.new_server_transaction())
+        .items()
         .materialize();
 
     // Initial: should see alpha items
@@ -126,11 +120,12 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     // The switched cell should have the latest result
     assert_eq!(switched.get().len(), 10);
 
-    // Cache has accumulated entries (some may be dead weak refs now)
+    // Every row the lookup left is torn down: only the current key's row lives
+    ctx.sweep_dead_families();
     let cache_after = ctx.query_rows();
-    assert!(
-        cache_after >= cache_before,
-        "cache should have grown or stayed the same"
+    assert_eq!(
+        cache_after, cache_before,
+        "left rows should be torn down (before={cache_before}, after={cache_after})"
     );
 
     // Now drop the switched cell — all inner query_maps should become reclaimable
@@ -141,18 +136,18 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     ctx.sweep_dead_families();
     let cache_final = ctx.query_rows();
 
-    // After dropping all references, sweep should clean up most/all cache entries
+    // After dropping all references, every row is torn down
     assert!(
-        cache_final < cache_after,
+        cache_final == 0,
         "sweep should have removed dead query cache entries \
          (cache before={cache_before}, after switch={cache_after}, final={cache_final})",
     );
 }
 
-/// Verify that repeated `query_map` calls with the SAME params inside `switch_map`
-/// reuse the cache entry (cache hit) rather than creating new factories.
+/// Verify that a `query_map_at` key that keeps re-emitting the SAME params
+/// keeps one row rather than building new ones.
 #[test]
-fn query_map_same_params_inside_switch_map_reuses_cache() {
+fn query_map_at_same_params_reuses_row() {
     let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
@@ -161,24 +156,19 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
     }
 
     let trigger = Cell::new(0u64);
-    let ctx_clone = ctx.clone();
-
-    // Every switch creates query_map with SAME params — should cache-hit
-    let switched = trigger
+    // Every trigger re-emits the SAME params — the lookup must keep its row
+    let key = trigger
         .clone()
-        .switch_map(move |_| {
-            let request = ctx_clone.new_server_transaction();
-            ctx_clone
-                .query_map(
-                    GetBenchItemsByQuery(BenchItemQuery {
-                        category: Some(StringFilter::Eq("tools".into())),
-                        ..Default::default()
-                    }),
-                    request,
-                )
-                .items()
-                .materialize()
+        .map(|_| {
+            GetBenchItemsByQuery(BenchItemQuery {
+                category: Some(StringFilter::Eq("tools".into())),
+                ..Default::default()
+            })
         })
+        .materialize();
+    let switched = ctx
+        .query_map_at(key, ctx.new_server_transaction())
+        .items()
         .materialize();
 
     assert_eq!(switched.get().len(), 5);
@@ -204,13 +194,12 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
     );
 }
 
-/// Reproduce the production leak: `switch_map` creates `query_map().items()`
+/// Reproduce the production leak shape: a `query_map_at` lookup changes key
 /// while the underlying store is actively receiving updates. Store mutations
-/// cause the `CellMap`'s internal subscriptions to fire, which may keep the
-/// `CellMap` alive (via `map_keepalive` in `items()`) even after `switch_map` replaces
-/// the inner chain.
+/// fire the rows' internal subscriptions, which must not keep a left row
+/// alive after the lookup moves on.
 #[test]
-fn query_map_inside_switch_map_with_active_store_mutations() {
+fn query_map_at_changing_key_with_active_store_mutations() {
     let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
@@ -222,29 +211,24 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
 
     let categories = ["alpha", "beta"];
     let selector = Cell::new(0usize);
-    let ctx_clone = ctx.clone();
-
-    let switched = selector
+    let key = selector
         .clone()
-        .switch_map(move |idx| {
+        .map(move |idx| {
             let category = idx
                 .checked_rem(categories.len())
                 .and_then(|index| categories.get(index))
                 .copied()
                 .unwrap_or_default()
                 .to_string();
-            let request = ctx_clone.new_server_transaction();
-            ctx_clone
-                .query_map(
-                    GetBenchItemsByQuery(BenchItemQuery {
-                        category: Some(StringFilter::Eq(category.into())),
-                        ..Default::default()
-                    }),
-                    request,
-                )
-                .items()
-                .materialize()
+            GetBenchItemsByQuery(BenchItemQuery {
+                category: Some(StringFilter::Eq(category.into())),
+                ..Default::default()
+            })
         })
+        .materialize();
+    let switched = ctx
+        .query_map_at(key, ctx.new_server_transaction())
+        .items()
         .materialize();
 
     assert_eq!(switched.get().len(), 10);
@@ -274,7 +258,7 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
     let live_before_drop = ctx.query_rows();
     let total_before_drop = ctx.query_rows();
 
-    // Drop the switch_map chain
+    // Drop the lookup chain
     drop(switched);
     drop(selector);
 
@@ -282,10 +266,10 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
     ctx.sweep_dead_families();
     let live_after = ctx.query_rows();
 
-    // All query cache entries should be reclaimable after dropping the switch_map
+    // All query cache entries should be reclaimable after dropping the lookup
     assert_eq!(
         live_after, 0,
-        "expected 0 live cache entries after dropping switch_map, found {live_after} \
+        "expected 0 live cache entries after dropping the lookup, found {live_after} \
          (total before drop={total_before_drop}, live before drop={live_before_drop})",
     );
 }
@@ -338,15 +322,14 @@ fn query_cache_live_count_tracks_reachable_entries() {
 }
 
 // =============================================================================
-// Report-level tests: ctx.report() with switch_map + nested query_map
+// Report-level tests: ctx.report() with a query_map at a changing key
 // =============================================================================
 
-/// Core reproduction of the `CuePaused` leak: a report whose `compute()` uses
-/// `switch_map` with a nested `query_map`. Store mutations trigger the outer
-/// query, `switch_map` recreates the inner `query_map`, and old cache entries
-/// must be reclaimable.
+/// Core reproduction of the `CuePaused` leak: a report whose `compute()` keys
+/// an inner `query_map` on an outer query. Store mutations change the key,
+/// the lookup moves to a new row, and the rows it left must be reclaimable.
 #[test]
-fn report_with_switch_map_query_map_cleans_up_cache() {
+fn report_with_query_map_at_cleans_up_rows() {
     let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
@@ -359,7 +342,7 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     let report_cache_before = ctx.report_rows();
 
     // Create the report — this calls SwitchMapReport::compute() which sets up
-    // the switch_map + nested query_map chain
+    // the outer query + keyed inner query_map
     let request = ctx.new_server_transaction();
     let report_cell = ctx.report(
         SwitchMapReport {
@@ -378,8 +361,8 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     assert!(cache_after_report > cache_before);
     assert!(report_cache_after_report > report_cache_before);
 
-    // Now mutate items to trigger the outer query → switch_map → new inner query_map
-    // Each mutation changes the item list, causing switch_map to recreate
+    // Now mutate items to trigger the outer query → new key → new inner row
+    // Each mutation changes the item list, moving the lookup to a new row
     for round in 0..20 {
         insert_bench_item(
             &ctx,
@@ -415,7 +398,7 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
 /// Stress test: many rounds of store mutations while report is alive.
 /// Verifies cache doesn't grow unboundedly during active use.
 #[test]
-fn report_switch_map_cache_bounded_during_active_mutations() {
+fn report_query_map_at_rows_bounded_during_active_mutations() {
     let _serial = scheduler_test_serial();
     let ctx = make_ctx();
 
@@ -433,8 +416,8 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
 
     assert_eq!(report_cell.get().len(), 5);
 
-    // Run 100 rounds of mutations — each triggers switch_map to recreate
-    // the inner query_map with new IDs
+    // Run 100 rounds of mutations — each moves the inner lookup to a row
+    // with new IDs
     for round in 0..100 {
         insert_bench_item(
             &ctx,

@@ -12,7 +12,6 @@ use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::MapExt;
 #[cfg(not(target_arch = "wasm32"))]
-use hyphae::SwitchMapExt;
 use hyphae::{Cell, Definite, Materialize};
 #[cfg(not(target_arch = "wasm32"))]
 use hyphae::{DedupedExt, interval};
@@ -224,21 +223,12 @@ impl ReportHandler for PeerAlive {
     type Output = i64;
 
     fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
-        let peer_id = self.peer_id.clone();
-        let report_ctx = ctx.clone();
-        ctx.peer_clients_tick().switch_map(move |_| {
-            let Some(peer_client) = report_ctx.peer_client(peer_id.as_ref()) else {
-                return Cell::new(Arc::new(-1)).lock();
-            };
-
-            peer_client
-                .ping_ms()
-                .clone()
-                .map(|ping_ms| {
-                    Arc::new(ping_ms.map_or(-1, |ms| i64::try_from(ms).unwrap_or(i64::MAX)))
-                })
-                .materialize()
-        })
+        ctx.peer_pings()
+            .get(&self.peer_id)
+            .map(|ping_ms| {
+                Arc::new(ping_ms.flatten().map_or(-1, |ms| i64::try_from(ms).unwrap_or(i64::MAX)))
+            })
+            .materialize()
     }
 }
 

@@ -168,7 +168,7 @@ pub trait ReportHandler: Sized {
     /// incurs at most one cell allocation regardless of the chain depth of
     /// `ctx.report(...)` calls.
     ///
-    /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `switch_map`,
+    /// Concrete `Cell<U>` values produced by `ctx.query_map()`, `lookup`,
     /// `deduped`, etc. already implement `Materialize<U, Definite>`, so
     /// returning them directly is fine.
     #[allow(clippy::as_conversions, clippy::unreachable)]

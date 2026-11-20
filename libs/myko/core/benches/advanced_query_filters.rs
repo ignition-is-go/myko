@@ -4,7 +4,7 @@
 //! - Phase 1: N separate per-value query cells (the rship-audit workaround
 //!   shape) collapsing into one `In`-filter cell.
 //! - Phase 2: a filter change costing a full query reconstruction (what
-//!   wrapping a query in `switch_map` forces on every tick) collapsing
+//!   moving a `query_map_at` lookup to a new key costs on every tick) collapsing
 //!   into `query_live`'s incremental bucket-diff — only the delta buckets
 //!   are touched, not the whole existing set.
 
@@ -117,8 +117,8 @@ fn bench_n_cells_vs_in_filter(c: &mut Criterion) {
 
 // ─────────────────────────────────────────────────────────────────────────
 // Phase 2: cost of a filter CHANGE that adds one more value to an already-
-// large `In` set — full reconstruction (what switch_map forces on every
-// tick) vs query_live's incremental bucket-diff (only the new key's bucket
+// large `In` set — full reconstruction (what a `query_map_at` key change
+// costs on every tick) vs query_live's incremental bucket-diff (only the new key's bucket
 // gets subscribed; the pre-existing buckets are left completely alone).
 // ─────────────────────────────────────────────────────────────────────────
 
@@ -138,7 +138,7 @@ fn bench_filter_change_cost(c: &mut Criterion) {
         ));
 
         g.bench_with_input(
-            BenchmarkId::new("full_rebuild_like_switch_map", existing),
+            BenchmarkId::new("full_rebuild_like_new_key", existing),
             &existing,
             |b, &existing| {
                 let base_ids: Vec<String> = (0..existing).map(|i| format!("server-{i}")).collect();
@@ -147,7 +147,7 @@ fn bench_filter_change_cost(c: &mut Criterion) {
                     // A unique marker id each iteration guarantees this is
                     // never a query-cache hit — genuinely simulating a
                     // fresh reconstruction on every "tick", exactly what
-                    // wrapping query_map in switch_map forces since a
+                    // moving query_map_at to a new key costs since a
                     // changed filter value is a new cache key every time.
                     counter = counter.saturating_add(1);
                     let mut ids: Vec<ServerId> = base_ids

@@ -141,6 +141,30 @@ pub trait Querying: ServerScoped {
             .query_map(query, self.__request().clone())
     }
 
+    /// [`Self::query_map`] at a reactive query: the map follows `query`,
+    /// sharing each query's row with every other reader of it.
+    fn query_map_at<Q, M>(
+        &self,
+        query: Cell<Q, M>,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    where
+        M: Send + Sync + 'static,
+        Q: QueryParams + 'static,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + CellValue
+            + 'static,
+    {
+        self.__server_ctx()
+            .query_map_at(query, self.__request().clone())
+    }
+
     /// Subscribe to a query keyed by canonical `Arc<str>` ids.
     fn query_map_by_str<Q>(&self, query: Q) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
@@ -480,6 +504,10 @@ pub trait PeerAccess: ServerScoped {
     /// The live peer client for a peer server id, if present.
     fn peer_client(&self, peer_id: &str) -> Option<Arc<crate::client::MykoClient>> {
         self.__server_ctx().peer_client(peer_id)
+    }
+    /// Latest ping per live peer client, keyed by peer server id.
+    fn peer_pings(&self) -> hyphae::CellMap<Arc<str>, Option<u64>, CellImmutable> {
+        self.__server_ctx().peer_pings()
     }
     /// A reactive tick that updates when peer-client membership changes.
     fn peer_clients_tick(&self) -> Cell<u64, CellImmutable> {

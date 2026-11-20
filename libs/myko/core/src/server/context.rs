@@ -361,6 +361,10 @@ pub struct MykoServerContext {
     peer_clients: Arc<DashMap<Arc<str>, Arc<MykoClient>>>,
     /// Monotonic tick bumped on peer client register/unregister.
     peer_clients_tick: Cell<u64, CellMutable>,
+    /// Latest ping per live peer client, mirrored from each client's
+    /// `ping_ms` cell by a subscription held in `peer_ping_watches`.
+    peer_pings: CellMap<Arc<str>, Option<u64>>,
+    peer_ping_watches: Arc<DashMap<Arc<str>, hyphae::SubscriptionGuard>>,
     /// Optional event sink used to fan out applied events to saga runtimes.
     event_sink: Option<flume::Sender<MEvent>>,
     event_sink_filter: Option<Arc<EventSinkFilter>>,
@@ -420,6 +424,8 @@ impl MykoServerContext {
             search_index,
             peer_clients,
             peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
+            peer_pings: CellMap::new(),
+            peer_ping_watches: Arc::new(DashMap::new()),
             event_sink,
             event_sink_filter: None,
             families: Arc::new(Families::default()),
@@ -460,8 +466,17 @@ impl MykoServerContext {
 
     /// Register or replace a live peer client for a server id.
     pub fn register_peer_client<S: AsRef<str>>(&self, peer_id: S, client: Arc<MykoClient>) {
-        self.peer_clients
-            .insert(Arc::<str>::from(peer_id.as_ref()), client);
+        let peer_id = Arc::<str>::from(peer_id.as_ref());
+        let pings = self.peer_pings.clone();
+        let watched_id = peer_id.clone();
+        let watch = client.ping_ms().subscribe(move |signal| {
+            if let hyphae::Signal::Value(ping) = signal {
+                let ping = **ping;
+                hyphae::settle::new_ticket(|| pings.insert(watched_id.clone(), ping));
+            }
+        });
+        self.peer_ping_watches.insert(peer_id.clone(), watch);
+        self.peer_clients.insert(peer_id, client);
         let next = self.peer_clients_tick.get().saturating_add(1);
         self.peer_clients_tick.set(next);
     }
@@ -469,6 +484,8 @@ impl MykoServerContext {
     /// Remove a live peer client for a server id.
     pub fn unregister_peer_client(&self, peer_id: &str) {
         if self.peer_clients.remove(peer_id).is_some() {
+            self.peer_ping_watches.remove(peer_id);
+            self.peer_pings.remove(&Arc::<str>::from(peer_id));
             let next = self.peer_clients_tick.get().saturating_add(1);
             self.peer_clients_tick.set(next);
         }
@@ -480,6 +497,13 @@ impl MykoServerContext {
         self.peer_clients
             .get(peer_id)
             .map(|entry| entry.value().clone())
+    }
+
+    /// Latest ping per live peer client, keyed by peer server id. A peer
+    /// that is not connected has no row.
+    #[must_use]
+    pub fn peer_pings(&self) -> CellMap<Arc<str>, Option<u64>, CellImmutable> {
+        self.peer_pings.clone().lock()
     }
 
     /// Reactive tick that updates whenever peer client membership changes.
@@ -2387,6 +2411,29 @@ impl MykoServerContext {
             + Sync
             + 'static,
     {
+        self.query_map_at(Cell::new(query).lock(), request)
+    }
+
+    /// [`Self::query_map`] at a reactive query: when `query` changes, the map
+    /// moves to the new query's shared row and releases the old one.
+    pub fn query_map_at<Q, M>(
+        &self,
+        query: Cell<Q, M>,
+        request: Arc<RequestContext>,
+    ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
+    where
+        M: Send + Sync + 'static,
+        Q: QueryParams + Params,
+        Q::Item: Eventable
+            + WithId
+            + WithTypedId
+            + DeserializeOwned
+            + Clone
+            + std::fmt::Debug
+            + Send
+            + Sync
+            + 'static,
+    {
         let scope = Self::family_scope(&request, RequestCacheScope::Shared);
         let untyped = self.query_family::<Q>(request);
         let family = self
@@ -2399,12 +2446,12 @@ impl MykoServerContext {
                     lease,
                 )
             });
-        Cell::new(query).lock().lookup(family)
+        query.lookup(family)
     }
 
     /// Reactive filter parameters: `filter_cell` replaces a value-based
     /// `GetXsByQuery` with a live `Cell`, so a filter derived from other
-    /// cells no longer needs a `switch_map` wrapper — see
+    /// cells needs no rebuilt query — see
     /// `query::query_live` for the mechanics
     /// (incremental bucket-diffing on `In`/`Eq` field changes, scoped
     /// rescan on `Range`/`Contains` changes, never a graph teardown).

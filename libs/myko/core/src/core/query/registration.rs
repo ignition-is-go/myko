@@ -700,7 +700,7 @@ pub fn cartesian_product(sets: Vec<Vec<Arc<str>>>) -> Vec<CompoundKey> {
 // ─────────────────────────────────────────────────────────────────────────
 // query_live — phase 2 of the advanced-query-design spec (§5): a reactive
 // filter *parameter* instead of a plain value, so a filter derived from
-// other cells no longer needs a switch_map wrapper. Server-side only.
+// other cells needs no rebuilt query. Server-side only.
 // ─────────────────────────────────────────────────────────────────────────
 
 fn live_filter_matches<F: LiveFilterQuery>(filter: &F, item: &AnyItemArc) -> bool {
@@ -866,7 +866,7 @@ impl<F> Default for LiveQueryState<F> {
 /// Reactive filter parameters: `filter_cell` replaces the value-based
 ///
 /// `GetXsByQuery` query with a live `Cell`, so a filter whose value is
-/// itself derived reactively no longer needs a `switch_map` wrapper. The
+/// itself derived reactively needs no rebuilt query. The
 /// returned map is a single persistent reactive graph node —
 /// filter changes are handled by incrementally adding/removing bucket
 /// subscriptions (for `In`/`Eq` changes on indexed `#[belongs_to]` fields)
