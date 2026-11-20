@@ -40,19 +40,27 @@ pub struct StoreRegistry {
 }
 
 impl StoreRegistry {
-    /// Create a new empty registry.
+    /// A registry holding a store for every registered entity type.
+    ///
+    /// Stores are graph nodes, and a node may be built only between tickets,
+    /// so every store a ticket can reach is built here, up front.
     #[must_use]
     pub fn new() -> Self {
-        Self {
+        let registry = Self {
             stores: DashMap::with_hasher(ahash::RandomState::new()),
             settled_writes: DashMap::with_hasher(ahash::RandomState::new()),
             root: Cell::new(()),
+        };
+        for item in inventory::iter::<crate::core::item::ItemRegistration> {
+            let _ = registry.get_or_create(item.entity_type);
         }
+        registry
     }
 
     /// Get or create an entity store for the given type.
     ///
-    /// Creates a new store if one doesn't exist for this type.
+    /// Every registered type's store already exists. Creating one for an
+    /// unregistered type builds nodes, so do it between tickets.
     #[must_use]
     pub fn get_or_create(&self, entity_type: &str) -> Arc<EntityStore> {
         let key: Arc<str> = entity_type.into();
@@ -133,18 +141,16 @@ mod tests {
     #[test]
     fn test_registry_get_or_create() {
         let registry = StoreRegistry::new();
+        let registered = registry.len();
 
-        // First access creates store
-        let store1 = registry.get_or_create("Target");
-        assert_eq!(registry.len(), 1);
+        let store1 = registry.get_or_create("UnregisteredA");
+        assert_eq!(registry.len(), registered + 1);
 
-        // Second access returns same store
-        let store2 = registry.get_or_create("Target");
+        let store2 = registry.get_or_create("UnregisteredA");
         assert!(Arc::ptr_eq(&store1, &store2));
 
-        // Different type creates new store
-        let store3 = registry.get_or_create("Scene");
-        assert_eq!(registry.len(), 2);
+        let store3 = registry.get_or_create("UnregisteredB");
+        assert_eq!(registry.len(), registered + 2);
         assert!(!Arc::ptr_eq(&store1, &store3));
     }
 
@@ -152,23 +158,18 @@ mod tests {
     fn test_registry_get() {
         let registry = StoreRegistry::new();
 
-        // Non-existent returns None
-        assert!(registry.get("Target").is_none());
+        assert!(registry.get("Unregistered").is_none());
 
-        // After creation, returns Some
-        drop(registry.get_or_create("Target"));
-        assert!(registry.get("Target").is_some());
+        drop(registry.get_or_create("Unregistered"));
+        assert!(registry.get("Unregistered").is_some());
     }
 
     #[test]
-    fn test_registry_entity_types() {
+    fn every_registered_type_has_a_store_before_any_ticket() {
         let registry = StoreRegistry::new();
 
-        drop(registry.get_or_create("Target"));
-        drop(registry.get_or_create("Scene"));
-        drop(registry.get_or_create("Binding"));
-
-        let types = registry.entity_types();
-        assert_eq!(types.len(), 3);
+        for item in inventory::iter::<crate::core::item::ItemRegistration> {
+            assert!(registry.get(item.entity_type).is_some(), "{}", item.entity_type);
+        }
     }
 }
