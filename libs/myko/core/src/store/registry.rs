@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use hyphae::{Cell, CellMutable, MapDiff, Signal};
 
 use super::{EntityStore, settled_writes::SettledWrites};
 
@@ -33,6 +34,9 @@ pub struct StoreRegistry {
     stores: DashMap<Arc<str>, Arc<EntityStore>, ahash::RandomState>,
     /// The write queue of each store whose writes are applied by a settle.
     settled_writes: DashMap<Arc<str>, Arc<SettledWrites>, ahash::RandomState>,
+    /// Fires on every change to every store, including stores created
+    /// later. Query, view and report families anchor to it.
+    root: Cell<(), CellMutable>,
 }
 
 impl StoreRegistry {
@@ -42,6 +46,7 @@ impl StoreRegistry {
         Self {
             stores: DashMap::with_hasher(ahash::RandomState::new()),
             settled_writes: DashMap::with_hasher(ahash::RandomState::new()),
+            root: Cell::new(()),
         }
     }
 
@@ -54,8 +59,27 @@ impl StoreRegistry {
 
         self.stores
             .entry(key.clone())
-            .or_insert_with(|| Arc::new(EntityStore::new().with_name(format!("store:{key}"))))
+            .or_insert_with(|| {
+                let store = Arc::new(EntityStore::new().with_name(format!("store:{key}")));
+                // The root owns the subscription, which puts it below the
+                // store: it fires in the settle of the store's change.
+                let root = self.root.downgrade();
+                self.root.own(store.subscribe_diffs(move |diff| {
+                    if !matches!(diff, MapDiff::Initial { .. })
+                        && let Some(root) = root.upgrade()
+                    {
+                        root.notify(Signal::value(()));
+                    }
+                }));
+                store
+            })
             .clone()
+    }
+
+    /// The node every store's changes feed.
+    #[must_use]
+    pub fn root(&self) -> &Cell<(), CellMutable> {
+        &self.root
     }
 
     /// The queue that applies a write to this type's store when the settle

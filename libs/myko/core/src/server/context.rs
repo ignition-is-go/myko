@@ -414,6 +414,7 @@ impl MykoServerContext {
         {
             tracing::error!(%error, "initial graph projection rebuild failed");
         }
+        let families = Arc::new(Families::new(registry.root().clone()));
         Self {
             host_id,
             host_id_str: Arc::from(host_id.to_string()),
@@ -428,7 +429,7 @@ impl MykoServerContext {
             peer_ping_watches: Arc::new(DashMap::new()),
             event_sink,
             event_sink_filter: None,
-            families: Arc::new(Families::default()),
+            families,
             ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
             graph_index,

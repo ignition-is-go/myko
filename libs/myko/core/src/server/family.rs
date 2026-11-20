@@ -13,7 +13,7 @@ use std::{
 };
 
 use dashmap::DashMap;
-use hyphae::{CellValue, Family, FamilyRow, KeyedFamily, Lease, family};
+use hyphae::{Cell, CellMutable, CellValue, Family, FamilyNode, FamilyRow, KeyedFamily, Lease, family};
 
 use super::MykoServerContext;
 use crate::request::RequestContext;
@@ -79,6 +79,10 @@ where
     fn acquire(&self, key: &K) -> Lease<R> {
         self.0.acquire(key)
     }
+
+    fn node(&self) -> FamilyNode {
+        self.0.node()
+    }
 }
 
 /// What a family's rows are, for diagnostics. A projection family's rows are
@@ -113,12 +117,21 @@ where
 
 type Slots = DashMap<(TypeId, String), (FamilyKind, Box<dyn Slot>), ahash::RandomState>;
 
-#[derive(Default)]
 pub struct Families {
     slots: Slots,
+    /// The store registry's root, which every family anchors to: rows read
+    /// stores, and every store's changes feed the root.
+    root: Cell<(), CellMutable>,
 }
 
 impl Families {
+    pub fn new(root: Cell<(), CellMutable>) -> Self {
+        Self {
+            slots: Slots::default(),
+            root,
+        }
+    }
+
     /// The live family for this row type and `scope`, or a new one whose rows
     /// are `build(key)`.
     pub fn get_or_build<K, R>(
@@ -144,6 +157,7 @@ impl Families {
             return SharedFamily(family);
         }
         let family = Arc::new(family(build));
+        family.anchor(&self.root);
         entry.insert((kind, Box::new(Arc::downgrade(&family))));
         SharedFamily(family)
     }
