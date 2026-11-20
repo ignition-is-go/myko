@@ -1,9 +1,13 @@
 //! Reports modelled on rship's: a keyed lookup with a map, a report that
 //! reads another report, and a grouped report over one scene's nodes.
 
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering::Relaxed},
+};
 
 use myko::{
+    hyphae::DedupedExt as _,
     prelude::*,
     report::{ReportContext, ReportHandler},
 };
@@ -139,5 +143,130 @@ impl ReportHandler for SceneStats {
             })
         })
         .materialize()
+    }
+}
+
+/// Times each label report's body ran. A run that leaves these at zero did
+/// no work for a write that could not change the output.
+pub static LABEL_COMPUTES: AtomicU64 = AtomicU64::new(0);
+pub static LABEL_DEDUPED_COMPUTES: AtomicU64 = AtomicU64::new(0);
+pub static LABEL_UPPER_COMPUTES: AtomicU64 = AtomicU64::new(0);
+
+#[myko_report_output]
+pub struct NodeLabelOut {
+    pub node_id: Arc<str>,
+    pub label: String,
+}
+
+fn label_of(node_id: &Arc<str>, items: &[Arc<BNode>]) -> Arc<NodeLabelOut> {
+    Arc::new(NodeLabelOut {
+        node_id: node_id.clone(),
+        label: items.first().map_or_else(String::new, |node| {
+            format!("{}:{}", node.node_type, node.category)
+        }),
+    })
+}
+
+/// Reads only fields the tick never changes, so its output stays equal while
+/// its input changes on every tick. Written the plain way, with no dedup.
+#[myko_report(NodeLabelOut)]
+pub struct NodeLabel {
+    pub node_id: BNodeId,
+}
+
+impl ReportHandler for NodeLabel {
+    type Output = NodeLabelOut;
+
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        let node_id = self.node_id.0.clone();
+        ctx.query_map(GetBNodesByIds {
+            ids: vec![self.node_id.clone()],
+        })
+        .items()
+        .map(move |items| {
+            LABEL_COMPUTES.fetch_add(1, Relaxed);
+            label_of(&node_id, items)
+        })
+        .materialize()
+    }
+}
+
+/// [`NodeLabel`] with `.deduped()` on its output.
+#[myko_report(NodeLabelOut)]
+pub struct NodeLabelDeduped {
+    pub node_id: BNodeId,
+}
+
+impl ReportHandler for NodeLabelDeduped {
+    type Output = NodeLabelOut;
+
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        let node_id = self.node_id.0.clone();
+        ctx.query_map(GetBNodesByIds {
+            ids: vec![self.node_id.clone()],
+        })
+        .items()
+        .map(move |items| {
+            LABEL_DEDUPED_COMPUTES.fetch_add(1, Relaxed);
+            label_of(&node_id, items)
+        })
+        .deduped()
+        .materialize()
+    }
+}
+
+/// Reads [`NodeLabel`]. Shows whether an unchanged output still wakes the
+/// reports downstream of it.
+#[myko_report(NodeLabelOut)]
+pub struct LabelUpper {
+    pub node_id: BNodeId,
+}
+
+impl ReportHandler for LabelUpper {
+    type Output = NodeLabelOut;
+
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        ctx.report(NodeLabel {
+            node_id: self.node_id.clone(),
+        })
+        .map(|below| {
+            LABEL_UPPER_COMPUTES.fetch_add(1, Relaxed);
+            Arc::new(NodeLabelOut {
+                node_id: below.node_id.clone(),
+                label: below.label.to_uppercase(),
+            })
+        })
+        .materialize()
+    }
+}
+
+/// The grouped report of [`SceneStats`], built on `query_live` with a filter
+/// cell instead of a fixed `GetBNodesByQuery`.
+#[myko_report(SceneStatsOut)]
+pub struct LiveSceneStats {
+    pub scene_id: BSceneId,
+}
+
+impl ReportHandler for LiveSceneStats {
+    type Output = SceneStatsOut;
+
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        let scene_id = self.scene_id.0.clone();
+        let filter = Cell::new(BNodeQuery {
+            scene_id: Some(IdFilter::Eq(self.scene_id.clone())),
+            ..Default::default()
+        })
+        .lock();
+        ctx.query_live(filter)
+            .items()
+            .map(move |items| {
+                Arc::new(SceneStatsOut {
+                    scene_id: scene_id.clone(),
+                    count: items.len(),
+                    max_seq: items.iter().map(|node| node.seq).max().unwrap_or(0),
+                    sum_x: items.iter().map(|node| node.x).sum(),
+                })
+            })
+            .materialize()
     }
 }

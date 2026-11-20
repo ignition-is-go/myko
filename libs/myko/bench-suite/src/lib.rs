@@ -43,6 +43,7 @@
     clippy::explicit_counter_loop,
     clippy::collapsible_if,
     clippy::unused_self,
+    clippy::semicolon_if_nothing_returned,
     // Client sessions are held in a Vec only to keep their subscriptions alive.
     clippy::collection_is_never_read
 )]
@@ -59,7 +60,9 @@ pub mod views;
 /// Runs one scenario by name. Returns false for an unknown name.
 pub fn run(scenario: &str, args: &scenarios::Args) -> bool {
     match scenario {
-        "m1" | "m2" | "m3" | "m5" | "m7" | "payload" => scenarios::tick_scenario(scenario, args),
+        "m1" | "m2" | "m3" | "m5" | "m7" | "payload" | "overload" => {
+            scenarios::tick_scenario(scenario, args)
+        }
         "idle" => scenarios::idle(args),
         "sweep" => scenarios::sweep(args),
         "churn_cost" => scenarios::churn_cost(args),
@@ -70,6 +73,7 @@ pub fn run(scenario: &str, args: &scenarios::Args) -> bool {
         "shared_params" => scenarios::shared_params(args),
         "setup" => scenarios::setup(args),
         "write_cost" => scenarios::write_cost(args),
+        "dedup" => scenarios::dedup(args),
         _ => return false,
     }
     true

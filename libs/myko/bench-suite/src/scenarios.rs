@@ -14,6 +14,7 @@ use std::{
 use myko::{
     core::item::AnyItem,
     event::{MEvent, MEventType},
+    hyphae::{MapDiff, Signal},
     prelude::*,
 };
 
@@ -174,6 +175,7 @@ pub fn tick_scenario(name: &str, args: &Args) {
     let churn_rate = args.f64("churn", 0.0);
     let probe_hz = args.f64("probe_hz", 10.0);
     let scenes = 240;
+    super::harness::gate_writes(args.usize("gate", 0) == 1);
 
     let mut record = Record::new(name);
     record
@@ -186,7 +188,10 @@ pub fn tick_scenario(name: &str, args: &Args) {
         .param("wire", args.str("wire", "json"))
         .param("shared", shared)
         .param("churn_per_s", churn_rate)
-        .param("counting", counting);
+        .param("counting", counting)
+        .param("gate", args.usize("gate", 0))
+        .param("probe_hz", probe_hz)
+        .param("pulse_hz", args.f64("pulse_hz", 0.0));
 
     let bench = Bench::new(args.wire(), 400_000, 8);
     let maker = Arc::new(NodeMaker::new(payload_bytes, scenes, 64));
@@ -203,6 +208,8 @@ pub fn tick_scenario(name: &str, args: &Args) {
     let mut sessions: Vec<Client> = (0..clients)
         .map(|c| bench.client(&format!("client-{c}")))
         .collect();
+    // (subscription, the hot row it must end on) for the convergence check.
+    let mut watched: Vec<(Sub, usize)> = Vec::new();
     match surface {
         Surface::Query => {
             let hot_each = if shared {
@@ -212,7 +219,8 @@ pub fn tick_scenario(name: &str, args: &Args) {
             };
             for (c, session) in sessions.iter_mut().enumerate() {
                 let base = if shared { 0 } else { c * ids_each };
-                session.sub_query(&in_query(base..base + ids_each));
+                let sub = session.sub_query(&in_query(base..base + ids_each));
+                watched.extend((base..base + hot_each).map(|row| (sub.clone(), row)));
                 if !shared || c == 0 {
                     tick_set.extend(base..base + hot_each);
                 }
@@ -241,9 +249,12 @@ pub fn tick_scenario(name: &str, args: &Args) {
         Surface::Report => {
             for (c, session) in sessions.iter_mut().enumerate() {
                 for row in c * ids_each..(c + 1) * ids_each {
-                    session.sub_report(&NodeValue {
+                    let sub = session.sub_report(&NodeValue {
                         node_id: payload::node_id(row),
                     });
+                    if row < tick_rows {
+                        watched.push((sub, row));
+                    }
                 }
             }
             let hot = tick_rows.min(clients * ids_each);
@@ -269,7 +280,117 @@ pub fn tick_scenario(name: &str, args: &Args) {
     let probe_row = rows - 1;
     assert!(!tick_set.contains(&probe_row));
 
+    // Taps below the client session: one on the store, one on the cell a
+    // subscription reads. Comparing their counts with the session's shows
+    // which layer merges writes.
+    let taps = args.usize("taps", 0) == 1;
+    let store_tap = Arc::new(AtomicU64::new(0));
+    let cell_tap = Arc::new(AtomicU64::new(0));
+    let mut tap_guards = Vec::new();
+    let mut cell_tap_rows = 0u64;
+    if taps {
+        fn tick_rows_in(diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>) -> u64 {
+            match diff {
+                MapDiff::Insert { value, .. }
+                | MapDiff::Update {
+                    new_value: value, ..
+                } => u64::from(
+                    super::harness::stamp_of_item(value).is_some_and(|stamp| stamp.tick != NONE),
+                ),
+                MapDiff::Batch { changes } => changes.iter().map(tick_rows_in).sum(),
+                MapDiff::Initial { .. } | MapDiff::Remove { .. } => 0,
+            }
+        }
+        let store = bench
+            .ctx
+            .registry
+            .get_or_create(maker.node(0, NONE, 0, 0).entity_type());
+        let counter = store_tap.clone();
+        tap_guards.push(store.subscribe_diffs(move |diff| {
+            counter.fetch_add(tick_rows_in(diff), Relaxed);
+        }));
+        let request = bench.ctx.new_server_transaction();
+        match surface {
+            Surface::Query => {
+                let hot_each = if shared {
+                    ids_each.min(tick_rows)
+                } else {
+                    ids_each.min(tick_rows / clients)
+                };
+                let cell = bench.ctx.query_map_untyped(in_query(0..ids_each), request);
+                let counter = cell_tap.clone();
+                tap_guards.push(cell.subscribe_diffs(move |diff| {
+                    counter.fetch_add(tick_rows_in(diff), Relaxed);
+                }));
+                cell_tap_rows = hot_each as u64;
+            }
+            Surface::Report => {
+                cell_tap_rows = 200.min(tick_rows) as u64;
+                for row in 0..cell_tap_rows as usize {
+                    let cell = bench.ctx.report(
+                        NodeValue {
+                            node_id: payload::node_id(row),
+                        },
+                        request.clone(),
+                    );
+                    let counter = cell_tap.clone();
+                    tap_guards.push(cell.subscribe(move |signal| {
+                        if let Signal::Value(out) = signal {
+                            counter.fetch_add(u64::from(out.tick != NONE), Relaxed);
+                        }
+                    }));
+                }
+            }
+            Surface::View => {}
+        }
+        settle(&bench);
+        store_tap.store(0, Relaxed);
+        cell_tap.store(0, Relaxed);
+    }
+    bench
+        .sink
+        .track_rows
+        .store(args.usize("track", 0) == 1, Relaxed);
+
     let stop = Arc::new(AtomicBool::new(false));
+    // An event stream beside the tick: single pulses for one emitter, each of
+    // which must reach its subscriber on its own.
+    let pulse_hz = args.f64("pulse_hz", 0.0);
+    let pulses = (pulse_hz > 0.0).then(|| {
+        bench
+            .ctx
+            .set(&payload::target(0, 0))
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        bench
+            .ctx
+            .set(&payload::emitter(0, 0, 0))
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        let mut client = bench.client("pulse-watcher");
+        let sub = client.sub_query(&GetBPulsesByQuery(BPulseQuery {
+            emitter_id: Some(IdFilter::Eq(payload::emitter_id(0))),
+            ..Default::default()
+        }));
+        settle(&bench);
+        let (bench, stop) = (bench.clone(), stop.clone());
+        let before = bench.sink.slots[sub.slot].msgs.load(Relaxed);
+        let handle = std::thread::spawn(move || {
+            let data = payload::blob(128, 9);
+            let mut pace = Paced::new(pulse_hz);
+            let mut sent = 0u64;
+            while !stop.load(Relaxed) {
+                pace.wait();
+                sent += 1;
+                let event = MEvent::from_item(
+                    &payload::pulse(0, sent, 200, &data),
+                    MEventType::SET,
+                    "bench",
+                );
+                super::harness::write(|| adapter::ingest(&bench.ctx, vec![event]));
+            }
+            sent
+        });
+        (client, sub, before, handle)
+    });
     let probe = (probe_hz > 0.0)
         .then(|| spawn_probe(&bench, maker.clone(), probe_row, probe_hz, stop.clone()));
     // Churned subscriptions read rows the tick never writes.
@@ -437,6 +558,58 @@ pub fn tick_scenario(name: &str, args: &Args) {
             .check("churn_nothing_lost", churn.lost == 0);
     }
     settle(&bench);
+    if let Some((client, sub, before, handle)) = pulses {
+        let sent = handle.join().unwrap_or(0);
+        settle(&bench);
+        let delivered = bench.sink.slots[sub.slot].msgs.load(Relaxed) - before;
+        record
+            .metric("pulses_sent", sent)
+            .metric("pulses_delivered", delivered)
+            .check("every_pulse_delivered", delivered == sent)
+            .check(
+                "last_pulse_delivered",
+                bench.sink.slots[sub.slot].last_val.load(Relaxed) == sent,
+            );
+        drop(client);
+    }
+    // Per tick: did every row arrive, some, or none.
+    let (mut complete, mut partial, mut empty) = (0u64, 0u64, 0u64);
+    for tick in warmup..outcome.issued {
+        match bench.sink.tick_rows[tick].load(Relaxed) {
+            0 => empty += 1,
+            rows if rows == expect_per_tick => complete += 1,
+            _ => partial += 1,
+        }
+    }
+    record
+        .metric("ticks_complete", complete)
+        .metric("ticks_partial", partial)
+        .metric("ticks_empty", empty);
+    if taps {
+        let issued = outcome.issued as u64;
+        record
+            .metric("store_tap_rows", store_tap.load(Relaxed))
+            .metric("store_tap_expected", issued * tick_rows as u64)
+            .metric("cell_tap_rows", cell_tap.load(Relaxed))
+            .metric("cell_tap_expected", issued * cell_tap_rows);
+    }
+    if bench.sink.track_rows.load(Relaxed) || surface == Surface::Report {
+        // Does each subscription end on the last value written?
+        let last = outcome.issued as u64;
+        let rows = bench.sink.row_last.lock();
+        let stale = watched
+            .iter()
+            .filter(|(sub, row)| match surface {
+                Surface::Report => bench.sink.slots[sub.slot].last_val.load(Relaxed) != last,
+                _ => rows.get(&(sub.slot, payload::node_id(*row).0)).copied() != Some(last),
+            })
+            .count();
+        record
+            .metric("stale_rows_after_settle", stale)
+            .metric("watched_rows", watched.len())
+            .check("converged_to_last_write", stale == 0);
+    }
+    drop(tap_guards);
     record.sink_checks(&bench.sink);
     record.emit();
     drop(sessions);
@@ -554,10 +727,10 @@ impl WriteProbe {
 /// and writes spread over rows that each match one of the queries (S1).
 pub fn sweep(args: &Args) {
     let kind = args.str("kind", "by_ids");
-    let default_steps = if kind == "scan" {
-        "0,250,1000,4000"
-    } else {
-        "0,1000,10000,50000"
+    let default_steps = match kind.as_str() {
+        "scan" => "0,250,1000,4000",
+        "view" => "0,12,48,192",
+        _ => "0,1000,10000,50000",
     };
     let steps: Vec<usize> = args
         .str("steps", default_steps)
@@ -575,8 +748,9 @@ pub fn sweep(args: &Args) {
 
     let bench = Bench::new(args.wire(), max_q + 64, 4);
     let maker = Arc::new(NodeMaker::new(args.usize("payload", 512), groups, groups));
-    if kind == "fk" {
-        load_scenes(&bench, groups, 12);
+    if matches!(kind.as_str(), "fk" | "live" | "scene_stats" | "view") {
+        // One scene per query, and one project per scene for the view kind.
+        load_scenes(&bench, groups, groups);
     } else {
         load_scenes(&bench, 16, 12);
     }
@@ -600,6 +774,15 @@ pub fn sweep(args: &Args) {
             })),
             "report" => client.sub_report(&NodeValue {
                 node_id: payload::node_id(index),
+            }),
+            "scene_stats" => client.sub_report(&SceneStats {
+                scene_id: payload::scene_id(index),
+            }),
+            "live" => client.sub_report(&LiveSceneStats {
+                scene_id: payload::scene_id(index),
+            }),
+            "view" => client.sub_view(&GetNodesWithScene {
+                project_id: Arc::from(format!("project-{index}")),
             }),
             other => panic!("unknown kind {other}"),
         }
@@ -626,6 +809,9 @@ pub fn sweep(args: &Args) {
         let subscribe_s = (now_ns() - started) as f64 / 1e9;
         let settled = settle(&bench);
         let msgs_before = bench.sink.total_msgs();
+        let heap = heap_bytes();
+        let (clones0, eqs0) = (blob::CLONES.load(Relaxed), blob::EQS.load(Relaxed));
+        blob::COUNTING.store(true, Relaxed);
 
         let mut hot = WriteProbe::new();
         let mut pace = Paced::new(args.f64("write_hz", 500.0));
@@ -645,6 +831,7 @@ pub fn sweep(args: &Args) {
             }
         }
         settle(&bench);
+        blob::COUNTING.store(false, Relaxed);
         let written = (hot.latency.0.len() + spread.latency.0.len()) as u64;
         let msgs = bench.sink.total_msgs() - msgs_before;
 
@@ -654,7 +841,16 @@ pub fn sweep(args: &Args) {
             .param("queries", queries)
             .param("rows", rows)
             .metric("subscribe_s", subscribe_s)
-            .metric("heap_mb", heap_bytes() / 1_048_576)
+            .metric("heap_mb", heap / 1_048_576)
+            .metric("heap_bytes", heap)
+            .metric(
+                "payload_clones_per_write",
+                (blob::CLONES.load(Relaxed) - clones0) as f64 / written.max(1) as f64,
+            )
+            .metric(
+                "payload_eqs_per_write",
+                (blob::EQS.load(Relaxed) - eqs0) as f64 / written.max(1) as f64,
+            )
             .metric("msgs_for_writes", msgs)
             .metric("writes", written);
         hot.latency.report_us("hot_latency", &mut record.metrics);
@@ -1079,6 +1275,8 @@ pub fn bursts(args: &Args) {
         .split(',')
         .filter_map(|s| s.parse().ok())
         .collect();
+    let split = args.usize("split", 0) == 1;
+    super::harness::gate_writes(args.usize("gate", 0) == 1);
     let bench = Bench::new(args.wire(), emitters + 64, 4);
     let ctx = &bench.ctx;
     let target_rows: Vec<BTarget> = (0..targets).map(|t| payload::target(t, 0)).collect();
@@ -1132,7 +1330,15 @@ pub fn bursts(args: &Args) {
                             .collect();
                         sent += events.len() as u64;
                         let t0 = now_ns();
-                        adapter::ingest(&bench.ctx, events);
+                        if split {
+                            // One event per ingest call: no two events of a
+                            // key ever share a batch.
+                            for event in events {
+                                super::harness::write(|| adapter::ingest(&bench.ctx, vec![event]));
+                            }
+                        } else {
+                            super::harness::write(|| adapter::ingest(&bench.ctx, events));
+                        }
                         call.push(now_ns() - t0);
                     }
                     (call, sent)
@@ -1165,6 +1371,8 @@ pub fn bursts(args: &Args) {
             .param("emitters", emitters)
             .param("writers", writers)
             .param("has_sequential", adapter::HAS_SEQUENTIAL)
+            .param("split", split)
+            .param("gate", args.usize("gate", 0))
             .metric("events_sent", sent)
             .metric("events_delivered", delivered)
             .metric("events_coalesced", sent.saturating_sub(delivered))
@@ -1528,4 +1736,144 @@ pub fn write_cost(args: &Args) {
         );
     record.sink_checks(&bench.sink);
     record.emit();
+}
+
+// ───────────────────────── dedup: work caused by values that did not change
+
+/// Counts the downstream work of a write that changes nothing a reader
+/// uses. Phase `identical` rewrites every row with the value it already
+/// has. Phase `irrelevant` changes fields the label reports never read.
+pub fn dedup(args: &Args) {
+    let rows = args.count("rows", 20_000);
+    let watched = args.count("watched", 2_000).min(rows);
+    let rounds = args.usize("rounds", 20);
+    let bench = Bench::new(args.wire(), watched * 6 + 64, 8);
+    let maker = Arc::new(NodeMaker::new(args.usize("payload", 512), 240, 64));
+    load_scenes(&bench, 240, 12);
+    load_nodes(&bench, &maker, rows, 1_000);
+    let kinds = [
+        "by_ids",
+        "node_value",
+        "label",
+        "label_deduped",
+        "label_upper",
+        "view",
+    ];
+    let mut clients: Vec<Client> = Vec::new();
+    let mut slots: Vec<Vec<usize>> = Vec::new();
+    for kind in kinds {
+        let mut client = bench.client(kind);
+        let mut mine = Vec::new();
+        if kind == "view" {
+            // Every project, so the view holds every watched row.
+            for project in 0..12 {
+                mine.push(
+                    client
+                        .sub_view(&GetNodesWithScene {
+                            project_id: Arc::from(format!("project-{project}")),
+                        })
+                        .slot,
+                );
+            }
+        } else {
+            for row in 0..watched {
+                let node_id = payload::node_id(row);
+                let sub = match kind {
+                    "by_ids" => client.sub_query(&GetBNodesByIds { ids: vec![node_id] }),
+                    "node_value" => client.sub_report(&NodeValue { node_id }),
+                    "label" => client.sub_report(&NodeLabel { node_id }),
+                    "label_deduped" => client.sub_report(&NodeLabelDeduped { node_id }),
+                    _ => client.sub_report(&LabelUpper { node_id }),
+                };
+                mine.push(sub.slot);
+            }
+        }
+        clients.push(client);
+        slots.push(mine);
+    }
+    let settled = settle(&bench);
+    let delivered = |bench: &Bench, kind: usize| -> u64 {
+        slots[kind]
+            .iter()
+            .map(|slot| bench.sink.slots[*slot].rows.load(Relaxed))
+            .sum()
+    };
+    let computes = || {
+        (
+            LABEL_COMPUTES.load(Relaxed),
+            LABEL_DEDUPED_COMPUTES.load(Relaxed),
+            LABEL_UPPER_COMPUTES.load(Relaxed),
+        )
+    };
+
+    for phase in ["identical", "irrelevant"] {
+        let before: Vec<u64> = (0..kinds.len())
+            .map(|kind| delivered(&bench, kind))
+            .collect();
+        let (computes0, bytes0) = (computes(), bench.sink.bytes_ser.load(Relaxed));
+        let (eqs0, clones0) = (blob::EQS.load(Relaxed), blob::CLONES.load(Relaxed));
+        blob::COUNTING.store(true, Relaxed);
+        let mut call = Samples::default();
+        let mut done = Samples::default();
+        for round in 0..rounds {
+            // `identical` writes the loaded value again. `irrelevant` moves
+            // seq, x and y, which no label report reads.
+            let seq = if phase == "identical" {
+                0
+            } else {
+                round as u64 + 1
+            };
+            let items: Vec<Arc<dyn AnyItem>> = (0..watched)
+                .map(|row| maker.item(row, NONE, seq, 0))
+                .collect();
+            let t0 = now_ns();
+            let _ = bench.ctx.set_batch_any(items);
+            call.push(now_ns() - t0);
+            settle(&bench);
+            done.push(now_ns().saturating_sub(t0 + QUIET.as_nanos() as u64));
+        }
+        blob::COUNTING.store(false, Relaxed);
+        let written = (rounds * watched) as f64;
+        let per = |count: u64| ((count as f64 / written) * 1000.0).round() / 1000.0;
+        let computes1 = computes();
+        let mut record = Record::new("dedup");
+        record
+            .param("phase", phase)
+            .param("rows_per_write", watched)
+            .metric(
+                "call_us_per_row",
+                us(call.quantile(0.5) / watched as f64 * 1000.0) / 1000.0,
+            )
+            .metric(
+                "settled_us_per_row",
+                us(done.quantile(0.5) / watched as f64 * 1000.0) / 1000.0,
+            )
+            .metric(
+                "bytes_per_written_row",
+                per(bench.sink.bytes_ser.load(Relaxed) - bytes0),
+            )
+            .metric("payload_eqs_per_row", per(blob::EQS.load(Relaxed) - eqs0))
+            .metric(
+                "payload_clones_per_row",
+                per(blob::CLONES.load(Relaxed) - clones0),
+            )
+            .metric("label_computes_per_row", per(computes1.0 - computes0.0))
+            .metric(
+                "label_deduped_computes_per_row",
+                per(computes1.1 - computes0.1),
+            )
+            .metric(
+                "label_upper_computes_per_row",
+                per(computes1.2 - computes0.2),
+            );
+        for (kind, name) in kinds.iter().enumerate() {
+            record.metric(
+                &format!("deliveries_per_row_{name}"),
+                per(delivered(&bench, kind) - before[kind]),
+            );
+        }
+        record.check("settled", settled);
+        record.sink_checks(&bench.sink);
+        record.emit();
+    }
 }
