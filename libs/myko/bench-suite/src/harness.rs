@@ -225,6 +225,10 @@ pub struct Sink {
     /// inspects message contents (the atomic-batch check).
     pub capture: AtomicBool,
     pub captured: parking_lot::Mutex<Vec<Vec<Arc<dyn AnyItem>>>>,
+    /// When set, the last sequence delivered for every (subscription, row)
+    /// is kept, so a scenario can tell whether the client view converged.
+    pub track_rows: AtomicBool,
+    pub row_last: parking_lot::Mutex<HashMap<(usize, Arc<str>), u64>>,
 }
 
 pub const MAX_TICKS: usize = 4096;
@@ -269,6 +273,8 @@ impl Sink {
             ser_ns: AtomicU64::new(0),
             capture: AtomicBool::new(false),
             captured: parking_lot::Mutex::new(Vec::new()),
+            track_rows: AtomicBool::new(false),
+            row_last: parking_lot::Mutex::new(HashMap::new()),
         });
         for rx in receivers {
             let sink = sink.clone();
@@ -432,6 +438,14 @@ impl Sink {
                     self.deletes_ser.fetch_add(deletes, Relaxed);
                     self.bytes_ser.fetch_add(bytes as u64, Relaxed);
                     self.msgs_ser.fetch_add(1, Relaxed);
+                    if self.track_rows.load(Relaxed) {
+                        let mut rows = self.row_last.lock();
+                        for wrapped in &wire.upserts {
+                            if let Some(stamp) = stamp_of_item(&wrapped.item) {
+                                rows.insert((slot, wrapped.item.id()), stamp.seq);
+                            }
+                        }
+                    }
                     if self.capture.load(Relaxed) {
                         self.captured
                             .lock()
@@ -902,4 +916,25 @@ pub fn commit() -> String {
             })
         })
         .clone()
+}
+
+static GATE_WRITES: AtomicBool = AtomicBool::new(false);
+static WRITE_GATE: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+
+/// Turns on the write gate: every write the harness issues then holds one
+/// process-wide mutex, so no two batches are ever open at once. This is a
+/// stand-in for a one-writer-at-a-time rule inside myko, used to test
+/// whether that rule removes the loss under overload.
+pub fn gate_writes(on: bool) {
+    GATE_WRITES.store(on, Relaxed);
+}
+
+/// Runs one write, under the gate when it is on.
+pub fn write<R>(f: impl FnOnce() -> R) -> R {
+    if GATE_WRITES.load(Relaxed) {
+        let _gate = WRITE_GATE.lock();
+        f()
+    } else {
+        f()
+    }
 }

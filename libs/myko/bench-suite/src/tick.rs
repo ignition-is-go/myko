@@ -126,7 +126,7 @@ pub fn run_ticks(bench: &Bench, plan: &TickPlan) -> TickOutcome {
         if !plan.paced {
             scheduled[tick] = actual[tick];
         }
-        if let Err(error) = bench.ctx.set_batch_any(batch) {
+        if let Err(error) = super::harness::write(|| bench.ctx.set_batch_any(batch)) {
             panic!("tick write failed: {error:?}");
         }
         returned[tick] = now_ns();
@@ -225,7 +225,7 @@ pub fn spawn_probe(
 
             let before = sink.slots[other.slot].msgs.load(Relaxed);
             let t0 = now_ns();
-            let _ = bench.ctx.set(&payload::probe(index));
+            let _ = super::harness::write(|| bench.ctx.set(&payload::probe(index)));
             let t1 = now_ns();
             match sink.wait_slot(other.slot, before, timeout) {
                 Some(cb) => {
@@ -240,9 +240,11 @@ pub fn spawn_probe(
 
             let before = sink.slots[same.slot].msgs.load(Relaxed);
             let t0 = now_ns();
-            let _ = bench
-                .ctx
-                .set(&maker.node(same_row, NONE, index, PROBE_WRITER));
+            let _ = super::harness::write(|| {
+                bench
+                    .ctx
+                    .set(&maker.node(same_row, NONE, index, PROBE_WRITER))
+            });
             let t1 = now_ns();
             match sink.wait_slot(same.slot, before, timeout) {
                 Some(cb) => {

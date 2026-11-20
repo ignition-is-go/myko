@@ -90,7 +90,15 @@ fn idle_probe_reads_its_own_writes() {
 
 #[test]
 fn a_write_reaches_only_the_query_it_matches() {
-    for kind in ["by_ids", "by_id_report", "fk", "report", "scan"] {
+    for kind in [
+        "by_ids",
+        "by_id_report",
+        "fk",
+        "report",
+        "scene_stats",
+        "live",
+        "scan",
+    ] {
         assert_checks(
             &run("sweep", &format!("kind={kind} scale=0.01 writes=20")),
             &[],
@@ -146,6 +154,29 @@ fn a_multi_type_mutation_converges() {
 #[test]
 fn identical_subscriptions_each_get_the_full_result() {
     assert_checks(&run("shared_params", "scale=0.02"), &[]);
+}
+
+#[test]
+fn overload_taps_and_event_stream_lose_nothing_at_low_load() {
+    assert_checks(
+        &run(
+            "overload",
+            "scale=0.02 ticks=20 warmup=2 taps=1 track=1 pulse_hz=100",
+        ),
+        &[],
+    );
+    assert_checks(
+        &run(
+            "overload",
+            "surface=report scale=0.02 ticks=20 warmup=2 taps=1 pulse_hz=100",
+        ),
+        &[],
+    );
+}
+
+#[test]
+fn unchanged_values_settle() {
+    assert_checks(&run("dedup", "scale=0.05 rounds=3"), &[]);
 }
 
 #[test]

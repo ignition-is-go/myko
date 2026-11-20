@@ -15,7 +15,8 @@
     clippy::exit,
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
-    clippy::as_conversions
+    clippy::as_conversions,
+    clippy::too_many_lines
 )]
 
 use std::{

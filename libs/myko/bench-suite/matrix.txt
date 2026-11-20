@@ -1,7 +1,7 @@
 # label                 limit_s  scenario and arguments
+# The timed data points. Label, time limit in seconds, scenario and arguments.
 setup-200k              180  setup rows=200000 subs=12
 setup-50k               120  setup rows=50000 subs=12
-setup-200k-nosub        180  setup rows=200000 subs=0
 setup-single-20k        180  setup rows=20000 batch=1 subs=12
 idle                    120  idle seconds=10
 m1                      240  m1
@@ -10,36 +10,50 @@ m2                      240  m2 surface=view rows=100000
 m2-quarter              180  m2 surface=view rows=100000 scale=0.25
 m3                      300  m3 surface=report rows=100000
 m3-quarter              180  m3 surface=report rows=100000 scale=0.25
+# Overload ladder: the same graph, more rows per 30 Hz tick, with taps on
+# the store and on the subscribed cell, a 100 Hz event stream beside it, and
+# a convergence check after the writer stops.
+ov-q-500                180  overload rows=100000 tick_rows=500 taps=1 track=1 pulse_hz=100
+ov-q-1000               180  overload rows=100000 tick_rows=1000 taps=1 track=1 pulse_hz=100
+ov-q-2500               180  overload rows=100000 tick_rows=2500 taps=1 track=1 pulse_hz=100
+ov-q-6250               180  overload rows=100000 tick_rows=6250 taps=1 track=1 pulse_hz=100
+ov-q-12500              180  overload rows=100000 tick_rows=12500 taps=1 track=1 pulse_hz=100
+ov-r-250                180  overload surface=report rows=100000 tick_rows=250 taps=1 pulse_hz=100
+ov-r-500                180  overload surface=report rows=100000 tick_rows=500 taps=1 pulse_hz=100
+ov-r-1000               180  overload surface=report rows=100000 tick_rows=1000 taps=1 pulse_hz=100
+ov-r-2500               180  overload surface=report rows=100000 tick_rows=2500 taps=1 pulse_hz=100
+ov-r-6250               180  overload surface=report rows=100000 tick_rows=6250 taps=1 pulse_hz=100
 m5                      300  m5 scale=0.25 churn=1000 ticks=900
 m6-typed-1              120  atomic group=1
 m6-typed-50             120  atomic group=50
 m6-events-50            120  atomic group=50 path=events
-m7-cbor                 240  m7 rows=100000 wire=cbor
-m7-none                 240  m7 rows=100000 wire=none
+m7-cbor                 240  m7 rows=100000 wire=cbor scale=0.25
+m7-none                 240  m7 rows=100000 wire=none scale=0.25
 m8                      180  shared_params
-payload-128             240  payload rows=100000 payload=128
-payload-512             240  payload rows=100000 payload=512
-payload-4096            300  payload rows=100000 payload=4096
-count-128               300  payload rows=100000 payload=128 count=1 ticks=20 warmup=2 probe_hz=0
+payload-128             240  payload rows=100000 payload=128 scale=0.25
+payload-512             240  payload rows=100000 payload=512 scale=0.25
+payload-4096            300  payload rows=100000 payload=4096 scale=0.25
 count-512               300  payload rows=100000 payload=512 count=1 ticks=20 warmup=2 probe_hz=0
-count-4096              300  payload rows=100000 payload=4096 count=1 ticks=20 warmup=2 probe_hz=0
 count-shared-512        300  payload rows=100000 payload=512 count=1 shared=1 ticks=20 warmup=2 probe_hz=0
 sweep-by_ids            600  sweep kind=by_ids
 sweep-by_id_report      600  sweep kind=by_id_report
 sweep-fk                600  sweep kind=fk
 sweep-report            600  sweep kind=report
+sweep-scene_stats       600  sweep kind=scene_stats
+sweep-live              600  sweep kind=live
 sweep-scan              600  sweep kind=scan
+sweep-view              600  sweep kind=view
 churn-cost              600  churn_cost
 chain                   400  chain
 belongs-10k             180  belongs_to emitters=10000
 belongs-40k             180  belongs_to emitters=40000
 bursts-1k               180  bursts emitters=1000
 bursts-4k               180  bursts emitters=4000
-# Cost decomposition (not gates): one changed row, component by component.
+dedup                   180  dedup
+# Cost decomposition: one changed row, component by component.
 wc-part-0               120  write_cost entity=part subs=0
 wc-node-0               120  write_cost entity=node subs=0
 wc-node-1-none          120  write_cost entity=node subs=1 wire=none
 wc-node-1-json          120  write_cost entity=node subs=1 wire=json
 wc-node-12-none         120  write_cost entity=node subs=12 wire=none
-wc-part-0-single        120  write_cost entity=part subs=0 single=1
 wc-node-0-single        120  write_cost entity=node subs=0 single=1
