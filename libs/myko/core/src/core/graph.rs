@@ -17,7 +17,7 @@ use std::{
     hash::Hash,
     marker::PhantomData,
     sync::{
-        Arc, Mutex, MutexGuard, RwLock, Weak,
+        Arc, Mutex, MutexGuard, RwLock,
         atomic::{AtomicU64, Ordering},
     },
 };
@@ -935,42 +935,33 @@ where
     ) -> Self::Query;
 }
 
-struct RelatedTargetSubscription {
-    references: usize,
-    generation: u64,
-    guard: Option<hyphae::SubscriptionGuard>,
-}
-
-type RetiredRelatedTarget = (Arc<str>, Option<hyphae::SubscriptionGuard>);
-
+/// The targets a related-entity watch follows: each edge's target, and how
+/// many edges reference each target.
 #[derive(Default)]
 struct RelatedEntityWatchState {
     edge_targets: HashMap<Arc<str>, Arc<str>>,
-    targets: HashMap<Arc<str>, RelatedTargetSubscription>,
-    next_generation: u64,
-    bulk_target_guard: Option<hyphae::SubscriptionGuard>,
-    bulk_targets: bool,
+    targets: HashMap<Arc<str>, usize>,
 }
 
 impl RelatedEntityWatchState {
-    fn remove_edge(&mut self, edge_id: &Arc<str>) -> Option<RetiredRelatedTarget> {
+    /// Drop `edge_id`'s reference; returns its target once no edge holds it.
+    fn remove_edge(&mut self, edge_id: &Arc<str>) -> Option<Arc<str>> {
         let target_id = self.edge_targets.remove(edge_id)?;
-        let target = self.targets.get_mut(&target_id)?;
-        if target.references > 1 {
-            target.references = target.references.saturating_sub(1);
+        let references = self.targets.get_mut(&target_id)?;
+        if *references > 1 {
+            *references -= 1;
             return None;
         }
-        self.targets
-            .remove(&target_id)
-            .map(|target| (target_id, target.guard))
+        self.targets.remove(&target_id);
+        Some(target_id)
     }
 
     fn upsert_edge(
         &mut self,
         edge_id: Arc<str>,
         target_id: Arc<str>,
-        retired: &mut Vec<RetiredRelatedTarget>,
-        added: &mut Vec<(Arc<str>, u64)>,
+        retired: &mut Vec<Arc<str>>,
+        added: &mut Vec<Arc<str>>,
     ) {
         if self.edge_targets.get(&edge_id) == Some(&target_id) {
             return;
@@ -979,21 +970,11 @@ impl RelatedEntityWatchState {
             retired.push(target);
         }
         self.edge_targets.insert(edge_id, target_id.clone());
-        if let Some(target) = self.targets.get_mut(&target_id) {
-            target.references = target.references.saturating_add(1);
-            return;
+        let references = self.targets.entry(target_id.clone()).or_insert(0);
+        *references += 1;
+        if *references == 1 {
+            added.push(target_id);
         }
-        self.next_generation = self.next_generation.saturating_add(1);
-        let generation = self.next_generation;
-        self.targets.insert(
-            target_id.clone(),
-            RelatedTargetSubscription {
-                references: 1,
-                generation,
-                guard: None,
-            },
-        );
-        added.push((target_id, generation));
     }
 }
 
@@ -1049,8 +1030,8 @@ where
 fn apply_related_edge_diff<E, F>(
     diff: &hyphae::MapDiff<Arc<str>, Arc<E>>,
     state: &mut RelatedEntityWatchState,
-    retired: &mut Vec<RetiredRelatedTarget>,
-    added: &mut Vec<(Arc<str>, u64)>,
+    retired: &mut Vec<Arc<str>>,
+    added: &mut Vec<Arc<str>>,
     related_id: &F,
 ) where
     E: GraphEdge,
@@ -1059,12 +1040,7 @@ fn apply_related_edge_diff<E, F>(
 {
     match diff {
         hyphae::MapDiff::Initial { entries } => {
-            retired.extend(
-                state
-                    .targets
-                    .drain()
-                    .map(|(target_id, target)| (target_id, target.guard)),
-            );
+            retired.extend(state.targets.drain().map(|(target_id, _)| target_id));
             state.edge_targets.clear();
             for (edge_id, edge) in entries {
                 if let Some(target_id) = related_id(edge) {
@@ -1097,80 +1073,15 @@ fn apply_related_edge_diff<E, F>(
     }
 }
 
-fn install_related_target_subscription(
-    state: &Arc<Mutex<RelatedEntityWatchState>>,
-    dispatch: &Arc<parking_lot::ReentrantMutex<()>>,
-    output: hyphae::WeakCellMap<Arc<str>, Arc<dyn AnyItem>>,
-    store: &crate::store::EntityStore,
-    target_id: &Arc<str>,
-    generation: u64,
-) {
-    use hyphae::{Materialize, Signal, Watchable};
-
-    let cell = store.get(target_id).materialize();
-    let state_weak: Weak<Mutex<RelatedEntityWatchState>> = Arc::downgrade(state);
-    let dispatch_for_target = dispatch.clone();
-    let output_for_target = output;
-    let target_for_callback = target_id.clone();
-    let guard = cell.subscribe(move |signal| {
-        crate::core::locked_writes::locked_writes(|| {
-            let _dispatch_guard = dispatch_for_target.lock();
-            let Signal::Value(value) = signal else {
-                return;
-            };
-            let Some(state) = state_weak.upgrade() else {
-                return;
-            };
-            let is_current = {
-                let state = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state
-                    .targets
-                    .get(&target_for_callback)
-                    .is_some_and(|target| target.generation == generation)
-            };
-            if !is_current {
-                return;
-            }
-            let Some(output) = output_for_target.upgrade() else {
-                return;
-            };
-            match value.as_ref() {
-                Some(item) => {
-                    output.insert(target_for_callback.clone(), item.clone());
-                }
-                None => {
-                    output.remove(&target_for_callback);
-                }
-            }
-        });
-    });
-
-    let mut guard = Some(guard);
-    let mut state = state
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(target) = state.targets.get_mut(target_id)
-        && target.generation == generation
-        && target.guard.is_none()
-    {
-        target.guard = guard.take();
-    }
-    drop(state);
-    drop(guard);
-}
-
-fn collect_bulk_target_actions(
+fn collect_target_actions(
     diff: &hyphae::MapDiff<Arc<str>, Arc<dyn AnyItem>>,
     state: &RelatedEntityWatchState,
     upserts: &mut Vec<(Arc<str>, Arc<dyn AnyItem>)>,
     removals: &mut Vec<Arc<str>>,
 ) {
     match diff {
-        // Bulk installation hydrates the referenced IDs directly after the
-        // subscription is live. Scanning the entire store here made dense
-        // graph views pay for every unrelated entity before doing that work.
+        // The edge watch hydrates each target as it is added, so the
+        // store's own snapshot carries nothing new.
         hyphae::MapDiff::Initial { .. } => {}
         hyphae::MapDiff::Insert { key, value }
         | hyphae::MapDiff::Update {
@@ -1189,7 +1100,7 @@ fn collect_bulk_target_actions(
         }
         hyphae::MapDiff::Batch { changes } => {
             for change in changes {
-                collect_bulk_target_actions(change, state, upserts, removals);
+                collect_target_actions(change, state, upserts, removals);
             }
         }
     }
@@ -1222,78 +1133,10 @@ fn apply_related_output_actions(
     }
 }
 
-fn install_bulk_target_subscription(
-    state: &Arc<Mutex<RelatedEntityWatchState>>,
-    dispatch: &Arc<parking_lot::ReentrantMutex<()>>,
-    output: &hyphae::WeakCellMap<Arc<str>, Arc<dyn AnyItem>>,
-    store: &crate::store::EntityStore,
-) {
-    let state_weak: Weak<Mutex<RelatedEntityWatchState>> = Arc::downgrade(state);
-    let dispatch_for_store = dispatch.clone();
-    let Some(output_for_hydration) = output.upgrade() else {
-        return;
-    };
-    let output_for_diffs = output_for_hydration.downgrade();
-    let guard = store.subscribe_diffs(move |diff| {
-        crate::core::locked_writes::locked_writes(|| {
-            let _dispatch_guard = dispatch_for_store.lock();
-            let Some(state) = state_weak.upgrade() else {
-                return;
-            };
-            let (upserts, removals) = {
-                let state = state
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                if !state.bulk_targets {
-                    return;
-                }
-                let mut upserts = Vec::new();
-                let mut removals = Vec::new();
-                collect_bulk_target_actions(diff, &state, &mut upserts, &mut removals);
-                (upserts, removals)
-            };
-            let Some(output) = output_for_diffs.upgrade() else {
-                return;
-            };
-            apply_related_output_actions(&output, removals, upserts);
-        });
-    });
-
-    let mut guard = Some(guard);
-    let target_ids = {
-        let mut state = state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if state.bulk_targets && state.bulk_target_guard.is_none() {
-            state.bulk_target_guard = guard.take();
-            state.targets.keys().cloned().collect::<Vec<_>>()
-        } else {
-            Vec::new()
-        }
-    };
-    let entries = target_ids
-        .into_iter()
-        .filter_map(|target_id| store.get_value(&target_id).map(|value| (target_id, value)))
-        .collect::<Vec<_>>();
-    if !entries.is_empty() {
-        output_for_hydration.insert_many(entries);
-    }
-    drop(guard);
-}
-
-fn prefer_bulk_target_subscription(targets: usize, store: &crate::store::EntityStore) -> bool {
-    use hyphae::{Gettable, Materialize};
-
-    const MIN_BULK_TARGETS: usize = 1_024;
-    const MIN_DENSITY_DENOMINATOR: usize = 4;
-
-    if targets < MIN_BULK_TARGETS {
-        return false;
-    }
-    let store_size = store.size().materialize().get();
-    targets >= store_size.saturating_div(MIN_DENSITY_DENOMINATOR)
-}
-
+/// Join `edges` to the distinct targets they reference, through one
+/// subscription to the target store built here, up front. The edge callback
+/// only changes which targets are followed; it builds no node, so it obeys
+/// the lifecycle rule however the edges change.
 fn graph_related_entity_watch_by<E, T, F>(
     edges: &hyphae::CellMap<Arc<str>, Arc<E>, hyphae::CellImmutable>,
     registry: &crate::store::StoreRegistry,
@@ -1309,76 +1152,62 @@ where
     let state = Arc::new(Mutex::new(RelatedEntityWatchState::default()));
     let dispatch = Arc::new(parking_lot::ReentrantMutex::new(()));
     let target_store = registry.get_or_create(T::Entity::ENTITY_NAME_STATIC);
-    let state_for_edges = state;
+
+    let state_for_store = Arc::downgrade(&state);
+    let dispatch_for_store = dispatch.clone();
+    let output_for_store = output.downgrade();
+    let store_guard = target_store.subscribe_diffs(move |diff| {
+        crate::core::locked_writes::locked_writes(|| {
+            let _dispatch_guard = dispatch_for_store.lock();
+            let Some(state) = state_for_store.upgrade() else {
+                return;
+            };
+            let mut upserts = Vec::new();
+            let mut removals = Vec::new();
+            collect_target_actions(
+                diff,
+                &state
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &mut upserts,
+                &mut removals,
+            );
+            let Some(output) = output_for_store.upgrade() else {
+                return;
+            };
+            apply_related_output_actions(&output, removals, upserts);
+        });
+    });
+    output.own(store_guard);
+
     let output_for_edges = output.downgrade();
-    let store_for_edges = target_store.clone();
-    let dispatch_for_edges = dispatch;
     let edge_guard = edges.subscribe_diffs(move |diff| {
         let Some(output) = output_for_edges.upgrade() else {
             return;
         };
-        let retired = crate::core::locked_writes::locked_writes(|| {
-            let _dispatch_guard = dispatch_for_edges.lock();
+        crate::core::locked_writes::locked_writes(|| {
+            let _dispatch_guard = dispatch.lock();
             let mut retired = Vec::new();
             let mut added = Vec::new();
-            let mut bulk_guards = Vec::new();
-            let (activate_bulk, bulk_targets) = {
-                let mut state = state_for_edges
+            apply_related_edge_diff(
+                diff,
+                &mut state
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                apply_related_edge_diff(diff, &mut state, &mut retired, &mut added, &related_id);
-                let activate_bulk = !state.bulk_targets
-                    && prefer_bulk_target_subscription(state.targets.len(), &store_for_edges);
-                if activate_bulk {
-                    state.bulk_targets = true;
-                    bulk_guards.extend(
-                        state
-                            .targets
-                            .values_mut()
-                            .filter_map(|target| target.guard.take()),
-                    );
-                }
-                (activate_bulk, state.bulk_targets)
-            };
-            let removals = retired
-                .iter()
-                .map(|(target_id, _)| target_id.clone())
-                .collect::<Vec<_>>();
-            if activate_bulk {
-                apply_related_output_actions(&output, removals, Vec::new());
-                install_bulk_target_subscription(
-                    &state_for_edges,
-                    &dispatch_for_edges,
-                    &output.downgrade(),
-                    store_for_edges.as_ref(),
-                );
-            } else if bulk_targets {
-                let entries = added
-                    .into_iter()
-                    .filter_map(|(target_id, _)| {
-                        store_for_edges
-                            .get_value(&target_id)
-                            .map(|value| (target_id, value))
-                    })
-                    .collect::<Vec<_>>();
-                apply_related_output_actions(&output, removals, entries);
-            } else {
-                apply_related_output_actions(&output, removals, Vec::new());
-                for (target_id, generation) in added {
-                    install_related_target_subscription(
-                        &state_for_edges,
-                        &dispatch_for_edges,
-                        output.downgrade(),
-                        store_for_edges.as_ref(),
-                        &target_id,
-                        generation,
-                    );
-                }
-            }
-            drop(bulk_guards);
-            retired
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &mut retired,
+                &mut added,
+                &related_id,
+            );
+            let upserts = added
+                .into_iter()
+                .filter_map(|target_id| {
+                    target_store
+                        .get_value(&target_id)
+                        .map(|value| (target_id, value))
+                })
+                .collect();
+            apply_related_output_actions(&output, retired, upserts);
         });
-        drop(retired);
     });
     output.own(edge_guard);
     output.lock()
@@ -1386,8 +1215,6 @@ where
 
 /// Join one routed edge watch to the distinct target IDs it currently references.
 ///
-/// Sparse views install keyed subscriptions. High-density views switch to one
-/// filtered store subscription to avoid paying per-key setup cost at hubs.
 #[doc(hidden)]
 #[must_use]
 pub fn graph_related_entity_watch<E, T>(
@@ -6833,11 +6660,6 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(context.batch_set(&neighbors).is_ok());
         assert!(context.batch_set(&edges).is_ok());
-        let article_store = context.registry.get_or_create(Article::ENTITY_NAME_STATIC);
-        assert!(super::prefer_bulk_target_subscription(
-            neighbors.len(),
-            article_store.as_ref()
-        ));
 
         let request = Arc::new(crate::request::RequestContext::from_client(
             "dense-neighbor-query".into(),
