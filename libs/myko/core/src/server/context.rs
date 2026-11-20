@@ -3174,7 +3174,7 @@ mod tests {
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hyphae::{Gettable, Materialize, ReactiveKeys},
+        hyphae::{Gettable, Materialize, ReactiveKeys, Watchable},
         search::SearchIndex,
         server::{
             HandlerRegistry, PersistError, Persister, RelationshipManager,
@@ -3915,6 +3915,139 @@ mod tests {
         assert!(
             store
                 .get(&Arc::<str>::from("buffered-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_write_on_another_thread_waits_for_the_window_being_settled() {
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let slow_armed = armed.clone();
+        let _slow = ctx
+            .registry
+            .get_or_create("BufferedTestItem")
+            .subscribe_diffs(move |_| {
+                if slow_armed.load(Ordering::Relaxed) {
+                    let _ = entered_tx.send(());
+                    let _ = release_rx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .recv();
+                }
+            });
+        // A row read by key is a value cell: the scheduler keeps one pending
+        // update for it, so a second write before the first is delivered
+        // replaces it.
+        let delivered = Arc::new(AtomicUsize::new(0));
+        let counter = delivered.clone();
+        let counter_armed = armed.clone();
+        let row = ctx
+            .registry
+            .get_or_create("ImmediateTestItem")
+            .get(&Arc::<str>::from("row"))
+            .materialize();
+        let _fast = row.subscribe(move |_| {
+            if counter_armed.load(Ordering::Relaxed) {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        armed.store(true, Ordering::Relaxed);
+
+        let slow_ctx = ctx.clone();
+        let settling = std::thread::spawn(move || {
+            slow_ctx.set_dyn(Arc::new(BufferedTestItem {
+                id: "slow".into(),
+                value: 0,
+            }))
+        });
+        assert!(entered_rx.recv().is_ok(), "the slow subscriber never ran");
+
+        let writer_ctx = ctx;
+        let writer_delivered = delivered.clone();
+        let writer = std::thread::spawn(move || {
+            (1..=2)
+                .map(|value| {
+                    let written = writer_ctx.set_dyn(Arc::new(ImmediateTestItem {
+                        id: "row".into(),
+                        value,
+                    }));
+                    (written.is_ok(), writer_delivered.load(Ordering::Relaxed))
+                })
+                .collect::<Vec<_>>()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(release_tx.send(()).is_ok());
+        assert!(settling.join().is_ok_and(|written| written.is_ok()));
+        let seen_at_return = writer.join().unwrap_or_default();
+
+        assert_eq!(
+            delivered.load(Ordering::Relaxed),
+            2,
+            "a write was merged into the next one while another thread was settling"
+        );
+        assert_eq!(
+            seen_at_return,
+            vec![(true, 1), (true, 2)],
+            "each write must be delivered by the time its call returns"
+        );
+    }
+
+    #[test]
+    fn a_subscriber_on_the_wave_pool_can_write() {
+        struct RestoreThreshold;
+        impl Drop for RestoreThreshold {
+            fn drop(&mut self) {
+                hyphae::scheduler::set_wave_threshold_for_test(256);
+            }
+        }
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let armed = Arc::new(AtomicBool::new(false));
+        let writer_armed = armed.clone();
+        let writer_ctx = ctx.clone();
+        let _relay = ctx
+            .registry
+            .get_or_create("BufferedTestItem")
+            .subscribe_diffs(move |_| {
+                if writer_armed.swap(false, Ordering::Relaxed) {
+                    let _ = writer_ctx.set_dyn(Arc::new(ImmediateTestItem {
+                        id: "relayed".into(),
+                        value: 1,
+                    }));
+                }
+            });
+        armed.store(true, Ordering::Relaxed);
+        // Every wave now runs on hyphae's pool while this write holds the
+        // window and waits for it.
+        hyphae::scheduler::set_wave_threshold_for_test(1);
+        let _restore = RestoreThreshold;
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let write_ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let written = write_ctx.set_dyn(Arc::new(BufferedTestItem {
+                id: "source".into(),
+                value: 0,
+            }));
+            let _ = done_tx.send(written.is_ok());
+        });
+
+        assert_eq!(
+            done_rx.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(true),
+            "a write from a pool thread waited for the window its own drain holds"
+        );
+        assert!(
+            ctx.registry
+                .get_or_create("ImmediateTestItem")
+                .get(&Arc::<str>::from("relayed"))
                 .materialize()
                 .get()
                 .is_some()
