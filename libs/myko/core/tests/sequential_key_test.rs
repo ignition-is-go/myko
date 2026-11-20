@@ -1,12 +1,12 @@
-//! `#[myko_sequential]`: the key each wire event carries, how a wire batch
-//! splits on it, and what a store subscriber then sees.
+//! `#[myko_sequential]`: which wire events settle alone, how a wire batch
+//! splits around them, and what a store subscriber then sees.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
 pub use myko::*;
 use myko::{
     hyphae::{Materialize, SettleKey, Signal, Watchable},
-    item::{SequentialSet, sequential_key},
+    item::SequentialSet,
     prelude::*,
     search::SearchIndex,
     server::{
@@ -111,32 +111,23 @@ fn plain(value: i64) -> MEvent {
 }
 
 #[test]
-fn a_marked_field_keys_the_event_by_its_value() {
+fn an_event_with_its_key_value_is_shared() {
     let registry = HandlerRegistry::new();
-    let a = registry.settle_key(&lane("one", "a", 1));
-
-    assert_eq!(a, sequential_key(Some("a".to_string())));
-    assert_eq!(a, registry.settle_key(&lane("two", "a", 2)));
-    assert_ne!(a, registry.settle_key(&lane("one", "b", 1)));
     let other_type = set(&OtherLaneReading {
         id: "one".into(),
         lane: "a".into(),
     });
-    assert_eq!(a, registry.settle_key(&other_type));
-}
 
-#[test]
-fn several_marked_fields_key_the_event_by_their_tuple() {
-    let registry = HandlerRegistry::new();
-
-    assert_eq!(
-        registry.settle_key(&channel("a", Some(1))),
-        sequential_key(Some(("a".to_string(), 1_u32)))
-    );
-    assert_ne!(
-        registry.settle_key(&channel("a", Some(1))),
-        registry.settle_key(&channel("a", Some(2)))
-    );
+    for event in [
+        lane("one", "a", 1),
+        lane("one", "b", 1),
+        other_type,
+        channel("a", Some(1)),
+        parity_reading(4),
+        parity_reading(5),
+    ] {
+        assert_eq!(registry.settle_key(&event), SettleKey::Shared);
+    }
 }
 
 #[test]
@@ -148,24 +139,6 @@ fn an_event_without_its_key_value_is_a_barrier() {
     assert_eq!(registry.settle_key(&channel("a", None)), SettleKey::Barrier);
     assert_eq!(registry.settle_key(&parity_reading(-1)), SettleKey::Barrier);
     assert_eq!(registry.settle_key(&unreadable), SettleKey::Barrier);
-}
-
-#[test]
-fn a_struct_level_function_keys_the_event() {
-    let registry = HandlerRegistry::new();
-
-    assert_eq!(
-        registry.settle_key(&parity_reading(4)),
-        sequential_key(Some(true))
-    );
-    assert_eq!(
-        registry.settle_key(&parity_reading(4)),
-        registry.settle_key(&parity_reading(6))
-    );
-    assert_ne!(
-        registry.settle_key(&parity_reading(4)),
-        registry.settle_key(&parity_reading(5))
-    );
 }
 
 #[test]
@@ -190,10 +163,8 @@ fn lanes(sets: &[SequentialSet]) -> Vec<(Vec<SettleKey>, Vec<i64>)> {
 }
 
 #[test]
-fn a_batch_splits_where_a_key_repeats_and_around_a_barrier() {
+fn a_batch_splits_only_around_a_barrier_and_keeps_arrival_order() {
     let registry = HandlerRegistry::new();
-    let a = sequential_key(Some("a".to_string()));
-    let b = sequential_key(Some("b".to_string()));
 
     let sets = registry.sequential_sets(vec![
         plain(1),
@@ -209,9 +180,7 @@ fn a_batch_splits_where_a_key_repeats_and_around_a_barrier() {
     assert_eq!(
         lanes(&sets),
         vec![
-            (vec![a, b], vec![1, 2, 3]),
-            (vec![a], vec![4, 5]),
-            (vec![a], vec![6]),
+            (vec![], vec![1, 2, 3, 4, 5, 6]),
             (vec![SettleKey::Barrier], vec![-7]),
             (vec![], vec![8]),
         ]
