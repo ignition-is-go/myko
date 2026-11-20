@@ -4897,6 +4897,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "myko-bench-suite"
+version = "6.17.1"
+dependencies = [
+ "ciborium",
+ "dashmap",
+ "flume 0.11.1",
+ "libc",
+ "myko",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "uuid",
+]
+
+[[package]]
 name = "myko-gpui"
 version = "6.18.0"
 dependencies = [
