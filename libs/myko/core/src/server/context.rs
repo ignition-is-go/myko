@@ -1521,6 +1521,7 @@ impl MykoServerContext {
         origin: Origin,
     ) -> Result<Option<super::MutationReplacement>, PersistError> {
         if matches!(origin, Origin::Transient)
+            || !super::proposed_state::has_rewriter(upserts, deletes)
             || self
                 .current_provenance()
                 .is_some_and(|provenance| provenance.undo_of_tx.is_some())
@@ -1582,6 +1583,17 @@ impl MykoServerContext {
         upserts: &[Arc<dyn AnyItem>],
         deletes: &[Arc<dyn AnyItem>],
     ) -> Result<(), PersistError> {
+        // Checked as a reversal first, which runs the most validators, so the
+        // common case with none to run never reads the provenance.
+        if !super::proposed_state::has_validator(upserts, deletes, true) {
+            return Ok(());
+        }
+        let reversal = self
+            .current_provenance()
+            .is_some_and(|provenance| provenance.undo_of_tx.is_some());
+        if !super::proposed_state::has_validator(upserts, deletes, reversal) {
+            return Ok(());
+        }
         super::ProposedState {
             server: Some(self),
             request: self.mutation_request(),
@@ -1590,10 +1602,7 @@ impl MykoServerContext {
             upserts,
             deletes,
         }
-        .validate(
-            self.current_provenance()
-                .is_some_and(|provenance| provenance.undo_of_tx.is_some()),
-        )
+        .validate(reversal)
         .map_err(|message| PersistError {
             entity_type: Arc::from("mutation"),
             message,

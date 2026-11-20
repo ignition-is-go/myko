@@ -64,6 +64,9 @@ impl StoreRegistry {
     /// Creates a new store if one doesn't exist for this type.
     #[must_use]
     pub fn get_or_create(&self, entity_type: &str) -> Arc<EntityStore> {
+        if let Some(store) = self.stores.get(entity_type) {
+            return store.clone();
+        }
         let key: Arc<str> = entity_type.into();
 
         self.stores

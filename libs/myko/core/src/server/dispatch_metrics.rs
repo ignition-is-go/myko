@@ -40,10 +40,11 @@ macro_rules! dispatch_counter {
 
 macro_rules! response_counter {
     ($fn_name:ident, $otel_name:literal, $tag_key:literal) => {
-        pub fn $fn_name(id: &str) {
+        // Runs once per delivery, so the id is shared, not copied.
+        pub fn $fn_name(id: &std::sync::Arc<str>) {
             static COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
             let counter = COUNTER.get_or_init(|| meter().u64_counter($otel_name).build());
-            counter.add(1, &[KeyValue::new($tag_key, id.to_string())]);
+            counter.add(1, &[KeyValue::new($tag_key, std::sync::Arc::clone(id))]);
         }
     };
 }
@@ -58,14 +59,14 @@ macro_rules! response_counter {
 /// path* distinction, not a transport one — it answers "did this arrive
 /// from outside the process or get called by server-side code composing
 /// commands," which is what actually matters for load attribution.
-pub fn record_command(command_id: &str, source: &str) {
+pub fn record_command(command_id: &'static str, source: &'static str) {
     static COUNTER: OnceLock<Counter<u64>> = OnceLock::new();
     let counter = COUNTER.get_or_init(|| meter().u64_counter("myko.command.count").build());
     counter.add(
         1,
         &[
-            KeyValue::new("command", command_id.to_string()),
-            KeyValue::new("source", source.to_string()),
+            KeyValue::new("command", command_id),
+            KeyValue::new("source", source),
         ],
     );
 }
