@@ -7,7 +7,6 @@
 #![allow(clippy::panic, clippy::missing_panics_doc)]
 
 use myko_bench_suite::{
-    compat,
     harness::{Record, take_records},
     scenarios::Args,
 };
@@ -123,14 +122,7 @@ fn belongs_to_index_and_cascades_are_exact() {
 
 #[test]
 fn event_bursts_keep_order_and_the_latest_value() {
-    // Without `#[myko_sequential]` a burst on one key settles together and
-    // the subscriber sees only its last event.
-    let known: &[&str] = if compat::HAS_SEQUENTIAL {
-        &[]
-    } else {
-        &["every_event_delivered"]
-    };
-    assert_checks(&run("bursts", "scale=0.05 bursts=10"), known);
+    assert_checks(&run("bursts", "scale=0.05 bursts=10"), &[]);
 }
 
 #[test]

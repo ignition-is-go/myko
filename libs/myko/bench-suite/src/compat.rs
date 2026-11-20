@@ -1,9 +1,8 @@
 //! The one place that depends on what this myko version offers.
 //!
-//! When `#[myko_sequential]` lands on this branch, put it on
-//! `BPulse::emitter_id`, set `HAS_SEQUENTIAL`, and make `ingest` split the
-//! batch with `handler_registry.sequential_sets` as `WsHandler` does. The
-//! `bursts` test then stops being ignored.
+//! `HAS_SEQUENTIAL` records whether `#[myko_sequential]` exists on this
+//! branch. It does not: `apply_event_batch` applies the events of one key in
+//! order for every entity type, so `ingest` needs no per-key split.
 
 use myko::{event::MEvent, server::MykoServerContext};
 

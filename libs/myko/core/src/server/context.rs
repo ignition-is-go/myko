@@ -1073,8 +1073,14 @@ impl MykoServerContext {
         }
         let input_len = events.len();
 
-        let mut set_items: Vec<Arc<dyn AnyItem>> = Vec::new();
-        let mut del_items: Vec<Arc<dyn AnyItem>> = Vec::new();
+        // One grouped store write carries one change per key, so two events
+        // for one key in it reach subscribers as the later event alone, and a
+        // SET then DEL then SET of one key ends deleted. The batch is cut
+        // wherever a key repeats and the runs are applied in arrival order.
+        let mut runs: Vec<[Vec<Arc<dyn AnyItem>>; 2]> = Vec::new();
+        let mut run: [Vec<Arc<dyn AnyItem>>; 2] = Default::default();
+        let mut keys_in_run: HashSet<(&'static str, Arc<str>)> = HashSet::new();
+        let mut applied = 0usize;
 
         for event in events {
             let change = event.change_type;
@@ -1084,45 +1090,44 @@ impl MykoServerContext {
                 tracing::warn!("Unknown entity type or parse error for ingest: {item_type}");
                 continue;
             };
+            let key = (item.entity_type(), item.id());
+            if keys_in_run.contains(&key) {
+                keys_in_run.clear();
+                runs.push(std::mem::take(&mut run));
+            }
+            keys_in_run.insert(key);
+            applied = applied.saturating_add(1);
+            let [sets, dels] = &mut run;
             match change {
-                MEventType::SET => set_items.push(item),
-                MEventType::DEL => del_items.push(item),
+                MEventType::SET => sets.push(item),
+                MEventType::DEL => dels.push(item),
             }
         }
+        runs.push(run);
 
-        let applied = set_items.len().saturating_add(del_items.len());
         if applied == 0 {
             return Ok(0);
         }
 
         tracing::trace!(
             target: "myko::server::context",
-            "apply_event_batch parsed: input_events={} sets={} dels={}",
+            "apply_event_batch parsed: input_events={} applied={} runs={}",
             input_len,
-            set_items.len(),
-            del_items.len()
+            applied,
+            runs.len()
         );
 
         // Ingested wire events are Local (cascade + produce); the shared batch
         // path groups by type, reduces, then runs the cascade/produce tail.
         // `emit_grouped` itself opens the `hyphae::batch` window (scoped to
         // just its reduce loop — see the comment there for why).
-        let emit = || -> Result<(), PersistError> {
-            self.submit_mutation_mode(
-                set_items.clone(),
-                MEventType::SET,
-                Origin::Local,
-                EdgeApplyMode::Import,
-            )?;
-            self.submit_mutation_mode(
-                del_items.clone(),
-                MEventType::DEL,
-                Origin::Local,
-                EdgeApplyMode::Import,
-            )?;
-            Ok(())
-        };
-        emit()?;
+        for [set_items, del_items] in runs {
+            for (items, change) in [(set_items, MEventType::SET), (del_items, MEventType::DEL)] {
+                if !items.is_empty() {
+                    self.submit_mutation_mode(items, change, Origin::Local, EdgeApplyMode::Import)?;
+                }
+            }
+        }
 
         Ok(applied)
     }
@@ -4048,6 +4053,68 @@ mod tests {
             ctx.registry
                 .get_or_create("ImmediateTestItem")
                 .get(&Arc::<str>::from("relayed"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn apply_event_batch_applies_events_of_one_key_in_order() {
+        fn event(id: &str, value: i32, change_type: MEventType) -> MEvent {
+            MEvent {
+                item: json!({ "id": id, "value": value }),
+                change_type,
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-burst".into(),
+                source_id: Some("test".into()),
+            }
+        }
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let store = ctx.registry.get_or_create("ImmediateTestItem");
+        let row = store.get(&Arc::<str>::from("row")).materialize();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_by_subscriber = seen.clone();
+        let _guard = row.subscribe(move |signal| {
+            if let hyphae::Signal::Value(item) = signal {
+                let value = item.as_ref().as_ref().and_then(|item| {
+                    item.as_any()
+                        .downcast_ref::<ImmediateTestItem>()
+                        .map(|typed| typed.value)
+                });
+                seen_by_subscriber
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(value);
+            }
+        });
+        seen.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        let applied = ctx
+            .apply_event_batch(vec![
+                event("row", 1, MEventType::SET),
+                event("other", 1, MEventType::SET),
+                event("row", 2, MEventType::SET),
+                event("row", 2, MEventType::DEL),
+                event("row", 3, MEventType::SET),
+            ])
+            .ok();
+
+        assert_eq!(applied, Some(5));
+        assert_eq!(
+            *seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![Some(1), Some(2), None, Some(3)],
+            "every event of the key must reach its subscriber, in the order sent"
+        );
+        assert!(
+            store
+                .get(&Arc::<str>::from("other"))
                 .materialize()
                 .get()
                 .is_some()

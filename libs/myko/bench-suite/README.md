@@ -27,14 +27,11 @@ a correctness check inside the scenario fails: a row not delivered, a
 sequence gap, a value out of its writer's order, a wrong value, a cascade
 that is not exact, a live cache entry left behind. Timings are not asserted.
 
-Two gaps on this branch are recorded in the tests, not hidden:
+One gap on this branch is recorded in the tests, not hidden:
 
 - `a_multi_type_mutation_is_never_seen_in_part` is `#[ignore]`. A three-way
   join shows part of a mutation that spans three entity types (gate L2-5).
   Remove the attribute when the engine settles a batch as one step.
-- `event_bursts_keep_order_and_the_latest_value` accepts
-  `every_event_delivered` failing while `compat::HAS_SEQUENTIAL` is false.
-  See `src/compat.rs` for what to change when `#[myko_sequential]` lands.
 
 ## Timed runs
 
