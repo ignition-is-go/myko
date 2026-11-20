@@ -2452,28 +2452,31 @@ impl MykoServerContext {
 
     /// Reactive filter parameters: `filter_cell` replaces a value-based
     /// `GetXsByQuery` with a live `Cell`, so a filter derived from other
-    /// cells needs no rebuilt query — see
-    /// `query::query_live` for the mechanics
-    /// (incremental bucket-diffing on `In`/`Eq` field changes, scoped
-    /// rescan on `Range`/`Contains` changes, never a graph teardown).
-    ///
-    /// Deliberately uncached, unlike `query_map`'s typed-projection cache:
-    /// a `Cell` is object identity, not a value, so there's no meaningful
-    /// key to share a projection under — each call site gets its own
-    /// independent graph node (spec §5: "no value-identity cache sharing").
-    pub fn query_live<F>(
+    /// cells needs no rebuilt query. A lookup into the query's family at
+    /// the filter: when the filter changes, the map moves to the new
+    /// filter's shared row as one `Initial`, and the returned map itself is
+    /// never replaced.
+    pub fn query_live<F, M>(
         &self,
-        filter_cell: impl Watchable<F>,
+        filter_cell: Cell<F, M>,
     ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
     where
-        F: LiveFilterQuery,
+        M: Send + Sync + 'static,
+        F: LiveFilterQuery + std::fmt::Debug,
+        F::Query: QueryParams<Item = F::Item>,
         F::Item: WithTypedId,
     {
-        let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
-        crate::core::item::typed_map_from_any_item_with_typed_id(
-            untyped,
-            "MykoServerContext::query_live",
-        )
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            self.host_id,
+            "query_live",
+        ));
+        use hyphae::{MapExt, Materialize};
+
+        let query = filter_cell
+            .map(|filter| filter.clone().into_query())
+            .materialize();
+        self.query_map_at(query, request)
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -3988,9 +3991,61 @@ mod tests {
         assert!(builder.join().is_ok());
     }
 
+    /// Run by [`building_a_report_inside_a_callback_breaks_the_lifecycle_rule`]
+    /// in a child process with `HYPHAE_LIFECYCLE=panic`.
     #[test]
-    fn a_report_is_built_while_a_settling_callback_asks_for_the_same_report() {
+    #[ignore = "run in a child process by its parent test"]
+    fn lifecycle_child_builds_a_report_inside_a_callback() {
+        use hyphae::{Cell, Mutable, Watchable};
+
+        use crate::{entities::server::ServerStats, request::RequestContext};
+
+        let ctx = make_ctx();
+        let request = Arc::new(RequestContext::internal(
+            Arc::<str>::from(Uuid::new_v4().to_string()),
+            ctx.host_id,
+            "test",
+        ));
+        let trigger = Cell::new(0u32);
+        let _guard = trigger.subscribe(move |signal| {
+            if matches!(signal, hyphae::Signal::Value(value) if **value == 1) {
+                let _ = ctx.report(ServerStats {}, request.clone());
+            }
+        });
+        trigger.set(1);
+    }
+
+    /// A report built in a settling callback is the construction the
+    /// lifecycle rule forbids: debug builds panic at its creation site.
+    #[cfg(debug_assertions)]
+    #[test]
+    fn building_a_report_inside_a_callback_breaks_the_lifecycle_rule() {
+        let output = std::process::Command::new(
+            std::env::current_exe().unwrap_or_else(|error| panic!("test binary: {error}")),
+        )
+        .args([
+            "--ignored",
+            "--exact",
+            "server::context::tests::lifecycle_child_builds_a_report_inside_a_callback",
+            "--nocapture",
+        ])
+        .env("HYPHAE_LIFECYCLE", "panic")
+        .env_remove("HYPHAE_LIFECYCLE_OUT")
+        .output()
+        .unwrap_or_else(|error| panic!("run the child test: {error}"));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "the child must fail");
+        assert!(
+            stderr.contains("hyphae: lifecycle rule"),
+            "the child fails on the lifecycle check:\n{stderr}"
+        );
+    }
+
+    #[test]
+    fn a_report_is_built_through_its_family_while_a_settling_callback_demands_it() {
         use std::time::Duration;
+
+        use hyphae::{Cell, LookupExt, Mutable};
 
         use crate::{entities::server::ServerStats, request::RequestContext};
 
@@ -4004,17 +4059,21 @@ mod tests {
         // Its build makes waiting writes: it builds two queries.
         let report = ServerStats {};
 
-        let (callback_ctx, callback_report, callback_request) =
-            (ctx.clone(), report.clone(), request.clone());
+        // The reader is built up front; the callback only moves its key, so
+        // the row is built in the family's fire, as the lifecycle rule asks.
+        let key: Cell<Option<ServerStats>, _> = Cell::new(None);
+        let reader = key
+            .clone()
+            .lookup(ctx.report_family::<ServerStats>(request.clone()));
+        let callback_report = report.clone();
         build_while_a_callback_runs(
             Some(Duration::from_millis(300)),
-            move || {
-                let _ = callback_ctx.report(callback_report.clone(), callback_request.clone());
-            },
+            move || key.set(Some(callback_report.clone())),
             move |_building| {
                 let _ = ctx.report(report, request);
             },
         );
+        drop(reader);
     }
 
     /// A store whose first row makes its subscriber set a second row, and the

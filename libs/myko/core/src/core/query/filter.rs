@@ -83,28 +83,12 @@ pub type CompoundFkExtractor = fn(&dyn std::any::Any) -> Option<CompoundKey>;
 /// `BelongsToSourceIndex`, and the extractor needed to build/maintain that
 /// index. Returned by a generated `XQuery`'s `belongs_to_route()` method
 /// (see `#[myko_item]`'s codegen); shared between the value-based query's
-/// `build_view` (routes once per query construction) and `query_live`'s
-/// incremental per-tick diffing (routes on every filter change, diffing
-/// keys against the previous tick's route) — one routing rule, two
-/// consumers, so they can never disagree on what's index-servable.
-///
-/// A plain data type deliberately kept here in the ungated `filter` module
-/// rather than the native-only `registration` module: [`LiveFilterQuery`]
-/// (below) needs to name it in a trait bound that must resolve on wasm32
-/// too, even though the actual `query_live` engine that consumes it stays
-/// server-only.
+/// `build_view`.
 pub struct BelongsToRoute {
     pub field_names: &'static [&'static str],
     pub keys: Vec<CompoundKey>,
     pub extract_fk: CompoundFkExtractor,
 }
-
-/// Sentinel `field_names` for the primary-key route, so `query_live`'s
-///
-/// route-shape tracking (`prev_route_field_names`) distinguishes id mode
-/// from every `belongs_to` field combination (a real field named "(id)" is
-/// impossible — parentheses aren't valid in a Rust identifier).
-pub const ID_ROUTE_FIELD_NAMES: &[&str] = &["(id)"];
 
 /// The full routing decision for one `XQuery` instance, in priority order:
 ///
@@ -117,8 +101,7 @@ pub const ID_ROUTE_FIELD_NAMES: &[&str] = &["(id)"];
 ///   buckets as before.
 ///
 /// Returned by a generated `XQuery`'s `query_route()` method; `None` from
-/// that method means scan mode. Same one-rule/two-consumers contract as
-/// [`BelongsToRoute`]: `build_view` and `query_live` both dispatch on this.
+/// that method means scan mode.
 pub enum QueryRoute {
     /// Primary-key route: subscribe the store's per-id cells for exactly
     /// these ids (empty = `In([])` = matches nothing, an empty result —
@@ -127,18 +110,10 @@ pub enum QueryRoute {
     BelongsTo(BelongsToRoute),
 }
 
-/// Bridges a generated `XQuery` type to its entity, so `query_live` can be
-///
-/// generic over just `impl Watchable<F>` — no `GetXsByQuery` wrapper
-/// needed; "the entity/query type is inferred from `Cell<XQuery>`" (spec
-/// §5). Implemented by `#[myko_item]`'s codegen for every generated
-/// `XQuery`, delegating to that type's own already-generated `matches`/
-/// `belongs_to_route` methods.
-///
-/// The trait declaration lives in this ungated module so it resolves on
-/// wasm32 (needed for `ReportContext::query_live`'s wasm32 stub signature,
-/// which must type-check even though its body just panics) — only the
-/// `query_live` engine itself (`registration.rs`) is native-only.
+/// Bridges a generated `XQuery` filter to the value query that runs it, so
+/// `query_live` can be generic over just `Cell<F>`: the entity and
+/// query types are inferred from `Cell<XQuery>` (spec §5). Implemented by
+/// `#[myko_item]`'s codegen for every generated `XQuery`.
 pub trait LiveFilterQuery: Clone + PartialEq + Send + Sync + 'static {
     type Item: Eventable
         + WithId
@@ -148,12 +123,10 @@ pub trait LiveFilterQuery: Clone + PartialEq + Send + Sync + 'static {
         + Send
         + Sync
         + 'static;
+    /// The generated `GetXsByQuery` wrapping this filter.
+    type Query: Clone + Send + Sync + 'static;
 
-    fn entity_type() -> &'static str;
-    fn matches(&self, item: &Self::Item) -> bool;
-    /// The full routing decision (id → `belongs_to` → scan); see
-    /// [`QueryRoute`]. `None` means scan mode.
-    fn query_route(&self) -> Option<QueryRoute>;
+    fn into_query(self) -> Self::Query;
 }
 
 /// Sort + dedup an `In` value set. Order doesn't affect matching, only

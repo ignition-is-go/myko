@@ -220,12 +220,14 @@ pub trait Querying: ServerScoped {
     }
 
     /// Reactive filter parameters: a live `Cell` filter instead of a value.
-    fn query_live<F>(
+    fn query_live<F, M>(
         &self,
-        filter_cell: impl hyphae::Watchable<F>,
+        filter_cell: hyphae::Cell<F, M>,
     ) -> CellMap<<F::Item as WithTypedId>::Id, Arc<F::Item>, CellImmutable>
     where
-        F: LiveFilterQuery,
+        M: Send + Sync + 'static,
+        F: LiveFilterQuery + std::fmt::Debug,
+        F::Query: QueryParams<Item = F::Item>,
         F::Item: WithTypedId,
     {
         self.__server_ctx().query_live(filter_cell)

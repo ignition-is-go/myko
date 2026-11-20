@@ -292,8 +292,6 @@ fn generate_route_arms(
 }
 
 fn generate_route_impl(
-    name: &syn::Ident,
-    name_str: &str,
     filter_ident: &syn::Ident,
     route_arms: &[TokenStream],
     krate: &syn::Path,
@@ -316,25 +314,6 @@ fn generate_route_impl(
             }
         }
 
-        #[cfg(not(target_arch = "wasm32"))]
-        impl #krate::query::LiveFilterQuery for #filter_ident {
-            type Item = #name;
-            fn entity_type() -> &'static str { #name_str }
-            fn matches(&self, item: &Self::Item) -> bool { #filter_ident::matches(self, item) }
-            fn query_route(&self) -> Option<#krate::query::QueryRoute> { #filter_ident::query_route(self) }
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        impl #krate::query::LiveFilterQuery for #filter_ident {
-            type Item = #name;
-            fn entity_type() -> &'static str { #name_str }
-            fn matches(&self, _item: &Self::Item) -> bool {
-                unreachable!("live queries execute on the server")
-            }
-            fn query_route(&self) -> Option<#krate::query::QueryRoute> {
-                unreachable!("live queries execute on the server")
-            }
-        }
     }
 }
 
@@ -350,6 +329,12 @@ fn generate_filter_query(
         #[#krate::myko_manual_cache_key]
         #[#krate::myko_query(#name)]
         pub struct #query_ident(pub #filter_ident);
+
+        impl #krate::query::LiveFilterQuery for #filter_ident {
+            type Item = #name;
+            type Query = #query_ident;
+            fn into_query(self) -> Self::Query { #query_ident(self) }
+        }
 
         impl #krate::prelude::CacheKey for #query_ident {
             fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
@@ -973,23 +958,12 @@ fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
     // every field's value set. A field with an In set of size N and
     // another of size M yields N*M compound keys, each backed by its own
     // bucket in the union.
-    //
-    // Emitted as a `belongs_to_route()` METHOD (returning the routing
-    // decision as data, not directly building/wrapping a source map)
-    // rather than inlined into build_view directly, so query_live's
-    // incremental per-tick diffing can call the exact same decision logic
-    // build_view uses for the one-shot value-based query — one routing
-    // rule, two consumers.
     let filter_belongs_to_route_arms = generate_route_arms(name, &required_belongs_to, krate);
 
-    // BelongsToRoute is a plain data type visible on every target (needed so
-    // ReportContext::query_live's wasm32 stub can name LiveFilterQuery in its
-    // bound), but this impl's body calls cartesian_product, which lives in
-    // the server-only core::query::registration engine — gate the impl the
-    // same way build_view already is, rather than the individual method.
+    // The impl's body calls cartesian_product, which lives in the
+    // server-only core::query::registration engine, so it is gated the same
+    // way build_view is.
     let filter_belongs_to_route_impl = generate_route_impl(
-        name,
-        &name_str,
         &filter_ident,
         &filter_belongs_to_route_arms,
         krate,
