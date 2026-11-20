@@ -6,7 +6,6 @@
 //! - Access server identity (`host_id`)
 
 use std::{
-    any::Any,
     cell::RefCell,
     collections::{HashMap, HashSet, VecDeque, hash_map::DefaultHasher},
     hash::{Hash, Hasher},
@@ -20,26 +19,26 @@ use std::{
 
 use dashmap::DashMap;
 use hyphae::{
-    Cell, CellImmutable, CellMap, CellMutable, Gettable, MapDiff, Materialize, Mutable, Watchable,
-    WeakCellMap,
+    Cell, CellImmutable, CellMap, CellMutable, Family, Gettable, LookupExt, MapDiff, Materialize,
+    Mutable, Watchable,
 };
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use super::{
     HandlerRegistry, RelationshipManager,
+    family::{Families, FamilyKind, FamilyParams, Params, ParamsFamily, SharedFamily},
     persister::{PersistError, PersistHealth, PersisterRouter},
 };
 use crate::{
-    cache::CacheKey,
     client::MykoClient,
     common::{
         to_value::ToValue,
         with_id::{WithId, WithTypedId},
     },
     core::item::{
-        AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc, typed_map_arc_from_any_item,
-        typed_map_from_any_item_with_typed_id,
+        AnyItem, Eventable, IngestBufferPolicy, downcast_any_item_arc,
+        typed_map_arc_from_any_item_holding, typed_map_from_any_item_with_typed_id_holding,
     },
     graph::{EdgeApplyMode, GraphIndex},
     query::{
@@ -53,8 +52,6 @@ use crate::{
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
     wire::{MEvent, MEventType},
 };
-
-type AnyItemArc = Arc<dyn AnyItem>;
 
 /// Where a mutation came from. This is the single policy point for the apply
 /// pipeline's loop-safety: it determines whether a mutation should run
@@ -319,54 +316,6 @@ impl Drop for BegunRoot {
     }
 }
 
-/// Weak-ref report cache entry. The cell stays alive as long as someone is
-/// subscribed to it. When all subscribers drop, the weak ref fails to upgrade
-/// and the next request recomputes.
-trait ReportCacheEntryDyn: Any + Send + Sync {
-    fn as_any(&self) -> &dyn Any;
-    fn is_alive(&self) -> bool;
-}
-
-struct ReportCacheEntry<T> {
-    weak: hyphae::cell::WeakCell<T, CellImmutable>,
-}
-
-impl<T> ReportCacheEntry<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    fn new(cell: &Cell<T, CellImmutable>) -> Self {
-        Self {
-            weak: cell.downgrade(),
-        }
-    }
-
-    fn get(&self) -> Option<Cell<T, CellImmutable>> {
-        self.weak.upgrade()
-    }
-}
-
-impl<T> ReportCacheEntryDyn for ReportCacheEntry<T>
-where
-    T: Clone + Send + Sync + 'static,
-{
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn is_alive(&self) -> bool {
-        self.weak.upgrade().is_some()
-    }
-}
-
-struct MapCacheEntry {
-    weak: WeakCellMap<Arc<str>, AnyItemArc>,
-    /// Lazily-created typed projections keyed by `TypeId` of the output
-    /// `CellMap<K, V>`. Each value is a type-erased weak cell map that can be
-    /// downcast back to the concrete `WeakCellMap<K, V>`.
-    typed: Mutex<HashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>>,
-}
-
 #[derive(Default)]
 struct BufferedIngestState {
     events: Vec<MEvent>,
@@ -382,74 +331,6 @@ impl BufferedIngestType {
         Self {
             state: Mutex::new(BufferedIngestState::default()),
         }
-    }
-}
-
-impl MapCacheEntry {
-    fn new(map: &FilteredCellMap) -> Self {
-        Self {
-            weak: map.downgrade(),
-            typed: Mutex::new(HashMap::new()),
-        }
-    }
-
-    fn get(&self) -> Option<FilteredCellMap> {
-        self.weak.upgrade().map(hyphae::CellMap::lock)
-    }
-
-    fn live_typed<K, V>(
-        typed: &HashMap<std::any::TypeId, Box<dyn Any + Send + Sync>>,
-    ) -> Option<CellMap<K, V, CellImmutable>>
-    where
-        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
-        V: hyphae::traits::CellValue + 'static,
-    {
-        typed
-            .get(&std::any::TypeId::of::<WeakCellMap<K, V>>())?
-            .downcast_ref::<WeakCellMap<K, V>>()?
-            .upgrade()
-            .map(hyphae::CellMap::lock)
-    }
-
-    /// The cached typed projection of this untyped map, if one is alive.
-    fn typed<K, V>(&self) -> Option<CellMap<K, V, CellImmutable>>
-    where
-        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
-        V: hyphae::traits::CellValue + 'static,
-    {
-        self.weak.upgrade()?;
-        Self::live_typed(
-            &self
-                .typed
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        )
-    }
-
-    /// Cache `built` as the typed projection unless a live one is already
-    /// cached, and return the cached one. `None` when the untyped map is gone.
-    fn adopt_typed<K, V>(
-        &self,
-        built: &CellMap<K, V, CellImmutable>,
-    ) -> Option<CellMap<K, V, CellImmutable>>
-    where
-        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
-        V: hyphae::traits::CellValue + 'static,
-    {
-        self.weak.upgrade()?;
-        let mut typed = self
-            .typed
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(existing) = Self::live_typed(&typed) {
-            return Some(existing);
-        }
-        typed.insert(
-            std::any::TypeId::of::<WeakCellMap<K, V>>(),
-            Box::new(built.downgrade()),
-        );
-        drop(typed);
-        Some(built.clone())
     }
 }
 
@@ -486,12 +367,8 @@ pub struct MykoServerContext {
     // AHash on the cache + dispatch maps below: every subscriber and every
     // applied event goes through one or more of these. Bench: ~1.6× faster
     // DashMap lookups vs default SipHash.
-    /// Top-level cache for reactive query maps.
-    query_cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>>,
-    /// Top-level cache for reactive view maps.
-    view_cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>>,
-    /// Top-level cache for reactive report cells with short-lived strong retention.
-    report_cache: Arc<DashMap<String, Arc<dyn ReportCacheEntryDyn>, ahash::RandomState>>,
+    /// Query, view and report families, shared by every reader.
+    families: Arc<Families>,
     /// Optional ingest buffers keyed by entity type for opt-in burst smoothing.
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>, ahash::RandomState>>,
     /// Optional history replay provider for point-in-time snapshots.
@@ -545,9 +422,7 @@ impl MykoServerContext {
             peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
             event_sink,
             event_sink_filter: None,
-            query_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
-            view_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
-            report_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
+            families: Arc::new(Families::default()),
             ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
             graph_index,
@@ -556,47 +431,17 @@ impl MykoServerContext {
         }
     }
 
-    fn cache_key<T: CacheKey>(
-        kind: &str,
-        id: &str,
-        params: &T,
-        request: &RequestContext,
-    ) -> String {
-        Self::cache_key_with_scope(kind, id, params, request, RequestCacheScope::Shared)
-    }
-
-    fn cache_key_with_scope<T: CacheKey>(
-        kind: &str,
-        id: &str,
-        params: &T,
-        request: &RequestContext,
-        scope: RequestCacheScope,
-    ) -> String {
-        let payload_hash = params.cache_key_hash();
+    /// The part of a family's identity that the request decides: rows are
+    /// shared per host, per authenticated caller, or per client.
+    fn family_scope(request: &RequestContext, scope: RequestCacheScope) -> String {
         if let Some(auth) = &request.auth {
-            return format!(
-                "{}:{kind}:{id}:{payload_hash:016x}:auth:{}",
-                request.host_id,
-                auth.id()
-            );
+            return format!("{}:auth:{}", request.host_id, auth.id());
         }
         match scope {
-            RequestCacheScope::Shared => {
-                format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
-            }
+            RequestCacheScope::Shared => request.host_id.to_string(),
             RequestCacheScope::PerClient => request.client_id.as_deref().map_or_else(
-                || {
-                    format!(
-                        "{}:{kind}:{id}:{payload_hash:016x}:request-server",
-                        request.host_id
-                    )
-                },
-                |client_id| {
-                    format!(
-                        "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}",
-                        request.host_id
-                    )
-                },
+                || format!("{}:request-server", request.host_id),
+                |client_id| format!("{}:request-client:{client_id}", request.host_id),
             ),
         }
     }
@@ -675,67 +520,32 @@ impl MykoServerContext {
         downcast_any_item_arc::<T>(&item, "MykoServerContext::entity_snapshot")
     }
 
-    /// Number of entries in the query cache (includes dead weak refs).
+    /// Live query rows across this context's query families.
     #[must_use]
-    pub fn query_cache_len(&self) -> usize {
-        self.query_cache.len()
+    pub fn query_rows(&self) -> usize {
+        self.families.rows(FamilyKind::Query)
     }
 
-    /// Number of entries in the report cache (includes dead weak refs).
+    /// Live view rows across this context's view families.
     #[must_use]
-    pub fn report_cache_len(&self) -> usize {
-        self.report_cache.len()
+    pub fn view_rows(&self) -> usize {
+        self.families.rows(FamilyKind::View)
     }
 
-    /// Count live (upgradeable) entries in the report cache.
+    /// Live report rows across this context's report families.
     #[must_use]
-    pub fn report_cache_live_count(&self) -> usize {
-        self.report_cache
-            .iter()
-            .filter(|entry| entry.value().is_alive())
-            .count()
+    pub fn report_rows(&self) -> usize {
+        self.families.rows(FamilyKind::Report)
     }
 
-    /// Count live (upgradeable) entries in the query cache.
-    #[must_use]
-    pub fn query_cache_live_count(&self) -> usize {
-        self.query_cache
-            .iter()
-            .filter(|entry| entry.value().weak.upgrade().is_some())
-            .count()
-    }
-
-    // NOTE(ts): the view_cache_* pair was dropped by f8c71afd as zero-caller,
-    // but it completes the query/view/report cache-diagnostics triple that
-    // rship_server's periodic health log reports — restored for symmetry.
-
-    /// Number of entries in the view cache (includes dead weak refs).
-    #[must_use]
-    pub fn view_cache_len(&self) -> usize {
-        self.view_cache.len()
-    }
-
-    /// Count live (upgradeable) entries in the view cache.
-    #[must_use]
-    pub fn view_cache_live_count(&self) -> usize {
-        self.view_cache
-            .iter()
-            .filter(|entry| entry.value().weak.upgrade().is_some())
-            .count()
-    }
-
-    /// Remove dead weak-ref entries from all caches, including belongs-to
-    /// source index buckets (process-global, not per-`MykoServerContext`, but
-    /// swept from here for hosting apps that already call this
-    /// periodically). Bucket entries are also reaped lazily on next access
-    /// regardless — this is a backstop for foreign ids that go dead and are
-    /// never looked up again.
-    pub fn sweep_dead_cache_entries(&self) {
-        self.query_cache
-            .retain(|_, entry| entry.weak.upgrade().is_some());
-        self.view_cache
-            .retain(|_, entry| entry.weak.upgrade().is_some());
-        self.report_cache.retain(|_, entry| entry.is_alive());
+    /// Forget families that every reader dropped, and sweep belongs-to source
+    /// index buckets (process-global, not per-`MykoServerContext`, but swept
+    /// from here for hosting apps that already call this periodically).
+    /// Bucket entries are also reaped lazily on next access regardless; this
+    /// is a backstop for foreign ids that go dead and are never looked up
+    /// again.
+    pub fn sweep_dead_families(&self) {
+        self.families.sweep();
         crate::query::sweep_all_belongs_to_source_indexes();
     }
 
@@ -2558,15 +2368,15 @@ impl MykoServerContext {
 
     /// Run a reactive query and return a typed map keyed by the item's typed id.
     ///
-    /// The typed projection is cached — multiple callers with the same query
-    /// share a single underlying map instead of each creating their own copy.
+    /// A lookup into the query's typed family: every caller with the same
+    /// query shares one map.
     pub fn query_map<Q>(
         &self,
         query: Q,
         request: Arc<RequestContext>,
     ) -> CellMap<<Q::Item as WithTypedId>::Id, Arc<Q::Item>, CellImmutable>
     where
-        Q: QueryParams + 'static,
+        Q: QueryParams + Params,
         Q::Item: Eventable
             + WithId
             + WithTypedId
@@ -2577,12 +2387,19 @@ impl MykoServerContext {
             + Sync
             + 'static,
     {
-        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        // Hold the untyped map alive so the weak ref in the cache entry stays valid.
-        let untyped = self.query_map_untyped(query, request);
-        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
-            typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
-        })
+        let scope = Self::family_scope(&request, RequestCacheScope::Shared);
+        let untyped = self.query_family::<Q>(request);
+        let family = self
+            .families
+            .get_or_build(FamilyKind::Projection, scope, move |query: &Q| {
+                let lease = untyped.acquire(query);
+                typed_map_from_any_item_with_typed_id_holding(
+                    lease.row().clone(),
+                    "MykoServerContext::query_map",
+                    lease,
+                )
+            });
+        Cell::new(query).lock().lookup(family)
     }
 
     /// Reactive filter parameters: `filter_cell` replaces a value-based
@@ -2605,7 +2422,10 @@ impl MykoServerContext {
         F::Item: WithTypedId,
     {
         let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
-        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        crate::core::item::typed_map_from_any_item_with_typed_id(
+            untyped,
+            "MykoServerContext::query_live",
+        )
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -2617,15 +2437,23 @@ impl MykoServerContext {
         request: Arc<RequestContext>,
     ) -> CellMap<Arc<str>, Arc<Q::Item>, CellImmutable>
     where
-        Q: QueryParams + 'static,
+        Q: QueryParams + Params,
         Q::Item:
             Eventable + WithId + DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        let untyped = self.query_map_untyped(query, request);
-        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
-            typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
-        })
+        let scope = Self::family_scope(&request, RequestCacheScope::Shared);
+        let untyped = self.query_family::<Q>(request);
+        let family = self
+            .families
+            .get_or_build(FamilyKind::Projection, scope, move |query: &Q| {
+                let lease = untyped.acquire(query);
+                typed_map_arc_from_any_item_holding(
+                    lease.row().clone(),
+                    "MykoServerContext::query_map_by_str",
+                    lease,
+                )
+            });
+        Cell::new(query).lock().lookup(family)
     }
 
     /// Run a reactive query.
@@ -2648,166 +2476,129 @@ impl MykoServerContext {
     /// ```
     pub fn query_map_untyped<Q>(&self, query: Q, request: Arc<RequestContext>) -> FilteredCellMap
     where
-        Q: QueryFactory + QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q: QueryFactory + QueryHandler + QueryParams + Params,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
-        Self::compute_or_cache(&key, &self.query_cache, || {
-            let query_req = QueryRequest::with_tx(query, request.tx.clone());
-            let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
-            Q::cell_factory(
-                any_query,
-                self.registry.clone(),
-                request,
-                Some(Arc::new(self.clone())),
-            )
-            .unwrap_or_else(|error| {
-                tracing::error!(
-                    query_id = %Q::query_id_static(),
-                    %error,
-                    "typed query factory failed; returning an empty query"
-                );
-                CellMap::new().lock()
-            })
-        })
+        Cell::new(query)
+            .lock()
+            .lookup(self.query_family::<Q>(request))
     }
 
-    /// Fast-path lookup shared by the query and view untyped-map caches:
-    /// return the live shared map if the weak ref still upgrades, otherwise
-    /// evict the dead entry and report a miss.
-    fn try_get_cached(
-        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
-        key: &str,
-    ) -> Option<FilteredCellMap> {
-        let existing = cache.get(key)?;
-        if let Some(shared) = existing.value().get() {
-            return Some(shared);
-        }
-        drop(existing);
-        cache.remove(key);
-        None
-    }
-
-    /// Shared typed-projection retrieval for `query_map` and `query_map_by_str`.
-    ///
-    /// Returns the typed projection cached under `key`, or builds one with
-    /// `project` and caches it. `project` subscribes and makes a waiting
-    /// write, and a subscriber callback on the settling thread reads this
-    /// cache, so it runs with no cache lock held. Two callers that race each
-    /// build a projection, and both return the one that reached the cache
-    /// first.
-    fn typed_projection<K, V>(
-        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
-        key: &str,
-        untyped: &FilteredCellMap,
-        project: impl Fn(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
-    ) -> CellMap<K, V, CellImmutable>
+    /// The family of `Q`'s untyped maps.
+    fn query_family<Q>(&self, request: Arc<RequestContext>) -> SharedFamily<Q, FilteredCellMap>
     where
-        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
-        V: hyphae::traits::CellValue + 'static,
+        Q: QueryFactory + QueryHandler + QueryParams + Params,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let cached = cache.get(key).and_then(|entry| entry.value().typed());
-        if let Some(typed) = cached {
-            return typed;
-        }
-        let built = project(untyped.clone());
-        let adopted = cache
-            .get(key)
-            .and_then(|entry| entry.value().adopt_typed(&built));
-        if let Some(typed) = adopted {
-            return typed;
-        }
-        // A cache sweep evicted the entry, or it holds a map that has since
-        // died.
-        cache.insert(key.to_owned(), MapCacheEntry::new(untyped));
-        let adopted = cache
-            .get(key)
-            .and_then(|entry| entry.value().adopt_typed(&built));
-        adopted.unwrap_or(built)
+        let ctx = self.clone();
+        self.families.get_or_build(
+            FamilyKind::Query,
+            Self::family_scope(&request, RequestCacheScope::Shared),
+            move |query: &Q| {
+                let query_req = QueryRequest::with_tx(query.clone(), request.tx.clone());
+                let any_query: Arc<dyn crate::query::AnyQuery> = Arc::new(query_req);
+                Q::cell_factory(
+                    any_query,
+                    ctx.registry.clone(),
+                    Arc::clone(&request),
+                    Some(Arc::new(ctx.clone())),
+                )
+                .unwrap_or_else(|error| {
+                    tracing::error!(
+                        query_id = %Q::query_id_static(),
+                        %error,
+                        "typed query factory failed; returning an empty query"
+                    );
+                    CellMap::new().lock()
+                })
+            },
+        )
     }
 
-    /// Caching shared by `query_map_untyped` and `view_map_untyped`. Returns
-    /// the cached untyped map, or runs `compute` and caches the result.
-    ///
-    /// `compute` subscribes and makes waiting writes, and a subscriber callback
-    /// on the settling thread asks for the same keys, so it runs with no lock
-    /// held. Callers that race on a missing key each build a map, and all
-    /// return the one that reached the cache first.
-    fn compute_or_cache(
-        key: &str,
-        cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
-        compute: impl FnOnce() -> FilteredCellMap,
-    ) -> FilteredCellMap {
-        if let Some(cell) = Self::try_get_cached(cache, key) {
-            return cell;
-        }
-        let computed = compute();
-        let cached = match cache.entry(key.to_owned()) {
-            dashmap::Entry::Occupied(mut entry) => {
-                let existing = entry.get().get();
-                if existing.is_none() {
-                    entry.insert(MapCacheEntry::new(&computed));
-                }
-                existing
-            }
-            dashmap::Entry::Vacant(entry) => {
-                entry.insert(MapCacheEntry::new(&computed));
-                None
-            }
-        };
-        cached.unwrap_or(computed)
+    /// The family of `V`'s untyped maps.
+    fn view_family_untyped<V>(
+        &self,
+        request: Arc<RequestContext>,
+    ) -> SharedFamily<V, FilteredViewCellMap>
+    where
+        V: ViewFactory + Params,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let ctx = self.clone();
+        self.families.get_or_build(
+            FamilyKind::View,
+            Self::family_scope(&request, V::request_cache_scope()),
+            move |view: &V| {
+                let view_req = crate::view::ViewRequest::with_tx(view.clone(), request.tx.clone());
+                let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
+                V::cell_factory(
+                    any_view,
+                    ctx.registry.clone(),
+                    Arc::clone(&request),
+                    Arc::new(ctx.clone()),
+                )
+                .unwrap_or_else(|error| {
+                    tracing::error!(
+                        view_id = %V::view_id_static(),
+                        %error,
+                        "typed view factory failed; returning an empty view"
+                    );
+                    CellMap::new().lock()
+                })
+            },
+        )
+    }
+
+    /// The family of `V`'s typed maps, one per view type and request scope.
+    #[must_use]
+    pub fn view_family<V>(
+        &self,
+        request: Arc<RequestContext>,
+    ) -> SharedFamily<V, TypedViewCellMap<V::Item>>
+    where
+        V: ViewFactory + Params,
+        V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        let scope = Self::family_scope(&request, V::request_cache_scope());
+        let untyped = self.view_family_untyped::<V>(request);
+        self.families
+            .get_or_build(FamilyKind::Projection, scope, move |view: &V| {
+                let lease = untyped.acquire(view);
+                typed_map_arc_from_any_item_holding(
+                    lease.row().clone(),
+                    "MykoServerContext::view",
+                    lease,
+                )
+            })
     }
 
     /// Build a reactive view cell map (type-erased for framework internals).
     pub fn view_map_untyped<V>(&self, view: V, request: Arc<RequestContext>) -> FilteredViewCellMap
     where
-        V: ViewFactory + Clone + Send + Sync + 'static,
+        V: ViewFactory + Params,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key_with_scope(
-            "view",
-            V::view_id_static().as_ref(),
-            &view,
-            &request,
-            V::request_cache_scope(),
-        );
-        Self::compute_or_cache(&key, &self.view_cache, || {
-            let view_req = crate::view::ViewRequest::with_tx(view, request.tx.clone());
-            let any_view: Arc<dyn crate::view::AnyView> = Arc::new(view_req);
-            V::cell_factory(
-                any_view,
-                self.registry.clone(),
-                request,
-                Arc::new(self.clone()),
-            )
-            .unwrap_or_else(|error| {
-                tracing::error!(
-                    view_id = %V::view_id_static(),
-                    %error,
-                    "typed view factory failed; returning an empty view"
-                );
-                CellMap::new().lock()
-            })
-        })
+        Cell::new(view)
+            .lock()
+            .lookup(self.view_family_untyped::<V>(request))
     }
 
-    /// Build a typed reactive view cell map.
+    /// Build a typed reactive view cell map: a lookup into `V`'s family at a
+    /// constant key.
     pub fn view<V>(&self, view: V, request: Arc<RequestContext>) -> TypedViewCellMap<V::Item>
     where
-        V: ViewFactory + Clone + Send + Sync + 'static,
+        V: ViewFactory + Params,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        let key = Self::cache_key_with_scope(
-            "view",
-            V::view_id_static().as_ref(),
-            &view,
-            &request,
-            V::request_cache_scope(),
-        );
-        let untyped = self.view_map_untyped(view, request);
-        Self::typed_projection(&self.view_cache, &key, &untyped, |source| {
-            typed_map_arc_from_any_item(source, "MykoServerContext::view")
-        })
+        Cell::new(view)
+            .lock()
+            .lookup(self.view_family::<V>(request))
+    }
+
+    /// The shared family of a report or view type `P` for this request's scope.
+    #[must_use]
+    pub fn family<P: FamilyParams>(&self, request: Arc<RequestContext>) -> ParamsFamily<P> {
+        P::family(self, request)
     }
 
     /// Run a one-shot (non-reactive) query.
@@ -2846,117 +2637,76 @@ impl MykoServerContext {
             .collect()
     }
 
+    /// The family of `R`'s output cells, one per report type and request scope.
+    #[must_use]
+    pub fn report_family<R>(
+        &self,
+        request: Arc<RequestContext>,
+    ) -> SharedFamily<R, Cell<Arc<R::Output>, CellImmutable>>
+    where
+        R: ReportHandler + ReportId + Params + serde::Serialize,
+    {
+        let ctx = self.clone();
+        let scope = Self::family_scope(&request, R::request_cache_scope());
+        self.families
+            .get_or_build(FamilyKind::Report, scope, move |report: &R| {
+                ctx.build_report(report, Arc::clone(&request))
+            })
+    }
+
+    /// Subscribe to a report: a lookup into `R`'s family at a constant key.
     pub fn report<R>(
         &self,
         report: R,
         request: Arc<RequestContext>,
     ) -> Cell<Arc<R::Output>, CellImmutable>
     where
-        R: ReportHandler + ReportId + CacheKey + Clone + serde::Serialize + 'static,
+        R: ReportHandler + ReportId + Params + serde::Serialize,
     {
-        let key = Self::cache_key_with_scope(
-            "report",
-            report.report_id().as_ref(),
-            &report,
-            &request,
-            R::request_cache_scope(),
-        );
-        let report_id = report.report_id();
-
-        // Fast path: cache hit with live cell.
-        if let Some(cell) = self.try_get_cached_report::<R>(&key) {
-            crate::server::report_cache_stats::record_hit(&report_id);
-            tracing::trace!(
-                target: "myko::server::context::report_cache",
-                "report_cache HIT report_id={} key={}",
-                report_id,
-                key,
-            );
-            return cell;
+        let family = self.report_family::<R>(request);
+        if family.contains(&report) {
+            crate::server::report_cache_stats::record_hit(&report.report_id());
         }
+        Cell::new(report).lock().lookup(family)
+    }
 
+    /// Build the row for `report`, on the first demand for its params.
+    fn build_report<R>(
+        &self,
+        report: &R,
+        request: Arc<RequestContext>,
+    ) -> Cell<Arc<R::Output>, CellImmutable>
+    where
+        R: ReportHandler + ReportId + serde::Serialize,
+    {
+        let report_id = report.report_id();
         // Emit MISS_COMPUTE *before* compute() so the analyze pass can correlate
         // the miss with the work that follows even if compute panics or hangs.
         // Payload is only serialized when the trace target is enabled.
         if tracing::enabled!(target: "myko::server::context::report_cache", tracing::Level::TRACE) {
-            let payload = serde_json::to_string(&report)
-                .unwrap_or_else(|e| format!("<serialize error: {e}>"));
+            let payload =
+                serde_json::to_string(report).unwrap_or_else(|e| format!("<serialize error: {e}>"));
             tracing::trace!(
                 target: "myko::server::context::report_cache",
-                "report_cache MISS_COMPUTE report_id={} key={} payload={}",
+                "report_cache MISS_COMPUTE report_id={} payload={}",
                 report_id,
-                key,
                 payload,
             );
         }
+        crate::server::report_cache_stats::record_miss(&report_id);
 
         // Bounded cardinality (one name per report *type*, not per invocation),
-        // matching the `myko.reduce`/`myko.command` spans — this is the one-time
-        // cache-miss materialization, not a per-subscriber-update hot path.
+        // matching the `myko.reduce`/`myko.command` spans.
         let _span = tracing::trace_span!("myko.report", report = report_id.as_ref()).entered();
         crate::server::dispatch_metrics::record_report(report_id.as_ref(), request.origin());
         let nested_ctx = ReportContext::new(request, Arc::new(self.clone()));
-        // The trait returns `impl Pipeline<...>`; materialize once here so the
-        // cache and downstream consumers get a concrete `Cell`. This is the only
-        // materialization per report, regardless of how deep the inner chain is.
+        // The only materialization per report row, however deep the chain.
         let built = report.compute(nested_ctx).materialize();
-        drop(report);
-        // Named by report id (bounded cardinality — one name per report
-        // *type*, not per invocation) so hyphae's `hyphae.fanout` span
-        // (under the `profiling` feature) surfaces `cell.name` instead of
-        // being anonymous. `Cell<T, CellImmutable>::with_name` is available
-        // post-materialize (unlike `CellMap`, which only exposes it pre-lock
-        // — query/view result maps can't be named at this seam the same way).
+        // Named by report id so hyphae's `hyphae.fanout` span (under the
+        // `profiling` feature) surfaces `cell.name`.
         #[cfg(feature = "profiling")]
         let built = built.with_name(report_id.as_ref());
-        // The build ran with no lock held, because it makes waiting writes and
-        // a subscriber callback on the settling thread asks for the same
-        // reports. Callers that race on a missing key each build a cell, and
-        // all return the one that reached the cache first.
-        let cached = match self.report_cache.entry(key) {
-            dashmap::Entry::Occupied(mut entry) => {
-                let existing = entry
-                    .get()
-                    .as_any()
-                    .downcast_ref::<ReportCacheEntry<Arc<R::Output>>>()
-                    .and_then(ReportCacheEntry::get);
-                if existing.is_none() {
-                    entry.insert(Arc::new(ReportCacheEntry::new(&built)));
-                }
-                existing
-            }
-            dashmap::Entry::Vacant(entry) => {
-                entry.insert(Arc::new(ReportCacheEntry::new(&built)));
-                None
-            }
-        };
-        if let Some(cached) = cached {
-            crate::server::report_cache_stats::record_hit_after_gate(&report_id);
-            return cached;
-        }
-        crate::server::report_cache_stats::record_miss(&report_id);
-
         built
-    }
-
-    /// Try to get a cached report cell. Returns None if missing or dead.
-    fn try_get_cached_report<R>(&self, key: &str) -> Option<Cell<Arc<R::Output>, CellImmutable>>
-    where
-        R: ReportHandler + 'static,
-    {
-        let existing = self.report_cache.get(key)?;
-        if let Some(entry) = existing
-            .value()
-            .as_any()
-            .downcast_ref::<ReportCacheEntry<Arc<R::Output>>>()
-            && let Some(shared) = entry.get()
-        {
-            return Some(shared);
-        }
-        // Dead entry — drop the ref before removing to avoid DashMap deadlock
-        drop(existing);
-        self.report_cache.remove(key);
-        None
     }
 
     #[must_use]
@@ -3906,7 +3656,7 @@ mod tests {
             request_for(ctx.host_id, "tx-a-2", Some("client-a")),
         );
         assert_eq!(
-            ctx.view_cache_len(),
+            ctx.view_rows(),
             1,
             "transaction IDs must not split a caller cache"
         );
@@ -3920,7 +3670,7 @@ mod tests {
             CallerScopedClientView {},
             request_for(ctx.host_id, "tx-b", Some("client-b")),
         );
-        assert_eq!(ctx.view_cache_len(), 2);
+        assert_eq!(ctx.view_rows(), 2);
         assert!(
             other_caller
                 .get_value(&Arc::<str>::from("client-b"))
@@ -3937,7 +3687,7 @@ mod tests {
             request_for(ctx.host_id, "tx-server", None),
         );
         assert_eq!(
-            ctx.view_cache_len(),
+            ctx.view_rows(),
             3,
             "internal callers need their own cache scope"
         );
@@ -3956,7 +3706,7 @@ mod tests {
 
         let first_view = ctx.view(ConnectedClients {}, first.clone());
         let second_view = ctx.view(ConnectedClients {}, second.clone());
-        assert_eq!(ctx.view_cache_len(), 1);
+        assert_eq!(ctx.view_rows(), 1);
         assert_eq!(
             first_view.len().materialize().get(),
             second_view.len().materialize().get()
@@ -3967,7 +3717,7 @@ mod tests {
         };
         let first_report = ctx.report(report.clone(), first);
         let second_report = ctx.report(report, second);
-        assert_eq!(ctx.report_cache_len(), 1);
+        assert_eq!(ctx.report_rows(), 1);
         assert_eq!(first_report.get(), second_report.get());
     }
 
@@ -4006,7 +3756,7 @@ mod tests {
             request_for(ctx.host_id, "tx-a-2", Some("client-a")),
         );
         assert_eq!(
-            ctx.report_cache_len(),
+            ctx.report_rows(),
             1,
             "transaction IDs must not split a caller cache"
         );
@@ -4023,7 +3773,7 @@ mod tests {
             WindbackStatus {},
             request_for(ctx.host_id, "tx-b", Some("client-b")),
         );
-        assert_eq!(ctx.report_cache_len(), 2);
+        assert_eq!(ctx.report_rows(), 2);
         assert_eq!(
             other_caller.get().windback.as_deref(),
             Some("2026-02-01T00:00:00Z")
@@ -4038,7 +3788,7 @@ mod tests {
             )),
         );
         assert_eq!(
-            ctx.report_cache_len(),
+            ctx.report_rows(),
             3,
             "internal callers need their own cache scope"
         );
@@ -4185,118 +3935,6 @@ mod tests {
         }
         assert!(settler.join().is_ok());
         assert!(builder.join().is_ok());
-    }
-
-    /// A map whose construction waits for the settle in progress.
-    fn map_built_with_a_waiting_write() -> super::FilteredCellMap {
-        use hyphae::CellMap;
-
-        let _ = CellMap::<Arc<str>, u32>::new().insert(Arc::from("row"), 1);
-        CellMap::<Arc<str>, super::AnyItemArc>::new().lock()
-    }
-
-    #[test]
-    fn a_typed_projection_is_built_while_a_settling_callback_reads_the_cache() {
-        use dashmap::DashMap;
-        use hyphae::CellMap;
-
-        use super::{AnyItemArc, MapCacheEntry};
-
-        let _serial = scheduler_test_serial();
-        let cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>> = Arc::new(
-            DashMap::with_hasher_and_shard_amount(ahash::RandomState::new(), 2),
-        );
-        let untyped = CellMap::<Arc<str>, AnyItemArc>::new().lock();
-        cache.insert("live".to_owned(), MapCacheEntry::new(&untyped));
-
-        // Looking up a dead entry evicts it, which takes its shard
-        // exclusively. With two shards, some of these share the shard of
-        // "live".
-        let dead_keys: Vec<String> = (0..64).map(|n| format!("dead-{n}")).collect();
-        for key in &dead_keys {
-            cache.insert(
-                key.clone(),
-                MapCacheEntry::new(&CellMap::<Arc<str>, AnyItemArc>::new().lock()),
-            );
-        }
-
-        let callback_cache = cache.clone();
-        build_while_a_callback_runs(
-            None,
-            move || {
-                for key in &dead_keys {
-                    assert!(MykoServerContext::try_get_cached(&callback_cache, key).is_none());
-                }
-            },
-            move |building| {
-                let typed =
-                    MykoServerContext::typed_projection(&cache, "live", &untyped, |_source| {
-                        building();
-                        let typed = CellMap::<Arc<str>, u32>::new();
-                        typed.insert(Arc::from("row"), 1);
-                        typed.lock()
-                    });
-                assert_eq!(typed.get_value(&Arc::from("row")), Some(1));
-            },
-        );
-    }
-
-    #[test]
-    fn a_query_map_is_built_while_a_settling_callback_asks_for_the_same_key() {
-        use dashmap::DashMap;
-
-        use super::MapCacheEntry;
-
-        let _serial = scheduler_test_serial();
-        let cache: Arc<DashMap<String, MapCacheEntry, ahash::RandomState>> =
-            Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
-
-        let callback_cache = cache.clone();
-        let from_callback = Arc::new(std::sync::Mutex::new(None));
-        let kept = from_callback.clone();
-        build_while_a_callback_runs(
-            None,
-            move || {
-                let map = MykoServerContext::compute_or_cache(
-                    "key",
-                    &callback_cache,
-                    map_built_with_a_waiting_write,
-                );
-                *kept
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(map);
-            },
-            move |building| {
-                let _map = MykoServerContext::compute_or_cache("key", &cache, || {
-                    building();
-                    map_built_with_a_waiting_write()
-                });
-            },
-        );
-    }
-
-    #[test]
-    fn racing_builds_of_one_key_return_the_map_cached_first() {
-        use dashmap::DashMap;
-        use hyphae::CellMap;
-
-        use super::{AnyItemArc, MapCacheEntry};
-
-        let cache: DashMap<String, MapCacheEntry, ahash::RandomState> =
-            DashMap::with_hasher(ahash::RandomState::new());
-        let id: Arc<str> = Arc::from("first");
-        let item: AnyItemArc = Arc::new(BufferedTestItem {
-            id: id.clone(),
-            value: 1,
-        });
-        let first = CellMap::from_entries(vec![(id.clone(), item)]).lock();
-        let winner = MykoServerContext::compute_or_cache("key", &cache, || {
-            // Another caller finishes its build of the same key first.
-            let cached = MykoServerContext::compute_or_cache("key", &cache, || first.clone());
-            assert!(cached.contains_key(&id));
-            CellMap::<Arc<str>, AnyItemArc>::new().lock()
-        });
-        assert!(winner.contains_key(&id));
     }
 
     #[test]

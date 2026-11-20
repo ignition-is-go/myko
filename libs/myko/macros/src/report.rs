@@ -48,7 +48,7 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
             }
         } else {
             quote! {
-                #[derive(Clone, Debug, Default, Hash, #serde_path::Serialize, #serde_path::Deserialize)]
+                #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, #serde_path::Serialize, #serde_path::Deserialize)]
                 #ts_cfg_derive
                 #serde_rename_attr
             }
@@ -61,7 +61,7 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
         }
     } else {
         quote! {
-            #[derive(Clone, Debug, Hash, #serde_path::Serialize, #serde_path::Deserialize)]
+            #[derive(Clone, Debug, Hash, PartialEq, Eq, #serde_path::Serialize, #serde_path::Deserialize)]
             #ts_cfg_derive
             #serde_rename_attr
         }
@@ -81,25 +81,24 @@ pub fn myko_report_impl(report_output_type: &Path, mut input_struct: ItemStruct)
         }
     };
 
-    let cache_key_impl = if manual_cache_key {
-        quote!()
-    } else if non_hash_cache_key {
-        quote! {
-            impl #krate::prelude::CacheKey for #struct_name {
-                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
-                    #krate::cache::write_serde_cache_key(self, state);
-                }
-            }
-        }
-    } else {
-        quote! {
-            impl #krate::prelude::CacheKey for #struct_name {
-                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
-                    #krate::cache::write_hash_cache_key(self, state);
-                }
+    let cache_key_impl =
+        crate::cache_key_tokens(struct_name, krate, manual_cache_key, non_hash_cache_key);
+    let family_impl = quote! {
+        impl #krate::server::FamilyParams for #struct_name {
+            type Row = #krate::hyphae::Cell<
+                std::sync::Arc<<Self as #krate::report::ReportHandler>::Output>,
+                #krate::hyphae::CellImmutable,
+            >;
+
+            fn family(
+                ctx: &#krate::server::MykoServerContext,
+                request: std::sync::Arc<#krate::request::RequestContext>,
+            ) -> #krate::server::SharedFamily<Self, Self::Row> {
+                ctx.report_family::<Self>(request)
             }
         }
     };
+    let cache_key_impl = quote!(#cache_key_impl #family_impl);
 
     let expanded = quote! {
         #derives

@@ -106,7 +106,6 @@ use hyphae::{Cell, CellImmutable, CellMap, CellValue};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::{
-    cache::CacheKey,
     command::{CommandContext, CommandError, CommandHandler},
     common::with_id::{WithId, WithTypedId},
     core::item::Eventable,
@@ -246,9 +245,15 @@ pub trait Reporting: ServerScoped {
     /// key so concurrent requests share one computation.
     fn report<R>(&self, report: R) -> Cell<Arc<R::Output>, CellImmutable>
     where
-        R: ReportHandler + ReportId + CacheKey + Clone + Serialize + 'static,
+        R: ReportHandler + ReportId + crate::server::Params + Serialize,
     {
         self.__server_ctx().report(report, self.__request().clone())
+    }
+
+    /// The shared family of a report or view type: one per type and request
+    /// scope, whose rows are that type's instances keyed by params.
+    fn family<P: crate::server::FamilyParams>(&self) -> crate::server::ParamsFamily<P> {
+        self.__server_ctx().family::<P>(self.__request().clone())
     }
 }
 
@@ -453,7 +458,7 @@ pub trait Viewing: ServerScoped {
     /// Subscribe to a view and get a typed reactive `CellMap`.
     fn view<V>(&self, view: V) -> crate::core::view::TypedViewCellMap<V::Item>
     where
-        V: crate::core::view::ViewFactory + Clone,
+        V: crate::core::view::ViewFactory + crate::server::Params,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug,
     {
         self.__server_ctx().view(view, self.__request().clone())
@@ -462,7 +467,7 @@ pub trait Viewing: ServerScoped {
     /// Subscribe to a view and get an untyped (erased) reactive map.
     fn view_map_untyped<V>(&self, view: V) -> crate::core::view::FilteredViewCellMap
     where
-        V: crate::core::view::ViewFactory + Clone + Send + Sync + 'static,
+        V: crate::core::view::ViewFactory + crate::server::Params,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
         self.__server_ctx()

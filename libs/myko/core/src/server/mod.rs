@@ -38,6 +38,7 @@ mod client_session;
 mod context;
 pub mod dispatch_metrics;
 pub mod entity_set_stats;
+mod family;
 mod handler_registry;
 pub mod history_feed;
 pub mod history_replay;
@@ -50,6 +51,7 @@ pub use client_registry::{client_registry, init_client_registry, try_client_regi
 pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
+pub use family::{FamilyKind, FamilyParams, Params, ParamsFamily, SharedFamily};
 pub use handler_registry::HandlerRegistry;
 pub use history_feed::{
     HistoryFeedRow, HistoryFilter, HistoryResetReason, HistorySubscription, HistoryUpdate,

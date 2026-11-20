@@ -172,6 +172,54 @@ pub(crate) fn take_non_hash_cache_key_attr(input_struct: &mut syn::ItemStruct) -
     found
 }
 
+/// The `CacheKey` impl, unless the struct writes its own, and the parameter
+/// identity that keys a family row: hashable params derive it, and the rest
+/// compare and hash by their cache key.
+pub(crate) fn cache_key_tokens(
+    struct_name: &syn::Ident,
+    krate: &syn::Path,
+    manual_cache_key: bool,
+    non_hash_cache_key: bool,
+) -> proc_macro2::TokenStream {
+    let writer = if non_hash_cache_key {
+        quote!(write_serde_cache_key)
+    } else {
+        quote!(write_hash_cache_key)
+    };
+    let cache_key = if manual_cache_key {
+        quote!()
+    } else {
+        quote! {
+            impl #krate::prelude::CacheKey for #struct_name {
+                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
+                    #krate::cache::#writer(self, state);
+                }
+            }
+        }
+    };
+    if !non_hash_cache_key {
+        return cache_key;
+    }
+    quote! {
+        #cache_key
+
+        impl PartialEq for #struct_name {
+            fn eq(&self, other: &Self) -> bool {
+                #krate::prelude::CacheKey::cache_key_hash(self)
+                    == #krate::prelude::CacheKey::cache_key_hash(other)
+            }
+        }
+
+        impl Eq for #struct_name {}
+
+        impl std::hash::Hash for #struct_name {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                state.write_u64(#krate::prelude::CacheKey::cache_key_hash(self));
+            }
+        }
+    }
+}
+
 fn take_marker_attr(input_struct: &mut syn::ItemStruct, attr_name: &str) -> bool {
     let mut found = false;
     input_struct.attrs.retain(|attr| {

@@ -24,7 +24,7 @@ fn query_derive_tokens(
             #serde_rename_attr
         },
         (true, false) => quote! {
-            #[derive(Clone, Debug, Default, Hash, #serde_path::Serialize, #serde_path::Deserialize)]
+            #[derive(Clone, Debug, Default, Hash, PartialEq, Eq, #serde_path::Serialize, #serde_path::Deserialize)]
             #export_derive
             #serde_rename_attr
         },
@@ -34,7 +34,7 @@ fn query_derive_tokens(
             #serde_rename_attr
         },
         (false, false) => quote! {
-            #[derive(Clone, Debug, Hash, #serde_path::Serialize, #serde_path::Deserialize)]
+            #[derive(Clone, Debug, Hash, PartialEq, Eq, #serde_path::Serialize, #serde_path::Deserialize)]
             #export_derive
             #serde_rename_attr
         },
@@ -112,25 +112,8 @@ pub fn myko_query_impl(
         quote!()
     };
 
-    let cache_key_impl = if manual_cache_key {
-        quote!()
-    } else if non_hash_cache_key {
-        quote! {
-            impl #krate::prelude::CacheKey for #struct_name {
-                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
-                    #krate::cache::write_serde_cache_key(self, state);
-                }
-            }
-        }
-    } else {
-        quote! {
-            impl #krate::prelude::CacheKey for #struct_name {
-                fn cache_key(&self, state: &mut dyn std::hash::Hasher) {
-                    #krate::cache::write_hash_cache_key(self, state);
-                }
-            }
-        }
-    };
+    let cache_key_impl =
+        crate::cache_key_tokens(struct_name, krate, manual_cache_key, non_hash_cache_key);
 
     quote! {
         #derives

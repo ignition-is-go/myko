@@ -541,3 +541,41 @@ mod typed_search_tests {
         assert_eq!(result.ids.len(), 1);
     }
 }
+
+/// The sorted names of the items in one category, for family tests.
+#[myko_report(Vec<String>)]
+pub struct BenchCategoryNames {
+    pub category: String,
+}
+
+impl ReportHandler for BenchCategoryNames {
+    type Output = Vec<String>;
+
+    fn compute(&self, ctx: ReportContext) -> impl Materialize<Arc<Self::Output>, Definite> {
+        ctx.query_map(GetBenchItemsByCategory {
+            category: self.category.clone(),
+        })
+        .items()
+        .map(|items| {
+            let mut names: Vec<String> = items.iter().map(|item| item.name.clone()).collect();
+            names.sort();
+            Arc::new(names)
+        })
+    }
+}
+
+/// The items in one category, as a view, for family tests.
+#[myko_view(BenchItem)]
+pub struct BenchItemsInCategory {
+    pub category: String,
+}
+
+impl ViewHandler for BenchItemsInCategory {
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>> {
+        ctx.view_context.query_map_by_str(GetBenchItemsByCategory {
+            category: ctx.view.category.clone(),
+        })
+    }
+}

@@ -104,9 +104,22 @@ pub fn typed_map_arc_from_any_item<T: std::fmt::Debug + PartialEq + Send + Sync 
     source: CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
     context: &'static str,
 ) -> CellMap<Arc<str>, Arc<T>, CellImmutable> {
+    typed_map_arc_from_any_item_holding(source, context, ())
+}
+
+/// [`typed_map_arc_from_any_item`] that keeps `hold` alive as long as the
+/// typed map, such as the lease on a family row it projects.
+pub fn typed_map_arc_from_any_item_holding<
+    T: std::fmt::Debug + PartialEq + Send + Sync + 'static,
+>(
+    source: CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
+    context: &'static str,
+    hold: impl Send + Sync + 'static,
+) -> CellMap<Arc<str>, Arc<T>, CellImmutable> {
     let typed = CellMap::<Arc<str>, Arc<T>>::new();
     let weak = typed.downgrade();
     let guard = source.subscribe_diffs(move |diff| {
+        let _hold = &hold;
         let Some(typed) = weak.upgrade() else { return };
         if let Some(typed_diff) = downcast_any_item_map_diff_arc::<T>(diff, context) {
             apply_map_diff(&typed, &typed_diff);
@@ -125,9 +138,23 @@ pub fn typed_map_from_any_item_with_typed_id<T>(
 where
     T: CellValue + WithTypedId + Send + Sync + 'static,
 {
+    typed_map_from_any_item_with_typed_id_holding(source, context, ())
+}
+
+/// [`typed_map_from_any_item_with_typed_id`] that keeps `hold` alive as long
+/// as the typed map, such as the lease on a family row it projects.
+pub fn typed_map_from_any_item_with_typed_id_holding<T>(
+    source: CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
+    context: &'static str,
+    hold: impl Send + Sync + 'static,
+) -> CellMap<<T as WithTypedId>::Id, Arc<T>, CellImmutable>
+where
+    T: CellValue + WithTypedId + Send + Sync + 'static,
+{
     let typed = CellMap::<<T as WithTypedId>::Id, Arc<T>>::new();
     let weak = typed.downgrade();
     let guard = source.subscribe_diffs(move |diff| {
+        let _hold = &hold;
         let Some(typed) = weak.upgrade() else { return };
         let Some(typed_diff) = downcast_any_item_map_diff_arc::<T>(diff, context) else {
             return;

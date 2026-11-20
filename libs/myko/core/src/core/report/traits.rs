@@ -82,6 +82,7 @@ impl From<&Arc<dyn AnyReport>> for WrappedReport {
 /// The full `Report` trait is implemented on `ReportRequest<R>` where `R: ReportParams`.
 pub trait ReportParams:
     CacheKey
+    + crate::server::Params
     + Serialize
     + DeserializeOwned
     + Clone
@@ -99,6 +100,7 @@ pub trait ReportParams:
 impl<T> ReportParams for T where
     T: Serialize
         + CacheKey
+        + crate::server::Params
         + DeserializeOwned
         + Clone
         + Send

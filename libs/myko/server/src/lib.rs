@@ -345,11 +345,10 @@ pub struct MykoServer {
     /// Server ownership death-watch guard (kept alive for server lifetime).
     server_ownership_guard: std::sync::Mutex<Option<hyphae::SubscriptionGuard>>,
     /// Memoized server context. Built once on first `ctx()` and shared by
-    /// every caller — the caches (`query_cache`/`view_cache`/`report_cache`/
-    /// `ingest_buffers`) and the `peer_clients_tick` cell are
-    /// then genuinely process-wide, so N connections subscribing to the same
-    /// query share one reactive cell graph instead of N copies, cache sweeps
-    /// actually reach live entries, and every peer-death watcher observes the
+    /// every caller — the query/view/report families, `ingest_buffers` and
+    /// the `peer_clients_tick` cell are then genuinely process-wide, so N connections subscribing to the same
+    /// query share one reactive cell graph instead of N copies, family sweeps
+    /// actually reach live families, and every peer-death watcher observes the
     /// same tick. Every `MykoServerContext` field is an `Arc`/`Cell`/`Uuid`, so a
     /// clone is a handful of refcount bumps that share the underlying state.
     ctx_cache: std::sync::OnceLock<MykoServerContext>,
@@ -904,7 +903,7 @@ impl MykoServer {
             let accepted = tokio::select! {
                 accepted = listener.accept() => Some(accepted),
                 _ = cache_sweep.tick() => {
-                    sweep_ctx.sweep_dead_cache_entries();
+                    sweep_ctx.sweep_dead_families();
                     None
                 }
             };
@@ -1189,12 +1188,12 @@ mod tests {
         let _held = ctx1.query_map(myko::entities::client::GetAllClients {}, req);
 
         assert!(
-            ctx1.query_cache_len() >= 1,
+            ctx1.query_rows() >= 1,
             "querying through ctx1 should populate the shared query cache"
         );
         assert_eq!(
-            ctx2.query_cache_len(),
-            ctx1.query_cache_len(),
+            ctx2.query_rows(),
+            ctx1.query_rows(),
             "both ctx() calls must share one query cache"
         );
     }

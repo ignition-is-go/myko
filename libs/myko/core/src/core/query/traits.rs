@@ -153,6 +153,7 @@ pub struct QueryWindowBuildArgs<TQuery: QueryItemType> {
 /// The full `Query` trait is implemented on `QueryRequest<Q>` where `Q: QueryParams`.
 pub trait QueryParams:
     CacheKey
+    + crate::server::Params
     + Serialize
     + DeserializeOwned
     + Clone
@@ -171,6 +172,7 @@ pub trait QueryParams:
 impl<T> QueryParams for T where
     T: Serialize
         + CacheKey
+        + crate::server::Params
         + DeserializeOwned
         + Clone
         + Send

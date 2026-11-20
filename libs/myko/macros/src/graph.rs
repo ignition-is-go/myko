@@ -77,6 +77,21 @@ fn graph_query_common(
             }
         }
 
+        impl PartialEq for #query_ident {
+            fn eq(&self, other: &Self) -> bool {
+                #krate::cache::CacheKey::cache_key_hash(self)
+                    == #krate::cache::CacheKey::cache_key_hash(other)
+            }
+        }
+
+        impl Eq for #query_ident {}
+
+        impl std::hash::Hash for #query_ident {
+            fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+                state.write_u64(#krate::cache::CacheKey::cache_key_hash(self));
+            }
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         #krate::submit! {
             #krate::graph::GraphQueryRegistration {

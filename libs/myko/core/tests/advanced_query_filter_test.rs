@@ -162,7 +162,7 @@ fn count_report_permuted_in_filters_share_one_report_cell() {
     insert_bench_item(&ctx, "b", "beta", 2);
     insert_bench_item(&ctx, "c", "gamma", 3);
 
-    let before = ctx.report_cache_len();
+    let before = ctx.report_rows();
 
     let filter_a = BenchItemQuery {
         category: Some(StringFilter::In(vec![
@@ -182,12 +182,12 @@ fn count_report_permuted_in_filters_share_one_report_cell() {
 
     let cell_a = ctx.report(CountBenchItems(filter_a), request(&ctx, "tx-a"));
     assert_eq!(cell_a.get().count, 2);
-    let after_a = ctx.report_cache_len();
+    let after_a = ctx.report_rows();
     assert_eq!(after_a, before + 1, "first filter creates one report cell");
 
     let cell_b = ctx.report(CountBenchItems(filter_b), request(&ctx, "tx-b"));
     assert_eq!(cell_b.get().count, 2);
-    let after_b = ctx.report_cache_len();
+    let after_b = ctx.report_rows();
     assert_eq!(
         after_b, after_a,
         "permuted+duplicated In canonicalizes identically, so the second \

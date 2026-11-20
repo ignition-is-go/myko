@@ -115,7 +115,7 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     // Initial: should see alpha items
     assert_eq!(switched.get().len(), 10);
 
-    let cache_before = ctx.query_cache_len();
+    let cache_before = ctx.query_rows();
 
     // Switch through many different query params — each creates a new cache entry
     // because the category field changes the payload_hash
@@ -127,7 +127,7 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     assert_eq!(switched.get().len(), 10);
 
     // Cache has accumulated entries (some may be dead weak refs now)
-    let cache_after = ctx.query_cache_len();
+    let cache_after = ctx.query_rows();
     assert!(
         cache_after >= cache_before,
         "cache should have grown or stayed the same"
@@ -138,8 +138,8 @@ fn query_map_inside_switch_map_cache_entries_become_reclaimable() {
     drop(selector);
 
     // Sweep should reclaim dead entries
-    ctx.sweep_dead_cache_entries();
-    let cache_final = ctx.query_cache_len();
+    ctx.sweep_dead_families();
+    let cache_final = ctx.query_rows();
 
     // After dropping all references, sweep should clean up most/all cache entries
     assert!(
@@ -182,7 +182,7 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
         .materialize();
 
     assert_eq!(switched.get().len(), 5);
-    let cache_after_init = ctx.query_cache_len();
+    let cache_after_init = ctx.query_rows();
 
     // Switch 50 times with same query params
     for i in 1..=50 {
@@ -193,7 +193,7 @@ fn query_map_same_params_inside_switch_map_reuses_cache() {
 
     // Cache should NOT have grown significantly — same params = same cache key
     // (as long as the previous CellMap is still alive when we look it up)
-    let cache_after_switches = ctx.query_cache_len();
+    let cache_after_switches = ctx.query_rows();
 
     // Allow some growth due to weak refs dying between switches,
     // but it should NOT be 50 new entries
@@ -271,16 +271,16 @@ fn query_map_inside_switch_map_with_active_store_mutations() {
         }
     }
 
-    let live_before_drop = ctx.query_cache_live_count();
-    let total_before_drop = ctx.query_cache_len();
+    let live_before_drop = ctx.query_rows();
+    let total_before_drop = ctx.query_rows();
 
     // Drop the switch_map chain
     drop(switched);
     drop(selector);
 
     // Sweep
-    ctx.sweep_dead_cache_entries();
-    let live_after = ctx.query_cache_live_count();
+    ctx.sweep_dead_families();
+    let live_after = ctx.query_rows();
 
     // All query cache entries should be reclaimable after dropping the switch_map
     assert_eq!(
@@ -300,7 +300,7 @@ fn query_cache_live_count_tracks_reachable_entries() {
         insert_bench_item(&ctx, &format!("item-{i}"), "test", i);
     }
 
-    assert_eq!(ctx.query_cache_live_count(), 0);
+    assert_eq!(ctx.query_rows(), 0);
 
     // Create a query_map and hold onto it
     let request = ctx.new_server_transaction();
@@ -312,7 +312,7 @@ fn query_cache_live_count_tracks_reachable_entries() {
         request,
     );
 
-    assert_eq!(ctx.query_cache_live_count(), 1);
+    assert_eq!(ctx.query_rows(), 1);
 
     // Create another with different params
     let request2 = ctx.new_server_transaction();
@@ -324,17 +324,17 @@ fn query_cache_live_count_tracks_reachable_entries() {
         request2,
     );
 
-    assert_eq!(ctx.query_cache_live_count(), 2);
+    assert_eq!(ctx.query_rows(), 2);
 
     // Drop one — live count should decrease after sweep
     drop(map);
-    ctx.sweep_dead_cache_entries();
-    assert_eq!(ctx.query_cache_live_count(), 1);
+    ctx.sweep_dead_families();
+    assert_eq!(ctx.query_rows(), 1);
 
     // Drop the other
     drop(map2);
-    ctx.sweep_dead_cache_entries();
-    assert_eq!(ctx.query_cache_live_count(), 0);
+    ctx.sweep_dead_families();
+    assert_eq!(ctx.query_rows(), 0);
 }
 
 // =============================================================================
@@ -355,8 +355,8 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
         insert_bench_item(&ctx, &format!("item-{i}"), "alpha", i);
     }
 
-    let cache_before = ctx.query_cache_len();
-    let report_cache_before = ctx.report_cache_len();
+    let cache_before = ctx.query_rows();
+    let report_cache_before = ctx.report_rows();
 
     // Create the report — this calls SwitchMapReport::compute() which sets up
     // the switch_map + nested query_map chain
@@ -371,8 +371,8 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     // Should see all 10 item names
     assert_eq!(report_cell.get().len(), 10);
 
-    let cache_after_report = ctx.query_cache_len();
-    let report_cache_after_report = ctx.report_cache_len();
+    let cache_after_report = ctx.query_rows();
+    let report_cache_after_report = ctx.report_rows();
 
     // Report should have created cache entries
     assert!(cache_after_report > cache_before);
@@ -392,14 +392,14 @@ fn report_with_switch_map_query_map_cleans_up_cache() {
     // Report should reflect the new items
     assert_eq!(report_cell.get().len(), 30); // 10 original + 20 new
 
-    let cache_during = ctx.query_cache_len();
+    let cache_during = ctx.query_rows();
 
     // Drop the report cell — everything should become reclaimable
     drop(report_cell);
 
-    ctx.sweep_dead_cache_entries();
-    let cache_final = ctx.query_cache_live_count();
-    let report_cache_final = ctx.report_cache_live_count();
+    ctx.sweep_dead_families();
+    let cache_final = ctx.query_rows();
+    let report_cache_final = ctx.report_rows();
 
     assert_eq!(
         cache_final, 0,
@@ -447,10 +447,10 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
     assert_eq!(report_cell.get().len(), 105); // 5 + 100
 
     // Sweep mid-flight to reclaim dead entries
-    ctx.sweep_dead_cache_entries();
+    ctx.sweep_dead_families();
 
-    let live_count = ctx.query_cache_live_count();
-    let total_count = ctx.query_cache_len();
+    let live_count = ctx.query_rows();
+    let total_count = ctx.query_rows();
 
     // The live count should be bounded — only the currently-active query_maps
     // should be alive, not all 100+ historical ones.
@@ -462,10 +462,6 @@ fn report_switch_map_cache_bounded_during_active_mutations() {
     );
 
     drop(report_cell);
-    ctx.sweep_dead_cache_entries();
-    assert_eq!(
-        ctx.query_cache_live_count(),
-        0,
-        "all entries should be dead after drop"
-    );
+    ctx.sweep_dead_families();
+    assert_eq!(ctx.query_rows(), 0, "all entries should be dead after drop");
 }

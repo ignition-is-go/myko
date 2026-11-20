@@ -107,6 +107,7 @@ impl From<&Arc<dyn AnyView>> for WrappedView {
 /// Trait bound bundle for view parameter types.
 pub trait ViewParams:
     CacheKey
+    + crate::server::Params
     + serde::Serialize
     + DeserializeOwned
     + Clone
@@ -124,6 +125,7 @@ pub trait ViewParams:
 impl<T> ViewParams for T where
     T: serde::Serialize
         + CacheKey
+        + crate::server::Params
         + DeserializeOwned
         + Clone
         + Send

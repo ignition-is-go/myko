@@ -289,7 +289,7 @@ impl BelongsToSourceIndex {
     /// dead and is never looked up again would otherwise sit in
     /// `self.buckets` forever (just a `Weak` + a small `Vec<Arc<str>>` key,
     /// far smaller than the leak this replaces, but still unbounded over
-    /// time). Called from `MykoServerContext::sweep_dead_cache_entries` via
+    /// time). Called from `MykoServerContext::sweep_dead_families` via
     /// [`sweep_all_belongs_to_source_indexes`].
     fn sweep_dead_buckets(&self) {
         self.buckets.retain(|_, weak| weak.upgrade().is_some());
@@ -1196,7 +1196,7 @@ fn reconcile_scan_live_query<F: LiveFilterQuery>(
 /// relation's source index. `route_to_live_bucket` reaps dead entries lazily
 /// on next access, but a foreign id that goes dead and is never looked up
 /// again would otherwise linger; called from
-/// `MykoServerContext::sweep_dead_cache_entries`.
+/// `MykoServerContext::sweep_dead_families`.
 pub fn sweep_all_belongs_to_source_indexes() {
     belongs_to_source_indexes().retain(|_, weak| {
         let Some(index) = weak.upgrade() else {
@@ -1230,8 +1230,8 @@ pub fn build_ids_source_map(
         // store's per-key subscriber list hold `result` (and everything
         // built on top of it downstream) alive forever, regardless of
         // whether any external caller still references it. This is exactly
-        // the reference cycle `query_cache`'s weak-ref design assumes never
-        // happens (see `MapCacheEntry` in server/context.rs).
+        // the reference cycle that a family row's teardown assumes never
+        // happens (see `server/family.rs`).
         let result_weak = result.downgrade();
         let key_for_cb = id.clone();
         let guard = key_cell.subscribe(move |signal| {
