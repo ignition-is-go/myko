@@ -3330,12 +3330,15 @@ mod tests {
                 "nested receiver root"
             );
         });
+        // A writer is owed only its own ticket: the nested receiver root and
+        // the write back to the source settle on tickets that may follow it.
         assert!(
             source
                 .replace_batch_any([immediate_item("source", 1)], [],)
                 .is_ok(),
             "outer source root"
         );
+        hyphae::flush();
         assert!(returned.load(Ordering::SeqCst));
         assert_eq!(source_store.snapshot().len(), 2);
         assert_eq!(receiver_store.snapshot().len(), 1);
@@ -4082,10 +4085,14 @@ mod tests {
             "root mutation"
         );
 
-        let ran_on = *ran_on
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(ran_on.is_some_and(|thread| thread != std::thread::current().id()));
+        // A waiting writer helps run tickets, so the callback may run on this
+        // thread or a pool thread; either way its mutation joins the root.
+        assert!(
+            ran_on
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_some()
+        );
         assert_eq!(store.snapshot().len(), 2);
         assert_eq!(ctx.causal_diagnostics().roots, 1);
         assert_eq!(ctx.causal_diagnostics().derived_mutations, 1);
