@@ -153,6 +153,12 @@ fn generate_get_by_ids_query(
                 ctx.query.ids.contains(&ctx.item.id.clone().into())
             }
 
+            fn snapshot_route(&self) -> Option<#krate::query::QueryRoute> {
+                Some(#krate::query::QueryRoute::Ids(
+                    self.ids.iter().map(|id| std::sync::Arc::<str>::from(id.clone())).collect(),
+                ))
+            }
+
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::prelude::QueryBuildArgs<Self>,
@@ -374,6 +380,11 @@ fn generate_filter_query(
         impl #krate::prelude::QueryHandler for #query_ident {
             fn test_entity(ctx: #krate::prelude::QueryTestContext<Self>) -> bool {
                 ctx.query.0.matches(&ctx.item)
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
+            fn snapshot_route(&self) -> Option<#krate::query::QueryRoute> {
+                self.0.query_route()
             }
 
             #[cfg(not(target_arch = "wasm32"))]

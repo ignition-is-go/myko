@@ -526,7 +526,7 @@ pub fn build_belongs_to_source_map(
 fn belongs_to_source_index_for(
     registry: &Arc<StoreRegistry>,
     host_id: Uuid,
-    local_type: &'static str,
+    local_type: &str,
     field_names: &'static [&'static str],
     extract_fk: CompoundFkExtractor,
 ) -> Arc<BelongsToSourceIndex> {
@@ -554,6 +554,67 @@ fn belongs_to_source_index_for(
             index
         }
     }
+}
+
+thread_local! {
+    static IDLE_PROBE_RAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether hyphae has no batch open and no drain running.
+///
+/// A cell set runs its subscriber on the calling thread only then; otherwise
+/// the scheduler queues it. hyphae exposes no direct read of that state.
+fn scheduler_is_idle() -> bool {
+    use hyphae::{Mutable, Watchable};
+    static PROBE: std::sync::LazyLock<(
+        hyphae::Cell<u64, hyphae::CellMutable>,
+        hyphae::SubscriptionGuard,
+    )> = std::sync::LazyLock::new(|| {
+        let cell = hyphae::Cell::new(0);
+        let guard = cell.subscribe(|_| IDLE_PROBE_RAN.with(|ran| ran.set(true)));
+        (cell, guard)
+    });
+    static TICKET: AtomicU64 = AtomicU64::new(0);
+    let probe = &PROBE.0;
+    IDLE_PROBE_RAN.with(|ran| ran.set(false));
+    probe.set(TICKET.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
+    IDLE_PROBE_RAN.with(std::cell::Cell::get)
+}
+
+/// The rows a `belongs_to` route selects, read from the index without
+/// building a reactive map.
+///
+/// The index follows the store through its diffs, which the scheduler may
+/// still hold. `None` is returned while the scheduler has work queued, so a
+/// caller that reads the store instead never misses a row just written.
+#[must_use]
+pub fn belongs_to_route_snapshot(
+    registry: &Arc<StoreRegistry>,
+    host_id: Uuid,
+    local_type: &str,
+    route: &crate::query::BelongsToRoute,
+) -> Option<Vec<AnyItemArc>> {
+    let index = belongs_to_source_index_for(
+        registry,
+        host_id,
+        local_type,
+        route.field_names,
+        route.extract_fk,
+    );
+    if !scheduler_is_idle() {
+        return None;
+    }
+    let mutation = index
+        .mutation_gate
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let keys: HashSet<&CompoundKey> = route.keys.iter().collect();
+    Some(
+        keys.into_iter()
+            .filter_map(|key| mutation.members.get(key))
+            .flat_map(|members| members.values().cloned())
+            .collect(),
+    )
 }
 
 /// Above this many union keys, `build_belongs_to_union_source_map` logs a
@@ -1907,6 +1968,45 @@ mod belongs_to_source_index_tests {
     }
 
     #[test]
+    fn route_snapshot_reads_the_index_only_while_the_scheduler_is_idle() {
+        let _serial = crate::test_util::scheduler_test_serial();
+        let registry = Arc::new(crate::store::StoreRegistry::new());
+        let host_id = Uuid::new_v4();
+        let store = registry.get_or_create("TestChild");
+        let (id, item) = child("child-1", "parent-1");
+        store.insert(id, item);
+        let snapshot = || {
+            belongs_to_route_snapshot(
+                &registry,
+                host_id,
+                "TestChild",
+                &crate::query::BelongsToRoute {
+                    field_names: &["parent_id"],
+                    keys: vec![smallvec::smallvec![Arc::from("parent-1")]],
+                    extract_fk: extract_parent_fk,
+                },
+            )
+            .map(|rows| rows.len())
+        };
+
+        assert_eq!(snapshot(), Some(1));
+        let (id, item) = child("child-2", "parent-1");
+        store.insert(id, item);
+        assert_eq!(snapshot(), Some(2));
+
+        hyphae::batch(|| {
+            let (id, item) = child("child-3", "parent-1");
+            store.insert(id, item);
+            assert_eq!(
+                snapshot(),
+                None,
+                "the index is behind the store until the batch drains"
+            );
+        });
+        assert_eq!(snapshot(), Some(3));
+    }
+
+    #[test]
     fn the_store_registry_keeps_an_index_no_query_is_using() {
         let registry = Arc::new(crate::store::StoreRegistry::new());
         let host_id = Uuid::new_v4();
@@ -1933,7 +2033,6 @@ mod belongs_to_source_index_tests {
             "the index was rebuilt once its last bucket was dropped"
         );
         drop(again);
-        drop(lookup);
 
         drop(registry);
         assert!(

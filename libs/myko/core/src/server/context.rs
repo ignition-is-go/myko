@@ -2981,9 +2981,11 @@ impl MykoServerContext {
 
     /// Run a one-shot (non-reactive) query.
     ///
-    /// Iterates the store directly and returns matching entities without creating
-    /// any reactive cells or subscriptions. Use this for command handlers and other
-    /// contexts where you need a point-in-time snapshot, not a live query.
+    /// Reads the rows the query's route selects, or every row of the store
+    /// when it has none, and returns the ones that match. No reactive cell
+    /// or subscription is created. A write that has returned is visible to
+    /// the next snapshot. Use this for command handlers and other contexts
+    /// where you need a point-in-time snapshot, not a live query.
     pub fn query_snapshot<Q>(&self, query: Q, request: Arc<RequestContext>) -> Vec<Arc<Q::Item>>
     where
         Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
@@ -2991,11 +2993,12 @@ impl MykoServerContext {
     {
         let query_item_type = Q::query_item_type_static();
         let store = self.registry.get_or_create(&query_item_type);
+        let host_id = request.host_id;
 
         let query_context = Arc::new(QueryContext { req: request });
         let query = Arc::new(query);
 
-        let source = crate::query::registered_entity_source(
+        let scoped = crate::query::registered_entity_source(
             &crate::query::QueryBuildContext::new(
                 query_context.clone(),
                 self.registry.clone(),
@@ -3003,11 +3006,34 @@ impl MykoServerContext {
             ),
             &query_item_type,
             query.as_ref(),
-        )
-        .map_or_else(|| store.snapshot(), |source| source.snapshot());
-        source
+        );
+        let all_rows = |store: &crate::store::EntityStore| -> Vec<Arc<dyn AnyItem>> {
+            store.snapshot().into_iter().map(|(_, item)| item).collect()
+        };
+        let candidates: Vec<Arc<dyn AnyItem>> = match (scoped, query.snapshot_route()) {
+            (Some(source), _) => source
+                .snapshot()
+                .into_iter()
+                .map(|(_, item)| item)
+                .collect(),
+            (None, Some(crate::query::QueryRoute::Ids(ids))) => {
+                let ids: HashSet<Arc<str>> = ids.into_iter().collect();
+                ids.iter().filter_map(|id| store.get_value(id)).collect()
+            }
+            (None, Some(crate::query::QueryRoute::BelongsTo(route))) => {
+                crate::query::belongs_to_route_snapshot(
+                    &self.registry,
+                    host_id,
+                    &query_item_type,
+                    &route,
+                )
+                .unwrap_or_else(|| all_rows(&store))
+            }
+            (None, None) => all_rows(&store),
+        };
+        candidates
             .into_iter()
-            .filter_map(|(_, item)| {
+            .filter_map(|item| {
                 let typed_item =
                     downcast_any_item_arc::<Q::Item>(&item, "MykoServerContext::query_snapshot")?;
                 let ctx = QueryTestContext {
