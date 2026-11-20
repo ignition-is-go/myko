@@ -74,6 +74,7 @@ pub fn run(scenario: &str, args: &scenarios::Args) -> bool {
         "setup" => scenarios::setup(args),
         "write_cost" => scenarios::write_cost(args),
         "dedup" => scenarios::dedup(args),
+        "snapshot" => scenarios::snapshot(args),
         _ => return false,
     }
     true

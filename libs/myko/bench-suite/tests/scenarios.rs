@@ -183,3 +183,13 @@ fn unchanged_values_settle() {
 fn write_cost_delivers_every_row() {
     assert_checks(&run("write_cost", "scale=0.02 rounds=3 subs=2"), &[]);
 }
+
+#[test]
+fn a_snapshot_reads_the_write_before_it() {
+    for kind in ["id", "ids", "fk", "scan"] {
+        assert_checks(
+            &run("snapshot", &format!("kind={kind} scale=0.05 calls=40")),
+            &[],
+        );
+    }
+}

@@ -55,6 +55,11 @@ bursts-4k               180  bursts emitters=4000
 bursts-1k-w1            180  bursts emitters=1000 writers=1
 bursts-1k-split         180  bursts emitters=1000 split=1
 dedup                   180  dedup
+# One-shot reads after a write, 50,000 rows.
+snap-id                 120  snapshot kind=id
+snap-ids                120  snapshot kind=ids
+snap-fk                 120  snapshot kind=fk
+snap-scan               120  snapshot kind=scan
 # Cost decomposition: one changed row, component by component.
 wc-part-0               120  write_cost entity=part subs=0
 wc-node-0               120  write_cost entity=node subs=0

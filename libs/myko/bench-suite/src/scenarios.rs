@@ -1877,3 +1877,80 @@ pub fn dedup(args: &Args) {
         record.emit();
     }
 }
+
+// ───────────────────────── one-shot reads ─────────────────────────────────
+
+/// `query_snapshot`, the read a command handler makes: by one id, by 100
+/// ids, by a `belongs_to` key and by a field with no index. Each read
+/// follows a write, and must see it.
+pub fn snapshot(args: &Args) {
+    let rows = args.count("rows", 50_000);
+    let scenes = 240;
+    let calls = args.usize("calls", 300);
+    let kind = args.str("kind", "id");
+    let bench = Bench::new(args.wire(), 64, 2);
+    let maker = Arc::new(NodeMaker::new(args.usize("payload", 512), scenes, 64));
+    load_scenes(&bench, scenes, 12);
+    load_nodes(&bench, &maker, rows, 1_000);
+    let request = bench.ctx.new_server_transaction();
+    let mut latency = Samples::default();
+    let mut wrong = 0u64;
+    let mut stale = 0u64;
+    for call in 0..calls {
+        let row = (call * 7919) % rows;
+        let seq = call as u64 + 1;
+        bench
+            .ctx
+            .set_dyn(maker.item(row, NONE, seq, PROBE_WRITER))
+            .unwrap_or_else(|error| panic!("{error:?}"));
+        let t0 = now_ns();
+        let found = match kind.as_str() {
+            "ids" => bench.ctx.query_snapshot(
+                GetBNodesByIds {
+                    ids: (0..100)
+                        .map(|k| payload::node_id((row + k) % rows))
+                        .collect(),
+                },
+                request.clone(),
+            ),
+            "fk" => bench.ctx.query_snapshot(
+                GetBNodesByQuery(BNodeQuery {
+                    scene_id: Some(IdFilter::Eq(payload::scene_id(row % scenes))),
+                    ..Default::default()
+                }),
+                request.clone(),
+            ),
+            "scan" => bench.ctx.query_snapshot(
+                GetBNodesByQuery(BNodeQuery {
+                    seq: Some(seq.into()),
+                    ..Default::default()
+                }),
+                request.clone(),
+            ),
+            _ => bench
+                .ctx
+                .query_snapshot(in_query(row..=row), request.clone()),
+        };
+        latency.push(now_ns() - t0);
+        let expected = match kind.as_str() {
+            "ids" => 100,
+            "fk" => (rows - row % scenes).div_ceil(scenes),
+            _ => 1,
+        };
+        wrong += u64::from(found.len() != expected);
+        stale += u64::from(
+            !found
+                .iter()
+                .any(|node| node.id == payload::node_id(row) && node.seq == seq),
+        );
+    }
+    let mut record = Record::new("snapshot");
+    record.param("kind", kind).param("rows", rows);
+    latency.report_us("latency", &mut record.metrics);
+    record
+        .metric("wrong_results", wrong)
+        .metric("stale_reads", stale)
+        .check("results_exact", wrong == 0)
+        .check("read_sees_the_write_before_it", stale == 0);
+    record.emit();
+}

@@ -154,6 +154,7 @@ regression being accepted.
 | `shared_params` | Twelve identical subscriptions. |
 | `setup` | Load from an empty store. |
 | `write_cost` | The cost of one changed row, component by component. |
+| `snapshot` | `query_snapshot` after a write: by id, by ids, by a `belongs_to` key and by an unindexed field. |
 
 The subscription path is the server's: the registered parser reads the wire
 JSON, the registered cell factory builds the cell, and `ClientSession`
