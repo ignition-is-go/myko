@@ -23,6 +23,10 @@ ov-r-500                180  overload surface=report rows=100000 tick_rows=500 t
 ov-r-1000               180  overload surface=report rows=100000 tick_rows=1000 taps=1 pulse_hz=100
 ov-r-2500               180  overload surface=report rows=100000 tick_rows=2500 taps=1 pulse_hz=100
 ov-r-6250               180  overload surface=report rows=100000 tick_rows=6250 taps=1 pulse_hz=100
+# One writer, no probe and no event stream: the cost of a tick that waits
+# for nobody.
+ov-q-6250-solo          180  overload rows=100000 tick_rows=6250 taps=1 track=1 probe_hz=0
+ov-r-2500-solo          180  overload surface=report rows=100000 tick_rows=2500 taps=1 probe_hz=0
 m5                      300  m5 scale=0.25 churn=1000 ticks=900
 m6-typed-1              120  atomic group=1
 m6-typed-50             120  atomic group=50
@@ -32,7 +36,6 @@ m7-none                 240  m7 rows=100000 wire=none scale=0.25
 m8                      180  shared_params
 payload-128             240  payload rows=100000 payload=128 scale=0.25
 payload-512             240  payload rows=100000 payload=512 scale=0.25
-payload-4096            300  payload rows=100000 payload=4096 scale=0.25
 count-512               300  payload rows=100000 payload=512 count=1 ticks=20 warmup=2 probe_hz=0
 count-shared-512        300  payload rows=100000 payload=512 count=1 shared=1 ticks=20 warmup=2 probe_hz=0
 sweep-by_ids            600  sweep kind=by_ids
@@ -49,6 +52,8 @@ belongs-10k             180  belongs_to emitters=10000
 belongs-40k             180  belongs_to emitters=40000
 bursts-1k               180  bursts emitters=1000
 bursts-4k               180  bursts emitters=4000
+bursts-1k-w1            180  bursts emitters=1000 writers=1
+bursts-1k-split         180  bursts emitters=1000 split=1
 dedup                   180  dedup
 # Cost decomposition: one changed row, component by component.
 wc-part-0               120  write_cost entity=part subs=0
