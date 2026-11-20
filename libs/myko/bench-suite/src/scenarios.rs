@@ -574,8 +574,14 @@ pub fn tick_scenario(name: &str, args: &Args) {
     }
     // Per tick: did every row arrive, some, or none.
     let (mut complete, mut partial, mut empty) = (0u64, 0u64, 0u64);
-    for tick in warmup..outcome.issued {
-        match bench.sink.tick_rows[tick].load(Relaxed) {
+    for rows in bench
+        .sink
+        .tick_rows
+        .iter()
+        .take(outcome.issued)
+        .skip(warmup)
+    {
+        match rows.load(Relaxed) {
             0 => empty += 1,
             rows if rows == expect_per_tick => complete += 1,
             _ => partial += 1,

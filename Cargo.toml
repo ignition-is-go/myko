@@ -46,6 +46,15 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 as_conversions = "deny"
+# New in Rust 1.100 and not followed here:
+# asks for `assert_eq!(x, [] as [T; 0])` in place of `assert!(x.is_empty())`.
+assert_is_empty = "allow"
+# Fires on what leptos' `#[component]` generates and on `Unfilterable`,
+# whose derives the never type cannot carry.
+empty_enums = "allow"
+# Suggests `Option::map_or_default`, which is not stable before Rust 1.99.
+# No crate declares a `rust-version`, so the suggestion would raise it.
+map_unwrap_or = "allow"
 
 [workspace.dependencies]
 num-traits = "0.2"

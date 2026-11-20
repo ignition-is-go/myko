@@ -118,10 +118,6 @@ fn pending_response(tx: &str, sequence: u64) -> PendingQueryResponse {
 }
 
 #[test]
-#[expect(
-    clippy::float_cmp,
-    reason = "Unmeasured phases retain their exact initialized zero value."
-)]
 fn query_and_view_materialization_preserves_wire_response_fields()
 -> Result<(), Box<dyn std::error::Error>> {
     for is_view in [false, true] {

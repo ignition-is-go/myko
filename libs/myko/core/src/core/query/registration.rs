@@ -1903,7 +1903,6 @@ mod belongs_to_source_index_tests {
             let barrier = Arc::new(std::sync::Barrier::new(2));
 
             let bucket_thread = {
-                let index = index.clone();
                 let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
@@ -1912,7 +1911,6 @@ mod belongs_to_source_index_tests {
             };
             let insert_thread = {
                 let store = store.clone();
-                let barrier = barrier.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
                     let (id, item) = child(&format!("child-{i}"), "parent-race");
