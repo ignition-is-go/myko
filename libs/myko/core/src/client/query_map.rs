@@ -3,7 +3,10 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Gettable, Mutable, Watchable};
+use hyphae::{
+    Cell, CellImmutable, CellMap, CellMutable, Gettable, JoinExt, MapExt, Materialize, Mutable,
+    Watchable,
+};
 
 pub(super) fn apply_incremental_map_update<T: hyphae::CellValue>(
     map: &CellMap<Arc<str>, Arc<T>, CellMutable>,
@@ -732,10 +735,10 @@ impl MykoClient {
         let map: CellMap<Arc<str>, Arc<Q::Item>> =
             CellMap::new().with_name(format!("query_map:{query_id}"));
         let map_weak = map.downgrade();
-        let ready =
-            Cell::<bool, CellMutable>::new(false).with_name(format!("query_map_ready:{query_id}"));
-        let ready_weak = ready.downgrade();
-        let ready_read = ready.clone().lock();
+        let connections = self.inner.connections.clone();
+        let answered = Cell::new(None).with_name(format!("query_map_answered:{query_id}"));
+        let answered_weak = answered.downgrade();
+        let ready_read = connections.ready(&answered);
 
         let Ok(query_value) = serde_json::to_value(&query) else {
             error!("Could not serialize query map request for {query_id}");
@@ -761,6 +764,9 @@ impl MykoClient {
         // Duplicate explicit transaction IDs must not replace another watch;
         // otherwise dropping the older watch could remove the newer handler.
         let handler: super::QueryHandler = Arc::new(move |response_value: Value| {
+            // The connection this response arrived on, before anything it
+            // triggers can move to the next one.
+            let generation = connections.current();
             let Some(map_writer) = map_weak.upgrade() else {
                 return;
             };
@@ -812,8 +818,8 @@ impl MykoClient {
                 apply_incremental_map_update(&map_writer, response.deletes, upserts);
             }
 
-            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
-                ready_writer.set(true);
+            if is_initial_response && let Some(answered) = answered_weak.upgrade() {
+                super::connection::mark_answered(&answered, generation);
             }
         });
         if !self.try_register_query_handler(tx.clone(), handler) {
@@ -839,18 +845,14 @@ impl MykoClient {
 
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
-        let ready_for_status = ready.downgrade();
         let sequences_for_status = sequences;
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let send_query_id = query_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal {
+            if let hyphae::Signal::Value(connection) = signal {
                 sequences_for_status.reset_epoch();
-                if let Some(ready_writer) = ready_for_status.upgrade() {
-                    ready_writer.set(false);
-                }
-                if let ConnectionStatus::Connected(_) = &**status {
+                if let ConnectionStatus::Connected(_) = &connection.status {
                     match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching query map {send_query_id}"),
                         Err(e) => error!("Could not send query: {e:?}"),
@@ -865,6 +867,7 @@ impl MykoClient {
         map.own(status_guard);
         map.own(super::query_cancel_guard(tx.clone(), self.inner.clone()));
         map.own(super::retain_cell_guard(ready_read.clone()));
+        map.own(super::retain_cell_guard(answered.lock()));
         map.own(super::map_watch_cache_guard(
             cache_key.clone(),
             tx.clone(),
@@ -920,7 +923,9 @@ impl MykoClient {
         let tx = query.tx.clone();
         let items = Cell::new(Vec::new()).with_name(format!("query_window:{query_id}"));
         let items_weak = items.downgrade();
-        let ready = Cell::new(false).with_name(format!("query_window_ready:{query_id}"));
+        let connections = self.inner.connections.clone();
+        let answered = Cell::new(None).with_name(format!("query_window_answered:{query_id}"));
+        let ready = connections.ready(&answered);
         let total_count = Cell::new(None).with_name(format!("query_window_total_count:{query_id}"));
         let window = Cell::new(Some(initial_window.clone()))
             .with_name(format!("query_window_state:{query_id}"));
@@ -931,14 +936,29 @@ impl MykoClient {
             Some(initial_window.clone()),
         ))
         .with_name(format!("query_window_page_state:{query_id}"));
+        // The handler leaves `ready` false; the connection decides it.
+        let page_view = page_state
+            .clone()
+            .join(ready.clone())
+            .map(
+                |(state, ready): &(super::WindowedQueryState<Q::Item>, bool)| {
+                    super::WindowedQueryState::new(
+                        state.items.clone(),
+                        *ready,
+                        state.total_count,
+                        state.window.clone(),
+                    )
+                },
+            )
+            .materialize();
         let cursor_window = Arc::new(Mutex::new(None));
         let early_watch = WindowedQueryWatch {
             items: items.clone().lock(),
-            ready: ready.clone().lock(),
+            ready: ready.clone(),
             error: self.subscription_error(&tx),
             total_count: total_count.clone().lock(),
             window: window.clone().lock(),
-            state: page_state.clone().lock(),
+            state: page_view.clone(),
             cursor_window: cursor_window.clone(),
             tx: tx.clone(),
             client: self.clone(),
@@ -959,11 +979,14 @@ impl MykoClient {
         let sequences_for_handler = sequences.clone();
         let tx_for_handler = tx.clone();
         let query_id_for_handler = query_id.clone();
-        let ready_for_handler = ready.clone();
+        let answered_for_handler = answered.clone();
         let total_count_for_handler = total_count.clone();
         let window_for_handler = window.clone();
         let page_state_for_handler = page_state.clone();
         let handler: super::QueryHandler = Arc::new(move |response_value: Value| {
+            // The connection this response arrived on, before anything it
+            // triggers can move to the next one.
+            let generation = connections.current();
             let Some(items_writer) = items_weak.upgrade() else {
                 return;
             };
@@ -1036,20 +1059,22 @@ impl MykoClient {
                 },
             );
             drop(state);
-            let next_ready = ready_for_handler.get() || is_initial;
             let next_page_state = super::WindowedQueryState::new(
                 next_items.clone(),
-                next_ready,
+                false,
                 response.total_count,
                 response.window.clone(),
             );
             items_writer.set(next_items);
             total_count_for_handler.set(response.total_count);
             window_for_handler.set(response.window);
-            if is_initial {
-                ready_for_handler.set(true);
-            }
-            page_state_for_handler.set(next_page_state);
+            // One ticket, so the page never shows the snapshot as not ready.
+            hyphae::batch(|| {
+                page_state_for_handler.set(next_page_state);
+                if is_initial {
+                    super::connection::mark_answered(&answered_for_handler, generation);
+                }
+            });
         });
         if !self.try_register_query_handler(tx.clone(), handler) {
             error!("Refusing duplicate windowed query transaction {tx}");
@@ -1057,31 +1082,17 @@ impl MykoClient {
         }
 
         let inner = self.inner.clone();
-        let ready_for_status = ready.downgrade();
-        let page_state_for_status = page_state.downgrade();
         let window_for_status = window.clone().lock();
         let wrapped_for_status = wrapped;
         let tx_for_status = tx.clone();
         let cursor_for_status = cursor_window.clone();
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let status_guard = status_cell.subscribe(move |signal| {
-            let hyphae::Signal::Value(status) = signal else {
+            let hyphae::Signal::Value(connection) = signal else {
                 return;
             };
             sequences.reset_epoch();
-            if let Some(writer) = ready_for_status.upgrade() {
-                writer.set(false);
-            }
-            if let Some(writer) = page_state_for_status.upgrade() {
-                let current = writer.get();
-                writer.set(super::WindowedQueryState::new(
-                    current.items,
-                    false,
-                    current.total_count,
-                    current.window,
-                ));
-            }
-            if let ConnectionStatus::Connected(_) = &**status {
+            if let ConnectionStatus::Connected(_) = &connection.status {
                 let cursor = cursor_for_status
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1115,7 +1126,8 @@ impl MykoClient {
 
         items.own(status_guard);
         items.own(super::query_cancel_guard(tx.clone(), self.inner.clone()));
-        items.own(super::retain_cell_guard(ready.clone().lock()));
+        items.own(super::retain_cell_guard(ready.clone()));
+        items.own(super::retain_cell_guard(page_view.clone()));
         items.own(super::retain_cell_guard(total_count.clone().lock()));
         items.own(super::retain_cell_guard(window.clone().lock()));
         items.own(super::retain_cell_guard(page_state.clone().lock()));
@@ -1126,11 +1138,11 @@ impl MykoClient {
         ));
         let watch = WindowedQueryWatch {
             items: items.lock(),
-            ready: ready.lock(),
+            ready,
             error: early_watch.error,
             total_count: total_count.lock(),
             window: window.lock(),
-            state: page_state.lock(),
+            state: page_view,
             cursor_window,
             tx: early_watch.tx,
             client: early_watch.client,
@@ -1341,7 +1353,11 @@ mod tests {
 
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
         let frames = transport.sent_frames();
-        let Some(WsFrame::Text(frame)) = frames.first() else {
+        // The ping loop also sends on connect, from its own callback.
+        let Some(WsFrame::Text(frame)) = frames
+            .iter()
+            .find(|frame| matches!(frame, WsFrame::Text(text) if text.contains(r#""event":"ws:m:query""#)))
+        else {
             return;
         };
         let request = serde_json::from_str::<serde_json::Value>(frame);
@@ -1436,7 +1452,11 @@ mod tests {
 
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
         let frames = transport.sent_frames();
-        let Some(WsFrame::Text(frame)) = frames.first() else {
+        // The ping loop also sends on connect, from its own callback.
+        let Some(WsFrame::Text(frame)) = frames
+            .iter()
+            .find(|frame| matches!(frame, WsFrame::Text(text) if text.contains(r#""event":"ws:m:query""#)))
+        else {
             return;
         };
         let request = serde_json::from_str::<serde_json::Value>(frame);
@@ -1832,7 +1852,11 @@ mod tests {
 
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
         let frames = transport.sent_frames();
-        let Some(WsFrame::Text(frame)) = frames.first() else {
+        // The ping loop also sends on connect, from its own callback.
+        let Some(WsFrame::Text(frame)) = frames
+            .iter()
+            .find(|frame| matches!(frame, WsFrame::Text(text) if text.contains(r#""event":"ws:m:query""#)))
+        else {
             return;
         };
         let request = serde_json::from_str::<serde_json::Value>(frame);
@@ -2033,7 +2057,11 @@ mod tests {
         transport.set_status(SocketConnectionStatus::Connected("ws://test".to_owned()));
         let frames = transport.sent_frames();
         assert!(matches!(frames.first(), Some(WsFrame::Text(_))));
-        let Some(WsFrame::Text(frame)) = frames.first() else {
+        // The ping loop also sends on connect, from its own callback.
+        let Some(WsFrame::Text(frame)) = frames
+            .iter()
+            .find(|frame| matches!(frame, WsFrame::Text(text) if text.contains(r#""event":"ws:m:query""#)))
+        else {
             return;
         };
         let request = serde_json::from_str::<serde_json::Value>(frame);

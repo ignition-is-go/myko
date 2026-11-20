@@ -8,6 +8,7 @@ use std::{
 };
 
 mod cbor_json;
+mod connection;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod entity_sync;
 mod lifecycle;
@@ -989,6 +990,21 @@ impl Default for MykoClientOptions {
     }
 }
 
+/// A subscription's server error, tagged with the connection it arrived on.
+/// `visible` hides it once the connection changes.
+struct SubscriptionError {
+    tagged: Cell<Option<(u64, String)>, CellMutable>,
+    visible: Cell<Option<String>, CellImmutable>,
+}
+
+impl SubscriptionError {
+    fn new(connections: &connection::Connections) -> Self {
+        let tagged = Cell::new(None);
+        let visible = connections.current_only(&tagged);
+        Self { tagged, visible }
+    }
+}
+
 struct MykoClientInner {
     socket: Arc<dyn SocketTransport>,
     protocol: Arc<AtomicU8>,
@@ -1002,7 +1018,8 @@ struct MykoClientInner {
     peer_discovery_guard: Mutex<Option<SubscriptionGuard>>,
 
     // Dispatch maps keyed by tx
-    subscription_errors: DashMap<Arc<str>, Cell<Option<String>, CellMutable>>,
+    subscription_errors: DashMap<Arc<str>, SubscriptionError>,
+    connections: connection::Connections,
     query_handlers: DashMap<Arc<str>, QueryHandler>,
     report_handlers: DashMap<Arc<str>, ReportHandler>,
     report_result_handlers: DashMap<Arc<str>, ReportResultHandler>,
@@ -1055,9 +1072,9 @@ impl MykoClient {
         self.inner
             .subscription_errors
             .entry(Arc::from(tx))
-            .or_insert_with(|| Cell::new(None))
+            .or_insert_with(|| SubscriptionError::new(&self.inner.connections))
+            .visible
             .clone()
-            .lock()
     }
 
     fn try_register_query_handler(&self, tx: Arc<str>, handler: QueryHandler) -> bool {
@@ -1065,11 +1082,15 @@ impl MykoClient {
             .inner
             .subscription_errors
             .entry(tx.clone())
-            .or_insert_with(|| Cell::new(None))
+            .or_insert_with(|| SubscriptionError::new(&self.inner.connections))
+            .tagged
             .clone();
+        let inner = Arc::downgrade(&self.inner);
         let handler: QueryHandler = Arc::new(move |response| {
+            let Some(inner) = inner.upgrade() else { return };
+            let generation = inner.connections.current();
             if let Some(message) = response.get("error").and_then(Value::as_str) {
-                error.set(Some(message.to_string()));
+                error.set(Some((generation, message.to_string())));
                 return;
             }
             if error.get().is_some() {
@@ -1368,14 +1389,6 @@ impl MykoClient {
                         return;
                     };
                     let conn_status = (**status).clone();
-                    let errors: Vec<_> = inner
-                        .subscription_errors
-                        .iter()
-                        .map(|entry| entry.value().clone())
-                        .collect();
-                    for error in errors {
-                        error.set(None);
-                    }
 
                     if !matches!(conn_status, ConnectionStatus::Connected(_)) {
                         inner.ping_ms.set(None);
@@ -1405,6 +1418,7 @@ impl MykoClient {
                 peer_failover_status_guard: Mutex::new(None),
                 peer_discovery_guard: Mutex::new(None),
                 subscription_errors: DashMap::new(),
+                connections: connection::Connections::new(transport.actual_connection_state()),
                 query_handlers,
                 report_handlers,
                 report_result_handlers: DashMap::new(),
@@ -2077,10 +2091,10 @@ impl MykoClient {
 
         let cell = Cell::new(vec![]).with_name(query_id.as_ref());
         let cell_weak = cell.downgrade();
-        let ready =
-            Cell::<bool, CellMutable>::new(false).with_name(format!("query_ready:{query_id}"));
-        let ready_weak = ready.downgrade();
-        let ready_read = ready.clone().lock();
+        let connections = self.inner.connections.clone();
+        let answered = Cell::new(None).with_name(format!("query_answered:{query_id}"));
+        let answered_weak = answered.downgrade();
+        let ready_read = connections.ready(&answered);
         let trace = Cell::<Option<QueryTrace>, CellMutable>::new(None)
             .with_name(format!("query_trace:{query_id}"));
         let trace_read = trace.clone().lock();
@@ -2122,6 +2136,9 @@ impl MykoClient {
 
         // Register handler for query responses matching this tx
         let handler: QueryHandler = Arc::new(move |response_value: Value| {
+            // The connection this response arrived on, before anything it
+            // triggers can move to the next one.
+            let generation = connections.current();
             let response_epoch = trace_for_handler.epoch.load(Ordering::Relaxed);
             let Some(cell_writer) = cell_weak.upgrade() else {
                 warn!(
@@ -2225,8 +2242,8 @@ impl MykoClient {
             let row_count = state.len();
             cell_writer.set(state.values().cloned().collect());
             drop(state);
-            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
-                ready_writer.set(true);
+            if is_initial_response && let Some(answered) = answered_weak.upgrade() {
+                connection::mark_answered(&answered, generation);
                 trace_for_handler.emit_once(
                     response_epoch,
                     QueryTracePhase::SnapshotInstalled,
@@ -2262,15 +2279,14 @@ impl MykoClient {
 
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
-        let ready_for_status = ready.downgrade();
         let sequences_for_status = sequences;
         let epoch_for_status = epoch;
         let trace_for_status = trace_emitter;
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let send_query_id = query_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal {
+            if let hyphae::Signal::Value(connection) = signal {
                 // A status delivery starts a distinct transport attempt even when it
                 // is a disconnect. This runs before either ready or trace callbacks.
                 let epoch = epoch_for_status
@@ -2278,10 +2294,7 @@ impl MykoClient {
                     .wrapping_add(1);
                 trace_for_status.reset_seen_phases(epoch);
                 sequences_for_status.reset_epoch();
-                if let Some(ready_writer) = ready_for_status.upgrade() {
-                    ready_writer.set(false);
-                }
-                if let ConnectionStatus::Connected(_) = &**status {
+                if let ConnectionStatus::Connected(_) = &connection.status {
                     match socket.send(frame_to_send.clone()) {
                         Ok(()) => {
                             debug!("Watching query {send_query_id}");
@@ -2409,12 +2422,12 @@ impl MykoClient {
 
         // Subscribe to connection status to re-send on reconnect
         let socket = self.inner.socket.clone();
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let send_report_id = report_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal
-                && let ConnectionStatus::Connected(_) = &**status
+            if let hyphae::Signal::Value(connection) = signal
+                && let ConnectionStatus::Connected(_) = &connection.status
             {
                 match socket.send(frame_to_send.clone()) {
                     Ok(()) => debug!("Watching report {send_report_id}"),
@@ -2447,7 +2460,18 @@ impl MykoClient {
         O: DeserializeOwned + Clone + std::fmt::Debug + PartialEq + Send + Sync + 'static,
     {
         let report = report.into().report;
-        let epoch = Cell::new(Arc::<str>::from(uuid::Uuid::new_v4().to_string()));
+        // Each connection gets its own transaction ID, derived from the
+        // connection so a transition retires the old one in the same ticket.
+        let base = uuid::Uuid::new_v4().to_string();
+        let tx_for = move |generation: u64| -> Arc<str> { format!("{base}:{generation}").into() };
+        let epoch = {
+            let tx_for = tx_for.clone();
+            self.inner
+                .connections
+                .cell()
+                .map(move |connection: &connection::Connection| tx_for(connection.generation))
+                .materialize()
+        };
         let responses = Cell::new(None::<(Arc<str>, Result<O, String>)>);
         let output = epoch
             .clone()
@@ -2462,18 +2486,17 @@ impl MykoClient {
         let active = Arc::new(Mutex::new(None::<SubscriptionGuard>));
         let status_active = active.clone();
         let inner = Arc::downgrade(&self.inner);
-        let status_guard = self.connection_status().subscribe(move |signal| {
-            let hyphae::Signal::Value(status) = signal else {
+        let status_guard = self.inner.connections.cell().subscribe(move |signal| {
+            let hyphae::Signal::Value(connection) = signal else {
                 return;
             };
-            let tx: Arc<str> = uuid::Uuid::new_v4().to_string().into();
-            epoch.set(tx.clone());
+            let tx = tx_for(connection.generation);
             let previous = status_active
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take();
             drop(previous);
-            let ConnectionStatus::Connected(_) = &**status else {
+            let ConnectionStatus::Connected(_) = &connection.status else {
                 return;
             };
             let Some(inner) = inner.upgrade() else { return };
@@ -2577,10 +2600,10 @@ impl MykoClient {
         let tx: Arc<str> = view.tx.clone();
         let cell = Cell::new(vec![]).with_name(view_id.as_ref());
         let cell_weak = cell.downgrade();
-        let ready =
-            Cell::<bool, CellMutable>::new(false).with_name(format!("view_ready:{view_id}"));
-        let ready_weak = ready.downgrade();
-        let ready_read = ready.clone().lock();
+        let connections = self.inner.connections.clone();
+        let answered = Cell::new(None).with_name(format!("view_answered:{view_id}"));
+        let answered_weak = answered.downgrade();
+        let ready_read = connections.ready(&answered);
 
         let Ok(mut wrapped) = wrap_view(tx.clone(), &view.view) else {
             error!("Could not serialize view request for {view_id}");
@@ -2611,6 +2634,9 @@ impl MykoClient {
         let view_id_for_handler = view_id.clone();
 
         let handler: QueryHandler = Arc::new(move |response_value: Value| {
+            // The connection this response arrived on, before anything it
+            // triggers can move to the next one.
+            let generation = connections.current();
             let Some(cell_writer) = cell_weak.upgrade() else {
                 return;
             };
@@ -2675,8 +2701,8 @@ impl MykoClient {
 
             cell_writer.set(state.values().cloned().collect());
             drop(state);
-            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
-                ready_writer.set(true);
+            if is_initial_response && let Some(answered) = answered_weak.upgrade() {
+                connection::mark_answered(&answered, generation);
             }
         });
         if !self.try_register_query_handler(tx.clone(), handler) {
@@ -2690,18 +2716,14 @@ impl MykoClient {
         }
 
         let socket = self.inner.socket.clone();
-        let ready_for_status = ready.downgrade();
         let sequences_for_status = sequences;
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let send_view_id = view_id;
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal {
+            if let hyphae::Signal::Value(connection) = signal {
                 sequences_for_status.reset_epoch();
-                if let Some(ready_writer) = ready_for_status.upgrade() {
-                    ready_writer.set(false);
-                }
-                if let ConnectionStatus::Connected(_) = &**status {
+                if let ConnectionStatus::Connected(_) = &connection.status {
                     match socket.send(frame_to_send.clone()) {
                         Ok(()) => debug!("Watching view {send_view_id}"),
                         Err(e) => error!("Could not send view: {e:?}"),
@@ -2928,8 +2950,10 @@ impl MykoClient {
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(query.query_id.as_ref());
         let cell_weak = cell.downgrade();
-        let ready = Cell::new(false);
-        let ready_weak = ready.downgrade();
+        let connections = self.inner.connections.clone();
+        let answered = Cell::new(None);
+        let answered_weak = answered.downgrade();
+        let ready = connections.ready(&answered);
         let state_clone = state;
         let tx_clone = tx.clone();
 
@@ -2938,7 +2962,7 @@ impl MykoClient {
             error!("Could not encode raw query request");
             return ListWatch {
                 items: cell.lock(),
-                ready: ready.lock(),
+                ready,
                 error: Cell::new(Some("could not encode request".into())).lock(),
                 trace: None,
             };
@@ -2947,6 +2971,9 @@ impl MykoClient {
         self.try_register_query_handler(
             tx.clone(),
             Arc::new(move |response_value: Value| {
+                // The connection this response arrived on, before anything it
+                // triggers can move to the next one.
+                let generation = connections.current();
                 let Some(cell_writer) = cell_weak.upgrade() else {
                     return;
                 };
@@ -2980,23 +3007,19 @@ impl MykoClient {
                 };
                 cell_writer.set(items);
                 if response.sequence == 0
-                    && let Some(ready) = ready_weak.upgrade()
+                    && let Some(answered) = answered_weak.upgrade()
                 {
-                    ready.set(true);
+                    connection::mark_answered(&answered, generation);
                 }
             }),
         );
 
         let socket = self.inner.socket.clone();
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let frame_to_send = frame;
-        let ready_for_status = ready.downgrade();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal {
-                if let Some(ready) = ready_for_status.upgrade() {
-                    ready.set(false);
-                }
-                if let ConnectionStatus::Connected(_) = &**status {
+            if let hyphae::Signal::Value(connection) = signal {
+                if let ConnectionStatus::Connected(_) = &connection.status {
                     let _ = socket.send(frame_to_send.clone());
                 }
             }
@@ -3004,11 +3027,11 @@ impl MykoClient {
 
         cell.own(status_guard);
         cell.own(query_cancel_guard(tx.clone(), self.inner.clone()));
-        cell.own(retain_cell_guard(ready.clone().lock()));
+        cell.own(retain_cell_guard(ready.clone()));
 
         ListWatch {
             items: cell.lock(),
-            ready: ready.lock(),
+            ready,
             error: self.subscription_error(&tx),
             trace: None,
         }
@@ -3044,8 +3067,10 @@ impl MykoClient {
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
         let cell = Cell::new(Vec::<Value>::new()).with_name(view.view_id.as_ref());
         let cell_weak = cell.downgrade();
-        let ready = Cell::new(false);
-        let ready_weak = ready.downgrade();
+        let connections = self.inner.connections.clone();
+        let answered = Cell::new(None);
+        let answered_weak = answered.downgrade();
+        let ready = connections.ready(&answered);
         let state_clone = state;
         let tx_clone = tx.clone();
 
@@ -3054,7 +3079,7 @@ impl MykoClient {
             error!("Could not encode raw view request");
             return ListWatch {
                 items: cell.lock(),
-                ready: ready.lock(),
+                ready,
                 error: Cell::new(Some("could not encode request".into())).lock(),
                 trace: None,
             };
@@ -3063,6 +3088,9 @@ impl MykoClient {
         self.try_register_query_handler(
             tx.clone(),
             Arc::new(move |response_value: Value| {
+                // The connection this response arrived on, before anything it
+                // triggers can move to the next one.
+                let generation = connections.current();
                 let Some(cell_writer) = cell_weak.upgrade() else {
                     return;
                 };
@@ -3096,23 +3124,19 @@ impl MykoClient {
                 };
                 cell_writer.set(items);
                 if response.sequence == 0
-                    && let Some(ready) = ready_weak.upgrade()
+                    && let Some(answered) = answered_weak.upgrade()
                 {
-                    ready.set(true);
+                    connection::mark_answered(&answered, generation);
                 }
             }),
         );
 
         let socket = self.inner.socket.clone();
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let frame_to_send = frame;
-        let ready_for_status = ready.downgrade();
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal {
-                if let Some(ready) = ready_for_status.upgrade() {
-                    ready.set(false);
-                }
-                if let ConnectionStatus::Connected(_) = &**status {
+            if let hyphae::Signal::Value(connection) = signal {
+                if let ConnectionStatus::Connected(_) = &connection.status {
                     let _ = socket.send(frame_to_send.clone());
                 }
             }
@@ -3120,11 +3144,11 @@ impl MykoClient {
 
         cell.own(status_guard);
         cell.own(view_cancel_guard(tx.clone(), self.inner.clone()));
-        cell.own(retain_cell_guard(ready.clone().lock()));
+        cell.own(retain_cell_guard(ready.clone()));
 
         ListWatch {
             items: cell.lock(),
-            ready: ready.lock(),
+            ready,
             error: self.subscription_error(&tx),
             trace: None,
         }
@@ -3163,11 +3187,11 @@ impl MykoClient {
         );
 
         let socket = self.inner.socket.clone();
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let frame_to_send = frame;
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal
-                && let ConnectionStatus::Connected(_) = &**status
+            if let hyphae::Signal::Value(connection) = signal
+                && let ConnectionStatus::Connected(_) = &connection.status
             {
                 let _ = socket.send(frame_to_send.clone());
             }
@@ -3282,8 +3306,11 @@ mod query_trace_tests {
         }
 
         fn connect(&self, address: &str) {
-            self.status
-                .set(SocketConnectionStatus::Connected(address.to_owned()));
+            // The trace is written by the connection's callbacks, a ticket later.
+            crate::test_util::settled(|| {
+                self.status
+                    .set(SocketConnectionStatus::Connected(address.to_owned()));
+            });
         }
 
         fn query_send_count(&self) -> usize {
@@ -3569,10 +3596,13 @@ mod query_trace_tests {
             &query_response(&tx, 0, &serde_json::json!([])),
         );
 
-        let current = trace(&watch);
-        assert_eq!(current.phase, QueryTracePhase::SendAccepted);
-        assert!(current.epoch > 0);
-        assert_eq!(transport.query_send_count(), 2);
+        // The trace callback runs a ticket after the handler, so the
+        // reconnect follows the installed snapshot and retires it.
+        assert!(crate::test_util::settle_until(|| {
+            transport.query_send_count() == 2
+                && trace(&watch).phase == QueryTracePhase::SendAccepted
+        }));
+        assert!(trace(&watch).epoch > 0);
         assert!(!watch.ready().get());
         assert!(watch.items().get().is_empty());
     }
@@ -3615,9 +3645,14 @@ mod query_trace_tests {
             ),
         );
 
+        // The trace callback runs a ticket after the handler. The snapshot
+        // answered the live connection, so it is installed, and the
+        // disconnect that follows makes it not ready.
+        assert!(crate::test_util::settle_until(|| !matches!(
+            client.connection_status_sync(),
+            ConnectionStatus::Connected(_)
+        )));
         assert!(!watch.ready().get());
-        assert!(watch.items().get().is_empty());
-        assert_eq!(trace(&watch).phase, QueryTracePhase::ResponseReceived);
         assert_eq!(trace(&watch).epoch, attempt);
         assert!(!matches!(
             client.connection_status_sync(),
@@ -3819,7 +3854,11 @@ mod report_dispatch_tests {
             "retiring a report deadlocked its response callback"
         );
         assert!(worker.join().is_ok());
-        assert!(!client.inner.report_handlers.contains_key(&tx));
+        // A ticket still in flight can hold the report until it completes.
+        assert!(crate::test_util::settle_until(|| !client
+            .inner
+            .report_handlers
+            .contains_key(&tx)));
         // Prove the same dispatcher can subsequently deliver a new report.
         let next_tx: Arc<str> = "next-report".into();
         let (sent, received) = mpsc::channel();
