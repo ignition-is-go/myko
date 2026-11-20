@@ -158,3 +158,78 @@ fn benchmark_startup_ensure_membership() {
         );
     }
 }
+
+fn startup_node(index: usize) -> Arc<dyn AnyItem> {
+    Arc::new(Node {
+        id: format!("startup-node-{index}").into(),
+        name: index.to_string(),
+    })
+}
+
+fn pairs_with(registry: &StoreRegistry, node: &str) -> usize {
+    node_pairs(registry)
+        .iter()
+        .filter(|row| row.left_id.as_ref() == node || row.right_id.as_ref() == node)
+        .count()
+}
+
+#[test]
+fn a_written_dependency_ensures_the_combinations_it_is_part_of() {
+    let _serial = scheduler_test_serial();
+    let (ctx, registry, manager) = loaded_pairs(3);
+    let pairs = registry.get_or_create(NodePair::ENTITY_NAME_STATIC);
+    pairs.remove(&Arc::from("startup-pair-1-2"));
+
+    // A rewrite of a node that has every pair creates nothing, and does not
+    // repair a pair it is not part of.
+    assert!(manager.forward_set_batch(&[startup_node(0)], &ctx).is_ok());
+    assert_eq!(node_pairs(&registry).len(), 8);
+
+    let added = startup_node(3);
+    registry
+        .get_or_create(Node::ENTITY_NAME_STATIC)
+        .insert(added.id(), added.clone());
+    for _ in 0..2 {
+        assert!(
+            manager
+                .forward_set_batch(std::slice::from_ref(&added), &ctx)
+                .is_ok()
+        );
+        assert_eq!(pairs_with(&registry, "startup-node-3"), 7);
+        assert_eq!(node_pairs(&registry).len(), 15);
+    }
+
+    assert!(manager.forward_set_batch(&[startup_node(1)], &ctx).is_ok());
+    assert_eq!(node_pairs(&registry).len(), 16);
+    let tuples: std::collections::HashSet<_> = node_pairs(&registry)
+        .iter()
+        .map(|row| (row.left_id.clone(), row.right_id.clone()))
+        .collect();
+    assert_eq!(tuples.len(), 16);
+}
+
+#[test]
+#[ignore = "manual timing of one dependency rewrite as the derived store grows"]
+fn benchmark_rewrite_of_one_dependency() {
+    use std::time::Instant;
+
+    let _serial = scheduler_test_serial();
+    for n in [32, 64, 128, 256] {
+        let (ctx, registry, manager) = loaded_pairs(n);
+        let node = startup_node(0);
+        let start = Instant::now();
+        let rounds = 20_u32;
+        for _ in 0..rounds {
+            assert!(
+                manager
+                    .forward_set_batch(std::slice::from_ref(&node), &ctx)
+                    .is_ok()
+            );
+        }
+        eprintln!(
+            "{} pairs: {:?} per rewrite of one node",
+            node_pairs(&registry).len(),
+            start.elapsed() / rounds
+        );
+    }
+}

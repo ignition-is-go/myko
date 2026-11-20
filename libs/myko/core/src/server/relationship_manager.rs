@@ -463,7 +463,7 @@ impl RelationshipManager {
         }
 
         if self.ensure_for_by_dependency.contains_key(item_type) {
-            self.handle_ensure_for_type(item_type, ctx)?;
+            self.handle_ensure_for_type(item_type, items, ctx)?;
         }
 
         Ok(())
@@ -921,25 +921,50 @@ impl RelationshipManager {
             .collect()
     }
 
-    /// Handle `EnsureFor` once after a dependency type's store has settled.
+    /// Handle `EnsureFor` once after a write to a dependency type has settled.
+    ///
+    /// Only combinations that contain a written id can be new, so only those
+    /// are built and looked for. Every other combination was ensured when its
+    /// own members were written, or by the startup pass.
     fn handle_ensure_for_type(
         &self,
         item_type: &str,
+        written: &[Arc<dyn AnyItem>],
         ctx: &MykoServerContext,
     ) -> Result<(), PersistError> {
         let Some(lookups) = self.ensure_for_by_dependency.get(item_type) else {
             return Ok(());
         };
+        let written_ids: HashSet<Arc<str>> = written.iter().map(|item| item.id()).collect();
+        let written_set: Vec<Arc<str>> = written_ids.iter().cloned().collect();
 
         for lookup in lookups {
-            let combinations = Self::get_dependency_combinations(ctx, &lookup.dependencies);
-            let mut existing_combinations = Self::existing_ensure_for_combinations(ctx, lookup);
+            let positions: Vec<usize> = lookup
+                .dependencies
+                .iter()
+                .enumerate()
+                .filter(|(_, dependency)| dependency.foreign_type == item_type)
+                .map(|(position, _)| position)
+                .collect();
+            let dependency_ids: Vec<Vec<Arc<str>>> = lookup
+                .dependencies
+                .iter()
+                .map(|dependency| Self::get_all_ids(ctx, dependency.foreign_type))
+                .collect();
+            let mut existing_combinations =
+                Self::existing_ensure_for_combinations_with(ctx, lookup, &positions, &written_ids);
 
-            for combo in combinations {
-                if !existing_combinations.contains(&combo)
-                    && self.ensure_combination(lookup, &combo, ctx)?
-                {
-                    existing_combinations.insert(combo);
+            for position in positions {
+                let mut sets = dependency_ids.clone();
+                if let Some(set) = sets.get_mut(position) {
+                    set.clone_from(&written_set);
+                }
+                for combo in Self::cartesian_product(&sets) {
+                    if !existing_combinations.contains(&combo)
+                        && self.ensure_combination(lookup, &combo, ctx)?
+                    {
+                        existing_combinations.insert(combo);
+                    }
                 }
             }
         }
@@ -970,9 +995,17 @@ impl RelationshipManager {
         // Recheck after reserving: another publisher may have completed between
         // the caller's snapshot and this reservation.
         let store = ctx.registry.get_or_create(lookup.local_type);
-        let exists =
-            Self::find_ensure_for_entity_in(&store.snapshot(), &lookup.dependencies, combo)
-                .is_some();
+        let mut exists = false;
+        store.for_each(|_, item| {
+            exists = exists
+                || lookup
+                    .dependencies
+                    .iter()
+                    .zip(combo)
+                    .all(|(dependency, expected)| {
+                        (dependency.extract_fk)(item.as_any()).is_some_and(|fk| fk == *expected)
+                    });
+        });
         if exists {
             self.ensure_for_in_flight
                 .lock()
@@ -1328,6 +1361,15 @@ impl RelationshipManager {
         store.snapshot().into_iter().map(|(_, item)| item).collect()
     }
 
+    /// Get the ids of every entity of a type, without copying the rows.
+    fn get_all_ids(ctx: &MykoServerContext, entity_type: &str) -> Vec<Arc<str>> {
+        let mut ids = Vec::new();
+        ctx.registry
+            .get_or_create(entity_type)
+            .for_each(|id, _| ids.push(id.clone()));
+        ids
+    }
+
     /// Get all combinations of dependency entity IDs for `EnsureFor`
     fn get_dependency_combinations(
         ctx: &MykoServerContext,
@@ -1392,8 +1434,42 @@ impl RelationshipManager {
             .collect()
     }
 
+    /// The dependency tuples of the derived rows that reference a written id
+    /// at one of `positions`. Rows that do not are skipped without an
+    /// allocation, so the pass costs one foreign-key read per row.
+    fn existing_ensure_for_combinations_with(
+        ctx: &MykoServerContext,
+        lookup: &EnsureForLookup,
+        positions: &[usize],
+        written_ids: &HashSet<Arc<str>>,
+    ) -> HashSet<Vec<Arc<str>>> {
+        let mut existing = HashSet::new();
+        ctx.registry
+            .get_or_create(lookup.local_type)
+            .for_each(|_, item| {
+                let references_a_written_id = positions.iter().any(|position| {
+                    lookup
+                        .dependencies
+                        .get(*position)
+                        .and_then(|dependency| (dependency.extract_fk)(item.as_any()))
+                        .is_some_and(|fk| written_ids.contains(&fk))
+                });
+                if references_a_written_id
+                    && let Some(tuple) = lookup
+                        .dependencies
+                        .iter()
+                        .map(|dependency| (dependency.extract_fk)(item.as_any()))
+                        .collect::<Option<Vec<_>>>()
+                {
+                    existing.insert(tuple);
+                }
+            });
+        existing
+    }
+
     /// Find an `EnsureFor` entity matching the given dependency IDs
     /// from a pre-computed snapshot of existing items.
+    #[cfg(test)]
     fn find_ensure_for_entity_in(
         items: &[(Arc<str>, Arc<dyn AnyItem>)],
         dependencies: &[EnsureForDependency],
