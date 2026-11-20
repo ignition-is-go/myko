@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use hyphae::{Cell, CellImmutable, CellMap, CellMutable, Mutable as _, Watchable as _};
+use hyphae::{Cell, CellImmutable, CellMap, Watchable as _};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 use tracing::{debug, error, trace};
@@ -113,10 +113,10 @@ impl MykoClient {
         let map: CellMap<Arc<str>, Arc<V::Item>> =
             CellMap::new().with_name(format!("view_map:{view_id}"));
         let map_weak = map.downgrade();
-        let ready =
-            Cell::<bool, CellMutable>::new(false).with_name(format!("view_map_ready:{view_id}"));
-        let ready_weak = ready.downgrade();
-        let ready_read = ready.clone().lock();
+        let connections = self.inner.connections.clone();
+        let answered = Cell::new(None).with_name(format!("view_map_answered:{view_id}"));
+        let answered_weak = answered.downgrade();
+        let ready_read = connections.ready(&answered);
 
         let Ok(mut wrapped) = wrap_view(tx.clone(), &view.view) else {
             error!("Could not serialize view map request for {view_id}");
@@ -138,6 +138,9 @@ impl MykoClient {
         let sequences = Arc::new(MapSequence::new());
         let sequences_for_handler = Arc::clone(&sequences);
         let handler: super::QueryHandler = Arc::new(move |response_value: Value| {
+            // The connection this response arrived on, before anything it
+            // triggers can move to the next one.
+            let generation = connections.current();
             let Some(map_writer) = map_weak.upgrade() else {
                 return;
             };
@@ -182,8 +185,8 @@ impl MykoClient {
             } else {
                 apply_incremental_map_update(&map_writer, response.deletes, upserts);
             }
-            if is_initial_response && let Some(ready_writer) = ready_weak.upgrade() {
-                ready_writer.set(true);
+            if is_initial_response && let Some(answered) = answered_weak.upgrade() {
+                super::connection::mark_answered(&answered, generation);
             }
         });
         if !self.try_register_query_handler(tx.clone(), handler) {
@@ -197,17 +200,13 @@ impl MykoClient {
         }
 
         let sampling_for_status = sampling.clone();
-        let ready_for_status = ready.downgrade();
         let sequences_for_status = sequences;
-        let status_cell = self.connection_status();
+        let status_cell = self.inner.connections.cell();
         let send_view_id = view_id;
         let status_guard = status_cell.subscribe(move |signal| {
-            if let hyphae::Signal::Value(status) = signal {
+            if let hyphae::Signal::Value(connection) = signal {
                 sequences_for_status.reset_epoch();
-                if let Some(ready_writer) = ready_for_status.upgrade() {
-                    ready_writer.set(false);
-                }
-                if let ConnectionStatus::Connected(_) = &**status {
+                if let ConnectionStatus::Connected(_) = &connection.status {
                     match sampling_for_status.subscribe() {
                         Ok(()) => debug!("Watching view map {send_view_id}"),
                         Err(error) => error!("Could not send view: {error:?}"),

@@ -394,6 +394,43 @@ pub(crate) mod test_util {
     //! the first line of any test asserting on reactive state at an instant
     //! (same fix as `tests/query_cache_leak_test.rs`, which is a separate
     //! process and doesn't need to share this lock).
+    /// Run `f` and wait until its writes and every write their callbacks
+    /// make in turn have settled. A writer is owed only its own ticket; the
+    /// epoch scope carries through the callback tickets that follow it.
+    /// Inside a callback it only runs `f`: the callback's ticket cannot
+    /// finish while the callback waits on it.
+    pub fn settled<R>(f: impl FnOnce() -> R) -> R {
+        if hyphae::settle::is_settling() {
+            return f();
+        }
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let scope = hyphae::Epoch::scoped(move || {
+            let _ = done_tx.send(());
+        });
+        let result = hyphae::batch_with(&[], Some(scope.epoch()), f);
+        drop(scope);
+        assert!(
+            done_rx
+                .recv_timeout(std::time::Duration::from_secs(30))
+                .is_ok(),
+            "the write's feedback settles"
+        );
+        result
+    }
+
+    /// Flush until `ready` holds. For feedback no epoch scope can carry,
+    /// such as a callback write made during a subscribe's initial delivery:
+    /// each flush settles one more generation of callback tickets.
+    pub fn settle_until(ready: impl Fn() -> bool) -> bool {
+        for _ in 0..1_000 {
+            if ready() {
+                return true;
+            }
+            hyphae::flush();
+        }
+        ready()
+    }
+
     pub fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
         static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
         LOCK.lock()

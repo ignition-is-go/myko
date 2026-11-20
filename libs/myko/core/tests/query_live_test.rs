@@ -23,6 +23,25 @@ fn scheduler_test_serial() -> std::sync::MutexGuard<'static, ()> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Run `f` and wait for its writes and the writes their callbacks make in
+/// turn. A writer is owed only its own ticket; `query_live` rebuilds its
+/// result from a filter callback, a later ticket.
+fn settled<R>(f: impl FnOnce() -> R) -> R {
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let scope = myko::hyphae::Epoch::scoped(move || {
+        let _ = done_tx.send(());
+    });
+    let result = myko::hyphae::batch_with(&[], Some(scope.epoch()), f);
+    drop(scope);
+    assert!(
+        done_rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .is_ok(),
+        "the write's feedback settles"
+    );
+    result
+}
+
 fn make_ctx() -> MykoServerContext {
     MykoServerContext::new(
         Uuid::new_v4(),
@@ -47,7 +66,7 @@ fn insert_client(ctx: &MykoServerContext, id: &str, server_id: &str) {
         windback: None,
     };
     let event = MEvent::from_item(&client, MEventType::SET, &format!("tx-{id}"));
-    assert!(ctx.apply_event_batch(vec![event]).is_ok());
+    assert!(settled(|| ctx.apply_event_batch(vec![event])).is_ok());
 }
 
 fn eq_filter(server_id: &str) -> ClientQuery {
@@ -93,14 +112,14 @@ fn query_live_updates_when_the_in_set_grows() {
     let result = ctx.query_live(filter_cell.clone());
     assert_eq!(result.snapshot().len(), 1);
 
-    filter_cell.set(in_filter(&["server-A", "server-B"]));
+    settled(|| filter_cell.set(in_filter(&["server-A", "server-B"])));
     assert_eq!(
         result.snapshot().len(),
         2,
         "growing the In set must add the newly-included server's clients"
     );
 
-    filter_cell.set(in_filter(&["server-A", "server-B", "server-C"]));
+    settled(|| filter_cell.set(in_filter(&["server-A", "server-B", "server-C"])));
     assert_eq!(result.snapshot().len(), 3);
 }
 
@@ -116,7 +135,7 @@ fn query_live_updates_when_the_in_set_shrinks() {
     let result = ctx.query_live(filter_cell.clone());
     assert_eq!(result.snapshot().len(), 2);
 
-    filter_cell.set(in_filter(&["server-A"]));
+    settled(|| filter_cell.set(in_filter(&["server-A"])));
     assert_eq!(
         result.snapshot().len(),
         1,
@@ -138,7 +157,7 @@ fn query_live_still_tracks_store_writes_after_a_filter_change() {
     // Change the filter (still In-based, same field) then write to the
     // store — the bucket subscriptions from the LATEST filter tick must
     // still be live and tracking writes, not just a one-time snapshot.
-    filter_cell.set(in_filter(&["server-B"]));
+    settled(|| filter_cell.set(in_filter(&["server-B"])));
     assert_eq!(result.snapshot().len(), 0);
 
     insert_client(&ctx, "c2", "server-B");
@@ -163,8 +182,12 @@ fn query_live_range_filter_change_reevaluates_correctly() {
         windback: Some(Arc::from("2026-01-01T00:00:00Z")),
     };
     assert!(
-        ctx.apply_event_batch(vec![MEvent::from_item(&client_a, MEventType::SET, "tx-1")])
-            .is_ok()
+        settled(|| ctx.apply_event_batch(vec![MEvent::from_item(
+            &client_a,
+            MEventType::SET,
+            "tx-1"
+        )]))
+        .is_ok()
     );
 
     let filter_cell: Cell<ClientQuery, CellMutable> = Cell::new(ClientQuery {
@@ -178,9 +201,11 @@ fn query_live_range_filter_change_reevaluates_correctly() {
 
     // Change to a non-matching value — scan mode must re-evaluate and
     // retract, even though nothing about the store changed.
-    filter_cell.set(ClientQuery {
-        windback: Some(myko::query::StringFilter::Eq(Arc::from("nope"))),
-        ..Default::default()
+    settled(|| {
+        filter_cell.set(ClientQuery {
+            windback: Some(myko::query::StringFilter::Eq(Arc::from("nope"))),
+            ..Default::default()
+        })
     });
     assert_eq!(
         result.snapshot().len(),
@@ -189,11 +214,13 @@ fn query_live_range_filter_change_reevaluates_correctly() {
     );
 
     // Change back to a matching value.
-    filter_cell.set(ClientQuery {
-        windback: Some(myko::query::StringFilter::Eq(Arc::from(
-            "2026-01-01T00:00:00Z",
-        ))),
-        ..Default::default()
+    settled(|| {
+        filter_cell.set(ClientQuery {
+            windback: Some(myko::query::StringFilter::Eq(Arc::from(
+                "2026-01-01T00:00:00Z",
+            ))),
+            ..Default::default()
+        })
     });
     assert_eq!(result.snapshot().len(), 1);
 }
@@ -234,7 +261,7 @@ fn query_live_downstream_state_survives_a_filter_change() {
     // throughout — verified structurally by construction (query_live
     // returns one CellMap up front and only ever mutates it via
     // insert/remove from then on, never replacing it).
-    filter_cell.set(in_filter(&["server-A", "server-B"]));
+    settled(|| filter_cell.set(in_filter(&["server-A", "server-B"])));
     insert_client(&ctx, "c2", "server-B");
     let _ = myko::hyphae::Gettable::get(&downstream);
     assert_eq!(
@@ -261,10 +288,10 @@ fn query_live_transitions_between_indexed_and_scan_mode() {
         windback: None,
     };
     assert!(
-        ctx.apply_event_batch(vec![
+        settled(|| ctx.apply_event_batch(vec![
             MEvent::from_item(&client_a, MEventType::SET, "tx-1"),
             MEvent::from_item(&client_b, MEventType::SET, "tx-2"),
-        ])
+        ]))
         .is_ok()
     );
 
@@ -276,11 +303,13 @@ fn query_live_transitions_between_indexed_and_scan_mode() {
     // Switch to scan mode (no belongs_to field pinned — only a non-indexed
     // field) — must tear down the indexed bucket subscription cleanly and
     // re-evaluate via the whole-store scan path.
-    filter_cell.set(ClientQuery {
-        windback: Some(myko::query::StringFilter::Eq(Arc::from(
-            "2026-01-01T00:00:00Z",
-        ))),
-        ..Default::default()
+    settled(|| {
+        filter_cell.set(ClientQuery {
+            windback: Some(myko::query::StringFilter::Eq(Arc::from(
+                "2026-01-01T00:00:00Z",
+            ))),
+            ..Default::default()
+        })
     });
     assert_eq!(
         result.snapshot().len(),
@@ -289,7 +318,7 @@ fn query_live_transitions_between_indexed_and_scan_mode() {
     );
 
     // Switch back to indexed mode with a different server.
-    filter_cell.set(eq_filter("server-B"));
+    settled(|| filter_cell.set(eq_filter("server-B")));
     assert_eq!(
         result.snapshot().len(),
         1,
@@ -337,7 +366,7 @@ fn query_live_id_filter_routes_and_tracks_disjoint_swaps() {
 
     // Swap to a completely disjoint id set: old contributions retract,
     // new ones adopt — no teardown of `result` itself.
-    filter_cell.set(id_in_filter(&["c2"]));
+    settled(|| filter_cell.set(id_in_filter(&["c2"])));
     let snap = result.snapshot();
     assert_eq!(snap.len(), 1);
     assert_eq!(snap.first().map(|entry| entry.0.as_ref()), Some("c2"));
@@ -358,11 +387,11 @@ fn query_live_switches_between_id_and_belongs_to_modes() {
     assert_eq!(result.snapshot().len(), 1);
 
     // id mode -> belongs_to mode (server-A has two clients).
-    filter_cell.set(eq_filter("server-A"));
+    settled(|| filter_cell.set(eq_filter("server-A")));
     assert_eq!(result.snapshot().len(), 2);
 
     // belongs_to mode -> id mode again.
-    filter_cell.set(id_in_filter(&["c1"]));
+    settled(|| filter_cell.set(id_in_filter(&["c1"])));
     let snap = result.snapshot();
     assert_eq!(snap.len(), 1);
     assert_eq!(snap.first().map(|entry| entry.0.as_ref()), Some("c1"));
