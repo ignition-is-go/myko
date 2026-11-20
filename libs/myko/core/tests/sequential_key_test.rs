@@ -238,11 +238,13 @@ fn a_subscriber_sees_every_event_of_one_key_from_a_single_batch() {
     ];
     // Queued before any of them settles, as a burst is when a settle is
     // already running.
+    let mut applied = 0;
     for set in ctx.handler_registry.sequential_sets(batch) {
-        let applied = hyphae::enqueue(&set.keys, None, || ctx.apply_event_batch(set.events));
-        assert_eq!(applied.ok(), Some(1));
+        applied += hyphae::enqueue(&set.keys, None, || ctx.apply_event_batch(set.events))
+            .expect("the batch applies");
     }
     hyphae::flush();
+    assert_eq!(applied, 3);
 
     assert_eq!(
         *seen.lock().unwrap_or_else(PoisonError::into_inner),
