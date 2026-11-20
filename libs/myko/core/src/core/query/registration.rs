@@ -531,19 +531,25 @@ fn belongs_to_source_index_for(
     extract_fk: CompoundFkExtractor,
 ) -> Arc<BelongsToSourceIndex> {
     let key = format!("{host_id}:{local_type}:{}", field_names.join("+"));
+    // Building the index reads every row of the store. The registry keeps
+    // it, so a routed query with no other live query on the store does not
+    // pay for that again.
+    let build = || {
+        let index = BelongsToSourceIndex::new(registry.get_or_create(local_type), extract_fk);
+        registry.retain(index.clone());
+        index
+    };
     match belongs_to_source_indexes().entry(key) {
         dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
             if let Some(index) = occupied.get().upgrade() {
                 return index;
             }
-            let store = registry.get_or_create(local_type);
-            let index = BelongsToSourceIndex::new(store, extract_fk);
+            let index = build();
             occupied.insert(Arc::downgrade(&index));
             index
         }
         dashmap::mapref::entry::Entry::Vacant(vacant) => {
-            let store = registry.get_or_create(local_type);
-            let index = BelongsToSourceIndex::new(store, extract_fk);
+            let index = build();
             vacant.insert(Arc::downgrade(&index));
             index
         }
@@ -1901,31 +1907,39 @@ mod belongs_to_source_index_tests {
     }
 
     #[test]
-    fn global_registry_does_not_retain_an_unused_index() {
+    fn the_store_registry_keeps_an_index_no_query_is_using() {
         let registry = Arc::new(crate::store::StoreRegistry::new());
         let host_id = Uuid::new_v4();
         let registry_key = format!("{host_id}:TestChild:parent_id");
-        let index = belongs_to_source_index_for(
-            &registry,
-            host_id,
-            "TestChild",
-            &["parent_id"],
-            extract_parent_fk,
-        );
+        let lookup = || {
+            belongs_to_source_index_for(
+                &registry,
+                host_id,
+                "TestChild",
+                &["parent_id"],
+                extract_parent_fk,
+            )
+        };
+        let index = lookup();
         let weak = Arc::downgrade(&index);
         let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-live")]);
-
-        drop(index);
-        assert!(
-            weak.upgrade().is_some(),
-            "a live bucket must retain the index that routes its updates"
-        );
         drop(bucket);
+        drop(index);
+
+        let again = lookup();
+        assert!(
+            weak.upgrade()
+                .is_some_and(|first| Arc::ptr_eq(&first, &again)),
+            "the index was rebuilt once its last bucket was dropped"
+        );
+        drop(again);
+        drop(lookup);
+
+        drop(registry);
         assert!(
             weak.upgrade().is_none(),
-            "the global registry or driver subscription retained an unused index"
+            "the index outlived the registry that owns its store"
         );
-
         sweep_all_belongs_to_source_indexes();
         assert!(
             !belongs_to_source_indexes().contains_key(&registry_key),

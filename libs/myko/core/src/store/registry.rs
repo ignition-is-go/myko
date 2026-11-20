@@ -32,6 +32,9 @@ pub struct StoreRegistry {
     // the lookup-by-entity-type hot path. Bench: dashmap_default 183 µs vs
     // dashmap_ahash 115 µs / 10k lookups.
     stores: DashMap<Arc<str>, Arc<EntityStore>, ahash::RandomState>,
+    /// Indexes derived from these stores. They are costly to rebuild, so
+    /// they live as long as the stores do.
+    retained: parking_lot::Mutex<Vec<Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
 impl StoreRegistry {
@@ -41,7 +44,13 @@ impl StoreRegistry {
         Self {
             transactions: super::transactions::TransactionCoordinator::default(),
             stores: DashMap::with_hasher(ahash::RandomState::new()),
+            retained: parking_lot::Mutex::new(Vec::new()),
         }
+    }
+
+    /// Keep a derived index alive for the lifetime of this registry.
+    pub(crate) fn retain(&self, index: Arc<dyn std::any::Any + Send + Sync>) {
+        self.retained.lock().push(index);
     }
 
     /// Coordinate a persistence consumer's store update with checked reversals.
