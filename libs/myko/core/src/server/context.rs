@@ -4053,14 +4053,12 @@ mod tests {
     /// Fires every node on a settle pool thread while it lives.
     struct ForcedSettlePool {
         workers: usize,
-        wave_min: usize,
     }
 
     impl ForcedSettlePool {
         fn new() -> Self {
             Self {
                 workers: hyphae::settle::set_workers(1),
-                wave_min: hyphae::settle::set_wave_min(1),
             }
         }
     }
@@ -4068,7 +4066,6 @@ mod tests {
     impl Drop for ForcedSettlePool {
         fn drop(&mut self) {
             hyphae::settle::set_workers(self.workers);
-            hyphae::settle::set_wave_min(self.wave_min);
         }
     }
 
