@@ -1496,12 +1496,16 @@ mod tests {
                     .is_ok()
             );
             assert!(finished.join().is_ok());
-            assert_eq!(
-                *sequences
+            // The writer's re-entrant insert is a later ticket than the one
+            // that called it; the inserter is owed only its own.
+            let delivered = || {
+                sequences
                     .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner),
-                vec![0, 1, 2]
-            );
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .clone()
+            };
+            assert!(crate::test_util::settle_until(|| delivered().len() == 3));
+            assert_eq!(delivered(), vec![0, 1, 2]);
         }
     }
 

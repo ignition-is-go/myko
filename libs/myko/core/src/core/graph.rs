@@ -6585,12 +6585,12 @@ mod tests {
             id: ForwardIndexedAssignmentId::from("related-edge-parallel"),
             ..first.clone()
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article_a).is_ok());
-        assert!(context.set(&article_b).is_ok());
-        assert!(context.set(&unrelated).is_ok());
-        assert!(context.set(&first).is_ok());
-        assert!(context.set(&parallel).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&tag)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&article_a)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&article_b)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&unrelated)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&first)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&parallel)).is_ok());
 
         let request = || {
             Arc::new(crate::request::RequestContext::from_client(
@@ -6616,14 +6616,14 @@ mod tests {
             title: "still unrelated".into(),
             ..unrelated.clone()
         };
-        assert!(context.set(&unrelated_update).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&unrelated_update)).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 0);
 
         let article_a_update = Article {
             title: "A updated".into(),
             ..article_a.clone()
         };
-        assert!(context.set(&article_a_update).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&article_a_update)).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
         assert!(targets.get_value(&article_a.id()).is_some_and(|item| {
             item.as_any()
@@ -6631,16 +6631,16 @@ mod tests {
                 .is_some_and(|article| article.title.as_ref() == "A updated")
         }));
 
-        assert!(context.del(&first).is_ok());
+        assert!(crate::test_util::settled(|| context.del(&first)).is_ok());
         assert_eq!(targets.snapshot().len(), 1);
-        assert!(context.del(&parallel).is_ok());
+        assert!(crate::test_util::settled(|| context.del(&parallel)).is_ok());
         assert!(targets.snapshot().is_empty());
 
         let moved = ForwardIndexedAssignment {
             article_id: article_b.id.clone(),
             ..first
         };
-        assert!(context.set(&moved).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&moved)).is_ok());
         assert!(targets.get_value(&article_b.id()).is_some());
         let sources = context.query_map_by_str(
             ForwardIndexedAssignmentGraphSourcesTo::new(article_b.id.clone()),
@@ -6773,30 +6773,28 @@ mod tests {
         });
         diffs.store(0, Ordering::SeqCst);
         assert!(
-            context
-                .set(&Article {
-                    title: "still unrelated".into(),
-                    ..unrelated
-                })
-                .is_ok()
+            crate::test_util::settled(|| context.set(&Article {
+                title: "still unrelated".into(),
+                ..unrelated
+            }))
+            .is_ok()
         );
         assert_eq!(diffs.load(Ordering::SeqCst), 0);
 
         assert!(
-            context
-                .set(&Article {
-                    title: "B updated".into(),
-                    ..article_b.clone()
-                })
-                .is_ok()
+            crate::test_util::settled(|| context.set(&Article {
+                title: "B updated".into(),
+                ..article_b.clone()
+            }))
+            .is_ok()
         );
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
 
-        assert!(context.del(&first).is_ok());
+        assert!(crate::test_util::settled(|| context.del(&first)).is_ok());
         assert!(neighbors.get_value(&article_b.id()).is_some());
-        assert!(context.del(&parallel).is_ok());
+        assert!(crate::test_util::settled(|| context.del(&parallel)).is_ok());
         assert!(neighbors.get_value(&article_b.id()).is_none());
-        assert!(context.del(&self_loop).is_ok());
+        assert!(crate::test_util::settled(|| context.del(&self_loop)).is_ok());
         assert!(neighbors.get_value(&article_a.id()).is_none());
     }
 
@@ -6808,7 +6806,7 @@ mod tests {
             title: "center".into(),
             id: ArticleId::from("dense-neighbor-center"),
         };
-        assert!(context.set(&center).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&center)).is_ok());
 
         let neighbors = (0..1_024)
             .map(|ordinal| Article {
@@ -6858,12 +6856,11 @@ mod tests {
         });
         diffs.store(0, Ordering::SeqCst);
         assert!(
-            context
-                .set(&Article {
-                    title: "center updated".into(),
-                    ..center
-                })
-                .is_ok()
+            crate::test_util::settled(|| context.set(&Article {
+                title: "center updated".into(),
+                ..center
+            }))
+            .is_ok()
         );
         assert_eq!(diffs.load(Ordering::SeqCst), 0);
 
@@ -6871,17 +6868,17 @@ mod tests {
             title: "first updated".into(),
             ..neighbors[0].clone()
         };
-        assert!(context.set(&first_neighbor).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&first_neighbor)).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
 
-        assert!(context.del(&neighbors[1]).is_ok());
+        assert!(crate::test_util::settled(|| context.del(&neighbors[1])).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 2);
         assert!(view.get_value(&neighbors[1].id()).is_none());
-        assert!(context.set(&neighbors[1]).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&neighbors[1])).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 2);
         assert!(view.get_value(&neighbors[1].id()).is_none());
 
-        assert!(context.del(&edges[0]).is_ok());
+        assert!(crate::test_util::settled(|| context.del(&edges[0])).is_ok());
         assert_eq!(view.snapshot().len(), neighbors.len().saturating_sub(2));
     }
 
@@ -6902,8 +6899,8 @@ mod tests {
             article_id: article.id.clone(),
             id: ForwardIndexedAssignmentId::from("related-edge-reentrant"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&tag)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&article)).is_ok());
 
         let targets = context.query_map_by_str(
             ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
@@ -6930,7 +6927,7 @@ mod tests {
             }
         });
 
-        assert!(context.set(&edge).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&edge)).is_ok());
         assert!(fired.load(Ordering::SeqCst));
         assert!(deleted.load(Ordering::SeqCst));
         assert!(targets.snapshot().is_empty());
@@ -6958,9 +6955,9 @@ mod tests {
             title: "B".into(),
             id: ArticleId::from("article-windowed-b"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article_a).is_ok());
-        assert!(context.set(&article_b).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&tag)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&article_a)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&article_b)).is_ok());
         assert!(
             context
                 .batch_set(&[
@@ -7005,14 +7002,14 @@ mod tests {
             title: "B updated".into(),
             ..article_b.clone()
         };
-        assert!(context.set(&off_page_update).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&off_page_update)).is_ok());
         assert!(Arc::ptr_eq(&initial, &source.snapshots().get()));
 
         let visible_article_update = Article {
             title: "A updated".into(),
             ..article_a
         };
-        assert!(context.set(&visible_article_update).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&visible_article_update)).is_ok());
         let visible_update = source.snapshots().get();
         assert!(!Arc::ptr_eq(&initial, &visible_update));
 
@@ -7025,12 +7022,12 @@ mod tests {
             article_id: article_first.id.clone(),
             id: ForwardIndexedAssignmentId::from("windowed-related-first"),
         };
-        assert!(context.set(&article_first).is_ok());
-        assert!(context.set(&edge_first).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&article_first)).is_ok());
+        assert!(crate::test_util::settled(|| context.set(&edge_first)).is_ok());
         let shifted = source.snapshots().get();
         assert_eq!(shifted.total_count, 3);
         assert_eq!(shifted.entries[0].0, article_first.id());
-        assert!(context.del(&edge_first).is_ok());
+        assert!(crate::test_util::settled(|| context.del(&edge_first)).is_ok());
         let restored = source.snapshots().get();
         assert_eq!(restored.total_count, 2);
         assert_eq!(restored.entries[0].0, visible_article_update.id());

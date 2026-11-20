@@ -1544,14 +1544,18 @@ mod belongs_to_source_index_tests {
                 generation: 0,
                 filter: ClientQuery::default(),
             }));
-            let _reconciliation = synchronization.reconciliation_gate.lock();
+            let reconciliation = synchronization.reconciliation_gate.lock();
             let _guard = bucket.subscribe_diffs(build_live_diff_callback(
                 &result,
                 filter,
                 &synchronization,
                 LiveDiffScope::Bucket,
             ));
-            assert_eq!(result.snapshot().len(), 2);
+            // The callback's insert is a later ticket, replayed once the gate opens.
+            drop(reconciliation);
+            assert!(crate::test_util::settle_until(
+                || result.snapshot().len() == 2
+            ));
             assert!(done.send(()).is_ok());
         });
         assert!(
