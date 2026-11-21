@@ -3760,8 +3760,6 @@ dependencies = [
 [[package]]
 name = "hyphae"
 version = "3.1.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f032da105f8b60b47afe176e7cfef5d6905857895915efc4703cc281bbdb762b"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -11128,3 +11126,11 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
+
+[[patch.unused]]
+name = "hyphae-gpui"
+version = "3.1.12"
+
+[[patch.unused]]
+name = "hyphae-leptos"
+version = "3.1.12"

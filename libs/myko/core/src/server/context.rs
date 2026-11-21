@@ -3214,7 +3214,7 @@ mod tests {
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hyphae::{Gettable, Materialize, ReactiveKeys},
+        hyphae::{Gettable, Materialize, ReactiveKeys, Watchable},
         search::SearchIndex,
         server::{
             HandlerRegistry, PersistError, Persister, RelationshipManager,
