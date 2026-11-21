@@ -580,7 +580,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
             fn execute(self, ctx: #krate::prelude::CommandContext) -> Result<#delete_many_result, #krate::prelude::CommandError> {
                 let entities = ctx.exec_query(#get_many { ids: self.ids.clone() })?;
                 let deleted_count = entities.len();
-                ctx.emit_del_batch(entities.iter().map(|entity| entity.as_ref()))?;
+                ctx.emit_del_batch(entities)?;
                 Ok(#delete_many_result { deleted_count })
             }
         }

@@ -26,7 +26,7 @@ pub fn begin_undo_history(
             "undo-boundary",
         ));
         let ctx = CommandContext::new("myko:undo-history-boundary".into(), request, server.clone());
-        ctx.emit_set(&UndoHistoryBoundary { id: id.into() })
+        ctx.emit_set(UndoHistoryBoundary { id: id.into() })
             .map_err(|error| error.message)?;
         drop(ctx);
         server.flush_history_writes()?;

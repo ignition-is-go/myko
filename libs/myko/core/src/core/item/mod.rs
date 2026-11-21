@@ -8,7 +8,7 @@ pub use cell_map_cast::{
     typed_map_from_any_item, typed_map_from_any_item_with_typed_id,
 };
 pub use traits::{
-    AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
+    AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, IntoItem, ItemParseFn,
     ItemRegistration, ItemSerializeJsonFn, UndoableRegistration, is_undoable_entity,
     lookup_item_registration,
 };

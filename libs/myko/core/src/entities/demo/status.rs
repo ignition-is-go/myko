@@ -31,7 +31,7 @@ pub struct CreateDemoStatus {
 
 impl CommandHandler for CreateDemoStatus {
     fn execute(self, ctx: CommandContext) -> Result<bool, CommandError> {
-        ctx.emit_set(&DemoStatus {
+        ctx.emit_set(DemoStatus {
             id: self.id,
             name: self.name,
             color: self.color,
@@ -61,7 +61,7 @@ impl CommandHandler for RenameDemoStatus {
                     format!("demo status {} not found", self.id),
                 )
             })?;
-        ctx.emit_set(&DemoStatus {
+        ctx.emit_set(DemoStatus {
             id: self.id,
             name: self.name,
             color: status.color.clone(),

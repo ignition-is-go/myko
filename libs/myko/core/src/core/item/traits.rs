@@ -159,6 +159,24 @@ inventory::collect!(IngestBufferRegistration);
 // Eventable - Trait for items that can be sent as events
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// An entity handed to a write: a value, which moves into its `Arc`, or an
+/// `Arc` already held, which is shared. Neither copies the entity.
+pub trait IntoItem<T> {
+    fn into_item(self) -> Arc<T>;
+}
+
+impl<T: Eventable> IntoItem<T> for T {
+    fn into_item(self) -> Arc<T> {
+        Arc::new(self)
+    }
+}
+
+impl<T: Eventable> IntoItem<T> for Arc<T> {
+    fn into_item(self) -> Self {
+        self
+    }
+}
+
 pub trait Eventable:
     AnyItem + Serialize + DeserializeOwned + Clone + PartialEq + Sized + Any
 {

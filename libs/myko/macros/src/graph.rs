@@ -770,7 +770,7 @@ fn graph_mutation_tokens(
                 self,
                 ctx: #krate::prelude::CommandContext,
             ) -> Result<(), #krate::prelude::CommandError> {
-                #krate::prelude::EventPublishing::emit_set(&ctx, &self.edge)
+                #krate::prelude::EventPublishing::emit_set(&ctx, self.edge)
             }
         }
 
@@ -787,7 +787,7 @@ fn graph_mutation_tokens(
                 ctx: #krate::prelude::CommandContext,
             ) -> Result<usize, #krate::prelude::CommandError> {
                 let affected = self.edges.len();
-                #krate::prelude::EventPublishing::emit_set_batch(&ctx, &self.edges)?;
+                #krate::prelude::EventPublishing::emit_set_batch(&ctx, self.edges)?;
                 Ok(affected)
             }
         }
@@ -875,7 +875,7 @@ fn graph_mutation_tokens(
                     });
                 }
 
-                match #krate::prelude::EventPublishing::emit_set(&ctx, &self.edge) {
+                match #krate::prelude::EventPublishing::emit_set(&ctx, self.edge.clone()) {
                     Ok(()) => Ok(#ensure_result {
                         id: #krate::prelude::WithTypedId::typed_id(&self.edge),
                         created: true,

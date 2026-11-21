@@ -1713,16 +1713,16 @@ mod provenance_tests {
             port: 0,
             started_at: "test".into(),
         };
-        ctx.emit_set(&parent)
+        ctx.emit_set(parent.clone())
             .map_err(|error| anyhow::anyhow!(error.message))?;
-        ctx.emit_set(&ConnectedClient {
+        ctx.emit_set(ConnectedClient {
             id: "child".into(),
             server_id: ServerId::from(Arc::<str>::from("parent")),
             address: None,
             windback: None,
         })
         .map_err(|error| anyhow::anyhow!(error.message))?;
-        ctx.emit_del(&parent)
+        ctx.emit_del(parent)
             .map_err(|error| anyhow::anyhow!(error.message))?;
 
         let history = PostgresHistoryStore::new(config).map_err(anyhow::Error::msg)?;

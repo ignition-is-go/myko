@@ -675,11 +675,11 @@ impl MykoServerContext {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    pub fn set<T>(&self, entity: impl Into<Arc<T>>) -> Result<(), PersistError>
+    pub fn set<T>(&self, entity: impl crate::core::item::IntoItem<T>) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        self.set_with_origin(entity.into(), Origin::Local)
+        self.set_with_origin(entity.into_item(), Origin::Local)
     }
 
     /// Publish a live-only SET for an in-progress interaction. The item is
@@ -689,11 +689,14 @@ impl MykoServerContext {
     /// # Errors
     ///
     /// Returns an error when the entity cannot be serialized or applied.
-    pub fn set_transient<T>(&self, entity: impl Into<Arc<T>>) -> Result<(), PersistError>
+    pub fn set_transient<T>(
+        &self,
+        entity: impl crate::core::item::IntoItem<T>,
+    ) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        self.set_with_origin(entity.into(), Origin::Transient)
+        self.set_with_origin(entity.into_item(), Origin::Transient)
     }
 
     /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
@@ -717,11 +720,11 @@ impl MykoServerContext {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    pub fn del<T>(&self, entity: impl Into<Arc<T>>) -> Result<(), PersistError>
+    pub fn del<T>(&self, entity: impl crate::core::item::IntoItem<T>) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        self.del_with_origin(entity.into(), Origin::Local)
+        self.del_with_origin(entity.into_item(), Origin::Local)
     }
 
     pub(crate) fn del_with_origin<T>(
@@ -747,7 +750,7 @@ impl MykoServerContext {
     where
         T: Eventable + 'static,
         I: IntoIterator,
-        I::Item: Into<Arc<T>>,
+        I::Item: crate::core::item::IntoItem<T>,
     {
         self.batch_set_with_origin(entities, Origin::Local)
     }
@@ -761,11 +764,13 @@ impl MykoServerContext {
     where
         T: Eventable + 'static,
         I: IntoIterator,
-        I::Item: Into<Arc<T>>,
+        I::Item: crate::core::item::IntoItem<T>,
     {
         let items: Vec<Arc<dyn AnyItem>> = entities
             .into_iter()
-            .map(|entity| -> Arc<dyn AnyItem> { entity.into() })
+            .map(|entity| -> Arc<dyn AnyItem> {
+                crate::core::item::IntoItem::<T>::into_item(entity)
+            })
             .collect();
         if items.is_empty() {
             return Ok(());
@@ -784,7 +789,7 @@ impl MykoServerContext {
     where
         T: Eventable + 'static,
         I: IntoIterator,
-        I::Item: Into<Arc<T>>,
+        I::Item: crate::core::item::IntoItem<T>,
     {
         self.batch_del_with_origin(entities, Origin::Local)
     }
@@ -798,11 +803,13 @@ impl MykoServerContext {
     where
         T: Eventable + 'static,
         I: IntoIterator,
-        I::Item: Into<Arc<T>>,
+        I::Item: crate::core::item::IntoItem<T>,
     {
         let items: Vec<Arc<dyn AnyItem>> = entities
             .into_iter()
-            .map(|entity| -> Arc<dyn AnyItem> { entity.into() })
+            .map(|entity| -> Arc<dyn AnyItem> {
+                crate::core::item::IntoItem::<T>::into_item(entity)
+            })
             .collect();
         if items.is_empty() {
             return Ok(());

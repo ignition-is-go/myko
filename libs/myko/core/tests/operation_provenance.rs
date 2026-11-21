@@ -38,7 +38,7 @@ impl Persister for Recording {
             .take();
         if let Some(nested) = nested {
             nested
-                .emit_set(&child("reentrant"))
+                .emit_set(child("reentrant"))
                 .map_err(|e| PersistError {
                     entity_type: "Client".into(),
                     message: e.message,
@@ -116,7 +116,7 @@ fn child(id: &str) -> Client {
 pub struct NestedEdit {}
 impl CommandHandler for NestedEdit {
     fn execute(self, ctx: CommandContext) -> Result<(), myko::command::CommandError> {
-        ctx.emit_set(&child("nested"))
+        ctx.emit_set(child("nested"))
     }
 }
 
@@ -125,22 +125,22 @@ fn command_emissions_batches_replacements_and_cascades_share_transaction() -> an
     let (server, recorder, sink) = setup();
     let ctx = context(server.clone());
     let cloned = ctx.clone(); // Cloning before the first emit must keep one operation.
-    ctx.emit_set(&parent())
+    ctx.emit_set(parent())
         .map_err(|e| anyhow::anyhow!(e.message))?;
-    ctx.emit_set_batch(&[child("one"), child("two")])
+    ctx.emit_set_batch([child("one"), child("two")])
         .map_err(|e| anyhow::anyhow!(e.message))?;
     let mixed: Vec<Arc<dyn AnyItem>> = vec![Arc::new(child("three")), Arc::new(parent())];
     cloned
         .emit_set_any_batch(mixed)
         .map_err(|e| anyhow::anyhow!(e.message))?;
-    ctx.emit_replace_batch(&[child("four")], &[Arc::new(child("one"))])
+    ctx.emit_replace_batch([child("four")], &[Arc::new(child("one"))])
         .map_err(|e| anyhow::anyhow!(e.message))?;
     let raw = MEvent::from_item(&child("five"), MEventType::SET, "imported-host");
     ctx.emit_event_batch(vec![raw])
         .map_err(|e| anyhow::anyhow!(e.message))?;
     ctx.execute_command(NestedEdit {})
         .map_err(|e| anyhow::anyhow!(e.message))?;
-    ctx.emit_del(&parent())
+    ctx.emit_del(parent())
         .map_err(|e| anyhow::anyhow!(e.message))?;
     let records = recorder
         .0
@@ -187,10 +187,10 @@ fn command_emissions_batches_replacements_and_cascades_share_transaction() -> an
 fn independent_contexts_can_share_transaction() -> anyhow::Result<()> {
     let (server, recorder, _) = setup();
     context(server.clone())
-        .emit_set(&parent())
+        .emit_set(parent())
         .map_err(|e| anyhow::anyhow!(e.message))?;
     context(server)
-        .emit_set(&parent())
+        .emit_set(parent())
         .map_err(|e| anyhow::anyhow!(e.message))?;
     let records = recorder
         .0
@@ -240,7 +240,7 @@ fn queued_reentrant_command_retains_its_own_operation() -> anyhow::Result<()> {
     let (server, recorder, _) = setup();
     let outer = context(server.clone());
     outer
-        .emit_set(&parent())
+        .emit_set(parent())
         .map_err(|e| anyhow::anyhow!(e.message))?;
     let mut nested = context(server);
     Arc::make_mut(&mut nested.req).tx = "reentrant-tx".into();
@@ -249,7 +249,7 @@ fn queued_reentrant_command_retains_its_own_operation() -> anyhow::Result<()> {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(nested);
     outer
-        .emit_del(&parent())
+        .emit_del(parent())
         .map_err(|e| anyhow::anyhow!(e.message))?;
     let records = recorder
         .0
@@ -390,9 +390,9 @@ fn command_queries_reports_and_nested_writes_keep_originating_transaction() -> a
 fn sink_only_commands_keep_originating_transaction() -> anyhow::Result<()> {
     let (server, _, sink) = setup_with_recording(false);
     let ctx = context(server);
-    ctx.emit_set(&parent())
+    ctx.emit_set(parent())
         .map_err(|error| anyhow::anyhow!(error.message))?;
-    ctx.emit_set_batch(&[child("one"), child("two")])
+    ctx.emit_set_batch([child("one"), child("two")])
         .map_err(|error| anyhow::anyhow!(error.message))?;
     let events: Vec<_> = sink.try_iter().collect();
     anyhow::ensure!(events.len() == 3);
@@ -428,7 +428,7 @@ fn saga_commands_keep_event_transaction_across_async_dispatch() -> anyhow::Resul
 
     let (server, recorder, _) = setup();
     let ctx = context(server.clone());
-    ctx.emit_set(&parent())
+    ctx.emit_set(parent())
         .map_err(|error| anyhow::anyhow!(error.message))?;
     let event = recorder
         .0

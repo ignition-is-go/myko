@@ -167,7 +167,7 @@ impl crate::command::CommandHandler for SetClientWindbackTime {
             windback: Some(self.windback),
         };
 
-        ctx.emit_set(&updated_client)?;
+        ctx.emit_set(updated_client)?;
 
         Ok(true)
     }
@@ -211,7 +211,7 @@ impl crate::command::CommandHandler for ClearClientWindbackTime {
             windback: None,
         };
 
-        ctx.emit_set(&updated_client)?;
+        ctx.emit_set(updated_client)?;
 
         Ok(true)
     }

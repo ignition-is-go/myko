@@ -152,7 +152,7 @@ impl CommandHandler for SetBPartRevision {
         else {
             return Ok(false);
         };
-        ctx.emit_set(&BPart {
+        ctx.emit_set(BPart {
             id: part.id.clone(),
             name: part.name.clone(),
             revision: self.revision,

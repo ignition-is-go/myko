@@ -33,7 +33,7 @@ pub struct CreateDemoTask {
 
 impl CommandHandler for CreateDemoTask {
     fn execute(self, ctx: CommandContext) -> Result<bool, CommandError> {
-        ctx.emit_set(&DemoTask {
+        ctx.emit_set(DemoTask {
             id: self.id,
             title: self.title,
             completed: self.completed,
@@ -63,7 +63,7 @@ impl CommandHandler for RenameDemoTask {
                     format!("demo task {} not found", self.id),
                 )
             })?;
-        ctx.emit_set(&DemoTask {
+        ctx.emit_set(DemoTask {
             id: self.id,
             title: self.title,
             completed: task.completed,
@@ -103,7 +103,7 @@ impl CommandHandler for SetDemoTaskStatus {
                     format!("demo task {} not found", self.id),
                 )
             })?;
-        ctx.emit_set(&DemoTask {
+        ctx.emit_set(DemoTask {
             id: self.id,
             title: task.title.clone(),
             completed: task.completed,

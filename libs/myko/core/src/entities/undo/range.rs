@@ -353,7 +353,7 @@ pub fn undo_range_matching(
             };
             ctx.clone()
                 .for_undo(history.transaction_id.clone())
-                .emit_set(&receipt)?;
+                .emit_set(receipt)?;
         }
         ctx.__server_ctx()
             .flush_history_writes()

@@ -189,7 +189,7 @@ pub fn generate_setter_commands(entity_name: &str, setters: &[SetterField]) -> T
                             ..entity.as_ref().clone()
                         };
 
-                        ctx.emit_set(&updated)?;
+                        ctx.emit_set(updated)?;
                         Ok(())
                     }
                 }

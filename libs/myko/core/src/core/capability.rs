@@ -283,15 +283,15 @@ pub trait EventPublishing: ServerScoped {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    fn emit_set<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
+    fn emit_set<T>(&self, item: impl crate::core::item::IntoItem<T>) -> Result<(), CommandError>
     where
-        T: Eventable + Serialize + Clone + 'static,
+        T: Eventable + 'static,
     {
         let _operation = self
             .__operation_provenance()
             .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
-            .set((*item).clone())
+            .set(item.into_item())
             .map_err(|e| self.__emit_err(e))
     }
 
@@ -303,16 +303,16 @@ pub trait EventPublishing: ServerScoped {
     /// Returns an error when the transient update cannot be applied.
     fn emit_set_transient<T>(
         &self,
-        item: impl std::ops::Deref<Target = T>,
+        item: impl crate::core::item::IntoItem<T>,
     ) -> Result<(), CommandError>
     where
-        T: Eventable + Serialize + Clone + 'static,
+        T: Eventable + 'static,
     {
         let _operation = self
             .__operation_provenance()
             .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
-            .set_transient((*item).clone())
+            .set_transient(item.into_item())
             .map_err(|e| self.__emit_err(e))
     }
 
@@ -321,13 +321,17 @@ pub trait EventPublishing: ServerScoped {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    fn emit_set_batch<T: Eventable + Serialize + Clone + 'static>(
-        &self,
-        items: &[T],
-    ) -> Result<(), CommandError> {
+    fn emit_set_batch<T, I>(&self, items: I) -> Result<(), CommandError>
+    where
+        T: Eventable + 'static,
+        I: IntoIterator,
+        I::Item: crate::core::item::IntoItem<T>,
+    {
         let anys = items
-            .iter()
-            .map(|item| -> Arc<dyn crate::item::AnyItem> { Arc::new(item.clone()) });
+            .into_iter()
+            .map(|item| -> Arc<dyn crate::item::AnyItem> {
+                crate::core::item::IntoItem::<T>::into_item(item)
+            });
         let _operation = self
             .__operation_provenance()
             .map(|p| self.__server_ctx().operation_scope(p));
@@ -358,15 +362,15 @@ pub trait EventPublishing: ServerScoped {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    fn emit_del<T>(&self, item: impl std::ops::Deref<Target = T>) -> Result<(), CommandError>
+    fn emit_del<T>(&self, item: impl crate::core::item::IntoItem<T>) -> Result<(), CommandError>
     where
-        T: Eventable + Serialize + Clone + 'static,
+        T: Eventable + 'static,
     {
         let _operation = self
             .__operation_provenance()
             .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
-            .del((*item).clone())
+            .del(item.into_item())
             .map_err(|e| self.__emit_err(e))
     }
 
@@ -375,15 +379,17 @@ pub trait EventPublishing: ServerScoped {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    fn emit_del_batch<'a, T, I>(&self, items: I) -> Result<(), CommandError>
+    fn emit_del_batch<T, I>(&self, items: I) -> Result<(), CommandError>
     where
-        T: Eventable + Serialize + Clone + 'static,
-        I: IntoIterator<Item = &'a T>,
-        T: 'a,
+        T: Eventable + 'static,
+        I: IntoIterator,
+        I::Item: crate::core::item::IntoItem<T>,
     {
         let anys = items
             .into_iter()
-            .map(|item| -> Arc<dyn crate::item::AnyItem> { Arc::new(item.clone()) });
+            .map(|item| -> Arc<dyn crate::item::AnyItem> {
+                crate::core::item::IntoItem::<T>::into_item(item)
+            });
         let _operation = self
             .__operation_provenance()
             .map(|p| self.__server_ctx().operation_scope(p));
@@ -398,13 +404,17 @@ pub trait EventPublishing: ServerScoped {
     /// # Errors
     ///
     /// Returns an error when authoritative validation or persistence fails.
-    fn emit_replace_batch<T>(&self, upserts: &[T], deletes: &[Arc<T>]) -> Result<(), CommandError>
+    fn emit_replace_batch<T, I>(&self, upserts: I, deletes: &[Arc<T>]) -> Result<(), CommandError>
     where
-        T: Eventable + Serialize + Clone + 'static,
+        T: Eventable + 'static,
+        I: IntoIterator,
+        I::Item: crate::core::item::IntoItem<T>,
     {
         let upserts = upserts
-            .iter()
-            .map(|item| -> Arc<dyn crate::item::AnyItem> { Arc::new(item.clone()) });
+            .into_iter()
+            .map(|item| -> Arc<dyn crate::item::AnyItem> {
+                crate::core::item::IntoItem::<T>::into_item(item)
+            });
         let deletes = deletes
             .iter()
             .cloned()

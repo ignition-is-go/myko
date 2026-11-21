@@ -60,8 +60,8 @@ pub use crate::{
             TraversalReportOptions, TraversalResult, TypedEdgeEnds, Undirected,
         },
         item::{
-            AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
-            ItemRegistration,
+            AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, IntoItem,
+            ItemParseFn, ItemRegistration,
         },
     },
     query::{

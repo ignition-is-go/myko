@@ -200,7 +200,7 @@ impl Fixture {
             })
             .collect::<Vec<_>>();
         self.context(user, tx)
-            .emit_set_batch(&positions)
+            .emit_set_batch(positions.iter().cloned())
             .map_err(command_error)?;
         self.backend.flush().map_err(anyhow::Error::msg)
     }
@@ -255,7 +255,7 @@ fn alice_undoes_move_after_restart_and_preserves_bobs_rename() -> anyhow::Result
     node.name = "Bob's name".into();
     fixture
         .context("bob", "bob-rename")
-        .emit_set(&node)
+        .emit_set(node)
         .map_err(command_error)?;
     fixture.restart()?;
     let result = UndoLastTransaction {}
@@ -357,7 +357,7 @@ fn deletion_undo_resurrects_entities_and_original_relationship_ids() -> anyhow::
     let original = fixture.node("a")?;
     fixture
         .context("alice", "delete-node")
-        .emit_del(&original)
+        .emit_del(original)
         .map_err(command_error)?;
     anyhow::ensure!(fixture.node("a").is_err() && fixture.position("a").is_err());
     let result = UndoTransaction {
@@ -378,7 +378,7 @@ fn undo_creation_cannot_cascade_delete_a_newer_child() -> anyhow::Result<()> {
     fixture.seed()?;
     fixture
         .context("alice", "create-node")
-        .emit_set(&UndoNode {
+        .emit_set(UndoNode {
             id: "new".into(),
             scene_id: "scene".into(),
             name: "New".into(),
@@ -386,7 +386,7 @@ fn undo_creation_cannot_cascade_delete_a_newer_child() -> anyhow::Result<()> {
         .map_err(command_error)?;
     fixture
         .context("bob", "add-value")
-        .emit_set(&UndoValue {
+        .emit_set(UndoValue {
             id: "value".into(),
             node_id: "new".into(),
             value: "Bob's value".into(),
@@ -432,7 +432,7 @@ fn incomplete_transaction_remains_ineligible_after_restart() -> anyhow::Result<(
     fixture.seed()?;
     let unfinished = fixture.context("alice", "unfinished");
     unfinished
-        .emit_set(&UndoPosition {
+        .emit_set(UndoPosition {
             id: "a".into(),
             node_id: "a".into(),
             x: Some(5.0),
@@ -502,7 +502,7 @@ pub struct SagaMove {
 }
 impl CommandHandler for SagaMove {
     fn execute(self, ctx: CommandContext) -> Result<(), myko::command::CommandError> {
-        ctx.emit_set(&UndoPosition {
+        ctx.emit_set(UndoPosition {
             id: self.node_id.0.clone().into(),
             node_id: self.node_id,
             x: Some(7.0),
@@ -544,7 +544,7 @@ fn saga_retains_verified_actor_and_delays_completion_until_causal_work_finishes(
     );
     fixture
         .context("alice", "saga-root")
-        .emit_set(&UndoTrigger {
+        .emit_set(UndoTrigger {
             id: "trigger".into(),
             node_id: "a".into(),
         })
@@ -606,7 +606,7 @@ fn mixed_authors_and_legacy_history_are_not_undo_authority() -> anyhow::Result<(
     let mut context = fixture.context("alice", "legacy");
     Arc::make_mut(&mut context.req).auth = None;
     context
-        .emit_set(&UndoPosition {
+        .emit_set(UndoPosition {
             id: "b".into(),
             node_id: "b".into(),
             x: Some(3.0),
@@ -642,7 +642,7 @@ fn undo_cannot_rewrite_a_newer_owning_parent_or_remove_a_new_ensured_child() -> 
     fixture.seed()?;
     fixture
         .context("alice", "create-owned")
-        .emit_set(&UndoNode {
+        .emit_set(UndoNode {
             id: "owned".into(),
             scene_id: "scene".into(),
             name: "Owned".into(),
@@ -650,7 +650,7 @@ fn undo_cannot_rewrite_a_newer_owning_parent_or_remove_a_new_ensured_child() -> 
         .map_err(command_error)?;
     fixture
         .context("bob", "own-node")
-        .emit_set(&UndoGroup {
+        .emit_set(UndoGroup {
             id: "group".into(),
             nodes: vec!["owned".into()],
         })
@@ -667,7 +667,7 @@ fn undo_cannot_rewrite_a_newer_owning_parent_or_remove_a_new_ensured_child() -> 
     );
     fixture
         .context("alice", "create-ensured")
-        .emit_set(&UndoNode {
+        .emit_set(UndoNode {
             id: "ensured".into(),
             scene_id: "scene".into(),
             name: "Ensured".into(),
@@ -675,7 +675,7 @@ fn undo_cannot_rewrite_a_newer_owning_parent_or_remove_a_new_ensured_child() -> 
         .map_err(command_error)?;
     fixture
         .context("bob", "add-ensured-row")
-        .emit_set(&UndoPosition {
+        .emit_set(UndoPosition {
             id: "new-position".into(),
             node_id: "ensured".into(),
             x: Some(9.0),
@@ -727,7 +727,7 @@ fn ordinary_entity_writes_cannot_forge_undo_receipts() -> anyhow::Result<()> {
     fixture.moved("alice", "move", &[("a", 1.0)])?;
     fixture
         .context("bob", "forged-receipt")
-        .emit_set(&TransactionUndo {
+        .emit_set(TransactionUndo {
             id: "move".into(),
             transaction_id: "move".into(),
             undo_transaction_id: "forged-receipt".into(),
@@ -752,7 +752,7 @@ fn late_causal_writes_do_not_reorder_the_originating_user_actions() -> anyhow::R
     fixture.seed()?;
     let early = fixture.context("alice", "early-action");
     early
-        .emit_set(&UndoPosition {
+        .emit_set(UndoPosition {
             id: "a".into(),
             node_id: "a".into(),
             x: Some(1.0),
@@ -760,7 +760,7 @@ fn late_causal_writes_do_not_reorder_the_originating_user_actions() -> anyhow::R
         .map_err(command_error)?;
     fixture.moved("alice", "later-action", &[("b", 2.0)])?;
     early
-        .emit_set(&UndoPosition {
+        .emit_set(UndoPosition {
             id: "a".into(),
             node_id: "a".into(),
             x: Some(3.0),
@@ -807,14 +807,14 @@ fn non_owning_reference_survives_target_deletion_and_blocks_missing_target_resto
     fixture.server.set(reference.clone())?;
     fixture
         .context("alice", "retarget")
-        .emit_set(&UndoReference {
+        .emit_set(UndoReference {
             target_id: "b".into(),
             ..reference
         })
         .map_err(command_error)?;
     fixture
         .context("bob", "remove-a")
-        .emit_del(&fixture.node("a")?)
+        .emit_del(fixture.node("a")?)
         .map_err(command_error)?;
     fixture.restart()?;
     anyhow::ensure!(
@@ -847,14 +847,14 @@ fn undo_target_creation_cannot_break_a_later_non_owning_reference() -> anyhow::R
     fixture.seed()?;
     fixture
         .context("alice", "create-target")
-        .emit_set(&UndoScene {
+        .emit_set(UndoScene {
             id: "shared".into(),
             name: "Shared".into(),
         })
         .map_err(command_error)?;
     fixture
         .context("bob", "add-reference")
-        .emit_set(&UndoReference {
+        .emit_set(UndoReference {
             id: "ref".into(),
             target_type: UndoScene::ENTITY_NAME_STATIC.into(),
             target_id: "shared".into(),
@@ -869,7 +869,7 @@ fn undo_target_creation_cannot_break_a_later_non_owning_reference() -> anyhow::R
     );
     fixture
         .context("bob", "ordinary-delete")
-        .emit_del(&UndoScene {
+        .emit_del(UndoScene {
             id: "shared".into(),
             name: "Shared".into(),
         })
@@ -893,7 +893,7 @@ fn startup_boundary_is_durable_and_excludes_old_transactions_without_rewriting_h
     // Ordinary entity writes cannot establish an internal migration boundary.
     fixture
         .context("bob", "forged-boundary")
-        .emit_set(&UndoHistoryBoundary {
+        .emit_set(UndoHistoryBoundary {
             id: "forged".into(),
         })
         .map_err(command_error)?;
@@ -1064,11 +1064,11 @@ fn older_prefix_can_restore_a_dependency_missing_from_latest_undo() -> anyhow::R
     fixture.server.set(reference.clone())?;
     fixture
         .context("alice", "delete-a")
-        .emit_del(&fixture.node("a")?)
+        .emit_del(fixture.node("a")?)
         .map_err(command_error)?;
     fixture
         .context("alice", "retarget-b")
-        .emit_set(&UndoReference {
+        .emit_set(UndoReference {
             target_id: "b".into(),
             ..reference
         })
@@ -1132,7 +1132,7 @@ fn entity_opt_in_excludes_presence_and_blocks_mixed_transactions_without_partial
     };
     fixture
         .context("alice", "presence-only")
-        .emit_set(&presence)
+        .emit_set(presence.clone())
         .map_err(command_error)?;
     let page = GetUndoTransactions { limit: 20 }
         .execute(fixture.context("alice", "log"))
@@ -1153,13 +1153,13 @@ fn entity_opt_in_excludes_presence_and_blocks_mixed_transactions_without_partial
     );
     {
         let ctx = fixture.context("alice", "mixed");
-        ctx.emit_set(&UndoPosition {
+        ctx.emit_set(UndoPosition {
             id: "b".into(),
             node_id: "b".into(),
             x: Some(2.0),
         })
         .map_err(command_error)?;
-        ctx.emit_set(&UndoPresence {
+        ctx.emit_set(UndoPresence {
             value: "away".into(),
             ..presence
         })
@@ -1220,7 +1220,7 @@ fn live_undo_metadata_waits_for_completion_and_tracks_foreign_writes() -> anyhow
     wait(&|value| value.page.is_some())?;
     let write = f.context("alice", "in-flight");
     write
-        .emit_set(&UndoPosition {
+        .emit_set(UndoPosition {
             id: "a".into(),
             node_id: "a".into(),
             x: Some(1.0),
@@ -1257,7 +1257,7 @@ fn live_undo_metadata_waits_for_completion_and_tracks_foreign_writes() -> anyhow
 
     let foreign = f.context("bob", "foreign");
     foreign
-        .emit_set(&UndoPosition {
+        .emit_set(UndoPosition {
             id: "a".into(),
             node_id: "a".into(),
             x: Some(2.0),
@@ -1367,19 +1367,19 @@ fn live_field_diffs_coalesce_writes_and_keep_deleted_entity_fields() -> anyhow::
         std::thread::sleep(Duration::from_millis(10));
     }
     let ctx = f.context("alice", "compound");
-    ctx.emit_set(&UndoPosition {
+    ctx.emit_set(UndoPosition {
         id: "a".into(),
         node_id: "a".into(),
         x: Some(1.0),
     })
     .map_err(command_error)?;
-    ctx.emit_set(&UndoPosition {
+    ctx.emit_set(UndoPosition {
         id: "a".into(),
         node_id: "a".into(),
         x: Some(2.0),
     })
     .map_err(command_error)?;
-    ctx.emit_set(&UndoValue {
+    ctx.emit_set(UndoValue {
         id: "temporary".into(),
         node_id: "a".into(),
         value: "removed contents".into(),
@@ -1387,7 +1387,7 @@ fn live_field_diffs_coalesce_writes_and_keep_deleted_entity_fields() -> anyhow::
     .map_err(command_error)?;
     drop(ctx);
     f.context("alice", "delete-value")
-        .emit_del(&UndoValue {
+        .emit_del(UndoValue {
             id: "temporary".into(),
             node_id: "a".into(),
             value: String::new(),
