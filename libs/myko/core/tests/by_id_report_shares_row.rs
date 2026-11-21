@@ -1,5 +1,7 @@
 //! `GetXById` hands on the row the store holds, not a copy of it.
 
+#![allow(clippy::expect_used)]
+
 use std::sync::Arc;
 
 use myko::{

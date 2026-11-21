@@ -104,14 +104,14 @@ fn touches(kinds: &[&str], upserts: &[Arc<dyn AnyItem>], deletes: &[Arc<dyn AnyI
 
 /// Whether any registered rewriter would see this mutation. When none would,
 /// the caller skips building the overlay and its request context.
-pub(crate) fn has_rewriter(upserts: &[Arc<dyn AnyItem>], deletes: &[Arc<dyn AnyItem>]) -> bool {
+pub fn has_rewriter(upserts: &[Arc<dyn AnyItem>], deletes: &[Arc<dyn AnyItem>]) -> bool {
     inventory::iter::<MutationRewriterRegistration>
         .into_iter()
         .any(|rewriter| touches(rewriter.entity_types, upserts, deletes))
 }
 
 /// Whether [`ProposedState::validate`] would run any validator.
-pub(crate) fn has_validator(
+pub fn has_validator(
     upserts: &[Arc<dyn AnyItem>],
     deletes: &[Arc<dyn AnyItem>],
     reversal: bool,
