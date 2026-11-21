@@ -464,10 +464,26 @@ impl<W: WsWriter> ClientSession<W> {
         let report_id_for_log = report_id.clone();
         let report_id_for_metrics = report_id.clone();
 
+        // An output equal to the last one sent tells the client nothing, and
+        // would be serialized and sent once per subscriber. Outputs that must
+        // repeat, such as events, differ in a field that changes per emission.
+        let last_sent: std::sync::Mutex<Option<Arc<dyn AnyOutput>>> = std::sync::Mutex::new(None);
         let guard = cell.subscribe(move |signal| match &signal {
             Signal::Value(output) => {
+                let output = output.as_ref();
+                {
+                    let mut last = last_sent
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if last.as_ref().is_some_and(|last| {
+                        Arc::ptr_eq(last, output) || last.equals(output.as_ref())
+                    }) {
+                        return;
+                    }
+                    *last = Some(Arc::clone(output));
+                }
                 crate::server::dispatch_metrics::record_report_response(&report_id_for_metrics);
-                writer.send_report_response(tx_clone.clone(), Arc::clone(output.as_ref()));
+                writer.send_report_response(tx_clone.clone(), Arc::clone(output));
             }
             Signal::Complete => {}
             Signal::Error(e) => {
@@ -1276,6 +1292,32 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(response.sequence);
         }
+    }
+
+    #[test]
+    fn a_report_output_equal_to_the_last_one_sent_is_not_sent_again() {
+        let _serial = scheduler_test_serial();
+        let writer = Arc::new(MockWriter::new());
+        let output = |text: &str| -> Arc<dyn AnyOutput> { Arc::new(text.to_owned()) };
+        let source = Cell::new(output("a"));
+        let mut session = ClientSession::new("dedup-client".into(), ArcMockWriter(writer.clone()));
+        session.subscribe_report(
+            "dedup-tx".into(),
+            "dedup-report".into(),
+            source.clone().lock(),
+        );
+        assert_eq!(writer.message_count(), 1);
+
+        source.set(output("a"));
+        assert_eq!(writer.message_count(), 1, "an equal output is a repeat");
+        source.set(output("b"));
+        assert_eq!(writer.message_count(), 2);
+        source.set(output("a"));
+        assert_eq!(
+            writer.message_count(),
+            3,
+            "returning to an earlier output is a change"
+        );
     }
 
     #[test]
