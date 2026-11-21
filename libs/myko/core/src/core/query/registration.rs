@@ -615,7 +615,9 @@ pub fn belongs_to_route_snapshot(
         route.field_names,
         route.extractor(),
     );
+    ROUTE_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
     if !scheduler_is_idle() {
+        ROUTE_SNAPSHOT_FALLBACKS.fetch_add(1, Ordering::Relaxed);
         return None;
     }
     let mutation = index
@@ -632,6 +634,19 @@ pub fn belongs_to_route_snapshot(
             .filter(|(id, _)| seen.insert(*id))
             .map(|(_, item)| item.clone())
             .collect(),
+    )
+}
+
+static ROUTE_SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
+static ROUTE_SNAPSHOT_FALLBACKS: AtomicU64 = AtomicU64::new(0);
+
+/// Index-routed snapshot reads since the process started, and how many of
+/// them found the scheduler busy and read the whole store instead.
+#[must_use]
+pub fn route_snapshot_counts() -> (u64, u64) {
+    (
+        ROUTE_SNAPSHOTS.load(Ordering::Relaxed),
+        ROUTE_SNAPSHOT_FALLBACKS.load(Ordering::Relaxed),
     )
 }
 
@@ -711,7 +726,8 @@ fn hold(
     out: &mut Vec<BucketDiff>,
 ) {
     if contribution.insert(key.clone(), value.clone()).is_none() {
-        *holders.entry(key.clone()).or_default() += 1;
+        let count = holders.entry(key.clone()).or_default();
+        *count = count.saturating_add(1);
     }
     out.push(MapDiff::Insert {
         key: key.clone(),
@@ -1352,8 +1368,7 @@ fn add_live_buckets<F: LiveFilterQuery>(
     new_filter: &F,
     new_keys: &HashSet<CompoundKey>,
     current_generation: u64,
-    make_source: &BucketSourceFn,
-    store: &Arc<crate::store::EntityStore>,
+    (make_source, store): (&BucketSourceFn, &Arc<crate::store::EntityStore>),
     synchronization: &Arc<LiveQuerySynchronization>,
 ) {
     for key in new_keys {
@@ -1407,8 +1422,7 @@ fn reconcile_indexed_live_query<F: LiveFilterQuery>(
             new_filter,
             &new_keys,
             current_generation,
-            &make_source,
-            &registry.get_or_create(F::entity_type()),
+            (&make_source, &registry.get_or_create(F::entity_type())),
             synchronization,
         );
     }

@@ -17,7 +17,11 @@
     clippy::arithmetic_side_effects,
     clippy::indexing_slicing,
     clippy::as_conversions,
-    clippy::cast_precision_loss
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::assigning_clones,
+    clippy::string_slice,
+    clippy::too_many_lines
 )]
 
 use std::{
@@ -42,6 +46,40 @@ use myko_bench_suite::{
     entities::{BPart, BPartId, Blob, GetBPartById, GetBPartsByIds, blob},
     harness::{Bench, Client, Wire},
 };
+
+pub mod ix {
+    use std::sync::Arc;
+
+    use myko::prelude::*;
+    use myko_bench_suite::entities::Blob;
+
+    /// A row with one `#[indexed]` field.
+    #[myko_item]
+    pub struct IxRow {
+        #[indexed]
+        pub service_id: Arc<str>,
+        pub revision: u64,
+        pub data: Blob,
+    }
+}
+
+pub mod plain {
+    use std::sync::Arc;
+
+    use myko::prelude::*;
+    use myko_bench_suite::entities::Blob;
+
+    /// The same row with no index, so the difference is the index's cost.
+    #[myko_item]
+    pub struct IxPlain {
+        pub service_id: Arc<str>,
+        pub revision: u64,
+        pub data: Blob,
+    }
+}
+
+use ix::{GetIxRowsByQuery, IxRow, IxRowQuery};
+use plain::{GetIxPlainsByQuery, IxPlain, IxPlainQuery};
 
 struct Counting;
 
@@ -367,6 +405,166 @@ fn report(name: &str, measured: &Measured, summary: &mut Vec<String>) {
     }
 }
 
+fn ix_row(index: usize, service: usize, revision: u64) -> IxRow {
+    IxRow {
+        id: format!("row-{index}").into(),
+        service_id: Arc::from(format!("service-{service}")),
+        revision,
+        data: Blob(myko::serde_json::Value::Null),
+    }
+}
+
+fn ix_plain(index: usize, service: usize, revision: u64) -> IxPlain {
+    IxPlain {
+        id: format!("row-{index}").into(),
+        service_id: Arc::from(format!("service-{service}")),
+        revision,
+        data: Blob(myko::serde_json::Value::Null),
+    }
+}
+
+fn on_service(service: usize) -> IxRowQuery {
+    IxRowQuery {
+        service_id: Some(myko::query::StringFilter::Eq(Arc::from(format!(
+            "service-{service}"
+        )))),
+        ..Default::default()
+    }
+}
+
+/// Writes to an indexed store against the same store with no index, with
+/// 0 and 10,000 live queries on other keys; and a snapshot by the indexed
+/// field against the same filter on the unindexed store, at 10,000 rows.
+fn index_rows(summary: &mut Vec<String>) {
+    const STORE_ROWS: usize = 10_000;
+    const OTHER_QUERIES: usize = 10_000;
+    let bench = Bench::new(Wire::None, 16, 1);
+    let request = Arc::new(RequestContext::from_client(
+        Arc::from("tx-index"),
+        Arc::from("client-index"),
+        bench.ctx.host_id,
+    ));
+    let rows: Vec<Arc<dyn AnyItem>> = (0..STORE_ROWS)
+        .map(|index| -> Arc<dyn AnyItem> { Arc::new(ix_row(index, index, 0)) })
+        .collect();
+    bench.ctx.set_batch_any(rows).unwrap();
+    let plain: Vec<Arc<dyn AnyItem>> = (0..STORE_ROWS)
+        .map(|index| -> Arc<dyn AnyItem> { Arc::new(ix_plain(index, index, 0)) })
+        .collect();
+    bench.ctx.set_batch_any(plain).unwrap();
+    settle(&bench);
+
+    let m = measure(&bench, |seq| bench.ctx.set(&ix_plain(1, 1, seq)).unwrap());
+    report("ctx.set, unindexed store, 0 live queries", &m, summary);
+
+    // Builds the index; the registry keeps it.
+    assert_eq!(
+        bench
+            .ctx
+            .query_snapshot(GetIxRowsByQuery(on_service(1)), request.clone())
+            .len(),
+        1
+    );
+    let m = measure(&bench, |seq| bench.ctx.set(&ix_row(1, 1, seq)).unwrap());
+    report("ctx.set, #[indexed] store, 0 live queries", &m, summary);
+
+    let others: Vec<_> = (0..OTHER_QUERIES)
+        .map(|query| {
+            bench.ctx.query_map_untyped(
+                GetIxRowsByQuery(on_service(STORE_ROWS + query)),
+                request.clone(),
+            )
+        })
+        .collect();
+    settle(&bench);
+    let m = measure(&bench, |seq| bench.ctx.set(&ix_row(1, 1, seq)).unwrap());
+    report(
+        "ctx.set, #[indexed] store, 10,000 live queries on other keys",
+        &m,
+        summary,
+    );
+
+    let mine = bench
+        .ctx
+        .query_map_untyped(GetIxRowsByQuery(on_service(1)), request.clone());
+    settle(&bench);
+    let m = measure(&bench, |seq| bench.ctx.set(&ix_row(1, 1, seq)).unwrap());
+    report(
+        "ctx.set, #[indexed] store, +1 live query on its key",
+        &m,
+        summary,
+    );
+    assert_eq!(mine.snapshot().len(), 1);
+
+    let m = measure(&bench, |_| {
+        assert_eq!(
+            bench
+                .ctx
+                .query_snapshot(GetIxRowsByQuery(on_service(2)), request.clone())
+                .len(),
+            1
+        );
+    });
+    report(
+        "query_snapshot by #[indexed] field, 10,000 rows",
+        &m,
+        summary,
+    );
+    let m = measure(&bench, |_| {
+        let query = IxPlainQuery {
+            service_id: Some(myko::query::StringFilter::Eq(Arc::from("service-2"))),
+            ..Default::default()
+        };
+        assert_eq!(
+            bench
+                .ctx
+                .query_snapshot(GetIxPlainsByQuery(query), request.clone())
+                .len(),
+            1
+        );
+    });
+    report(
+        "query_snapshot, same filter, unindexed, 10,000 rows",
+        &m,
+        summary,
+    );
+
+    // A writer on another thread keeps the scheduler busy while this one
+    // reads. Count how many routed snapshots fall back to a store scan.
+    let stop = Arc::new(AtomicBool::new(false));
+    let writer = {
+        let ctx = bench.ctx.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut revision = 0;
+            while !stop.load(Relaxed) {
+                revision += 1;
+                ctx.set(&ix_row(3, 3, revision)).unwrap();
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(50));
+    let (reads_before, fallbacks_before) = myko::query::route_snapshot_counts();
+    for _ in 0..1_000 {
+        assert_eq!(
+            bench
+                .ctx
+                .query_snapshot(GetIxRowsByQuery(on_service(2)), request.clone())
+                .len(),
+            1
+        );
+    }
+    let (reads_after, fallbacks_after) = myko::query::route_snapshot_counts();
+    stop.store(true, Relaxed);
+    writer.join().unwrap();
+    println!(
+        "\nunder a concurrent writer: {} of {} routed query_snapshot calls fell back to a store scan",
+        fallbacks_after - fallbacks_before,
+        reads_after - reads_before
+    );
+    drop((others, mine));
+}
+
 fn dispatch_command(bench: &Bench, command_id: &str, value: serde_json::Value) {
     let registration = myko::inventory::iter::<CommandHandlerRegistration>
         .into_iter()
@@ -469,6 +667,8 @@ fn write_path_allocations_by_call_site() {
         &m,
         &mut summary,
     );
+
+    index_rows(&mut summary);
 
     println!(
         "\n| operation | allocs | reallocs | bytes | deep clones | instructions:u | cpu us | msgs/rows |\n\

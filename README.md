@@ -98,6 +98,55 @@ collections, and `#[ensure_for(...)]` creates dependent entities as prerequisite
 appear. `#[myko_setter]` opts fields into generated setter commands;
 `#[searchable]` opts supported fields into search indexing.
 
+### Field indexes
+
+A query with equality filters on indexed fields reads only the rows under
+those keys, live and as a snapshot, instead of testing every row:
+
+```rust
+use myko::prelude::*;
+
+#[myko_item]
+#[index(control_id, session_id)]
+pub struct Fader {
+    #[indexed]
+    pub service_id: String,
+    #[indexed(each)]
+    pub groups: Vec<Arc<str>>,
+    pub control_id: Arc<str>,
+    pub session_id: Arc<str>,
+    pub level: i64,
+}
+
+// Routed through the `service_id` index.
+let query = FaderQuery {
+    service_id: Some(StringFilter::Eq("mixer".into())),
+    ..Default::default()
+};
+// A row whose `groups` contains "main".
+let in_group = FaderQuery {
+    groups: Some(ContainsFilter::Eq("main".into())),
+    ..Default::default()
+};
+```
+
+- `#[indexed]` files a row under its field's value. `#[indexed(each)]` on a
+  `Vec<T>` files it under each element, and the field's query filter becomes
+  `ContainsFilter<T>`. `#[index(a, b)]` on the item declares a compound key.
+- A field can be a key when its type implements `IndexKey`: ids, strings,
+  `bool`, integers and `Option` of those. A JSON-like value opts in with
+  `impl_index_key_serde!` (keyed by its JSON text) and
+  `impl_filterable_by_key!`. Floats are rejected at compile time.
+- `Eq` and `In` filters route; `Contains`, `StartsWith` and ranges do not.
+  Unrouted fields still filter the routed rows.
+- When several routes apply, an `id` filter wins, then the route that pins
+  the most fields, then a `belongs_to` route before a declared index, then
+  declaration order.
+- `#[belongs_to]` fields are indexed this way already. An index is built
+  the first time a query routes through it and is kept for the store's
+  lifetime. Each write to the store then costs one key extraction per
+  index, and wakes only the queries on the keys it adds or removes.
+
 ### Graph edges
 
 An ordinary item can also be a typed edge. Its existing ID, fields and events

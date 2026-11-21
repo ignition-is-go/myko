@@ -130,13 +130,10 @@ impl KeyExtractor {
         match self {
             Self::One(extract) => extract(item).into_iter().collect(),
             Self::Each(extract) => {
-                let mut keys = extract(item);
-                let mut index = 0;
-                while index < keys.len() {
-                    if keys[..index].contains(&keys[index]) {
-                        keys.remove(index);
-                    } else {
-                        index = index.saturating_add(1);
+                let mut keys = smallvec::SmallVec::<[CompoundKey; 1]>::new();
+                for key in extract(item) {
+                    if !keys.contains(&key) {
+                        keys.push(key);
                     }
                 }
                 keys
@@ -195,9 +192,10 @@ impl<T: IndexKey> IndexKey for Option<T> {
     }
 }
 
-/// The key of any serializable value, as its JSON text. Use it for a value
-/// type with no natural key, such as a tagged enum that carries data, via
-/// [`impl_index_key_serde!`](crate::impl_index_key_serde). Struct fields
+/// The key of any serializable value, as its JSON text.
+///
+/// Use it for a value type with no natural key, such as a tagged enum that
+/// carries data, via [`impl_index_key_serde!`](crate::impl_index_key_serde). Struct fields
 /// serialize in declaration order, so equal values give equal text; a
 /// `HashMap` inside the value does not, and must not be part of a key.
 pub fn serde_index_key<T: Serialize + ?Sized>(value: &T) -> Option<Arc<str>> {
@@ -819,9 +817,10 @@ impl EqualityKeys for bool {
     }
 }
 
-/// Filter on a list field declared `#[indexed(each)]`: `Eq(x)` matches a row
-/// whose list contains `x`, `In(xs)` one whose list contains any of `xs`.
-/// On the wire it is the bare element or `{ "$in": [...] }`, like `IdFilter`.
+/// Filter on a list field declared `#[indexed(each)]`.
+///
+/// `Eq(x)` matches a row whose list contains `x`, `In(xs)` one whose list
+/// contains any of `xs`. On the wire it is the bare element or `{ "$in": [...] }`, like `IdFilter`.
 #[derive(Debug, Clone, PartialEq, Eq, TS)]
 #[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
 pub enum ContainsFilter<T> {
@@ -856,6 +855,8 @@ impl<T: IndexKey> EqualityKeys for ContainsFilter<T> {
 /// Equality filter for a value type compared by its [`IndexKey`] rather
 /// than by `Ord`, such as a JSON-like value that holds floats. Declare it
 /// with [`impl_filterable_by_key!`](crate::impl_filterable_by_key).
+// Not `Eq`: the values it holds, such as floats, may not be.
+#[allow(clippy::derive_partial_eq_without_eq)]
 #[derive(Debug, Clone, PartialEq, TS)]
 #[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
 pub enum KeyFilter<T> {

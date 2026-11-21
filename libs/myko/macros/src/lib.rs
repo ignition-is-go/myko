@@ -13,6 +13,7 @@ use syn::{
 mod client_events;
 mod command;
 mod graph;
+mod index;
 mod item;
 mod message_events;
 mod operation_contract;
