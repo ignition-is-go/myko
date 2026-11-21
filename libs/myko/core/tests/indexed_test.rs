@@ -211,9 +211,9 @@ fn target_by_service_id() {
         },
         |id, matching| {
             let service = if matching { "service-1" } else { "service-2" };
-            assert!(ctx.set(&target(id, service, &[])).is_ok());
+            assert!(ctx.set(target(id, service, &[])).is_ok());
         },
-        |id| assert!(ctx.del(&target(id, "service-1", &[])).is_ok()),
+        |id| assert!(ctx.del(target(id, "service-1", &[])).is_ok()),
     );
 }
 
@@ -246,9 +246,9 @@ fn target_by_an_element_of_its_children() {
             } else {
                 &["child-w"]
             };
-            assert!(ctx.set(&target(id, "service-1", children)).is_ok());
+            assert!(ctx.set(target(id, "service-1", children)).is_ok());
         },
-        |id| assert!(ctx.del(&target(id, "service-1", &[])).is_ok()),
+        |id| assert!(ctx.del(target(id, "service-1", &[])).is_ok()),
     );
 }
 
@@ -264,7 +264,7 @@ fn a_row_filed_under_two_keys_of_one_query_appears_once() {
         ..Default::default()
     };
     let live = ctx.query_map_untyped(GetIxTargetsByQuery(query()), request(&ctx));
-    assert!(ctx.set(&target("t1", "s", &["child-x", "child-y"])).is_ok());
+    assert!(ctx.set(target("t1", "s", &["child-x", "child-y"])).is_ok());
     assert_eq!(live.snapshot().len(), 1);
     assert_eq!(
         ctx.query_snapshot(GetIxTargetsByQuery(query()), request(&ctx))
@@ -272,9 +272,9 @@ fn a_row_filed_under_two_keys_of_one_query_appears_once() {
         1
     );
     // Dropping one of its two keys keeps it in the query.
-    assert!(ctx.set(&target("t1", "s", &["child-y"])).is_ok());
+    assert!(ctx.set(target("t1", "s", &["child-y"])).is_ok());
     assert_eq!(live.snapshot().len(), 1);
-    assert!(ctx.set(&target("t1", "s", &[])).is_ok());
+    assert!(ctx.set(target("t1", "s", &[])).is_ok());
     assert_eq!(live.snapshot().len(), 0);
 }
 
@@ -308,11 +308,11 @@ fn node_value_by_anchor_and_value() {
             } else {
                 IxValue::Text("0.5".into())
             };
-            assert!(ctx.set(&node_value(id, "anchor-1", value)).is_ok());
+            assert!(ctx.set(node_value(id, "anchor-1", value)).is_ok());
         },
         |id| {
             assert!(
-                ctx.del(&node_value(id, "anchor-1", IxValue::Number(0.5)))
+                ctx.del(node_value(id, "anchor-1", IxValue::Number(0.5)))
                     .is_ok()
             );
         },
@@ -345,13 +345,10 @@ fn control_value_by_control_and_session() {
         },
         |id, matching| {
             let session = if matching { "session-1" } else { "session-2" };
-            assert!(ctx.set(&control_value(id, "control-1", session)).is_ok());
+            assert!(ctx.set(control_value(id, "control-1", session)).is_ok());
         },
         |id| {
-            assert!(
-                ctx.del(&control_value(id, "control-1", "session-1"))
-                    .is_ok()
-            );
+            assert!(ctx.del(control_value(id, "control-1", "session-1")).is_ok());
         },
     );
 }
@@ -388,19 +385,19 @@ fn a_row_whose_unrouted_field_stops_matching_leaves_a_routed_query() {
     };
     let live = ctx.query_map_untyped(GetIxControlValuesByQuery(query()), request(&ctx));
     let mut row = control_value("v1", "control-1", "session-1");
-    assert!(ctx.set(&row).is_ok());
+    assert!(ctx.set(row.clone()).is_ok());
     assert_eq!(live.snapshot().len(), 1);
 
     // The route's keys are unchanged; only the residual field changes.
     row.level = 1;
-    assert!(ctx.set(&row).is_ok());
+    assert!(ctx.set(row.clone()).is_ok());
     assert_eq!(
         live.snapshot().len(),
         0,
         "the row no longer matches the filter"
     );
     row.level = 0;
-    assert!(ctx.set(&row).is_ok());
+    assert!(ctx.set(row).is_ok());
     assert_eq!(live.snapshot().len(), 1);
 }
 
@@ -421,12 +418,12 @@ fn a_row_that_changes_key_and_stops_matching_leaves_a_union_route() {
     for round in 0..20 {
         let id = format!("v{round}");
         assert!(
-            ctx.set(&control_value(&id, "control-1", "session-1"))
+            ctx.set(control_value(&id, "control-1", "session-1"))
                 .is_ok()
         );
         let mut moved = control_value(&id, "control-1", "session-2");
         moved.level = 1;
-        assert!(ctx.set(&moved).is_ok());
+        assert!(ctx.set(moved).is_ok());
         assert!(
             live.snapshot().iter().all(|(row, _)| row.as_ref() != id),
             "round {round}: a row that moved key and stopped matching stayed"
@@ -449,7 +446,7 @@ fn an_indexed_route_keeps_a_row_with_its_new_value_and_snapshots_agree() {
     let mut row = control_value("v1", "control-1", "session-1");
     for (level, expected) in [(0, vec![0]), (1, vec![]), (2, vec![2]), (0, vec![0])] {
         row.level = level;
-        assert!(ctx.set(&row).is_ok());
+        assert!(ctx.set(row.clone()).is_ok());
         let live_levels: Vec<i64> = live
             .snapshot()
             .iter()

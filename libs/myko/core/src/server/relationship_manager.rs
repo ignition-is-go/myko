@@ -1805,15 +1805,15 @@ mod cascade_tests {
         let (ctx, registry) = make_ctx();
 
         // root <- branch <- leaf
-        assert!(ctx.set(&make_node("root", "")).is_ok());
-        assert!(ctx.set(&make_node("branch", "root")).is_ok());
-        assert!(ctx.set(&make_node("leaf", "branch")).is_ok());
+        assert!(ctx.set(make_node("root", "")).is_ok());
+        assert!(ctx.set(make_node("branch", "root")).is_ok());
+        assert!(ctx.set(make_node("leaf", "branch")).is_ok());
 
         assert!(exists(&registry, "root"));
         assert!(exists(&registry, "branch"));
         assert!(exists(&registry, "leaf"));
 
-        assert!(ctx.del(&make_node("root", "")).is_ok());
+        assert!(ctx.del(make_node("root", "")).is_ok());
 
         assert!(!exists(&registry, "root"), "root deleted");
         assert!(!exists(&registry, "branch"), "direct child deleted");
@@ -1835,8 +1835,8 @@ mod cascade_tests {
         let store = registry.get_or_create("CascadeNode");
         store.insert(root.id.0.clone(), Arc::new(root.clone()));
         store.insert(child.id.0.clone(), Arc::new(child));
-        assert!(ctx.set(&make_node("unrelated", "unrelated")).is_ok());
-        assert!(ctx.del(&root).is_ok());
+        assert!(ctx.set(make_node("unrelated", "unrelated")).is_ok());
+        assert!(ctx.del(root).is_ok());
         assert!(!exists(&registry, "hydrated-root"));
         assert!(
             !exists(&registry, "hydrated-child"),
@@ -1878,14 +1878,14 @@ mod cascade_tests {
             id: "other-session".into(),
             name: "Other".into(),
         };
-        assert!(ctx.set(&other_session).is_ok());
+        assert!(ctx.set(other_session.clone()).is_ok());
         let other_state = CascadeState {
             id: "other-state".into(),
             engine_id: engine.id.clone(),
             session_id: other_session.id,
         };
-        assert!(ctx.set(&other_state).is_ok());
-        assert!(ctx.del(&session).is_ok());
+        assert!(ctx.set(other_state.clone()).is_ok());
+        assert!(ctx.del(session).is_ok());
         let states = registry.get_or_create(CascadeState::ENTITY_NAME_STATIC);
         assert!(states.get_value(&state.id.0).is_none());
         assert!(states.get_value(&other_state.id.0).is_some());
@@ -1905,10 +1905,10 @@ mod cascade_tests {
         let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
-        assert!(ctx.set(&make_node("root", "")).is_ok());
-        assert!(ctx.set(&make_node("branch", "root")).is_ok());
-        assert!(ctx.set(&make_node("leaf", "branch")).is_ok());
-        assert!(ctx.set(&make_node("island", "")).is_ok());
+        assert!(ctx.set(make_node("root", "")).is_ok());
+        assert!(ctx.set(make_node("branch", "root")).is_ok());
+        assert!(ctx.set(make_node("leaf", "branch")).is_ok());
+        assert!(ctx.set(make_node("island", "")).is_ok());
 
         let store = registry.get_or_create("CascadeNode");
         let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
@@ -1961,10 +1961,10 @@ mod cascade_tests {
         let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
-        assert!(ctx.set(&make_node("a", "b")).is_ok());
-        assert!(ctx.set(&make_node("b", "a")).is_ok());
+        assert!(ctx.set(make_node("a", "b")).is_ok());
+        assert!(ctx.set(make_node("b", "a")).is_ok());
 
-        assert!(ctx.del(&make_node("a", "b")).is_ok());
+        assert!(ctx.del(make_node("a", "b")).is_ok());
 
         assert!(!exists(&registry, "a"), "a deleted");
         assert!(
@@ -1980,15 +1980,15 @@ mod cascade_tests {
     fn causal_depth_budget_stops_a_partial_cascade_without_rollback() {
         let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
-        assert!(ctx.set(&make_node("root", "")).is_ok());
-        assert!(ctx.set(&make_node("branch", "root")).is_ok());
-        assert!(ctx.set(&make_node("leaf", "branch")).is_ok());
+        assert!(ctx.set(make_node("root", "")).is_ok());
+        assert!(ctx.set(make_node("branch", "root")).is_ok());
+        assert!(ctx.set(make_node("leaf", "branch")).is_ok());
         ctx.set_causal_limits(CausalLimits {
             max_depth: 1,
             max_derived_mutations: 100,
         });
 
-        let result = ctx.del(&make_node("root", ""));
+        let result = ctx.del(make_node("root", ""));
         assert!(result.is_err(), "depth-two leaf cascade must be bounded");
         let Err(error) = result else { return };
         assert!(error.message.contains("exceeded max depth 1"));
@@ -2199,7 +2199,7 @@ mod ensure_for_cascade_tests {
                 let ctx = &ctx;
                 scope.spawn(move || {
                     barrier.wait();
-                    assert!(ctx.set(&make_parent("p1")).is_ok());
+                    assert!(ctx.set(make_parent("p1")).is_ok());
                 });
             }
         });
@@ -2219,11 +2219,11 @@ mod ensure_for_cascade_tests {
             name: id.to_owned(),
         };
 
-        assert!(ctx.set(&node("n1")).is_ok());
-        assert!(ctx.set(&node("n2")).is_ok());
+        assert!(ctx.set(node("n1")).is_ok());
+        assert!(ctx.set(node("n2")).is_ok());
         assert_eq!(node_pairs(&registry).len(), 4);
 
-        assert!(ctx.del(&node("n2")).is_ok());
+        assert!(ctx.del(node("n2")).is_ok());
         let remaining = node_pairs(&registry);
         assert_eq!(remaining.len(), 1);
         assert!(
@@ -2238,7 +2238,7 @@ mod ensure_for_cascade_tests {
         let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
-        assert!(ctx.set(&make_parent("p1")).is_ok());
+        assert!(ctx.set(make_parent("p1")).is_ok());
         let statuses = ensured_statuses_for(&registry, "p1");
         assert_eq!(statuses.len(), 1, "first ensure_for level must exist");
         let status_id = statuses.first().cloned().unwrap_or_default();
@@ -2248,7 +2248,7 @@ mod ensure_for_cascade_tests {
             "an ensured entity must trigger ensure_for relationships that depend on it"
         );
 
-        assert!(ctx.del(&make_parent("p1")).is_ok());
+        assert!(ctx.del(make_parent("p1")).is_ok());
         assert!(ensured_statuses_for(&registry, "p1").is_empty());
         assert!(
             ensured_details_for(&registry, &status_id).is_empty(),
@@ -2261,14 +2261,14 @@ mod ensure_for_cascade_tests {
         let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
-        assert!(ctx.set(&make_parent("p1")).is_ok());
+        assert!(ctx.set(make_parent("p1")).is_ok());
         assert_eq!(
             ensured_statuses_for(&registry, "p1").len(),
             1,
             "ensure_for auto-created exactly one EnsuredStatus for p1"
         );
 
-        assert!(ctx.del(&make_parent("p1")).is_ok());
+        assert!(ctx.del(make_parent("p1")).is_ok());
 
         assert!(
             ensured_statuses_for(&registry, "p1").is_empty(),
@@ -2281,8 +2281,8 @@ mod ensure_for_cascade_tests {
         let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
-        assert!(ctx.set(&make_parent("p1")).is_ok());
-        assert!(ctx.set(&make_parent("p2")).is_ok());
+        assert!(ctx.set(make_parent("p1")).is_ok());
+        assert!(ctx.set(make_parent("p2")).is_ok());
         assert_eq!(ensured_statuses_for(&registry, "p1").len(), 1);
         assert_eq!(ensured_statuses_for(&registry, "p2").len(), 1);
 
@@ -2302,12 +2302,12 @@ mod ensure_for_cascade_tests {
         let _serial = scheduler_test_serial();
         let (ctx, registry) = make_ctx();
 
-        assert!(ctx.set(&make_parent("p1")).is_ok());
-        assert!(ctx.set(&make_parent("p2")).is_ok());
+        assert!(ctx.set(make_parent("p1")).is_ok());
+        assert!(ctx.set(make_parent("p2")).is_ok());
         assert_eq!(ensured_statuses_for(&registry, "p1").len(), 1);
         assert_eq!(ensured_statuses_for(&registry, "p2").len(), 1);
 
-        assert!(ctx.del(&make_parent("p1")).is_ok());
+        assert!(ctx.del(make_parent("p1")).is_ok());
 
         assert!(ensured_statuses_for(&registry, "p1").is_empty());
         assert_eq!(

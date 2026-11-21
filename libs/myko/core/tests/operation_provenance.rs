@@ -170,7 +170,7 @@ fn command_emissions_batches_replacements_and_cascades_share_transaction() -> an
     }
     anyhow::ensure!(sink.try_iter().all(|e| e.tx.as_ref() == "caller-chosen-tx"));
     drop(records);
-    server.set(&parent())?;
+    server.set(parent())?;
     let records = recorder
         .0
         .lock()
@@ -369,7 +369,7 @@ impl CommandHandler for ReadThenWrite {
 #[test]
 fn command_queries_reports_and_nested_writes_keep_originating_transaction() -> anyhow::Result<()> {
     let (server, recorder, _) = setup();
-    server.set(&parent())?;
+    server.set(parent())?;
     context(server)
         .execute_command(ReadThenWrite {})
         .map_err(|error| anyhow::anyhow!(error.message))?;

@@ -172,17 +172,17 @@ impl Fixture {
         CommandContext::new("SceneEdit".into(), Arc::new(req), self.server.clone())
     }
     fn seed(&self) -> anyhow::Result<()> {
-        self.server.set(&UndoScene {
+        self.server.set(UndoScene {
             id: "scene".into(),
             name: "Scene".into(),
         })?;
         for id in ["a", "b"] {
-            self.server.set(&UndoPosition {
+            self.server.set(UndoPosition {
                 id: id.into(),
                 node_id: id.into(),
                 x: None,
             })?;
-            self.server.set(&UndoNode {
+            self.server.set(UndoNode {
                 id: id.into(),
                 scene_id: "scene".into(),
                 name: id.into(),
@@ -804,7 +804,7 @@ fn non_owning_reference_survives_target_deletion_and_blocks_missing_target_resto
         target_type: UndoNode::ENTITY_NAME_STATIC.into(),
         target_id: "a".into(),
     };
-    fixture.server.set(&reference)?;
+    fixture.server.set(reference.clone())?;
     fixture
         .context("alice", "retarget")
         .emit_set(&UndoReference {
@@ -1061,7 +1061,7 @@ fn older_prefix_can_restore_a_dependency_missing_from_latest_undo() -> anyhow::R
         target_type: UndoNode::ENTITY_NAME_STATIC.into(),
         target_id: "a".into(),
     };
-    fixture.server.set(&reference)?;
+    fixture.server.set(reference.clone())?;
     fixture
         .context("alice", "delete-a")
         .emit_del(&fixture.node("a")?)

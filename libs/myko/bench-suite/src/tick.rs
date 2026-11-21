@@ -204,7 +204,7 @@ pub fn spawn_probe(
         let mut client = bench.client("probe");
         bench
             .ctx
-            .set(&payload::probe(0))
+            .set(payload::probe(0))
             .unwrap_or_else(|error| panic!("{error:?}"));
         let other = client.sub_query(&GetBProbesByIds {
             ids: vec![BProbeId(Arc::from("probe-0"))],
@@ -225,7 +225,7 @@ pub fn spawn_probe(
 
             let before = sink.slots[other.slot].msgs.load(Relaxed);
             let t0 = now_ns();
-            let _ = super::harness::write(|| bench.ctx.set(&payload::probe(index)));
+            let _ = super::harness::write(|| bench.ctx.set(payload::probe(index)));
             let t1 = now_ns();
             match sink.wait_slot(other.slot, before, timeout) {
                 Some(cb) => {
@@ -243,7 +243,7 @@ pub fn spawn_probe(
             let _ = super::harness::write(|| {
                 bench
                     .ctx
-                    .set(&maker.node(same_row, NONE, index, PROBE_WRITER))
+                    .set(maker.node(same_row, NONE, index, PROBE_WRITER))
             });
             let t1 = now_ns();
             match sink.wait_slot(same.slot, before, timeout) {

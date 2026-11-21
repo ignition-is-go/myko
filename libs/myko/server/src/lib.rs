@@ -1055,7 +1055,7 @@ mod tests {
         let id = DemoStatusId::from("stable-live-status");
         let payload = "x".repeat(4096);
         for update in 0..1000 {
-            ctx.set(&DemoStatus {
+            ctx.set(DemoStatus {
                 id: id.clone(),
                 name: update.to_string(),
                 color: payload.clone(),
@@ -1115,7 +1115,7 @@ mod tests {
         let ctx = server.ctx();
         let id = DemoStatusId::from("stable-status");
         for update in 0..1000 {
-            ctx.set(&DemoStatus {
+            ctx.set(DemoStatus {
                 id: id.clone(),
                 name: update.to_string(),
                 color: String::new(),
@@ -1152,7 +1152,7 @@ mod tests {
         let ctx = server.ctx();
         let id = DemoStatusId::from("transient-status");
         for update in 0..1000 {
-            ctx.set_transient(&DemoStatus {
+            ctx.set_transient(DemoStatus {
                 id: id.clone(),
                 name: update.to_string(),
                 color: String::new(),

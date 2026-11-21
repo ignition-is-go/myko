@@ -435,7 +435,7 @@ impl Drop for ConnectionGuard {
         if let Some(registry) = try_client_registry() {
             registry.unregister(&self.client_id);
         }
-        if let Err(error) = self.ctx.del(&self.client_entity) {
+        if let Err(error) = self.ctx.del(self.client_entity.clone()) {
             tracing::error!("Failed to delete client entity: {error}");
         }
         tracing::info!("Client disconnected: {} from {}", self.client_id, self.addr);
@@ -453,7 +453,7 @@ impl WsHandler {
             address: Some(Arc::from(addr.to_string())),
             windback: None,
         };
-        if let Err(error) = ctx.set(&client) {
+        if let Err(error) = ctx.set(client.clone()) {
             tracing::error!("Failed to persist client entity: {error}");
         }
         tracing::info!("Client connected: {} from {}", client_id, addr);
@@ -2504,7 +2504,7 @@ mod tests {
         assert!(released.upgrade().is_none());
         assert!(
             context
-                .set(&Server {
+                .set(Server {
                     id: "fallback-server".into(),
                     version: "test".into(),
                     address: "127.0.0.1".into(),

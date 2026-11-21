@@ -444,7 +444,7 @@ fn a_residual_field_change_moves_a_row_in_and_out_of_a_routed_query() {
         ("a", vec!["a"]),
         ("c", vec!["c"]),
     ] {
-        assert!(ctx.set(&client_at("c1", "server-A", address)).is_ok());
+        assert!(ctx.set(client_at("c1", "server-A", address)).is_ok());
         assert_eq!(
             address_of(&live.snapshot()),
             expected,

@@ -454,7 +454,7 @@ fn index_rows(summary: &mut Vec<String>) {
     bench.ctx.set_batch_any(plain).unwrap();
     settle(&bench);
 
-    let m = measure(&bench, |seq| bench.ctx.set(&ix_plain(1, 1, seq)).unwrap());
+    let m = measure(&bench, |seq| bench.ctx.set(ix_plain(1, 1, seq)).unwrap());
     report("ctx.set, unindexed store, 0 live queries", &m, summary);
 
     // Builds the index; the registry keeps it.
@@ -465,7 +465,7 @@ fn index_rows(summary: &mut Vec<String>) {
             .len(),
         1
     );
-    let m = measure(&bench, |seq| bench.ctx.set(&ix_row(1, 1, seq)).unwrap());
+    let m = measure(&bench, |seq| bench.ctx.set(ix_row(1, 1, seq)).unwrap());
     report("ctx.set, #[indexed] store, 0 live queries", &m, summary);
 
     let others: Vec<_> = (0..OTHER_QUERIES)
@@ -477,7 +477,7 @@ fn index_rows(summary: &mut Vec<String>) {
         })
         .collect();
     settle(&bench);
-    let m = measure(&bench, |seq| bench.ctx.set(&ix_row(1, 1, seq)).unwrap());
+    let m = measure(&bench, |seq| bench.ctx.set(ix_row(1, 1, seq)).unwrap());
     report(
         "ctx.set, #[indexed] store, 10,000 live queries on other keys",
         &m,
@@ -488,7 +488,7 @@ fn index_rows(summary: &mut Vec<String>) {
         .ctx
         .query_map_untyped(GetIxRowsByQuery(on_service(1)), request.clone());
     settle(&bench);
-    let m = measure(&bench, |seq| bench.ctx.set(&ix_row(1, 1, seq)).unwrap());
+    let m = measure(&bench, |seq| bench.ctx.set(ix_row(1, 1, seq)).unwrap());
     report(
         "ctx.set, #[indexed] store, +1 live query on its key",
         &m,
@@ -539,7 +539,7 @@ fn index_rows(summary: &mut Vec<String>) {
             let mut revision = 0;
             while !stop.load(Relaxed) {
                 revision += 1;
-                ctx.set(&ix_row(3, 3, revision)).unwrap();
+                ctx.set(ix_row(3, 3, revision)).unwrap();
             }
         })
     };
@@ -583,14 +583,14 @@ fn write_path_allocations_by_call_site() {
 
     let bench = Bench::new(Wire::None, 16, 1);
     for index in 0..ROWS {
-        bench.ctx.set(&probe(index, 0)).unwrap();
+        bench.ctx.set(probe(index, 0)).unwrap();
     }
     settle(&bench);
 
     let m = measure(&bench, |_| {});
     report("nothing (harness floor: settle only)", &m, &mut summary);
 
-    let m = measure(&bench, |seq| bench.ctx.set(&probe(1, seq)).unwrap());
+    let m = measure(&bench, |seq| bench.ctx.set(probe(1, seq)).unwrap());
     report("ctx.set, existing row, no subscribers", &m, &mut summary);
 
     let m = measure(&bench, |seq| {
@@ -629,7 +629,7 @@ fn write_path_allocations_by_call_site() {
         ids: vec![BPartId(Arc::from("probe-4"))],
     });
     settle(&bench);
-    let m = measure(&bench, |seq| bench.ctx.set(&probe(4, seq)).unwrap());
+    let m = measure(&bench, |seq| bench.ctx.set(probe(4, seq)).unwrap());
     report(
         "ctx.set delivered to one GetBPartsByIds subscriber",
         &m,
@@ -641,7 +641,7 @@ fn write_path_allocations_by_call_site() {
         id: BPartId(Arc::from("probe-5")),
     });
     settle(&bench);
-    let m = measure(&bench, |seq| bench.ctx.set(&probe(5, seq)).unwrap());
+    let m = measure(&bench, |seq| bench.ctx.set(probe(5, seq)).unwrap());
     report(
         "ctx.set delivered to one GetBPartById report subscriber",
         &m,

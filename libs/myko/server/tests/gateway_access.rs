@@ -264,7 +264,7 @@ async fn readonly_query_updates_controls_cancel_and_reconnect() -> Result {
         query::{QueryWindow, QueryWindowUpdate, WrappedQuery},
     };
     let server = Arc::new(MykoServer::builder().build());
-    server.ctx().set(&task("initial"))?;
+    server.ctx().set(task("initial"))?;
     let (addr, task_handle) = gateway(server.clone(), GatewayAccess::ReadOnly).await?;
     let url = format!("ws://{addr}/myko");
     let (mut socket, _) = tokio_tungstenite::connect_async(&url).await?;
@@ -279,7 +279,7 @@ async fn readonly_query_updates_controls_cancel_and_reconnect() -> Result {
     assert!(
         matches!(initial, MykoMessage::QueryResponse(ref response) if !response.upserts.is_empty())
     );
-    server.ctx().set(&task("live-update"))?;
+    server.ctx().set(task("live-update"))?;
     assert!(
         matches!(next(&mut socket).await?, MykoMessage::QueryResponse(ref response) if !response.upserts.is_empty())
     );
@@ -311,7 +311,7 @@ async fn readonly_query_updates_controls_cancel_and_reconnect() -> Result {
     });
     send(&mut socket, &ping, true).await?;
     assert!(matches!(next(&mut socket).await?, MykoMessage::Ping(_)));
-    server.ctx().set(&task("after-cancel"))?;
+    server.ctx().set(task("after-cancel"))?;
     send(&mut socket, &ping, true).await?;
     assert!(matches!(next(&mut socket).await?, MykoMessage::Ping(_)));
     socket.close(None).await?;
@@ -367,7 +367,7 @@ async fn readonly_denies_result_injection_and_benchmark() -> Result {
 async fn typed_client_receives_readonly_initial_and_live_query_data() -> Result {
     use myko::{client::MykoClient, entities::demo::GetDemoTasks, hyphae::Gettable};
     let server = Arc::new(MykoServer::builder().build());
-    server.ctx().set(&task("typed-initial"))?;
+    server.ctx().set(task("typed-initial"))?;
     let (addr, task_handle) = gateway(server.clone(), GatewayAccess::ReadOnly).await?;
     let client = MykoClient::new_with_auto_reconnect(false);
     client.set_address(Some(format!("ws://{addr}/myko")));
@@ -379,7 +379,7 @@ async fn typed_client_receives_readonly_initial_and_live_query_data() -> Result 
     })
     .await?;
     assert_eq!(watch.items().get().len(), 1);
-    server.ctx().set(&task("typed-live"))?;
+    server.ctx().set(task("typed-live"))?;
     timeout(Duration::from_secs(3), async {
         while watch.items().get().len() != 2 {
             tokio::task::yield_now().await;
@@ -413,7 +413,7 @@ async fn policy_router_owns_connection_lifetime_and_cancellation_cleanup() -> Re
     use myko::wire::query::WrappedQuery;
     let server = Arc::new(MykoServer::builder().build());
     let ctx = Arc::new(server.ctx());
-    ctx.set(&task("lifetime"))?;
+    ctx.set(task("lifetime"))?;
     for cancel in [false, true, false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         let addr = listener.local_addr()?;

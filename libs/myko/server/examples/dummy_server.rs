@@ -45,7 +45,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     color: color.to_owned(),
                     emoji: emoji.to_owned(),
                 };
-                if let Err(error) = ctx.set(&status) {
+                if let Err(error) = ctx.set(status) {
                     tracing::error!(%error, status_id = id, "failed to seed demo status");
                 }
             }
@@ -77,7 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     completed,
                     status_id: DemoStatusId::from(status_id),
                 };
-                if let Err(error) = ctx.set(&task) {
+                if let Err(error) = ctx.set(task) {
                     tracing::error!(%error, task_id = id, "failed to seed demo task");
                 }
             }

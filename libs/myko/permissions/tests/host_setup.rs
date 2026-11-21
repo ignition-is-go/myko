@@ -542,7 +542,7 @@ async fn entity_policy_persists_replays_and_reads_live_entity_queries()
     session.authorize(operation)?;
     let mut changed = admin_role;
     changed.enabled = false;
-    context.set(&changed)?;
+    context.set(changed)?;
     session.check()?;
     assert_eq!(session.authorize(operation), Err(AuthError::Forbidden));
     assert!(
@@ -650,7 +650,7 @@ async fn legacy_import_preserves_ids_and_never_restores_grants_over_entity_state
         .ok_or("missing source role")?
         .clone();
     role.enabled = false;
-    context.set(&role)?;
+    context.set(role)?;
     assert!(!policy.import_from(&source)?);
     assert!(
         !policy

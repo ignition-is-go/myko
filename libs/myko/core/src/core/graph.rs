@@ -5766,9 +5766,9 @@ mod tests {
             article_id: article.id.clone(),
             id: ForwardIndexedAssignmentId::from("forward-edge"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
-        assert!(context.set(&edge).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
+        assert!(context.set(edge.clone()).is_ok());
 
         let graph = context.graph_index().expect("graph index");
         {
@@ -5847,7 +5847,7 @@ mod tests {
             1
         );
 
-        assert!(context.del(&edge).is_ok());
+        assert!(context.del(edge.clone()).is_ok());
         let state = graph
             .state
             .read()
@@ -5877,8 +5877,8 @@ mod tests {
                 id: ArticleLinkId::from(format!("article-link-{ordinal}")),
             })
             .collect::<Vec<_>>();
-        assert!(context.batch_set(&articles).is_ok());
-        assert!(context.batch_set(&links).is_ok());
+        assert!(context.batch_set(articles.iter().cloned()).is_ok());
+        assert!(context.batch_set(links.iter().cloned()).is_ok());
 
         let path = context
             .traverse::<ArticleLink>()
@@ -5999,10 +5999,10 @@ mod tests {
                 id: ScopedTagAssignmentId::from("scoped-edge-excluded"),
             },
         ];
-        assert!(context.set(&tag).is_ok());
-        assert!(context.batch_set(&articles).is_ok());
-        assert!(context.batch_set(&scopes).is_ok());
-        assert!(context.batch_set(&edges).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.batch_set(articles.iter().cloned()).is_ok());
+        assert!(context.batch_set(scopes.iter().cloned()).is_ok());
+        assert!(context.batch_set(edges.iter().cloned()).is_ok());
 
         let result = context
             .traverse::<ScopedTagAssignment>()
@@ -6038,10 +6038,10 @@ mod tests {
             article_id: article.id.clone(),
             id: ForwardIndexedAssignmentId::from("forward-watch-edge"),
         };
-        assert!(context.set(&watched_tag).is_ok());
-        assert!(context.set(&other_tag).is_ok());
-        assert!(context.set(&article).is_ok());
-        assert!(context.set(&edge).is_ok());
+        assert!(context.set(watched_tag.clone()).is_ok());
+        assert!(context.set(other_tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
+        assert!(context.set(edge.clone()).is_ok());
 
         let watched = context
             .edges::<ForwardIndexedAssignment>()
@@ -6061,27 +6061,27 @@ mod tests {
             article_id: unrelated_article.id.clone(),
             id: ForwardIndexedAssignmentId::from("unrelated-route-edge"),
         };
-        assert!(context.set(&unrelated_article).is_ok());
+        assert!(context.set(unrelated_article.clone()).is_ok());
         let graph = context.graph_index().expect("graph index");
         let callbacks_before = graph.routed_watch_callbacks();
-        assert!(context.set(&unrelated_edge).is_ok());
+        assert!(context.set(unrelated_edge.clone()).is_ok());
         assert_eq!(graph.routed_watch_callbacks(), callbacks_before);
 
         let moved_away = ForwardIndexedAssignment {
             tag_id: other_tag.id.clone(),
             ..edge.clone()
         };
-        assert!(context.set(&moved_away).is_ok());
+        assert!(context.set(moved_away.clone()).is_ok());
         assert_eq!(graph.routed_watch_callbacks(), callbacks_before + 1);
         assert!(watched.snapshot().is_empty());
 
-        assert!(context.set(&edge).is_ok());
+        assert!(context.set(edge.clone()).is_ok());
         assert_eq!(
             watched.snapshot(),
             vec![(edge.id(), Arc::new(edge.clone()))]
         );
 
-        assert!(context.del(&edge).is_ok());
+        assert!(context.del(edge.clone()).is_ok());
         assert!(watched.snapshot().is_empty());
     }
 
@@ -6107,8 +6107,8 @@ mod tests {
                 id: ArticleId::from("article-routed-three"),
             },
         ];
-        assert!(context.set(&tag).is_ok());
-        assert!(context.batch_set(&articles).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.batch_set(articles.iter().cloned()).is_ok());
         let watched = context
             .edges::<ForwardIndexedAssignment>()
             .watch_from(&tag.id)
@@ -6127,7 +6127,7 @@ mod tests {
                 id: ForwardIndexedAssignmentId::from("routed-edge-two"),
             },
         ];
-        assert!(context.batch_set(&first_batch).is_ok());
+        assert!(context.batch_set(first_batch.iter().cloned()).is_ok());
         assert_eq!(graph.routed_watch_callbacks(), callbacks_before + 1);
         assert_eq!(watched.snapshot().len(), 2);
 
@@ -6135,7 +6135,7 @@ mod tests {
         let callbacks_before_drop_check = graph.routed_watch_callbacks();
         assert!(
             context
-                .set(&ForwardIndexedAssignment {
+                .set(ForwardIndexedAssignment {
                     tag_id: tag.id,
                     article_id: articles[2].id.clone(),
                     id: ForwardIndexedAssignmentId::from("routed-edge-three"),
@@ -6153,7 +6153,7 @@ mod tests {
             name: "windowed".into(),
             id: TagId::from("tag-windowed"),
         };
-        assert!(context.set(&tag).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
         for id in ["b", "c", "d"] {
             let article = Article {
                 title: id.into(),
@@ -6164,8 +6164,8 @@ mod tests {
                 article_id: article.id.clone(),
                 id: ForwardIndexedAssignmentId::from(id),
             };
-            assert!(context.set(&article).is_ok());
-            assert!(context.set(&edge).is_ok());
+            assert!(context.set(article.clone()).is_ok());
+            assert!(context.set(edge.clone()).is_ok());
         }
 
         let endpoint =
@@ -6197,8 +6197,8 @@ mod tests {
             article_id: first_article.id.clone(),
             id: ForwardIndexedAssignmentId::from("a"),
         };
-        assert!(context.set(&first_article).is_ok());
-        assert!(context.set(&first_edge).is_ok());
+        assert!(context.set(first_article.clone()).is_ok());
+        assert!(context.set(first_edge.clone()).is_ok());
         let shifted = source.snapshots().get();
         assert_eq!(shifted.total_count, 4);
         assert_eq!(shifted.entries.len(), 1);
@@ -6243,14 +6243,14 @@ mod tests {
             title: "replacement".into(),
             id: ArticleId::from("article-replacement"),
         };
-        assert!(context.set(&replacement_article).is_ok());
+        assert!(context.set(replacement_article.clone()).is_ok());
         let outside_update = ForwardIndexedAssignment {
             tag_id: tag.id.clone(),
             article_id: replacement_article.id.clone(),
             id: ForwardIndexedAssignmentId::from("d"),
         };
         let before_outside_update = source.snapshots().get();
-        assert!(context.set(&outside_update).is_ok());
+        assert!(context.set(outside_update.clone()).is_ok());
         assert!(Arc::ptr_eq(
             &before_outside_update,
             &source.snapshots().get()
@@ -6261,7 +6261,7 @@ mod tests {
             article_id: replacement_article.id.clone(),
             id: ForwardIndexedAssignmentId::from("c"),
         };
-        assert!(context.set(&visible_update).is_ok());
+        assert!(context.set(visible_update.clone()).is_ok());
         let updated = source.snapshots().get();
         let updated_edge = crate::item::downcast_any_item_arc::<ForwardIndexedAssignment>(
             &updated.entries[0].1,
@@ -6293,16 +6293,16 @@ mod tests {
             name: "window-race".into(),
             id: TagId::from("tag-window-race"),
         };
-        assert!(context.set(&tag).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
         for id in ["b", "c", "d"] {
             let article = Article {
                 title: id.into(),
                 id: ArticleId::from(format!("article-window-race-{id}")),
             };
-            assert!(context.set(&article).is_ok());
+            assert!(context.set(article.clone()).is_ok());
             assert!(
                 context
-                    .set(&ForwardIndexedAssignment {
+                    .set(ForwardIndexedAssignment {
                         tag_id: tag.id.clone(),
                         article_id: article.id,
                         id: ForwardIndexedAssignmentId::from(id),
@@ -6358,10 +6358,10 @@ mod tests {
                 title: "a".into(),
                 id: ArticleId::from("article-window-race-a"),
             };
-            assert!(context_for_diff.set(&article).is_ok());
+            assert!(context_for_diff.set(article.clone()).is_ok());
             assert!(
                 context_for_diff
-                    .set(&ForwardIndexedAssignment {
+                    .set(ForwardIndexedAssignment {
                         tag_id: tag_for_diff.id,
                         article_id: article.id,
                         id: ForwardIndexedAssignmentId::from("a"),
@@ -6421,11 +6421,11 @@ mod tests {
             article_id: article.id.clone(),
             id: ForwardIndexedAssignmentId::from("generated-query-edge"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&other_tag).is_ok());
-        assert!(context.set(&article).is_ok());
-        assert!(context.set(&other_article).is_ok());
-        assert!(context.set(&edge).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(other_tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
+        assert!(context.set(other_article.clone()).is_ok());
+        assert!(context.set(edge.clone()).is_ok());
 
         let request = || {
             Arc::new(crate::request::RequestContext::from_client(
@@ -6517,18 +6517,18 @@ mod tests {
             article_id: other_article.id.clone(),
             id: ForwardIndexedAssignmentId::from("missing-edge"),
         };
-        assert!(context.set(&later_selected).is_ok());
+        assert!(context.set(later_selected.clone()).is_ok());
         assert_eq!(from_ids.snapshot().len(), 2);
         assert_eq!(to_ids.snapshot().len(), 1);
         assert_eq!(between_ids.snapshot().len(), 1);
-        assert!(context.del(&later_selected).is_ok());
+        assert!(context.del(later_selected.clone()).is_ok());
         assert_eq!(from_ids.snapshot().len(), 1);
 
         let moved = ForwardIndexedAssignment {
             tag_id: other_tag.id.clone(),
             ..edge.clone()
         };
-        assert!(context.set(&moved).is_ok());
+        assert!(context.set(moved.clone()).is_ok());
         assert!(from.snapshot().is_empty());
         assert_eq!(to.snapshot().len(), 1);
         assert!(between.snapshot().is_empty());
@@ -6571,12 +6571,12 @@ mod tests {
             id: ForwardIndexedAssignmentId::from("related-edge-parallel"),
             ..first.clone()
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article_a).is_ok());
-        assert!(context.set(&article_b).is_ok());
-        assert!(context.set(&unrelated).is_ok());
-        assert!(context.set(&first).is_ok());
-        assert!(context.set(&parallel).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article_a.clone()).is_ok());
+        assert!(context.set(article_b.clone()).is_ok());
+        assert!(context.set(unrelated.clone()).is_ok());
+        assert!(context.set(first.clone()).is_ok());
+        assert!(context.set(parallel.clone()).is_ok());
 
         let request = || {
             Arc::new(crate::request::RequestContext::from_client(
@@ -6602,14 +6602,14 @@ mod tests {
             title: "still unrelated".into(),
             ..unrelated.clone()
         };
-        assert!(context.set(&unrelated_update).is_ok());
+        assert!(context.set(unrelated_update.clone()).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 0);
 
         let article_a_update = Article {
             title: "A updated".into(),
             ..article_a.clone()
         };
-        assert!(context.set(&article_a_update).is_ok());
+        assert!(context.set(article_a_update.clone()).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
         assert!(targets.get_value(&article_a.id()).is_some_and(|item| {
             item.as_any()
@@ -6617,16 +6617,16 @@ mod tests {
                 .is_some_and(|article| article.title.as_ref() == "A updated")
         }));
 
-        assert!(context.del(&first).is_ok());
+        assert!(context.del(first.clone()).is_ok());
         assert_eq!(targets.snapshot().len(), 1);
-        assert!(context.del(&parallel).is_ok());
+        assert!(context.del(parallel.clone()).is_ok());
         assert!(targets.snapshot().is_empty());
 
         let moved = ForwardIndexedAssignment {
             article_id: article_b.id.clone(),
             ..first
         };
-        assert!(context.set(&moved).is_ok());
+        assert!(context.set(moved.clone()).is_ok());
         assert!(targets.get_value(&article_b.id()).is_some());
         let sources = context.query_map_by_str(
             ForwardIndexedAssignmentGraphSourcesTo::new(article_b.id.clone()),
@@ -6658,7 +6658,7 @@ mod tests {
         };
         assert!(
             context
-                .batch_set(&[
+                .batch_set([
                     article_a.clone(),
                     article_b.clone(),
                     article_c.clone(),
@@ -6689,7 +6689,7 @@ mod tests {
         };
         assert!(
             context
-                .batch_set(&[first.clone(), parallel.clone(), self_loop.clone(), third,])
+                .batch_set([first.clone(), parallel.clone(), self_loop.clone(), third,])
                 .is_ok()
         );
 
@@ -6760,7 +6760,7 @@ mod tests {
         diffs.store(0, Ordering::SeqCst);
         assert!(
             context
-                .set(&Article {
+                .set(Article {
                     title: "still unrelated".into(),
                     ..unrelated
                 })
@@ -6770,7 +6770,7 @@ mod tests {
 
         assert!(
             context
-                .set(&Article {
+                .set(Article {
                     title: "B updated".into(),
                     ..article_b.clone()
                 })
@@ -6778,11 +6778,11 @@ mod tests {
         );
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
 
-        assert!(context.del(&first).is_ok());
+        assert!(context.del(first.clone()).is_ok());
         assert!(neighbors.get_value(&article_b.id()).is_some());
-        assert!(context.del(&parallel).is_ok());
+        assert!(context.del(parallel.clone()).is_ok());
         assert!(neighbors.get_value(&article_b.id()).is_none());
-        assert!(context.del(&self_loop).is_ok());
+        assert!(context.del(self_loop.clone()).is_ok());
         assert!(neighbors.get_value(&article_a.id()).is_none());
     }
 
@@ -6794,7 +6794,7 @@ mod tests {
             title: "center".into(),
             id: ArticleId::from("dense-neighbor-center"),
         };
-        assert!(context.set(&center).is_ok());
+        assert!(context.set(center.clone()).is_ok());
 
         let neighbors = (0..1_024)
             .map(|ordinal| Article {
@@ -6819,8 +6819,8 @@ mod tests {
                 id: ArticleLinkId::from(format!("dense-neighbor-edge-{ordinal}")),
             })
             .collect::<Vec<_>>();
-        assert!(context.batch_set(&neighbors).is_ok());
-        assert!(context.batch_set(&edges).is_ok());
+        assert!(context.batch_set(neighbors.iter().cloned()).is_ok());
+        assert!(context.batch_set(edges.iter().cloned()).is_ok());
         let article_store = context.registry.get_or_create(Article::ENTITY_NAME_STATIC);
         assert!(super::prefer_bulk_target_subscription(
             neighbors.len(),
@@ -6845,7 +6845,7 @@ mod tests {
         diffs.store(0, Ordering::SeqCst);
         assert!(
             context
-                .set(&Article {
+                .set(Article {
                     title: "center updated".into(),
                     ..center
                 })
@@ -6857,17 +6857,17 @@ mod tests {
             title: "first updated".into(),
             ..neighbors[0].clone()
         };
-        assert!(context.set(&first_neighbor).is_ok());
+        assert!(context.set(first_neighbor.clone()).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 1);
 
-        assert!(context.del(&neighbors[1]).is_ok());
+        assert!(context.del(neighbors[1].clone()).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 2);
         assert!(view.get_value(&neighbors[1].id()).is_none());
-        assert!(context.set(&neighbors[1]).is_ok());
+        assert!(context.set(neighbors[1].clone()).is_ok());
         assert_eq!(diffs.load(Ordering::SeqCst), 2);
         assert!(view.get_value(&neighbors[1].id()).is_none());
 
-        assert!(context.del(&edges[0]).is_ok());
+        assert!(context.del(edges[0].clone()).is_ok());
         assert_eq!(view.snapshot().len(), neighbors.len().saturating_sub(2));
     }
 
@@ -6888,8 +6888,8 @@ mod tests {
             article_id: article.id.clone(),
             id: ForwardIndexedAssignmentId::from("related-edge-reentrant"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
 
         let targets = context.query_map_by_str(
             ForwardIndexedAssignmentGraphTargetsFrom::new(tag.id.clone()),
@@ -6910,13 +6910,13 @@ mod tests {
                 && !fired_for_callback.swap(true, Ordering::SeqCst)
             {
                 deleted_for_callback.store(
-                    context_for_callback.del(&edge_for_callback).is_ok(),
+                    context_for_callback.del(edge_for_callback.clone()).is_ok(),
                     Ordering::SeqCst,
                 );
             }
         });
 
-        assert!(context.set(&edge).is_ok());
+        assert!(context.set(edge.clone()).is_ok());
         assert!(fired.load(Ordering::SeqCst));
         assert!(deleted.load(Ordering::SeqCst));
         assert!(targets.snapshot().is_empty());
@@ -6944,12 +6944,12 @@ mod tests {
             title: "B".into(),
             id: ArticleId::from("article-windowed-b"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article_a).is_ok());
-        assert!(context.set(&article_b).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article_a.clone()).is_ok());
+        assert!(context.set(article_b.clone()).is_ok());
         assert!(
             context
-                .batch_set(&[
+                .batch_set([
                     ForwardIndexedAssignment {
                         tag_id: tag.id.clone(),
                         article_id: article_a.id.clone(),
@@ -6991,14 +6991,14 @@ mod tests {
             title: "B updated".into(),
             ..article_b.clone()
         };
-        assert!(context.set(&off_page_update).is_ok());
+        assert!(context.set(off_page_update.clone()).is_ok());
         assert!(Arc::ptr_eq(&initial, &source.snapshots().get()));
 
         let visible_article_update = Article {
             title: "A updated".into(),
             ..article_a
         };
-        assert!(context.set(&visible_article_update).is_ok());
+        assert!(context.set(visible_article_update.clone()).is_ok());
         let visible_update = source.snapshots().get();
         assert!(!Arc::ptr_eq(&initial, &visible_update));
 
@@ -7011,12 +7011,12 @@ mod tests {
             article_id: article_first.id.clone(),
             id: ForwardIndexedAssignmentId::from("windowed-related-first"),
         };
-        assert!(context.set(&article_first).is_ok());
-        assert!(context.set(&edge_first).is_ok());
+        assert!(context.set(article_first.clone()).is_ok());
+        assert!(context.set(edge_first.clone()).is_ok());
         let shifted = source.snapshots().get();
         assert_eq!(shifted.total_count, 3);
         assert_eq!(shifted.entries[0].0, article_first.id());
-        assert!(context.del(&edge_first).is_ok());
+        assert!(context.del(edge_first.clone()).is_ok());
         let restored = source.snapshots().get();
         assert_eq!(restored.total_count, 2);
         assert_eq!(restored.entries[0].0, visible_article_update.id());
@@ -7069,8 +7069,8 @@ mod tests {
                 id: ArticleId::from("article-many-c"),
             },
         ];
-        assert!(context.batch_set(&tags).is_ok());
-        assert!(context.batch_set(&articles).is_ok());
+        assert!(context.batch_set(tags.iter().cloned()).is_ok());
+        assert!(context.batch_set(articles.iter().cloned()).is_ok());
         let edges = [
             ForwardIndexedAssignment {
                 tag_id: tags[0].id.clone(),
@@ -7088,7 +7088,7 @@ mod tests {
                 id: ForwardIndexedAssignmentId::from("edge-many-other"),
             },
         ];
-        assert!(context.batch_set(&edges).is_ok());
+        assert!(context.batch_set(edges.iter().cloned()).is_ok());
 
         let watched = context
             .edges::<ForwardIndexedAssignment>()
@@ -7103,7 +7103,7 @@ mod tests {
         let callbacks = graph.routed_watch_callbacks();
         assert!(
             context
-                .set(&ForwardIndexedAssignment {
+                .set(ForwardIndexedAssignment {
                     tag_id: tags[1].id.clone(),
                     ..edges[0].clone()
                 })
@@ -7398,10 +7398,10 @@ mod tests {
             article_id: article.id.clone(),
             id: ForwardIndexedAssignmentId::from("aggregate-edge"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&other_tag).is_ok());
-        assert!(context.set(&article).is_ok());
-        assert!(context.set(&edge).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(other_tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
+        assert!(context.set(edge.clone()).is_ok());
 
         let request = || {
             Arc::new(crate::request::RequestContext::from_client(
@@ -7445,13 +7445,13 @@ mod tests {
             tag_id: other_tag.id.clone(),
             ..edge.clone()
         };
-        assert!(context.set(&moved).is_ok());
+        assert!(context.set(moved.clone()).is_ok());
         assert_eq!(*count_from.get(), 0);
         assert_eq!(*count_to.get(), 1);
         assert_eq!(*count_between.get(), 0);
         assert!(!*exists_between.get());
 
-        assert!(context.del(&moved).is_ok());
+        assert!(context.del(moved.clone()).is_ok());
         assert_eq!(*count_to.get(), 0);
     }
 
@@ -7467,8 +7467,8 @@ mod tests {
             title: "Traversal report".into(),
             id: ArticleId::from("article-traversal-report"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
 
         let request = Arc::new(crate::request::RequestContext::from_client(
             Uuid::new_v4().to_string().into(),
@@ -7494,12 +7494,12 @@ mod tests {
             article_id: article.id.clone(),
             id: ForwardIndexedAssignmentId::from("traversal-report-edge"),
         };
-        assert!(context.set(&edge).is_ok());
+        assert!(context.set(edge.clone()).is_ok());
         assert_eq!(report.get().nodes, vec![EntityRef::from(&article)]);
         assert!(report.get().edge_ids.is_empty());
         assert!(!report.get().truncated);
 
-        assert!(context.del(&edge).is_ok());
+        assert!(context.del(edge.clone()).is_ok());
         assert!(report.get().nodes.is_empty());
     }
 
@@ -7527,14 +7527,14 @@ mod tests {
             title: "Excluded".into(),
             id: ArticleId::from("article-scoped-excluded"),
         };
-        assert!(context.set(&scope).is_ok());
-        assert!(context.set(&other_scope).is_ok());
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&included).is_ok());
-        assert!(context.set(&excluded).is_ok());
+        assert!(context.set(scope.clone()).is_ok());
+        assert!(context.set(other_scope.clone()).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(included.clone()).is_ok());
+        assert!(context.set(excluded.clone()).is_ok());
         assert!(
             context
-                .set(&ScopedTagAssignment {
+                .set(ScopedTagAssignment {
                     scope_id: scope.id.clone(),
                     tag_id: tag.id.clone(),
                     article_id: included.id.clone(),
@@ -7544,7 +7544,7 @@ mod tests {
         );
         assert!(
             context
-                .set(&ScopedTagAssignment {
+                .set(ScopedTagAssignment {
                     scope_id: other_scope.id.clone(),
                     tag_id: tag.id.clone(),
                     article_id: excluded.id.clone(),
@@ -7585,8 +7585,8 @@ mod tests {
             title: "Mutation helpers".into(),
             id: ArticleId::from("article-mutations"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
 
         let command_context = |command_id: &str| {
             let request = Arc::new(crate::request::RequestContext::from_client(
@@ -7630,8 +7630,8 @@ mod tests {
             title: "Concurrent mutation helpers".into(),
             id: ArticleId::from("article-mutations-concurrent"),
         };
-        assert!(context.set(&concurrent_tag).is_ok());
-        assert!(context.set(&concurrent_article).is_ok());
+        assert!(context.set(concurrent_tag.clone()).is_ok());
+        assert!(context.set(concurrent_article.clone()).is_ok());
         let context = Arc::new(context);
         let barrier = Arc::new(std::sync::Barrier::new(2));
         // Both workers must reach the barrier before either handle is joined.
@@ -7692,9 +7692,9 @@ mod tests {
                 id: ArticleId::from(format!("article-sync-{index}")),
             })
             .collect::<Vec<_>>();
-        assert!(context.set(&tag).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
         for article in &articles {
-            assert!(context.set(article).is_ok());
+            assert!(context.set(article.clone()).is_ok());
         }
         let retained = TagAssignment {
             tag_id: tag.id.clone(),
@@ -7708,7 +7708,7 @@ mod tests {
         };
         assert!(
             context
-                .batch_set(&[retained.clone(), replaced.clone()])
+                .batch_set([retained.clone(), replaced.clone()])
                 .is_ok()
         );
 
@@ -7795,10 +7795,10 @@ mod tests {
             id: TagId::from("mixed-replace-tag-remove"),
         };
         for article in [&old_article, &removed_article] {
-            assert!(context.set(article).is_ok());
+            assert!(context.set(article.clone()).is_ok());
         }
         for tag in [&old_tag, &removed_tag] {
-            assert!(context.set(tag).is_ok());
+            assert!(context.set(tag.clone()).is_ok());
         }
 
         let article_store = context.registry.get_or_create(Article::ENTITY_NAME_STATIC);
@@ -7884,7 +7884,7 @@ mod tests {
             title: "Original".into(),
             id: ArticleId::from("mixed-replace-overlap"),
         };
-        assert!(context.set(&article).is_ok());
+        assert!(context.set(article.clone()).is_ok());
         let article_store = context.registry.get_or_create(Article::ENTITY_NAME_STATIC);
         let diffs = Arc::new(std::sync::Mutex::new(Vec::new()));
         let captured_diffs = diffs.clone();
@@ -7933,8 +7933,8 @@ mod tests {
             title: "Keep after validation error".into(),
             id: ArticleId::from("mixed-replace-validation-article"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
         let inserted_tag = Tag {
             name: "must not be inserted".into(),
             id: TagId::from("mixed-replace-validation-insert"),
@@ -7995,10 +7995,10 @@ mod tests {
                 id: GraphScopeId::from("scope-sync-b"),
             },
         ];
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
         for scope in &scopes {
-            assert!(context.set(scope).is_ok());
+            assert!(context.set(scope.clone()).is_ok());
         }
         let edges = scopes
             .iter()
@@ -8010,7 +8010,7 @@ mod tests {
                 id: ScopedTagAssignmentId::from(format!("scoped-sync-edge-{index}")),
             })
             .collect::<Vec<_>>();
-        assert!(context.batch_set(&edges).is_ok());
+        assert!(context.batch_set(edges.iter().cloned()).is_ok());
         let request = Arc::new(crate::request::RequestContext::from_client(
             Uuid::new_v4().to_string().into(),
             "graph-scoped-sync-test".into(),
@@ -8123,9 +8123,9 @@ mod tests {
                 id: GraphScopeId::from("scope-2"),
             },
         ];
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
-        assert!(context.batch_set(&scopes).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
+        assert!(context.batch_set(scopes.iter().cloned()).is_ok());
         let assignments = [
             ScopedTagAssignment {
                 scope_id: scopes[0].id.clone(),
@@ -8140,7 +8140,7 @@ mod tests {
                 id: ScopedTagAssignmentId::from("scoped-edge-2"),
             },
         ];
-        assert!(context.batch_set(&assignments).is_ok());
+        assert!(context.batch_set(assignments.iter().cloned()).is_ok());
 
         let ensure_context = CommandContext::new(
             "EnsureScopedTagAssignment".into(),
@@ -8214,16 +8214,16 @@ mod tests {
             title: "Moved edge".into(),
             id: ArticleId::from("article-2"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
-        assert!(context.set(&moved_article).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
+        assert!(context.set(moved_article.clone()).is_ok());
 
         let assignment = TagAssignment {
             tag_id: tag.id.clone(),
             target: EntityRef::from(&article),
             id: TagAssignmentId::from("assignment-1"),
         };
-        assert!(context.set(&assignment).is_ok());
+        assert!(context.set(assignment.clone()).is_ok());
 
         let query = context.edges::<TagAssignment>();
         assert_eq!(
@@ -8345,7 +8345,7 @@ mod tests {
             target: EntityRef::from(&moved_article),
             ..assignment.clone()
         };
-        assert!(context.set(&moved).is_ok());
+        assert!(context.set(moved.clone()).is_ok());
         assert!(watched.snapshot().is_empty());
         assert!(watched_pair.snapshot().is_empty());
         assert_eq!(watched_pair_count.get(), 0);
@@ -8379,7 +8379,9 @@ mod tests {
             id: TagAssignmentId::from("assignment-2"),
             ..moved.clone()
         };
-        let error = context.set(&duplicate).expect_err("unique pair rejected");
+        let error = context
+            .set(duplicate.clone())
+            .expect_err("unique pair rejected");
         assert!(error.message.contains("already occupied"));
         assert_eq!(
             context
@@ -8390,7 +8392,7 @@ mod tests {
             1
         );
 
-        assert!(context.del(&tag).is_ok());
+        assert!(context.del(tag.clone()).is_ok());
         assert!(
             context
                 .edges::<TagAssignment>()
@@ -8424,14 +8426,14 @@ mod tests {
             name: "rust".into(),
             id: TagId::from("tag-1"),
         };
-        assert!(context.set(&tag).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
         let missing = TagAssignment {
             tag_id: tag.id,
             target: EntityRef::new("Tag", "tag-1"),
             id: TagAssignmentId::from("assignment-invalid"),
         };
         let error = context
-            .set(&missing)
+            .set(missing.clone())
             .expect_err("category mismatch rejected");
         assert!(error.message.contains("rejects entity type Tag"));
         assert!(
@@ -8452,14 +8454,14 @@ mod tests {
             name: "rust".into(),
             id: TagId::from("tag-observe"),
         };
-        assert!(context.set(&tag).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
         let invalid = TagAssignment {
             tag_id: tag.id,
             target: EntityRef::new("Tag", "tag-observe"),
             id: TagAssignmentId::from("assignment-observe-invalid"),
         };
 
-        assert!(context.set(&invalid).is_ok());
+        assert!(context.set(invalid.clone()).is_ok());
         assert_eq!(
             context
                 .registry
@@ -8488,8 +8490,8 @@ mod tests {
             title: "Concurrency".into(),
             id: ArticleId::from("article-concurrent"),
         };
-        assert!(context.set(&tag).is_ok());
-        assert!(context.set(&article).is_ok());
+        assert!(context.set(tag.clone()).is_ok());
+        assert!(context.set(article.clone()).is_ok());
         let first = TagAssignment {
             tag_id: tag.id.clone(),
             target: EntityRef::from(&article),
@@ -8499,7 +8501,7 @@ mod tests {
             id: TagAssignmentId::from("assignment-batch-b"),
             ..first.clone()
         };
-        assert!(context.batch_set(&[first.clone(), second.clone()]).is_err());
+        assert!(context.batch_set([first.clone(), second.clone()]).is_err());
         assert!(
             context
                 .registry
@@ -8514,7 +8516,7 @@ mod tests {
             let barrier = barrier.clone();
             joins.push(std::thread::spawn(move || {
                 barrier.wait();
-                context.set(&edge).is_ok()
+                context.set(edge.clone()).is_ok()
             }));
         }
         barrier.wait();
@@ -8579,11 +8581,11 @@ mod tests {
             title: "Restricted".into(),
             id: ArticleId::from("article-restricted"),
         };
-        assert!(restricted_context.set(&tag).is_ok());
-        assert!(restricted_context.set(&article).is_ok());
+        assert!(restricted_context.set(tag.clone()).is_ok());
+        assert!(restricted_context.set(article.clone()).is_ok());
         assert!(
             restricted_context
-                .set(&RestrictedTagAssignment {
+                .set(RestrictedTagAssignment {
                     tag_id: tag.id.clone(),
                     target: EntityRef::from(&article),
                     id: RestrictedTagAssignmentId::from("restricted-edge"),
@@ -8591,7 +8593,7 @@ mod tests {
                 .is_ok()
         );
         let error = restricted_context
-            .del(&tag)
+            .del(tag.clone())
             .expect_err("incident restrict edge blocks endpoint deletion");
         assert!(error.message.contains("cannot delete"));
         assert!(
@@ -8600,7 +8602,7 @@ mod tests {
                 .get("Tag")
                 .is_some_and(|store| store.get_value(&tag.id()).is_some())
         );
-        assert!(restricted_context.del(&article).is_ok());
+        assert!(restricted_context.del(article.clone()).is_ok());
         assert!(
             restricted_context
                 .registry
@@ -8618,15 +8620,15 @@ mod tests {
             title: "Retained".into(),
             id: ArticleId::from("article-retained"),
         };
-        assert!(retained_context.set(&retained_tag).is_ok());
-        assert!(retained_context.set(&retained_article).is_ok());
+        assert!(retained_context.set(retained_tag.clone()).is_ok());
+        assert!(retained_context.set(retained_article.clone()).is_ok());
         let retained = RetainedTagAssignment {
             tag_id: retained_tag.id.clone(),
             target: EntityRef::from(&retained_article),
             id: RetainedTagAssignmentId::from("retained-edge"),
         };
-        assert!(retained_context.set(&retained).is_ok());
-        assert!(retained_context.del(&retained_tag).is_ok());
+        assert!(retained_context.set(retained.clone()).is_ok());
+        assert!(retained_context.del(retained_tag.clone()).is_ok());
         assert_eq!(
             retained_context
                 .edges::<RetainedTagAssignment>()
@@ -8634,7 +8636,7 @@ mod tests {
                 .expect("dangling edge remains queryable"),
             vec![Arc::new(retained)]
         );
-        assert!(retained_context.del(&retained_article).is_ok());
+        assert!(retained_context.del(retained_article.clone()).is_ok());
         assert!(
             retained_context
                 .registry

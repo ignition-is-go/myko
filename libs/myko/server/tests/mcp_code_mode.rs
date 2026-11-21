@@ -146,7 +146,7 @@ fn seed_computation_records(server: &MykoServer) {
     let ctx = server.ctx();
     for id in 0..36 {
         assert!(
-            ctx.set(&ComputationRecord {
+            ctx.set(ComputationRecord {
                 id: format!("item-{id}").into(),
                 payload: "x".repeat(4096),
             })
@@ -159,7 +159,7 @@ fn seed_computation_records(server: &MykoServer) {
             payload: "x".repeat(4096),
         })
         .collect::<Vec<_>>();
-    assert!(ctx.batch_set(&deleted).is_ok());
+    assert!(ctx.batch_set(deleted.iter().cloned()).is_ok());
     let mut references = (0..18)
         .map(|id| (format!("item-{id}"), "shared"))
         .collect::<Vec<_>>();
@@ -169,7 +169,7 @@ fn seed_computation_records(server: &MykoServer) {
     references.push(("item-0".to_string(), "shared"));
     for (id, (entity_id, group)) in references.into_iter().enumerate() {
         assert!(
-            ctx.set(&ComputationReference {
+            ctx.set(ComputationReference {
                 id: format!("reference-{id}").into(),
                 entity_id: entity_id.into(),
                 group: group.to_string(),
@@ -178,7 +178,7 @@ fn seed_computation_records(server: &MykoServer) {
         );
     }
     for record in deleted {
-        assert!(ctx.del(&record).is_ok());
+        assert!(ctx.del(record).is_ok());
     }
 }
 

@@ -153,11 +153,11 @@ async fn fixture(
     grants: impl IntoIterator<Item = (EntityScope, ScopeDecision)>,
 ) -> TestResult<Fixture> {
     let server = Arc::new(MykoServer::builder().build());
-    server.ctx().set(&ScopeProject {
+    server.ctx().set(ScopeProject {
         id: ScopeProjectId::from("project-a"),
         name: "Project A".into(),
     })?;
-    server.ctx().set(&camera("camera-a", false))?;
+    server.ctx().set(camera("camera-a", false))?;
     let policy = Arc::new(ScopedAuthorizer::new(Arc::new(LocalPolicy(
         grants.into_iter().collect(),
     ))));

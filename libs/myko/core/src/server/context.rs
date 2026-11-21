@@ -675,11 +675,11 @@ impl MykoServerContext {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    pub fn set<T>(&self, entity: &T) -> Result<(), PersistError>
+    pub fn set<T>(&self, entity: impl Into<Arc<T>>) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        self.set_with_origin(entity, Origin::Local)
+        self.set_with_origin(entity.into(), Origin::Local)
     }
 
     /// Publish a live-only SET for an in-progress interaction. The item is
@@ -689,20 +689,24 @@ impl MykoServerContext {
     /// # Errors
     ///
     /// Returns an error when the entity cannot be serialized or applied.
-    pub fn set_transient<T>(&self, entity: &T) -> Result<(), PersistError>
+    pub fn set_transient<T>(&self, entity: impl Into<Arc<T>>) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        self.set_with_origin(entity, Origin::Transient)
+        self.set_with_origin(entity.into(), Origin::Transient)
     }
 
     /// Internal SET: typed reduce (direct `Arc` store insert) followed by the
     /// shared `apply_effects` tail, gated by `origin`.
-    pub(crate) fn set_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
+    pub(crate) fn set_with_origin<T>(
+        &self,
+        entity: Arc<T>,
+        origin: Origin,
+    ) -> Result<(), PersistError>
     where
         T: Eventable + 'static,
     {
-        let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
+        let item: Arc<dyn AnyItem> = entity;
         self.submit_mutation(vec![item], MEventType::SET, origin)
     }
 
@@ -713,18 +717,22 @@ impl MykoServerContext {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    pub fn del<T>(&self, entity: &T) -> Result<(), PersistError>
+    pub fn del<T>(&self, entity: impl Into<Arc<T>>) -> Result<(), PersistError>
     where
-        T: Eventable + Clone + 'static,
+        T: Eventable + 'static,
     {
-        self.del_with_origin(entity, Origin::Local)
+        self.del_with_origin(entity.into(), Origin::Local)
     }
 
-    pub(crate) fn del_with_origin<T>(&self, entity: &T, origin: Origin) -> Result<(), PersistError>
+    pub(crate) fn del_with_origin<T>(
+        &self,
+        entity: Arc<T>,
+        origin: Origin,
+    ) -> Result<(), PersistError>
     where
-        T: Eventable + Clone + 'static,
+        T: Eventable + 'static,
     {
-        let item: Arc<dyn AnyItem> = Arc::new(entity.clone());
+        let item: Arc<dyn AnyItem> = entity;
         self.submit_mutation(vec![item], MEventType::DEL, origin)
     }
 
@@ -735,29 +743,33 @@ impl MykoServerContext {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    pub fn batch_set<T>(&self, entities: &[T]) -> Result<(), PersistError>
+    pub fn batch_set<T, I>(&self, entities: I) -> Result<(), PersistError>
     where
-        T: Eventable + Clone + 'static,
+        T: Eventable + 'static,
+        I: IntoIterator,
+        I::Item: Into<Arc<T>>,
     {
         self.batch_set_with_origin(entities, Origin::Local)
     }
 
     /// Publish a batch of entities (SET) with one grouped store insert.
-    pub(crate) fn batch_set_with_origin<T>(
+    pub(crate) fn batch_set_with_origin<T, I>(
         &self,
-        entities: &[T],
+        entities: I,
         origin: Origin,
     ) -> Result<(), PersistError>
     where
-        T: Eventable + Clone + 'static,
+        T: Eventable + 'static,
+        I: IntoIterator,
+        I::Item: Into<Arc<T>>,
     {
-        if entities.is_empty() {
+        let items: Vec<Arc<dyn AnyItem>> = entities
+            .into_iter()
+            .map(|entity| -> Arc<dyn AnyItem> { entity.into() })
+            .collect();
+        if items.is_empty() {
             return Ok(());
         }
-        let items: Vec<Arc<dyn AnyItem>> = entities
-            .iter()
-            .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
-            .collect();
         self.submit_mutation(items, MEventType::SET, origin)
     }
 
@@ -768,29 +780,33 @@ impl MykoServerContext {
     /// # Errors
     ///
     /// Returns an error when the requested operation cannot be completed.
-    pub fn batch_del<T>(&self, entities: &[T]) -> Result<(), PersistError>
+    pub fn batch_del<T, I>(&self, entities: I) -> Result<(), PersistError>
     where
-        T: Eventable + Clone + 'static,
+        T: Eventable + 'static,
+        I: IntoIterator,
+        I::Item: Into<Arc<T>>,
     {
         self.batch_del_with_origin(entities, Origin::Local)
     }
 
     /// Delete a batch of entities (DEL) with one grouped store remove.
-    pub(crate) fn batch_del_with_origin<T>(
+    pub(crate) fn batch_del_with_origin<T, I>(
         &self,
-        entities: &[T],
+        entities: I,
         origin: Origin,
     ) -> Result<(), PersistError>
     where
-        T: Eventable + Clone + 'static,
+        T: Eventable + 'static,
+        I: IntoIterator,
+        I::Item: Into<Arc<T>>,
     {
-        if entities.is_empty() {
+        let items: Vec<Arc<dyn AnyItem>> = entities
+            .into_iter()
+            .map(|entity| -> Arc<dyn AnyItem> { entity.into() })
+            .collect();
+        if items.is_empty() {
             return Ok(());
         }
-        let items: Vec<Arc<dyn AnyItem>> = entities
-            .iter()
-            .map(|entity| -> Arc<dyn AnyItem> { Arc::new(entity.clone()) })
-            .collect();
         self.submit_mutation(items, MEventType::DEL, origin)
     }
 
@@ -3574,7 +3590,7 @@ mod tests {
                 value: 2,
             };
             match self.mutation {
-                ForwardMutation::Set => self.destination.set(&item),
+                ForwardMutation::Set => self.destination.set(item),
                 ForwardMutation::Replace => {
                     let item: Arc<dyn AnyItem> = Arc::new(item);
                     self.destination.replace_batch_any([item], [])
@@ -3683,7 +3699,7 @@ mod tests {
                         "receiver replacement"
                     );
                 } else {
-                    assert!(receiver_callback.set(&item).is_ok(), "receiver write");
+                    assert!(receiver_callback.set(item).is_ok(), "receiver write");
                 }
             });
             assert!(
@@ -3727,7 +3743,7 @@ mod tests {
             }
             assert!(
                 source_callback
-                    .set(&ImmediateTestItem {
+                    .set(ImmediateTestItem {
                         id: Arc::from("returned"),
                         value: 3,
                     })
@@ -3835,7 +3851,7 @@ mod tests {
             },
         ];
 
-        assert!(ctx.batch_set(&items).is_ok());
+        assert!(ctx.batch_set(items.iter().cloned()).is_ok());
         assert_eq!(persister.calls.load(Ordering::Relaxed), items.len());
         assert!(persister.all_after_reduce.load(Ordering::Relaxed));
         assert!(persister.all_before_reactive_drain.load(Ordering::Relaxed));
@@ -3876,7 +3892,7 @@ mod tests {
         );
 
         assert!(
-            ctx.set_transient(&ImmediateTestItem {
+            ctx.set_transient(ImmediateTestItem {
                 id: "transient-1".into(),
                 value: 9,
             })

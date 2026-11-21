@@ -291,7 +291,7 @@ pub trait EventPublishing: ServerScoped {
             .__operation_provenance()
             .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
-            .set(&*item)
+            .set((*item).clone())
             .map_err(|e| self.__emit_err(e))
     }
 
@@ -312,7 +312,7 @@ pub trait EventPublishing: ServerScoped {
             .__operation_provenance()
             .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
-            .set_transient(&*item)
+            .set_transient((*item).clone())
             .map_err(|e| self.__emit_err(e))
     }
 
@@ -366,7 +366,7 @@ pub trait EventPublishing: ServerScoped {
             .__operation_provenance()
             .map(|p| self.__server_ctx().operation_scope(p));
         self.__server_ctx()
-            .del(&*item)
+            .del((*item).clone())
             .map_err(|e| self.__emit_err(e))
     }
 

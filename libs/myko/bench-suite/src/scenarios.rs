@@ -102,7 +102,7 @@ fn load_scenes(bench: &Bench, scenes: usize, projects: usize) {
         let items: Vec<BScene> = chunk.iter().map(|i| payload::scene(*i, projects)).collect();
         bench
             .ctx
-            .batch_set(&items)
+            .batch_set(items.iter().cloned())
             .unwrap_or_else(|error| panic!("{error:?}"));
     }
 }
@@ -359,11 +359,11 @@ pub fn tick_scenario(name: &str, args: &Args) {
     let pulses = (pulse_hz > 0.0).then(|| {
         bench
             .ctx
-            .set(&payload::target(0, 0))
+            .set(payload::target(0, 0))
             .unwrap_or_else(|error| panic!("{error:?}"));
         bench
             .ctx
-            .set(&payload::emitter(0, 0, 0))
+            .set(payload::emitter(0, 0, 0))
             .unwrap_or_else(|error| panic!("{error:?}"));
         let mut client = bench.client("pulse-watcher");
         let sub = client.sub_query(&GetBPulsesByQuery(BPulseQuery {
@@ -714,7 +714,7 @@ impl WriteProbe {
         let before = sink.slots[sub.slot].msgs.load(Relaxed);
         let node = maker.node(row, NONE, seq, PROBE_WRITER);
         let t0 = now_ns();
-        let _ = bench.ctx.set(&node);
+        let _ = bench.ctx.set(node);
         let t1 = now_ns();
         match sink.wait_slot(sub.slot, before, Duration::from_secs(10)) {
             Some(cb) => {
@@ -1099,7 +1099,7 @@ pub fn belongs_to(args: &Args) {
     let ctx = &bench.ctx;
 
     let target_rows: Vec<BTarget> = (0..targets).map(|t| payload::target(t, 0)).collect();
-    ctx.batch_set(&target_rows)
+    ctx.batch_set(target_rows.iter().cloned())
         .unwrap_or_else(|error| panic!("{error:?}"));
     let mut parent: Vec<usize> = (0..emitters).map(|e| e % targets).collect();
     let started = now_ns();
@@ -1108,7 +1108,7 @@ pub fn belongs_to(args: &Args) {
             .iter()
             .map(|e| payload::emitter(*e, parent[*e], 0))
             .collect();
-        ctx.batch_set(&rows)
+        ctx.batch_set(rows.iter().cloned())
             .unwrap_or_else(|error| panic!("{error:?}"));
     }
     let load_s = (now_ns() - started) as f64 / 1e9;
@@ -1171,7 +1171,7 @@ pub fn belongs_to(args: &Args) {
             })
             .collect();
         let t0 = now_ns();
-        ctx.batch_set(&rows)
+        ctx.batch_set(rows.iter().cloned())
             .unwrap_or_else(|error| panic!("{error:?}"));
         reparent_call.push(now_ns() - t0);
         match wait_totals(&bench, expect_rows, expect_deletes) {
@@ -1187,7 +1187,7 @@ pub fn belongs_to(args: &Args) {
     let cascaded = (0..emitters).filter(|e| parent[*e] < doomed).count() as u64;
     let doomed_rows: Vec<BTarget> = (0..doomed).map(|t| payload::target(t, 0)).collect();
     let cascade_t0 = now_ns();
-    ctx.batch_del(&doomed_rows)
+    ctx.batch_del(doomed_rows.iter().cloned())
         .unwrap_or_else(|error| panic!("{error:?}"));
     let cascade_call = now_ns() - cascade_t0;
     let cascade_done = wait_totals(&bench, after_reparent.0, after_reparent.1 + cascaded);
@@ -1199,19 +1199,19 @@ pub fn belongs_to(args: &Args) {
     let (bundles, parts_each) = (args.count("bundles", 2_000), 5);
     load_scenes(&bench, 16, 4);
     let part_rows: Vec<BPart> = (0..bundles * parts_each).map(payload::part).collect();
-    ctx.batch_set(&part_rows)
+    ctx.batch_set(part_rows.iter().cloned())
         .unwrap_or_else(|error| panic!("{error:?}"));
     let bundle_rows: Vec<BBundle> = (0..bundles)
         .map(|b| payload::bundle(b, parts_each, 16))
         .collect();
-    ctx.batch_set(&bundle_rows)
+    ctx.batch_set(bundle_rows.iter().cloned())
         .unwrap_or_else(|error| panic!("{error:?}"));
     settle(&bench);
     let part_type = payload::part(0).entity_type();
     let parts_before = store_len(&bench, part_type);
     let gone = bundles / 4;
     let t0 = now_ns();
-    ctx.batch_del(&bundle_rows[..gone])
+    ctx.batch_del(bundle_rows[..gone].iter().cloned())
         .unwrap_or_else(|error| panic!("{error:?}"));
     let owns_call = now_ns() - t0;
     settle(&bench);
@@ -1286,12 +1286,12 @@ pub fn bursts(args: &Args) {
     let bench = Bench::new(args.wire(), emitters + 64, 4);
     let ctx = &bench.ctx;
     let target_rows: Vec<BTarget> = (0..targets).map(|t| payload::target(t, 0)).collect();
-    ctx.batch_set(&target_rows)
+    ctx.batch_set(target_rows.iter().cloned())
         .unwrap_or_else(|error| panic!("{error:?}"));
     let emitter_rows: Vec<BEmitter> = (0..emitters)
         .map(|e| payload::emitter(e, e % targets, 0))
         .collect();
-    ctx.batch_set(&emitter_rows)
+    ctx.batch_set(emitter_rows.iter().cloned())
         .unwrap_or_else(|error| panic!("{error:?}"));
     let mut clients: Vec<Client> = Vec::new();
     let subs: Vec<Sub> = (0..emitters)
@@ -1407,19 +1407,11 @@ pub fn atomic(args: &Args) {
     let via_events = args.str("path", "typed") == "events";
     let bench = Bench::new(args.wire(), 64, 4);
     let ctx = &bench.ctx;
-    ctx.batch_set(
-        &(0..trios)
-            .map(|i| payload::target(i, 0))
-            .collect::<Vec<_>>(),
-    )
-    .unwrap_or_else(|error| panic!("{error:?}"));
-    ctx.batch_set(
-        &(0..trios)
-            .map(|i| payload::emitter(i, i, 0))
-            .collect::<Vec<_>>(),
-    )
-    .unwrap_or_else(|error| panic!("{error:?}"));
-    ctx.batch_set(&(0..trios).map(|i| payload::gauge(i, 0)).collect::<Vec<_>>())
+    ctx.batch_set((0..trios).map(|i| payload::target(i, 0)))
+        .unwrap_or_else(|error| panic!("{error:?}"));
+    ctx.batch_set((0..trios).map(|i| payload::emitter(i, i, 0)))
+        .unwrap_or_else(|error| panic!("{error:?}"));
+    ctx.batch_set((0..trios).map(|i| payload::gauge(i, 0)))
         .unwrap_or_else(|error| panic!("{error:?}"));
     let mut clients: Vec<Client> = (0..4)
         .map(|c| bench.client(&format!("client-{c}")))
@@ -1618,7 +1610,7 @@ pub fn setup(args: &Args) {
     let started = now_ns();
     let call_s = if batch == 1 {
         for index in 0..rows {
-            let _ = bench.ctx.set(&maker.node(index, NONE, 0, 0));
+            let _ = bench.ctx.set(maker.node(index, NONE, 0, 0));
         }
         (now_ns() - started) as f64 / 1e9
     } else {

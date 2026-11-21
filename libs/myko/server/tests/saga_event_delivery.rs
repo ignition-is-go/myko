@@ -59,7 +59,7 @@ async fn registered_saga_receives_prestart_and_running_updates()
         color: String::new(),
         emoji: String::new(),
     };
-    ctx.set(&status)?;
+    ctx.set(status.clone())?;
     let running = server.clone();
     let task = tokio::spawn(async move { running.run().await.map_err(|error| error.to_string()) });
     let first = tokio::time::timeout(Duration::from_secs(5), OBSERVED.1.recv_async()).await;
@@ -69,7 +69,7 @@ async fn registered_saga_receives_prestart_and_running_updates()
         return Err(format!("expected before-start saga event, got {first}").into());
     }
     status.name = "after-start".into();
-    ctx.set(&status)?;
+    ctx.set(status.clone())?;
     let second = tokio::time::timeout(Duration::from_secs(5), OBSERVED.1.recv_async()).await;
     task.abort();
     let second = second??;

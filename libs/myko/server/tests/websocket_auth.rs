@@ -560,7 +560,7 @@ async fn internal_fixture(
         id: "kept".into(),
         value: 1,
     };
-    server.ctx().set(&kept)?;
+    server.ctx().set(kept.clone())?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
     let runtime = server.clone();
@@ -871,7 +871,7 @@ async fn declared_external_operations_cannot_be_expanded_by_permissive_policy() 
     for authenticated in [false, true] {
         let (server, addr, task) = internal_fixture(authenticated).await?;
         for binary in [false, true] {
-            server.ctx().set(&DeleteOnlyFixture {
+            server.ctx().set(DeleteOnlyFixture {
                 id: "kept".into(),
                 value: 1,
             })?;

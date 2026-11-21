@@ -37,7 +37,7 @@ fn a_by_id_report_returns_the_stored_row() {
         address: None,
         windback: None,
     };
-    assert!(ctx.set(&client).is_ok());
+    assert!(ctx.set(client).is_ok());
     let stored: Arc<dyn AnyItem> = ctx
         .registry
         .get_or_create("Client")
