@@ -395,8 +395,13 @@ fn generate_filter_query(
                 >>
             where Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                let mut residual = ctx.query.clone();
                 let source = if let Some(source) = #krate::query::registered_entity_source(&ctx.query_context, #name_str, ctx.query.as_ref()) { source } else { match ctx.query.0.query_route()? {
                     #krate::query::QueryRoute::Ids(ids) => {
+                        // The source holds these ids and no others, so the
+                        // id filter has nothing left to reject. Testing it
+                        // again would scan the id list for every changed row.
+                        std::sync::Arc::make_mut(&mut residual).0.id = None;
                         let store = ctx.query_context.registry().get_or_create(#name_str);
                         #krate::query::build_ids_source_map(&store, &ids)
                     }
@@ -409,7 +414,7 @@ fn generate_filter_query(
                     }
                 }};
                 Some(#krate::query::filter_query_over_source::<#query_ident>(
-                    source, ctx.query.clone(), ctx.query_context.query_context.clone(),
+                    source, residual, ctx.query_context.query_context.clone(),
                 ))
             }
         }
@@ -497,9 +502,12 @@ fn generate_get_by_id_report(
                 use #krate::prelude::{Eventable, MapExt};
                 let id: std::sync::Arc<str> = self.id.clone().into();
                 let store = ctx.entity_query_source(#name::ENTITY_NAME_STATIC, self);
+                // The row is handed on as the store holds it. Cloning it
+                // would copy the whole entity for every write and subscriber.
                 store.get(&id).map(move |item| std::sync::Arc::new(
-                    item.as_ref().and_then(|item| item.as_any().downcast_ref::<#name>())
-                        .map(|typed| std::sync::Arc::new(typed.clone()))
+                    item.as_ref().and_then(|item| {
+                        #krate::item::downcast_any_item_arc::<#name>(item, "get by id report")
+                    })
                 ))
             }
         }
