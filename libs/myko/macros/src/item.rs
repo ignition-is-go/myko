@@ -304,6 +304,7 @@ fn generate_route_arms(
                             item.downcast_ref::<#name>()
                                 .map(|e| #krate::query::CompoundKey::from_iter([#(#extracted),*]))
                         },
+                        extract_each: None,
                     });
                 }
             }
@@ -406,10 +407,10 @@ fn generate_filter_query(
                         #krate::query::build_ids_source_map(&store, &ids)
                     }
                     #krate::query::QueryRoute::BelongsTo(route) => {
-                        #krate::query::build_belongs_to_union_source_map(
+                        #krate::query::build_index_union_source_map(
                             ctx.query_context.registry(),
                             ctx.query_context.query_context.req.host_id,
-                            #name_str, route.field_names, route.extract_fk, route.keys,
+                            #name_str, route,
                         )
                     }
                 }};

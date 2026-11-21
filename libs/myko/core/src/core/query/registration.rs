@@ -20,8 +20,8 @@ use super::{
     cell::FilteredCellMap,
     context::{QueryBuildContext, QueryContext},
     filter::{
-        BelongsToRoute, CompoundFkExtractor, CompoundKey, ID_ROUTE_FIELD_NAMES, LiveFilterQuery,
-        QueryRoute,
+        BelongsToRoute, CompoundFkExtractor, CompoundKey, ID_ROUTE_FIELD_NAMES, KeyExtractor,
+        LiveFilterQuery, QueryRoute,
     },
     request::QueryRequest,
     traits::{
@@ -200,7 +200,7 @@ struct BelongsToSourceIndex {
 }
 
 impl BelongsToSourceIndex {
-    fn new(store: Arc<crate::store::EntityStore>, extract_fk: CompoundFkExtractor) -> Arc<Self> {
+    fn new(store: Arc<crate::store::EntityStore>, extract_fk: KeyExtractor) -> Arc<Self> {
         let driver = Arc::new(AnyItemMap::new());
         let index = Arc::new(Self {
             store,
@@ -297,7 +297,7 @@ impl BelongsToSourceIndex {
         self.buckets.retain(|_, weak| weak.upgrade().is_some());
     }
 
-    fn apply_diff(&self, diff: &BucketDiff, extract_fk: CompoundFkExtractor) {
+    fn apply_diff(&self, diff: &BucketDiff, extract_fk: KeyExtractor) {
         {
             let mut mutation = self
                 .mutation_gate
@@ -340,14 +340,14 @@ impl BelongsToSourceIndex {
     fn prepare_diff_locked(
         &self,
         diff: &BucketDiff,
-        extract_fk: CompoundFkExtractor,
+        extract_fk: KeyExtractor,
         members: &mut HashMap<CompoundKey, HashMap<Arc<str>, AnyItemArc>>,
     ) -> Vec<BucketAction> {
         match diff {
             MapDiff::Initial { entries } => {
                 members.clear();
                 for (id, item) in entries {
-                    if let Some(fk) = extract_fk(item.as_any()) {
+                    for fk in extract_fk.keys(item.as_any()) {
                         members
                             .entry(fk)
                             .or_default()
@@ -434,59 +434,68 @@ impl BelongsToSourceIndex {
     fn group_change(
         by_fk: &mut HashMap<CompoundKey, BucketDiffs>,
         change: &BucketDiff,
-        extract_fk: CompoundFkExtractor,
+        extract_fk: KeyExtractor,
     ) {
-        let mut push = |foreign_key: Option<CompoundKey>, diff: BucketDiff| {
-            if let Some(foreign_key) = foreign_key {
-                by_fk.entry(foreign_key).or_default().push(diff);
-            }
+        let mut push = |foreign_key: CompoundKey, diff: BucketDiff| {
+            by_fk.entry(foreign_key).or_default().push(diff);
         };
         match change {
-            MapDiff::Insert { key, value } => push(
-                extract_fk(value.as_any()),
-                MapDiff::Insert {
-                    key: key.clone(),
-                    value: value.clone(),
-                },
-            ),
-            MapDiff::Remove { key, old_value } => push(
-                extract_fk(old_value.as_any()),
-                MapDiff::Remove {
-                    key: key.clone(),
-                    old_value: old_value.clone(),
-                },
-            ),
-            MapDiff::Update {
-                key,
-                old_value,
-                new_value,
-            } => {
-                let old_fk = extract_fk(old_value.as_any());
-                let new_fk = extract_fk(new_value.as_any());
-                if old_fk == new_fk {
+            MapDiff::Insert { key, value } => {
+                for fk in extract_fk.keys(value.as_any()) {
                     push(
-                        new_fk,
-                        MapDiff::Update {
+                        fk,
+                        MapDiff::Insert {
                             key: key.clone(),
-                            old_value: old_value.clone(),
-                            new_value: new_value.clone(),
+                            value: value.clone(),
                         },
                     );
-                } else {
+                }
+            }
+            MapDiff::Remove { key, old_value } => {
+                for fk in extract_fk.keys(old_value.as_any()) {
                     push(
-                        old_fk,
+                        fk,
                         MapDiff::Remove {
                             key: key.clone(),
                             old_value: old_value.clone(),
                         },
                     );
-                    push(
-                        new_fk,
+                }
+            }
+            MapDiff::Update {
+                key,
+                old_value,
+                new_value,
+            } => {
+                // A key in both is an update in place; a key only in the old
+                // row loses it and a key only in the new row gains it.
+                let old_keys = extract_fk.keys(old_value.as_any());
+                let new_keys = extract_fk.keys(new_value.as_any());
+                for fk in &old_keys {
+                    if !new_keys.contains(fk) {
+                        push(
+                            fk.clone(),
+                            MapDiff::Remove {
+                                key: key.clone(),
+                                old_value: old_value.clone(),
+                            },
+                        );
+                    }
+                }
+                for fk in new_keys {
+                    let diff = if old_keys.contains(&fk) {
+                        MapDiff::Update {
+                            key: key.clone(),
+                            old_value: old_value.clone(),
+                            new_value: new_value.clone(),
+                        }
+                    } else {
                         MapDiff::Insert {
                             key: key.clone(),
                             value: new_value.clone(),
-                        },
-                    );
+                        }
+                    };
+                    push(fk, diff);
                 }
             }
             MapDiff::Initial { .. } | MapDiff::Batch { .. } => {}
@@ -517,8 +526,13 @@ pub fn build_belongs_to_source_map(
         foreign_ids.len(),
         "build_belongs_to_source_map: field_names and foreign_ids must be positionally paired"
     );
-    let index =
-        belongs_to_source_index_for(&registry, host_id, local_type, field_names, extract_fk);
+    let index = belongs_to_source_index_for(
+        &registry,
+        host_id,
+        local_type,
+        field_names,
+        KeyExtractor::One(extract_fk),
+    );
     drop(registry);
     index.bucket_for(foreign_ids).lock()
 }
@@ -528,7 +542,7 @@ fn belongs_to_source_index_for(
     host_id: Uuid,
     local_type: &str,
     field_names: &'static [&'static str],
-    extract_fk: CompoundFkExtractor,
+    extract_fk: KeyExtractor,
 ) -> Arc<BelongsToSourceIndex> {
     let key = format!("{host_id}:{local_type}:{}", field_names.join("+"));
     // Building the index reads every row of the store. The registry keeps
@@ -599,7 +613,7 @@ pub fn belongs_to_route_snapshot(
         host_id,
         local_type,
         route.field_names,
-        route.extract_fk,
+        route.extractor(),
     );
     if !scheduler_is_idle() {
         return None;
@@ -608,11 +622,15 @@ pub fn belongs_to_route_snapshot(
         .mutation_gate
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    // A row filed under several of the keys is returned once.
     let keys: HashSet<&CompoundKey> = route.keys.iter().collect();
+    let mut seen: HashSet<&Arc<str>> = HashSet::new();
     Some(
         keys.into_iter()
             .filter_map(|key| mutation.members.get(key))
-            .flat_map(|members| members.values().cloned())
+            .flat_map(|members| members.iter())
+            .filter(|(id, _)| seen.insert(*id))
+            .map(|(_, item)| item.clone())
             .collect(),
     )
 }
@@ -627,6 +645,12 @@ pub fn belongs_to_route_snapshot(
 /// to a table scan, so this only observes, never degrades.
 pub const UNION_KEYS_WARN_THRESHOLD: usize = 1000;
 
+/// How many of a union's buckets hold each row. A row leaves the union only
+/// when the last bucket holding it drops it: a row that moves between two
+/// buckets of one union, or that is filed under two of them, must not be
+/// removed by whichever bucket happens to report first.
+type UnionHolders = HashMap<Arc<str>, usize>;
+
 /// Rewrite one bucket's diffs into incremental changes safe to apply to the
 /// union of several buckets. An `Initial` is a replacement of this bucket's
 /// contribution, so the previous contribution must be retracted before the
@@ -635,45 +659,79 @@ pub const UNION_KEYS_WARN_THRESHOLD: usize = 1000;
 fn additive_union_diff(
     diff: &BucketDiff,
     contribution: &mut HashMap<Arc<str>, AnyItemArc>,
+    holders: &mut UnionHolders,
 ) -> Option<BucketDiff> {
+    let mut changes = Vec::new();
+    union_changes(diff, contribution, holders, &mut changes);
+    match changes.len() {
+        0 => None,
+        1 => changes.pop(),
+        _ => Some(MapDiff::Batch { changes }),
+    }
+}
+
+fn union_changes(
+    diff: &BucketDiff,
+    contribution: &mut HashMap<Arc<str>, AnyItemArc>,
+    holders: &mut UnionHolders,
+    out: &mut Vec<BucketDiff>,
+) {
     match diff {
         MapDiff::Initial { entries } => {
-            let mut changes = Vec::with_capacity(contribution.len().saturating_add(entries.len()));
-            for (key, old_value) in contribution.drain() {
-                changes.push(MapDiff::Remove { key, old_value });
+            let previous: Vec<(Arc<str>, AnyItemArc)> = contribution.drain().collect();
+            for (key, old_value) in previous {
+                release(holders, key, old_value, out);
             }
             for (key, value) in entries {
-                contribution.insert(key.clone(), value.clone());
-                changes.push(MapDiff::Insert {
-                    key: key.clone(),
-                    value: value.clone(),
-                });
+                hold(contribution, holders, key, value, out);
             }
-            (!changes.is_empty()).then_some(MapDiff::Batch { changes })
         }
         MapDiff::Batch { changes } => {
-            let rewritten: Vec<BucketDiff> = changes
-                .iter()
-                .filter_map(|change| additive_union_diff(change, contribution))
-                .collect();
-            if rewritten.is_empty() {
-                None
-            } else {
-                Some(MapDiff::Batch { changes: rewritten })
+            for change in changes {
+                union_changes(change, contribution, holders, out);
             }
         }
-        MapDiff::Insert { key, value } => {
-            contribution.insert(key.clone(), value.clone());
-            Some(diff.clone())
-        }
-        MapDiff::Remove { key, .. } => {
-            contribution.remove(key);
-            Some(diff.clone())
-        }
+        MapDiff::Insert { key, value } => hold(contribution, holders, key, value, out),
         MapDiff::Update { key, new_value, .. } => {
-            contribution.insert(key.clone(), new_value.clone());
-            Some(diff.clone())
+            hold(contribution, holders, key, new_value, out);
         }
+        MapDiff::Remove { key, old_value } => {
+            if contribution.remove(key).is_some() {
+                release(holders, key.clone(), old_value.clone(), out);
+            }
+        }
+    }
+}
+
+fn hold(
+    contribution: &mut HashMap<Arc<str>, AnyItemArc>,
+    holders: &mut UnionHolders,
+    key: &Arc<str>,
+    value: &AnyItemArc,
+    out: &mut Vec<BucketDiff>,
+) {
+    if contribution.insert(key.clone(), value.clone()).is_none() {
+        *holders.entry(key.clone()).or_default() += 1;
+    }
+    out.push(MapDiff::Insert {
+        key: key.clone(),
+        value: value.clone(),
+    });
+}
+
+fn release(
+    holders: &mut UnionHolders,
+    key: Arc<str>,
+    old_value: AnyItemArc,
+    out: &mut Vec<BucketDiff>,
+) {
+    let remaining = holders.get_mut(&key).map(|count| {
+        *count = count.saturating_sub(1);
+        *count
+    });
+    if remaining == Some(0) {
+        holders.remove(&key);
+        out.push(MapDiff::Remove { key, old_value });
     }
 }
 
@@ -701,6 +759,43 @@ pub fn build_belongs_to_union_source_map(
     extract_fk: CompoundFkExtractor,
     keys: Vec<CompoundKey>,
 ) -> FilteredCellMap {
+    union_source_map(
+        registry,
+        host_id,
+        local_type,
+        field_names,
+        KeyExtractor::One(extract_fk),
+        keys,
+    )
+}
+
+/// The rows of every key a route names, kept live: a union of the index's
+/// buckets for those keys. A row filed under several of them appears once.
+pub fn build_index_union_source_map(
+    registry: Arc<StoreRegistry>,
+    host_id: Uuid,
+    local_type: &'static str,
+    route: BelongsToRoute,
+) -> FilteredCellMap {
+    let extractor = route.extractor();
+    union_source_map(
+        registry,
+        host_id,
+        local_type,
+        route.field_names,
+        extractor,
+        route.keys,
+    )
+}
+
+fn union_source_map(
+    registry: Arc<StoreRegistry>,
+    host_id: Uuid,
+    local_type: &'static str,
+    field_names: &'static [&'static str],
+    extract_fk: KeyExtractor,
+    keys: Vec<CompoundKey>,
+) -> FilteredCellMap {
     if keys.len() > UNION_KEYS_WARN_THRESHOLD {
         tracing::warn!(
             target: "myko::core::query::registration",
@@ -715,10 +810,12 @@ pub fn build_belongs_to_union_source_map(
     let index =
         belongs_to_source_index_for(&registry, host_id, local_type, field_names, extract_fk);
     let result: AnyItemMap = AnyItemMap::new();
+    let holders = Arc::new(Mutex::new(UnionHolders::new()));
     for key in keys {
         let bucket = index.bucket_for(key).lock();
         let result_weak = result.downgrade();
         let contribution = Mutex::new(HashMap::new());
+        let holders = holders.clone();
         let guard = bucket.subscribe_diffs(move |diff| {
             let Some(result) = result_weak.upgrade() else {
                 return;
@@ -732,6 +829,9 @@ pub fn build_belongs_to_union_source_map(
             let additive = additive_union_diff(
                 diff,
                 &mut contribution
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+                &mut holders
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
@@ -846,9 +946,12 @@ fn reconcile_full_scope_membership<F: LiveFilterQuery>(
 /// store in scan mode (its `Initial` represents `result`'s entire scope, so
 /// deletes must retract ids absent from it too — see
 /// [`reconcile_full_scope_membership`] vs [`apply_bucket_candidates`]).
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum LiveDiffScope {
-    Bucket,
+    /// One key's bucket of the store named here. A row this bucket drops
+    /// may still belong to the result through another key: it moved
+    /// between two keys of the query, or it is filed under both.
+    Bucket(Arc<crate::store::EntityStore>),
     FullStore,
 }
 
@@ -861,11 +964,11 @@ fn apply_live_diff<F: LiveFilterQuery>(
     result: &AnyItemMap,
     diff: &BucketDiff,
     filter: &F,
-    scope: LiveDiffScope,
+    scope: &LiveDiffScope,
 ) {
     match diff {
         MapDiff::Initial { entries } => match scope {
-            LiveDiffScope::Bucket => apply_bucket_candidates(result, filter, entries.clone()),
+            LiveDiffScope::Bucket(_) => apply_bucket_candidates(result, filter, entries.clone()),
             LiveDiffScope::FullStore => {
                 reconcile_full_scope_membership(result, filter, entries.clone());
             }
@@ -876,7 +979,19 @@ fn apply_live_diff<F: LiveFilterQuery>(
             }
         }
         MapDiff::Remove { key, .. } => {
-            result.remove(key);
+            // The filter pins the route's keys, so a row that still matches
+            // it in the store is still in another of the query's buckets.
+            let current = match scope {
+                LiveDiffScope::Bucket(store) => store
+                    .get_value(key)
+                    .filter(|item| live_filter_matches(filter, item)),
+                LiveDiffScope::FullStore => None,
+            };
+            if let Some(item) = current {
+                result.insert(key.clone(), item);
+            } else {
+                result.remove(key);
+            }
         }
         MapDiff::Update { key, new_value, .. } => {
             if live_filter_matches(filter, new_value) {
@@ -1124,7 +1239,7 @@ fn build_live_diff_callback<F: LiveFilterQuery>(
         };
         if first.swap(false, Ordering::Relaxed) {
             if let Some(filter) = current_live_filter(&filter_state, &synchronization) {
-                apply_live_diff(&result, diff, &filter, scope);
+                apply_live_diff(&result, diff, &filter, &scope);
             }
             return;
         }
@@ -1132,7 +1247,7 @@ fn build_live_diff_callback<F: LiveFilterQuery>(
         let Some(filter) = current_live_filter(&filter_state, &synchronization) else {
             return;
         };
-        apply_live_diff(&result, diff, &filter, scope);
+        apply_live_diff(&result, diff, &filter, &scope);
     }
 }
 
@@ -1147,7 +1262,7 @@ fn split_query_route(
 ) -> (
     &'static [&'static str],
     HashSet<CompoundKey>,
-    Option<CompoundFkExtractor>,
+    Option<KeyExtractor>,
 ) {
     match route {
         QueryRoute::Ids(ids) => (
@@ -1157,11 +1272,14 @@ fn split_query_route(
                 .collect(),
             None,
         ),
-        QueryRoute::BelongsTo(BelongsToRoute {
-            field_names,
-            keys,
-            extract_fk,
-        }) => (field_names, keys.into_iter().collect(), Some(extract_fk)),
+        QueryRoute::BelongsTo(route) => {
+            let extractor = route.extractor();
+            (
+                route.field_names,
+                route.keys.into_iter().collect(),
+                Some(extractor),
+            )
+        }
     }
 }
 
@@ -1169,7 +1287,7 @@ fn build_live_bucket_source<F: LiveFilterQuery>(
     registry: &Arc<StoreRegistry>,
     host_id: Uuid,
     route_field_names: &'static [&'static str],
-    extract_fk: Option<CompoundFkExtractor>,
+    extract_fk: Option<KeyExtractor>,
 ) -> BucketSourceFn {
     extract_fk.map_or_else(
         || {
@@ -1235,6 +1353,7 @@ fn add_live_buckets<F: LiveFilterQuery>(
     new_keys: &HashSet<CompoundKey>,
     current_generation: u64,
     make_source: &BucketSourceFn,
+    store: &Arc<crate::store::EntityStore>,
     synchronization: &Arc<LiveQuerySynchronization>,
 ) {
     for key in new_keys {
@@ -1251,7 +1370,7 @@ fn add_live_buckets<F: LiveFilterQuery>(
             result,
             filter_state.clone(),
             synchronization,
-            LiveDiffScope::Bucket,
+            LiveDiffScope::Bucket(store.clone()),
         ));
         state.bucket_guards.insert(key.clone(), (bucket, guard));
         state.bucket_filter_refs.insert(key.clone(), filter_state);
@@ -1289,6 +1408,7 @@ fn reconcile_indexed_live_query<F: LiveFilterQuery>(
             &new_keys,
             current_generation,
             &make_source,
+            &registry.get_or_create(F::entity_type()),
             synchronization,
         );
     }
@@ -1608,7 +1728,7 @@ mod belongs_to_source_index_tests {
                     .map(|i| child(&format!("child-{i}"), &format!("parent-{i}")))
                     .collect(),
             });
-            let index = BelongsToSourceIndex::new(store, counted_parent_fk);
+            let index = BelongsToSourceIndex::new(store, KeyExtractor::One(counted_parent_fk));
             assert_eq!(MEMBERSHIP_EXTRACTIONS.load(Ordering::Relaxed), size);
             for i in 0..size {
                 let key = smallvec::smallvec![Arc::from(format!("parent-{i}"))];
@@ -1625,7 +1745,7 @@ mod belongs_to_source_index_tests {
     #[test]
     fn unwatched_membership_tracks_moves_removals_and_initial_reset() {
         let store = new_store();
-        let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+        let index = BelongsToSourceIndex::new(store.clone(), KeyExtractor::One(extract_parent_fk));
         let (id, old) = child("child", "old");
         store.insert(id.clone(), old.clone());
         let (_, new) = child("child", "new");
@@ -1691,7 +1811,7 @@ mod belongs_to_source_index_tests {
                 &result,
                 filter,
                 &synchronization,
-                LiveDiffScope::Bucket,
+                LiveDiffScope::Bucket(Arc::new(crate::store::EntityStore::new())),
             ));
             assert_eq!(result.snapshot().len(), 2);
             assert!(done.send(()).is_ok());
@@ -1757,7 +1877,7 @@ mod belongs_to_source_index_tests {
         // dropping every subscriber and sweeping must bring the count to 0
         // regardless of how many distinct parents were ever seen.
         let store = new_store();
-        let index = BelongsToSourceIndex::new(store, extract_parent_fk);
+        let index = BelongsToSourceIndex::new(store, KeyExtractor::One(extract_parent_fk));
 
         for i in 0..50 {
             let parent: Arc<str> = Arc::from(format!("parent-{i}"));
@@ -1784,7 +1904,7 @@ mod belongs_to_source_index_tests {
         let (id, item) = child("c1", "parent-x");
         store.insert(id.clone(), item);
 
-        let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+        let index = BelongsToSourceIndex::new(store.clone(), KeyExtractor::One(extract_parent_fk));
         let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-x")]);
         assert_eq!(bucket.snapshot().len(), 1);
 
@@ -1814,7 +1934,7 @@ mod belongs_to_source_index_tests {
         let (id, item) = child("c1", "parent-y");
         store.insert(id, item);
 
-        let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+        let index = BelongsToSourceIndex::new(store.clone(), KeyExtractor::One(extract_parent_fk));
 
         {
             let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-y")]);
@@ -1851,7 +1971,10 @@ mod belongs_to_source_index_tests {
         // must converge on exactly one live bucket no matter how many
         // callers race.
         let store = new_store();
-        let index = Arc::new(BelongsToSourceIndex::new(store.clone(), extract_parent_fk));
+        let index = Arc::new(BelongsToSourceIndex::new(
+            store.clone(),
+            KeyExtractor::One(extract_parent_fk),
+        ));
         let key: CompoundKey = smallvec::smallvec![Arc::from("parent-race")];
 
         let barrier = Arc::new(std::sync::Barrier::new(N));
@@ -1899,7 +2022,8 @@ mod belongs_to_source_index_tests {
         // the inserted child without requiring a later source diff.
         for i in 0..128 {
             let store = new_store();
-            let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+            let index =
+                BelongsToSourceIndex::new(store.clone(), KeyExtractor::One(extract_parent_fk));
             let barrier = Arc::new(std::sync::Barrier::new(2));
 
             let bucket_thread = {
@@ -1935,7 +2059,7 @@ mod belongs_to_source_index_tests {
     #[test]
     fn bucket_diff_fanout_can_reenter_bucket_creation() {
         let store = new_store();
-        let index = BelongsToSourceIndex::new(store.clone(), extract_parent_fk);
+        let index = BelongsToSourceIndex::new(store.clone(), KeyExtractor::One(extract_parent_fk));
         let bucket = index.bucket_for(smallvec::smallvec![Arc::from("parent-source")]);
         let (sent, received) = std::sync::mpsc::channel();
         let index_for_callback = index.clone();
@@ -1982,6 +2106,7 @@ mod belongs_to_source_index_tests {
                     field_names: &["parent_id"],
                     keys: vec![smallvec::smallvec![Arc::from("parent-1")]],
                     extract_fk: extract_parent_fk,
+                    extract_each: None,
                 },
             )
             .map(|rows| rows.len())
@@ -2015,7 +2140,7 @@ mod belongs_to_source_index_tests {
                 host_id,
                 "TestChild",
                 &["parent_id"],
-                extract_parent_fk,
+                KeyExtractor::One(extract_parent_fk),
             )
         };
         let index = lookup();
@@ -2122,7 +2247,10 @@ mod belongs_to_source_index_tests {
         store.insert(id_a, item_a);
         store.insert(id_b, item_b);
 
-        let index = BelongsToSourceIndex::new(store.clone(), extract_node_and_session_fk);
+        let index = BelongsToSourceIndex::new(
+            store.clone(),
+            KeyExtractor::One(extract_node_and_session_fk),
+        );
 
         let key_a: CompoundKey =
             smallvec::smallvec![Arc::from("node-A"), Arc::from("session-PROD")];
@@ -2188,7 +2316,8 @@ mod belongs_to_source_index_tests {
         // key against the SAME index would be a caller bug, not a
         // supported mixed-arity usage).
         let store = new_store();
-        let index = BelongsToSourceIndex::new(store, extract_node_and_session_fk);
+        let index =
+            BelongsToSourceIndex::new(store, KeyExtractor::One(extract_node_and_session_fk));
         let key: CompoundKey = smallvec::smallvec![Arc::from("node-A"), Arc::from("session-PROD")];
         let bucket = index.bucket_for(key.clone());
         assert_eq!(bucket.snapshot().len(), 0);
@@ -2322,6 +2451,46 @@ mod belongs_to_source_index_tests {
         store.remove_many(vec![matched_id]);
 
         assert_eq!(items.get().len(), 0);
+    }
+
+    #[test]
+    fn a_row_moving_between_two_keys_of_one_union_stays_in_it() {
+        // Whether the old key's remove or the new key's insert reaches the
+        // union first depends on hash order, so try many key pairs and rows.
+        for pair in 0..40 {
+            let registry = Arc::new(crate::store::StoreRegistry::new());
+            let store = registry.get_or_create("TestChild");
+            let (from, to): (Arc<str>, Arc<str>) = (
+                format!("parent-{pair}-a").into(),
+                format!("parent-{pair}-b").into(),
+            );
+            for row in 0..4 {
+                let (id, item) = child(&format!("child-{row}"), &from);
+                store.insert(id, item);
+            }
+            let union = build_belongs_to_union_source_map(
+                registry.clone(),
+                Uuid::new_v4(),
+                "TestChild",
+                &["parent_id"],
+                extract_parent_fk,
+                vec![
+                    smallvec::smallvec![from.clone()],
+                    smallvec::smallvec![to.clone()],
+                ],
+            );
+            for (round, parent) in [&to, &from, &to].into_iter().enumerate() {
+                for row in 0..4 {
+                    let (id, item) = child(&format!("child-{row}"), parent);
+                    store.insert(id, item);
+                }
+                assert_eq!(
+                    union.snapshot().len(),
+                    4,
+                    "pair {pair} round {round}: a row that moved between two keys left the union"
+                );
+            }
+        }
     }
 
     #[test]
