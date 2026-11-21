@@ -27,9 +27,7 @@
 mod entity_store;
 mod registry;
 pub(crate) mod transactions;
-mod write_window;
 pub use transactions::CommandCausation;
-pub use write_window::{WriteWindow, write_window};
 
 pub use entity_store::{EntityDiffCell, EntityEntriesCell, EntityStore};
 pub use registry::StoreRegistry;

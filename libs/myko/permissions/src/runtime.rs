@@ -348,7 +348,6 @@ impl Permissions {
             state.error = None;
             state.epoch = state.epoch.wrapping_add(1);
         }
-        let _window = myko::store::write_window();
         hyphae::batch(|| {
             let document = snapshot.as_ref().map(|snapshot| &snapshot.document);
             project::<PermissionPrincipal>(

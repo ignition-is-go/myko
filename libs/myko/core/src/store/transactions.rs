@@ -80,7 +80,6 @@ impl TransactionCoordinator {
     }
 
     pub(crate) fn coordinate<T>(&self, exclusive: bool, action: impl FnOnce() -> T) -> T {
-        let _window = super::write_window();
         if !exclusive && !self.history_enabled.load(Ordering::Acquire) {
             return action();
         }
