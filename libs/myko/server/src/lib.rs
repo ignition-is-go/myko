@@ -115,6 +115,7 @@ pub struct MykoServerBuilder {
     /// set; binaries override this to advertise their own name / version /
     /// instructions on the `/myko/mcp` endpoint.
     server_info: Option<mcp::dispatch::ServerInfo>,
+    history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>>,
 }
 
 type AfterInitCallback =
@@ -268,6 +269,18 @@ impl MykoServerBuilder {
         self
     }
 
+    /// Serve durable history (undo, transaction replay) from `provider`
+    /// instead of Postgres, for example from fixtures in a test. It replaces
+    /// the provider `with_postgres` would install.
+    #[must_use]
+    pub fn with_history_replay(
+        mut self,
+        provider: Arc<dyn myko::server::HistoryReplayProvider>,
+    ) -> Self {
+        self.history_replay = Some(provider);
+        self
+    }
+
     /// Build the server.
     #[must_use]
     pub fn build(self) -> MykoServer {
@@ -292,6 +305,9 @@ impl MykoServerBuilder {
         server.auth_provider = self.auth_provider;
         server.websocket_path = self.websocket_path.unwrap_or(server.websocket_path);
         server.mcp_path = self.mcp_path.unwrap_or(server.mcp_path);
+        if let Some(provider) = self.history_replay {
+            server.history_replay = Some(provider);
+        }
         server
     }
 }
@@ -323,7 +339,7 @@ pub struct MykoServer {
     _postgres_producer_owner: Option<PostgresProducer>,
     /// Postgres consumer (kept alive)
     postgres_consumer: Option<PostgresConsumer>,
-    history_replay: Option<Arc<PostgresHistoryReplayProvider>>,
+    history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>>,
     /// Whether the server is ready to accept connections
     ready: Arc<AtomicBool>,
     /// Peer registry for federation (initialized after catch-up)
@@ -444,7 +460,8 @@ impl MykoServer {
             config,
             _postgres_producer_owner: postgres_producer_owner,
             postgres_consumer,
-            history_replay,
+            history_replay: history_replay
+                .map(|provider| -> Arc<dyn myko::server::HistoryReplayProvider> { provider }),
             ready,
             peer_registry_instance: RwLock::new(None),
             peer_clients,
@@ -510,11 +527,7 @@ impl MykoServer {
     pub fn ctx(&self) -> MykoServerContext {
         self.ctx_cache
             .get_or_init(|| {
-                let history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>> =
-                    self.history_replay.clone().map(|provider| {
-                        let provider: Arc<dyn myko::server::HistoryReplayProvider> = provider;
-                        provider
-                    });
+                let history_replay = self.history_replay.clone();
                 MykoServerContext::new(
                     self.host_id,
                     self.registry.clone(),
