@@ -1130,6 +1130,26 @@ fn load_consumer_snapshot(
     Ok((high_water, count, fetch_sql))
 }
 
+/// Loads the SET events of a snapshot into the stores, as the startup load
+/// does. Returns the number of events read.
+pub(crate) fn hydrate_stores(
+    events: impl IntoIterator<Item = MEvent>,
+    host_id: &str,
+    handler_registry: &HandlerRegistry,
+    registry: &StoreRegistry,
+) -> usize {
+    let mut pending = SnapshotEntries::new();
+    let mut count = 0_usize;
+    for event in events {
+        if event.change_type == MEventType::SET {
+            queue_snapshot_event(&event, host_id, handler_registry, registry, &mut pending);
+            count = count.saturating_add(1);
+        }
+    }
+    flush_snapshot_entries(registry, pending);
+    count
+}
+
 fn flush_snapshot_entries(registry: &StoreRegistry, pending: SnapshotEntries) {
     for (entity_type, entries) in pending {
         registry.get_or_create(&entity_type).insert_many(entries);

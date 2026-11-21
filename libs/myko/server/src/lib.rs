@@ -712,6 +712,29 @@ impl MykoServer {
         Ok(())
     }
 
+    /// Load a snapshot the way startup loads one from Postgres.
+    ///
+    /// Each SET event's item goes straight into its store. The mutation
+    /// pipeline does not run: nothing is validated, persisted, cascaded or
+    /// sent to subscribers event by event. The search index is then built and
+    /// relations are established once, as `run` does after catch-up. Events
+    /// that are not SETs are skipped: a snapshot holds the latest state of
+    /// each entity. Returns the number of events loaded.
+    ///
+    /// Use it to bring a server to a known state before it serves, for
+    /// example from a fixture in a test.
+    pub fn hydrate_snapshot(&self, events: impl IntoIterator<Item = MEvent>) -> usize {
+        let loaded = postgres::hydrate_stores(
+            events,
+            &self.host_id.to_string(),
+            &self.handler_registry,
+            &self.registry,
+        );
+        self.search_index.build_from_registry(&self.registry);
+        self.establish_relations();
+        loaded
+    }
+
     /// Establish relationship invariants.
     pub fn establish_relations(&self) {
         if let Err(e) = self.relationship_manager.establish_relations(&self.ctx()) {
