@@ -66,9 +66,10 @@ type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
 type BucketDiffs = Vec<BucketDiff>;
 type BucketAction = (AnyItemMap, BucketDiff);
 
+type Members = HashMap<CompoundKey, HashMap<Arc<str>, AnyItemArc>>;
+
 #[derive(Default)]
 struct BelongsToMutationState {
-    members: HashMap<CompoundKey, HashMap<Arc<str>, AnyItemArc>>,
     pending: VecDeque<Vec<BucketAction>>,
     dispatching: bool,
 }
@@ -196,6 +197,10 @@ struct BelongsToSourceIndex {
     store: Arc<crate::store::EntityStore>,
     buckets: DashMap<CompoundKey, WeakAnyItemMap>,
     mutation_gate: Mutex<BelongsToMutationState>,
+    /// Every row of the store by key. A write hook keeps it, on the writing
+    /// thread before the write returns, so it always agrees with the store;
+    /// live buckets follow the store's diffs instead.
+    members: Mutex<Members>,
     driver: Arc<AnyItemMap>,
 }
 
@@ -206,8 +211,19 @@ impl BelongsToSourceIndex {
             store,
             buckets: DashMap::new(),
             mutation_gate: Mutex::new(BelongsToMutationState::default()),
+            members: Mutex::new(Members::new()),
             driver: driver.clone(),
         });
+
+        // Registration replays every current row as an insert, and each later
+        // write reaches the hook exactly once.
+        let index_for_writes = Arc::downgrade(&index);
+        let hook = index.store.register_write_hook(move |write| {
+            if let Some(index) = index_for_writes.upgrade() {
+                index.record_write(write, extract_fk);
+            }
+        });
+        driver.own_guard(hook);
 
         let index_for_diffs = Arc::downgrade(&index);
         let guard = index.store.subscribe_diffs(move |diff| {
@@ -217,6 +233,47 @@ impl BelongsToSourceIndex {
         });
         driver.own_guard(guard);
         index
+    }
+
+    fn record_write(
+        &self,
+        write: hyphae::cell_map::MapWrite<'_, Arc<str>, AnyItemArc>,
+        extract_fk: KeyExtractor,
+    ) {
+        use hyphae::cell_map::MapWrite;
+        let mut members = self
+            .members
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (id, old, new) = match write {
+            MapWrite::Insert { key, value } => (key, None, Some(value)),
+            MapWrite::Update { key, old, new } => (key, Some(old), Some(new)),
+            MapWrite::Remove { key, old } => (key, Some(old), None),
+        };
+        let new_keys = new
+            .map(|item| extract_fk.keys(item.as_any()))
+            .unwrap_or_default();
+        for fk in old
+            .map(|item| extract_fk.keys(item.as_any()))
+            .unwrap_or_default()
+        {
+            if !new_keys.contains(&fk)
+                && let Some(rows) = members.get_mut(&fk)
+            {
+                rows.remove(id);
+                if rows.is_empty() {
+                    members.remove(&fk);
+                }
+            }
+        }
+        if let Some(item) = new {
+            for fk in new_keys {
+                members
+                    .entry(fk)
+                    .or_default()
+                    .insert(id.clone(), item.clone());
+            }
+        }
     }
 
     /// Look up a bucket for *internal diff routing only* — never creates
@@ -245,13 +302,13 @@ impl BelongsToSourceIndex {
                 if let Some(map) = occupied.get().upgrade() {
                     return map;
                 }
-                let map = Self::build_backfilled_bucket(mutation.members.get(occupied.key()));
+                let map = Self::build_backfilled_bucket(self.members_of(occupied.key()).as_ref());
                 self.retain_for_bucket(&map);
                 occupied.insert(map.downgrade());
                 map
             }
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
-                let map = Self::build_backfilled_bucket(mutation.members.get(vacant.key()));
+                let map = Self::build_backfilled_bucket(self.members_of(vacant.key()).as_ref());
                 self.retain_for_bucket(&map);
                 vacant.insert(map.downgrade());
                 map
@@ -271,6 +328,14 @@ impl BelongsToSourceIndex {
             let _ = &index;
         });
         map.own_guard(guard);
+    }
+
+    fn members_of(&self, key: &CompoundKey) -> Option<HashMap<Arc<str>, AnyItemArc>> {
+        self.members
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(key)
+            .cloned()
     }
 
     fn build_backfilled_bucket(members: Option<&HashMap<Arc<str>, AnyItemArc>>) -> AnyItemMap {
@@ -303,7 +368,7 @@ impl BelongsToSourceIndex {
                 .mutation_gate
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let actions = self.prepare_diff_locked(diff, extract_fk, &mut mutation.members);
+            let actions = self.prepare_diff_locked(diff, extract_fk);
             mutation.pending.push_back(actions);
             if mutation.dispatching {
                 return;
@@ -341,19 +406,15 @@ impl BelongsToSourceIndex {
         &self,
         diff: &BucketDiff,
         extract_fk: KeyExtractor,
-        members: &mut HashMap<CompoundKey, HashMap<Arc<str>, AnyItemArc>>,
     ) -> Vec<BucketAction> {
         match diff {
-            MapDiff::Initial { entries } => {
-                members.clear();
-                for (id, item) in entries {
-                    for fk in extract_fk.keys(item.as_any()) {
-                        members
-                            .entry(fk)
-                            .or_default()
-                            .insert(id.clone(), item.clone());
-                    }
-                }
+            MapDiff::Initial { .. } => {
+                // The store was replaced. Each live bucket takes its key's
+                // rows from `members`, which the write hook already holds.
+                let members = self
+                    .members
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 let keys = self
                     .buckets
                     .iter()
@@ -378,51 +439,27 @@ impl BelongsToSourceIndex {
                 let mut grouped = HashMap::new();
                 for change in changes {
                     if matches!(change, MapDiff::Initial { .. } | MapDiff::Batch { .. }) {
-                        actions.extend(self.apply_grouped(std::mem::take(&mut grouped), members));
-                        actions.extend(self.prepare_diff_locked(change, extract_fk, members));
+                        actions.extend(self.route_grouped(std::mem::take(&mut grouped)));
+                        actions.extend(self.prepare_diff_locked(change, extract_fk));
                     } else {
                         Self::group_change(&mut grouped, change, extract_fk);
                     }
                 }
-                actions.extend(self.apply_grouped(grouped, members));
+                actions.extend(self.route_grouped(grouped));
                 actions
             }
             _ => {
                 let mut grouped = HashMap::new();
                 Self::group_change(&mut grouped, diff, extract_fk);
-                self.apply_grouped(grouped, members)
+                self.route_grouped(grouped)
             }
         }
     }
 
-    fn apply_grouped(
-        &self,
-        grouped: HashMap<CompoundKey, BucketDiffs>,
-        members: &mut HashMap<CompoundKey, HashMap<Arc<str>, AnyItemArc>>,
-    ) -> Vec<BucketAction> {
+    fn route_grouped(&self, grouped: HashMap<CompoundKey, BucketDiffs>) -> Vec<BucketAction> {
         grouped
             .into_iter()
-            .filter_map(|(fk, changes)| {
-                let rows = members.entry(fk.clone()).or_default();
-                for change in &changes {
-                    match change {
-                        MapDiff::Insert { key, value } => {
-                            rows.insert(key.clone(), value.clone());
-                        }
-                        MapDiff::Update { key, new_value, .. } => {
-                            rows.insert(key.clone(), new_value.clone());
-                        }
-                        MapDiff::Remove { key, .. } => {
-                            rows.remove(key);
-                        }
-                        MapDiff::Initial { .. } | MapDiff::Batch { .. } => {}
-                    }
-                }
-                if rows.is_empty() {
-                    members.remove(&fk);
-                }
-                self.route_action(&fk, MapDiff::Batch { changes })
-            })
+            .filter_map(|(fk, changes)| self.route_action(&fk, MapDiff::Batch { changes }))
             .collect()
     }
 
@@ -570,44 +607,18 @@ fn belongs_to_source_index_for(
     }
 }
 
-thread_local! {
-    static IDLE_PROBE_RAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Whether hyphae has no batch open and no drain running.
-///
-/// A cell set runs its subscriber on the calling thread only then; otherwise
-/// the scheduler queues it. hyphae exposes no direct read of that state.
-fn scheduler_is_idle() -> bool {
-    use hyphae::{Mutable, Watchable};
-    static PROBE: std::sync::LazyLock<(
-        hyphae::Cell<u64, hyphae::CellMutable>,
-        hyphae::SubscriptionGuard,
-    )> = std::sync::LazyLock::new(|| {
-        let cell = hyphae::Cell::new(0);
-        let guard = cell.subscribe(|_| IDLE_PROBE_RAN.with(|ran| ran.set(true)));
-        (cell, guard)
-    });
-    static TICKET: AtomicU64 = AtomicU64::new(0);
-    let probe = &PROBE.0;
-    IDLE_PROBE_RAN.with(|ran| ran.set(false));
-    probe.set(TICKET.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
-    IDLE_PROBE_RAN.with(std::cell::Cell::get)
-}
-
 /// The rows a `belongs_to` route selects, read from the index without
 /// building a reactive map.
 ///
-/// The index follows the store through its diffs, which the scheduler may
-/// still hold. `None` is returned while the scheduler has work queued, so a
-/// caller that reads the store instead never misses a row just written.
+/// The index is updated inside each store write, so the rows agree with
+/// the store at every point, including inside a batch.
 #[must_use]
 pub fn belongs_to_route_snapshot(
     registry: &Arc<StoreRegistry>,
     host_id: Uuid,
     local_type: &str,
     route: &crate::query::BelongsToRoute,
-) -> Option<Vec<AnyItemArc>> {
+) -> Vec<AnyItemArc> {
     let index = belongs_to_source_index_for(
         registry,
         host_id,
@@ -615,39 +626,19 @@ pub fn belongs_to_route_snapshot(
         route.field_names,
         route.extractor(),
     );
-    ROUTE_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
-    if !scheduler_is_idle() {
-        ROUTE_SNAPSHOT_FALLBACKS.fetch_add(1, Ordering::Relaxed);
-        return None;
-    }
-    let mutation = index
-        .mutation_gate
+    let members = index
+        .members
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     // A row filed under several of the keys is returned once.
     let keys: HashSet<&CompoundKey> = route.keys.iter().collect();
     let mut seen: HashSet<&Arc<str>> = HashSet::new();
-    Some(
-        keys.into_iter()
-            .filter_map(|key| mutation.members.get(key))
-            .flat_map(|members| members.iter())
-            .filter(|(id, _)| seen.insert(*id))
-            .map(|(_, item)| item.clone())
-            .collect(),
-    )
-}
-
-static ROUTE_SNAPSHOTS: AtomicU64 = AtomicU64::new(0);
-static ROUTE_SNAPSHOT_FALLBACKS: AtomicU64 = AtomicU64::new(0);
-
-/// Index-routed snapshot reads since the process started, and how many of
-/// them found the scheduler busy and read the whole store instead.
-#[must_use]
-pub fn route_snapshot_counts() -> (u64, u64) {
-    (
-        ROUTE_SNAPSHOTS.load(Ordering::Relaxed),
-        ROUTE_SNAPSHOT_FALLBACKS.load(Ordering::Relaxed),
-    )
+    keys.into_iter()
+        .filter_map(|key| members.get(key))
+        .flat_map(|members| members.iter())
+        .filter(|(id, _)| seen.insert(*id))
+        .map(|(_, item)| item.clone())
+        .collect()
 }
 
 /// Above this many union keys, `build_belongs_to_union_source_map` logs a
@@ -1871,10 +1862,9 @@ mod belongs_to_source_index_tests {
         assert!(old_bucket.snapshot().is_empty());
         assert!(
             index
-                .mutation_gate
+                .members
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .members
                 .is_empty()
         );
     }
@@ -2192,7 +2182,7 @@ mod belongs_to_source_index_tests {
     }
 
     #[test]
-    fn route_snapshot_reads_the_index_only_while_the_scheduler_is_idle() {
+    fn a_route_snapshot_agrees_with_the_store_inside_a_batch() {
         let _serial = crate::test_util::scheduler_test_serial();
         let registry = Arc::new(crate::store::StoreRegistry::new());
         let host_id = Uuid::new_v4();
@@ -2211,24 +2201,23 @@ mod belongs_to_source_index_tests {
                     extract_each: None,
                 },
             )
-            .map(|rows| rows.len())
+            .len()
         };
 
-        assert_eq!(snapshot(), Some(1));
-        let (id, item) = child("child-2", "parent-1");
-        store.insert(id, item);
-        assert_eq!(snapshot(), Some(2));
-
+        assert_eq!(snapshot(), 1);
         hyphae::batch(|| {
-            let (id, item) = child("child-3", "parent-1");
+            let (id, item) = child("child-2", "parent-1");
             store.insert(id, item);
             assert_eq!(
                 snapshot(),
-                None,
-                "the index is behind the store until the batch drains"
+                2,
+                "the index saw the write before the batch drained"
             );
+            let (id, item) = child("child-1", "parent-2");
+            store.insert(id, item);
+            assert_eq!(snapshot(), 1, "a row that changed key left it at once");
         });
-        assert_eq!(snapshot(), Some(3));
+        assert_eq!(snapshot(), 1);
     }
 
     #[test]

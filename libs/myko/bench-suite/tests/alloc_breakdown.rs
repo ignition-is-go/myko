@@ -530,7 +530,7 @@ fn index_rows(summary: &mut Vec<String>) {
     );
 
     // A writer on another thread keeps the scheduler busy while this one
-    // reads. Count how many routed snapshots fall back to a store scan.
+    // reads; the routed snapshot has no store-scan path left to fall to.
     let stop = Arc::new(AtomicBool::new(false));
     let writer = {
         let ctx = bench.ctx.clone();
@@ -544,24 +544,18 @@ fn index_rows(summary: &mut Vec<String>) {
         })
     };
     std::thread::sleep(Duration::from_millis(50));
-    let (reads_before, fallbacks_before) = myko::query::route_snapshot_counts();
     for _ in 0..1_000 {
         assert_eq!(
             bench
                 .ctx
                 .query_snapshot(GetIxRowsByQuery(on_service(2)), request.clone())
                 .len(),
-            1
+            1,
+            "a routed snapshot under a concurrent writer reads the index"
         );
     }
-    let (reads_after, fallbacks_after) = myko::query::route_snapshot_counts();
     stop.store(true, Relaxed);
     writer.join().unwrap();
-    println!(
-        "\nunder a concurrent writer: {} of {} routed query_snapshot calls fell back to a store scan",
-        fallbacks_after - fallbacks_before,
-        reads_after - reads_before
-    );
     drop((others, mine));
 }
 

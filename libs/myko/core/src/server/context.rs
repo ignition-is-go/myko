@@ -3036,7 +3036,6 @@ impl MykoServerContext {
                     &query_item_type,
                     &route,
                 )
-                .unwrap_or_else(|| all_rows(&store))
             }
             (None, None) => all_rows(&store),
         };
