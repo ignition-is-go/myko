@@ -8,7 +8,7 @@ use std::sync::Arc;
 pub use myko::*;
 
 use myko::{
-    query::{ContainsFilter, IdFilter, KeyFilter, QueryRoute, StringFilter},
+    query::{ContainsFilter, IdFilter, KeyFilter, NumericFilter, QueryRoute, StringFilter},
     request::RequestContext,
     server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
@@ -374,4 +374,94 @@ fn an_unindexed_filter_is_not_routed_and_a_partial_compound_key_is_not_either() 
         ..Default::default()
     };
     assert!(matches!(by_id.query_route(), Some(QueryRoute::Ids(_))));
+}
+
+#[test]
+fn a_row_whose_unrouted_field_stops_matching_leaves_a_routed_query() {
+    let _serial = serial();
+    let ctx = make_ctx();
+    let query = || IxControlValueQuery {
+        control_id: Some(StringFilter::Eq("control-1".into())),
+        session_id: Some(StringFilter::Eq("session-1".into())),
+        level: Some(NumericFilter::Eq(0)),
+        ..Default::default()
+    };
+    let live = ctx.query_map_untyped(GetIxControlValuesByQuery(query()), request(&ctx));
+    let mut row = control_value("v1", "control-1", "session-1");
+    assert!(ctx.set(&row).is_ok());
+    assert_eq!(live.snapshot().len(), 1);
+
+    // The route's keys are unchanged; only the residual field changes.
+    row.level = 1;
+    assert!(ctx.set(&row).is_ok());
+    assert_eq!(
+        live.snapshot().len(),
+        0,
+        "the row no longer matches the filter"
+    );
+    row.level = 0;
+    assert!(ctx.set(&row).is_ok());
+    assert_eq!(live.snapshot().len(), 1);
+}
+
+#[test]
+fn a_row_that_changes_key_and_stops_matching_leaves_a_union_route() {
+    let _serial = serial();
+    let ctx = make_ctx();
+    let query = IxControlValueQuery {
+        control_id: Some(StringFilter::Eq("control-1".into())),
+        session_id: Some(StringFilter::In(vec![
+            "session-1".into(),
+            "session-2".into(),
+        ])),
+        level: Some(NumericFilter::Eq(0)),
+        ..Default::default()
+    };
+    let live = ctx.query_map_untyped(GetIxControlValuesByQuery(query), request(&ctx));
+    for round in 0..20 {
+        let id = format!("v{round}");
+        assert!(
+            ctx.set(&control_value(&id, "control-1", "session-1"))
+                .is_ok()
+        );
+        let mut moved = control_value(&id, "control-1", "session-2");
+        moved.level = 1;
+        assert!(ctx.set(&moved).is_ok());
+        assert!(
+            live.snapshot().iter().all(|(row, _)| row.as_ref() != id),
+            "round {round}: a row that moved key and stopped matching stayed"
+        );
+    }
+}
+
+#[test]
+fn an_indexed_route_keeps_a_row_with_its_new_value_and_snapshots_agree() {
+    let _serial = serial();
+    let ctx = make_ctx();
+    let query = || IxControlValueQuery {
+        control_id: Some(StringFilter::Eq("control-1".into())),
+        session_id: Some(StringFilter::Eq("session-1".into())),
+        level: Some(NumericFilter::In(vec![0, 2])),
+        ..Default::default()
+    };
+    let live = ctx.query_map_untyped(GetIxControlValuesByQuery(query()), request(&ctx));
+    let levels = |rows: Vec<i64>| rows;
+    let mut row = control_value("v1", "control-1", "session-1");
+    for (level, expected) in [(0, vec![0]), (1, vec![]), (2, vec![2]), (0, vec![0])] {
+        row.level = level;
+        assert!(ctx.set(&row).is_ok());
+        let live_levels: Vec<i64> = live
+            .snapshot()
+            .iter()
+            .filter_map(|(_, row)| row.as_any().downcast_ref::<IxControlValue>())
+            .map(|row| row.level)
+            .collect();
+        assert_eq!(levels(live_levels), expected, "live, level {level}");
+        let snapshot: Vec<i64> = ctx
+            .query_snapshot(GetIxControlValuesByQuery(query()), request(&ctx))
+            .iter()
+            .map(|row| row.level)
+            .collect();
+        assert_eq!(snapshot, expected, "snapshot, level {level}");
+    }
 }

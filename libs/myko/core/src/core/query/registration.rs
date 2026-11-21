@@ -707,8 +707,26 @@ fn union_changes(
             }
         }
         MapDiff::Insert { key, value } => hold(contribution, holders, key, value, out),
-        MapDiff::Update { key, new_value, .. } => {
-            hold(contribution, holders, key, new_value, out);
+        MapDiff::Update {
+            key,
+            old_value,
+            new_value,
+        } => {
+            // An update must stay an update: the predicate downstream drops
+            // a row that stops matching only when it sees one.
+            if contribution
+                .insert(key.clone(), new_value.clone())
+                .is_some()
+            {
+                out.push(MapDiff::Update {
+                    key: key.clone(),
+                    old_value: old_value.clone(),
+                    new_value: new_value.clone(),
+                });
+            } else {
+                contribution.remove(key);
+                hold(contribution, holders, key, new_value, out);
+            }
         }
         MapDiff::Remove { key, old_value } => {
             if contribution.remove(key).is_some() {
@@ -725,14 +743,84 @@ fn hold(
     value: &AnyItemArc,
     out: &mut Vec<BucketDiff>,
 ) {
-    if contribution.insert(key.clone(), value.clone()).is_none() {
-        let count = holders.entry(key.clone()).or_default();
-        *count = count.saturating_add(1);
+    if let Some(old_value) = contribution.insert(key.clone(), value.clone()) {
+        out.push(MapDiff::Update {
+            key: key.clone(),
+            old_value,
+            new_value: value.clone(),
+        });
+        return;
     }
+    let count = holders.entry(key.clone()).or_default();
+    *count = count.saturating_add(1);
     out.push(MapDiff::Insert {
         key: key.clone(),
         value: value.clone(),
     });
+}
+
+/// States each change against what the union shows: an insert or update of
+/// a row it shows becomes an update from its shown value, and of a row it
+/// does not show, an insert. A predicate downstream drops a row that stops
+/// matching only on an update, and adds a row only on an insert.
+fn as_changes_to(result: &AnyItemMap, diff: BucketDiff) -> BucketDiff {
+    let mut shown: HashMap<Arc<str>, Option<AnyItemArc>> = HashMap::new();
+    restate(result, diff, &mut shown)
+}
+
+fn restate(
+    result: &AnyItemMap,
+    diff: BucketDiff,
+    shown: &mut HashMap<Arc<str>, Option<AnyItemArc>>,
+) -> BucketDiff {
+    let mut current = |key: &Arc<str>| {
+        shown
+            .entry(key.clone())
+            .or_insert_with(|| result.get_value(key))
+            .clone()
+    };
+    let upsert = |key: Arc<str>, value: AnyItemArc, current: Option<AnyItemArc>| match current {
+        Some(old_value) => MapDiff::Update {
+            key,
+            old_value,
+            new_value: value,
+        },
+        None => MapDiff::Insert { key, value },
+    };
+    let change = match diff {
+        MapDiff::Insert { key, value } => {
+            let was = current(&key);
+            upsert(key, value, was)
+        }
+        MapDiff::Update { key, new_value, .. } => {
+            let was = current(&key);
+            upsert(key, new_value, was)
+        }
+        MapDiff::Batch { changes } => {
+            return MapDiff::Batch {
+                changes: changes
+                    .into_iter()
+                    .map(|change| restate(result, change, shown))
+                    .collect(),
+            };
+        }
+        other => other,
+    };
+    match &change {
+        MapDiff::Insert { key, value }
+        | MapDiff::Update {
+            key,
+            new_value: value,
+            ..
+        } => {
+            shown.insert(key.clone(), Some(value.clone()));
+        }
+        MapDiff::Remove { key, .. } => {
+            shown.insert(key.clone(), None);
+        }
+        MapDiff::Initial { .. } | MapDiff::Batch { .. } => {}
+    }
+    change
 }
 
 fn release(
@@ -852,7 +940,7 @@ fn union_source_map(
                     .unwrap_or_else(std::sync::PoisonError::into_inner),
             );
             if let Some(additive) = additive {
-                result.apply_diff_owned(additive);
+                result.apply_diff_owned(as_changes_to(&result, additive));
             }
         });
         result.own(guard);

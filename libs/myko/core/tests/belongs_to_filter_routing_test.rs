@@ -403,3 +403,53 @@ fn snapshot_sees_a_write_made_just_before_it() {
     });
     assert_eq!(snapshot_ids(&ctx, on_server("server-A")), ["c1", "c3"]);
 }
+
+fn client_at(id: &str, server_id: &str, address: &str) -> Client {
+    Client {
+        id: id.into(),
+        server_id: ServerId::from(Arc::<str>::from(server_id)),
+        address: Some(address.into()),
+        windback: None,
+    }
+}
+
+/// A belongs_to-routed query with a residual filter on a field that is not
+/// a key: an update that changes only that field must take the row out,
+/// put it back, and keep it with its new value, live and in a snapshot.
+#[test]
+fn a_residual_field_change_moves_a_row_in_and_out_of_a_routed_query() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    let filter = || ClientQuery {
+        server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
+        address: Some(myko::query::StringFilter::In(vec!["a".into(), "c".into()])),
+        ..Default::default()
+    };
+    let live = ctx.query_map_untyped(GetClientsByQuery(filter()), request(&ctx, "tx-live"));
+    let address_of = |rows: &[(Arc<str>, Arc<dyn AnyItem>)]| -> Vec<String> {
+        rows.iter()
+            .filter_map(|(_, row)| row.as_any().downcast_ref::<Client>())
+            .filter_map(|client| client.address.as_deref().map(str::to_owned))
+            .collect()
+    };
+    let snapshot = || -> Vec<String> {
+        ctx.query_snapshot(GetClientsByQuery(filter()), request(&ctx, "tx-snap"))
+            .iter()
+            .filter_map(|client| client.address.as_deref().map(str::to_owned))
+            .collect()
+    };
+    for (address, expected) in [
+        ("a", vec!["a"]),
+        ("b", vec![]),
+        ("a", vec!["a"]),
+        ("c", vec!["c"]),
+    ] {
+        assert!(ctx.set(&client_at("c1", "server-A", address)).is_ok());
+        assert_eq!(
+            address_of(&live.snapshot()),
+            expected,
+            "live, address {address}"
+        );
+        assert_eq!(snapshot(), expected, "snapshot, address {address}");
+    }
+}
