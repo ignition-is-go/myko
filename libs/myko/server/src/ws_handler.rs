@@ -184,6 +184,32 @@ fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::
     }
 }
 
+static OUTBOUND_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static OVERLOAD_DISCONNECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// What the server gave up delivering, since the process started.
+///
+/// Read it before and after a load test: a client that was disconnected for
+/// overload reconnects and resubscribes, so the test itself may not notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WsDeliveryCounters {
+    /// Outbound frames that could not be queued for a client.
+    pub outbound_drops: u64,
+    /// Connections closed because a frame for them was dropped or could not
+    /// be written.
+    pub overload_disconnects: u64,
+}
+
+/// Process-wide WebSocket delivery failure counts.
+#[must_use]
+pub fn ws_delivery_counters() -> WsDeliveryCounters {
+    use std::sync::atomic::Ordering;
+    WsDeliveryCounters {
+        outbound_drops: OUTBOUND_DROPS.load(Ordering::Relaxed),
+        overload_disconnects: OVERLOAD_DISCONNECTS.load(Ordering::Relaxed),
+    }
+}
+
 /// Per-connection delivery-failure tracking without log storms.
 ///
 /// A bounded channel can reject a frame when full or during teardown. Either
@@ -213,10 +239,18 @@ impl DropLogger {
         }
     }
 
+    /// Ask the read loop to close the connection, counting it once.
+    fn disconnect_for_overload(&self) {
+        if !self.overload_tx.send_replace(true) {
+            OVERLOAD_DISCONNECTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     fn on_drop(&self, kind: &'static str, err: &dyn std::fmt::Display) {
         use std::sync::atomic::Ordering;
 
         self.dropped.fetch_add(1, Ordering::Relaxed);
+        OUTBOUND_DROPS.fetch_add(1, Ordering::Relaxed);
 
         // A dropped sequenced diff cannot be repaired while keeping this
         // session alive: every later sequence would be based on state the
@@ -224,7 +258,7 @@ impl DropLogger {
         // connection; reconnecting clients then resubscribe and receive a
         // fresh sequence-0 snapshot. `send_replace` is synchronous, so this
         // remains safe to call from reactive callbacks.
-        self.overload_tx.send_replace(true);
+        self.disconnect_for_overload();
 
         // Log at most once per second per connection.
         let now_ms = std::time::SystemTime::now()
@@ -1259,7 +1293,7 @@ impl WsHandler {
             {
                 // Wake the read half so connection cleanup drops both halves.
                 // Reconnecting clients will resubscribe from a fresh snapshot.
-                drop_logger.overload_tx.send_replace(true);
+                drop_logger.disconnect_for_overload();
                 break;
             }
         }
@@ -2284,6 +2318,27 @@ mod tests {
     use tungstenite::{Error as WebSocketError, error::ProtocolError};
 
     use super::*;
+
+    #[test]
+    fn dropped_frames_and_overload_disconnects_are_counted() {
+        let before = ws_delivery_counters();
+        let (overload_tx, overload_rx) = watch::channel(false);
+        let logger = DropLogger::new("counted".into(), overload_tx);
+        logger.on_drop("test", &"queue full");
+        logger.on_drop("test", &"queue full");
+        logger.disconnect_for_overload();
+        let after = ws_delivery_counters();
+
+        assert!(*overload_rx.borrow());
+        // Other tests in this binary may drop frames too, so these are floors.
+        assert!(after.outbound_drops.saturating_sub(before.outbound_drops) >= 2);
+        assert!(
+            after
+                .overload_disconnects
+                .saturating_sub(before.overload_disconnects)
+                >= 1
+        );
+    }
 
     struct SubscriptionWriter;
     impl WsWriter for SubscriptionWriter {
