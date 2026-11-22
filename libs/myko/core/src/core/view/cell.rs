@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use hyphae::{CellImmutable, CellMap, MapDiff, MapQuery, MapValuesExt, SubscriptionGuard};
+use hyphae::{
+    Cell, CellImmutable, CellMap, CellValue, Gettable, MapDiff, MapQuery, MapValuesExt, Signal,
+    SubscriptionGuard, Watchable,
+};
+use parking_lot::Mutex;
 
 use crate::core::item::AnyItem;
 
@@ -62,6 +66,34 @@ impl ErasedViewMap {
     pub fn snapshot(&self) -> Vec<(Arc<str>, Arc<dyn AnyItem>)> {
         self.source.snapshot_erased()
     }
+
+    /// Read the map `selector` currently selects, and no rows while it
+    /// selects none.
+    ///
+    /// Nothing is materialized per subscription: a subscriber reads the
+    /// selected map's own diffs. Each time the selection changes the
+    /// subscriber receives one `MapDiff::Initial` holding the full state of
+    /// the new selection (empty when none), which replaces whatever it held;
+    /// then that map's diffs in their order. A diff from a map that is no
+    /// longer selected is never delivered. `open` is called once per
+    /// selection change per subscription, so it should return an existing
+    /// shared map rather than build one.
+    ///
+    /// The subscriber callback runs under this subscription's lock and must
+    /// not subscribe to or change `selector` synchronously.
+    #[must_use]
+    pub fn switched<K, F>(selector: Cell<Option<K>, CellImmutable>, open: F) -> Self
+    where
+        K: CellValue,
+        F: Fn(&K) -> Self + Send + Sync + 'static,
+    {
+        Self {
+            source: Arc::new(Switched {
+                selector,
+                open: Arc::new(open),
+            }),
+        }
+    }
 }
 
 impl From<FilteredViewCellMap> for ErasedViewMap {
@@ -102,6 +134,113 @@ impl ErasedSource for FilteredViewCellMap {
 
     fn snapshot_erased(&self) -> Vec<(Arc<str>, Arc<dyn AnyItem>)> {
         self.snapshot()
+    }
+}
+
+type OpenSource<K> = Arc<dyn Fn(&K) -> ErasedViewMap + Send + Sync>;
+
+struct Switched<K: CellValue> {
+    selector: Cell<Option<K>, CellImmutable>,
+    open: OpenSource<K>,
+}
+
+impl<K: CellValue> ErasedSource for Switched<K> {
+    fn subscribe_erased(&self, callback: ErasedCallback) -> SubscriptionGuard {
+        let subscription = Arc::new(SwitchedSubscription {
+            selector: self.selector.clone(),
+            open: self.open.clone(),
+            callback,
+            state: Mutex::new(SwitchState {
+                epoch: 0,
+                selected: None,
+                followed: false,
+                source: None,
+            }),
+        });
+        let weak = Arc::downgrade(&subscription);
+        let selector_guard = self.selector.subscribe(move |signal| {
+            if let (Signal::Value(_), Some(subscription)) = (signal, weak.upgrade()) {
+                subscription.follow_selector();
+            }
+        });
+        let mut held = Some((selector_guard, subscription));
+        SubscriptionGuard::from_callback(move || {
+            if let Some((selector_guard, subscription)) = held.take() {
+                drop(selector_guard);
+                let source = subscription.state.lock().source.take();
+                drop(source);
+            }
+        })
+    }
+
+    fn snapshot_erased(&self) -> Vec<(Arc<str>, Arc<dyn AnyItem>)> {
+        self.selector
+            .get()
+            .map_or_else(Vec::new, |key| (self.open)(&key).snapshot())
+    }
+}
+
+struct SwitchedSubscription<K: CellValue> {
+    selector: Cell<Option<K>, CellImmutable>,
+    open: OpenSource<K>,
+    callback: ErasedCallback,
+    state: Mutex<SwitchState<K>>,
+}
+
+struct SwitchState<K> {
+    /// Bumped on every selection change. Only diffs of the subscription
+    /// opened at the current epoch reach the subscriber.
+    epoch: u64,
+    /// The selection the subscriber is on; meaningless until `followed`.
+    selected: Option<K>,
+    followed: bool,
+    source: Option<SubscriptionGuard>,
+}
+
+impl<K: CellValue> SwitchedSubscription<K> {
+    /// Move the subscriber to the selector's current value.
+    ///
+    /// Reads the selector rather than the signal, so however selector
+    /// notifications interleave, the last one to run leaves the subscriber on
+    /// the latest selection.
+    fn follow_selector(self: &Arc<Self>) {
+        let (epoch, selected, replaced) = {
+            let mut state = self.state.lock();
+            let selected = self.selector.get();
+            if state.followed && state.selected == selected {
+                return;
+            }
+            state.followed = true;
+            state.epoch = state.epoch.wrapping_add(1);
+            state.selected.clone_from(&selected);
+            if selected.is_none() {
+                (self.callback)(&MapDiff::Initial {
+                    entries: Vec::new(),
+                });
+            }
+            (state.epoch, selected, state.source.take())
+        };
+        drop(replaced);
+        let Some(key) = selected else { return };
+        // Subscribed outside the lock: the source delivers its Initial
+        // synchronously into the callback below, which takes the lock.
+        let weak = Arc::downgrade(self);
+        let guard = (self.open)(&key).subscribe_diffs(move |diff| {
+            let Some(subscription) = weak.upgrade() else {
+                return;
+            };
+            let state = subscription.state.lock();
+            if state.epoch == epoch {
+                (subscription.callback)(diff);
+            }
+        });
+        let mut state = self.state.lock();
+        if state.epoch == epoch {
+            state.source = Some(guard);
+        } else {
+            drop(state);
+            drop(guard);
+        }
     }
 }
 

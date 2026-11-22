@@ -8,6 +8,8 @@ mod context;
 mod erase_tests;
 mod registration;
 mod request;
+#[cfg(test)]
+mod switched_tests;
 mod traits;
 
 pub use cell::{ErasedViewDiff, ErasedViewMap, FilteredViewCellMap, TypedViewCellMap};

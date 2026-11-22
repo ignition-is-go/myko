@@ -144,8 +144,11 @@ where
             tracing::trace_span!("myko.view", view = V::view_id_static().as_ref()).entered();
         // A plan that is already a map materializes to itself, so the
         // subscription reads that map directly.
-        build_view::<V>(&any_view, registry, request_ctx, server_ctx)
-            .map(|plan| ErasedViewMap::from_typed(plan.materialize()))
+        let args = view_args::<V>(&any_view, registry, request_ctx, server_ctx)?;
+        if let Some(subscription) = V::subscribe(&args) {
+            return Ok(subscription);
+        }
+        Ok(ErasedViewMap::from_typed(V::build_cell(args).materialize()))
     }
 }
 
@@ -155,6 +158,18 @@ fn build_view<V>(
     request_ctx: Arc<RequestContext>,
     server_ctx: Arc<MykoServerContext>,
 ) -> Result<impl MapQuery<Key = Arc<str>, Value = Arc<<V as ViewItemType>::Item>>, String>
+where
+    V: ViewParams + ViewHandler + std::fmt::Debug + DeserializeOwned,
+{
+    view_args::<V>(any_view, registry, request_ctx, server_ctx).map(V::build_cell)
+}
+
+fn view_args<V>(
+    any_view: &Arc<dyn AnyView>,
+    registry: Arc<StoreRegistry>,
+    request_ctx: Arc<RequestContext>,
+    server_ctx: Arc<MykoServerContext>,
+) -> Result<ViewBuildArgs<V>, String>
 where
     V: ViewParams + ViewHandler + std::fmt::Debug + DeserializeOwned,
 {
@@ -170,8 +185,8 @@ where
         crate::common::downcast::downcast_request(any_ref, "view payload")?;
     let view: Arc<V> = Arc::new(request.view);
     let view_ctx = Arc::new(ViewContext::new(request_ctx, registry, server_ctx));
-    Ok(V::build_cell(ViewBuildArgs {
+    Ok(ViewBuildArgs {
         view,
         view_context: ViewBuildContext::new(view_ctx),
-    }))
+    })
 }
