@@ -96,5 +96,5 @@ pub use crate::{
         EntitySearch, EntitySearchResult, SearchIndex, SearchableRegistration, iter_searchable,
     },
     server::{CausalDiagnostics, CausalLimits, MykoServerContext},
-    view::{ViewFactory, ViewRegistration},
+    view::{ViewFactory, ViewRegistration, ViewSubscribeRegistration},
 };

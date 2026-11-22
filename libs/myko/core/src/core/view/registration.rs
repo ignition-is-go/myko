@@ -2,11 +2,12 @@
 
 use std::{any::Any, sync::Arc};
 
+use hyphae::MapQuery;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::{
-    cell::{FilteredViewCellMap, materialize_erased_view},
+    cell::{ErasedViewMap, FilteredViewCellMap, materialize_erased_view},
     context::{ViewBuildContext, ViewContext},
     request::ViewRequest,
     traits::{AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams},
@@ -49,6 +50,24 @@ pub struct ViewRegistration {
 
 inventory::collect!(ViewRegistration);
 
+/// Type alias for a view subscription factory: the view's output as erased
+/// rows read from its typed map, with no erased copy.
+pub type ViewSubscribeFactory = fn(
+    Arc<dyn AnyView>,
+    Arc<StoreRegistry>,
+    Arc<RequestContext>,
+    Arc<MykoServerContext>,
+) -> Result<ErasedViewMap, String>;
+
+/// Subscription factory for a view, registered beside its
+/// [`ViewRegistration`]. Views without one subscribe through `cell_factory`.
+pub struct ViewSubscribeRegistration {
+    pub view_id: &'static str,
+    pub subscribe: ViewSubscribeFactory,
+}
+
+inventory::collect!(ViewSubscribeRegistration);
+
 /// Factory trait for creating view registration data.
 pub trait ViewFactory: ViewParams {
     ///
@@ -67,6 +86,23 @@ pub trait ViewFactory: ViewParams {
         request_ctx: Arc<RequestContext>,
         server_ctx: Arc<MykoServerContext>,
     ) -> Result<FilteredViewCellMap, String>;
+
+    /// Build the view for a live subscription.
+    ///
+    /// Erases per read from the view's typed map, so a view whose plan is
+    /// already a map costs no extra scheduled write per changed row.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    fn subscribe_factory(
+        view: Arc<dyn AnyView>,
+        registry: Arc<StoreRegistry>,
+        request_ctx: Arc<RequestContext>,
+        server_ctx: Arc<MykoServerContext>,
+    ) -> Result<ErasedViewMap, String> {
+        Self::cell_factory(view, registry, request_ctx, server_ctx).map(ErasedViewMap::from)
+    }
 }
 
 impl<V> ViewFactory for V
@@ -93,34 +129,49 @@ where
         request_ctx: Arc<RequestContext>,
         server_ctx: Arc<MykoServerContext>,
     ) -> Result<FilteredViewCellMap, String> {
-        // Bounded cardinality (one span per view registration), matching
-        // `myko.query`/`myko.command`.
         let _span =
             tracing::trace_span!("myko.view", view = V::view_id_static().as_ref()).entered();
-        crate::server::dispatch_metrics::record_view(
-            V::view_id_static().as_ref(),
-            request_ctx.origin(),
-        );
-        tracing::trace!(
-            "ViewFactory::cell_factory start view_id={}",
-            V::view_id_static()
-        );
-        let any_ref: &dyn Any = any_view.as_ref();
-        let request: ViewRequest<V> =
-            crate::common::downcast::downcast_request(any_ref, "view payload")?;
-        let view: Arc<V> = Arc::new(request.view);
-
-        let view_ctx = Arc::new(ViewContext::new(request_ctx, registry, server_ctx));
-        let view_cell_ctx = ViewBuildContext::new(view_ctx);
-
-        let built = V::build_cell(ViewBuildArgs {
-            view,
-            view_context: view_cell_ctx,
-        });
-        tracing::trace!(
-            "ViewFactory::cell_factory using build_cell view_id={}",
-            V::view_id_static()
-        );
-        Ok(materialize_erased_view(built))
+        build_view::<V>(&any_view, registry, request_ctx, server_ctx).map(materialize_erased_view)
     }
+
+    fn subscribe_factory(
+        any_view: Arc<dyn AnyView>,
+        registry: Arc<StoreRegistry>,
+        request_ctx: Arc<RequestContext>,
+        server_ctx: Arc<MykoServerContext>,
+    ) -> Result<ErasedViewMap, String> {
+        let _span =
+            tracing::trace_span!("myko.view", view = V::view_id_static().as_ref()).entered();
+        // A plan that is already a map materializes to itself, so the
+        // subscription reads that map directly.
+        build_view::<V>(&any_view, registry, request_ctx, server_ctx)
+            .map(|plan| ErasedViewMap::from_typed(plan.materialize()))
+    }
+}
+
+fn build_view<V>(
+    any_view: &Arc<dyn AnyView>,
+    registry: Arc<StoreRegistry>,
+    request_ctx: Arc<RequestContext>,
+    server_ctx: Arc<MykoServerContext>,
+) -> Result<impl MapQuery<Key = Arc<str>, Value = Arc<<V as ViewItemType>::Item>>, String>
+where
+    V: ViewParams + ViewHandler + std::fmt::Debug + DeserializeOwned,
+{
+    // Bounded cardinality (one span per view registration), matching
+    // `myko.query`/`myko.command`.
+    crate::server::dispatch_metrics::record_view(
+        V::view_id_static().as_ref(),
+        request_ctx.origin(),
+    );
+    tracing::trace!("ViewFactory build start view_id={}", V::view_id_static());
+    let any_ref: &dyn Any = any_view.as_ref();
+    let request: ViewRequest<V> =
+        crate::common::downcast::downcast_request(any_ref, "view payload")?;
+    let view: Arc<V> = Arc::new(request.view);
+    let view_ctx = Arc::new(ViewContext::new(request_ctx, registry, server_ctx));
+    Ok(V::build_cell(ViewBuildArgs {
+        view,
+        view_context: ViewBuildContext::new(view_ctx),
+    }))
 }

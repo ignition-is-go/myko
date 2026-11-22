@@ -332,7 +332,7 @@ enum SubscriptionReady {
     View {
         tx_id: Arc<str>,
         view_id: Arc<str>,
-        cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko::item::AnyItem>, hyphae::CellImmutable>,
+        cellmap: myko::view::ErasedViewMap,
         window: Option<myko::wire::QueryWindow>,
     },
 }
@@ -788,7 +788,7 @@ impl WsHandler {
                 cellmap,
                 window,
             } => {
-                session.subscribe_view_with_id(tx_id, view_id, cellmap, window);
+                session.subscribe_erased_view(tx_id, view_id, cellmap, window);
             }
         }
         true
@@ -1669,7 +1669,13 @@ impl WsHandler {
         };
         match (view_data.parse)(wrapped.view.clone()) {
             Ok(view) => {
-                let factory = view_data.cell_factory;
+                let cell_factory = view_data.cell_factory;
+                let subscribe_factory = ctx.handler_registry.view_subscribe_factory(&view_id);
+                let factory = move |view, registry, request, ctx| match subscribe_factory {
+                    Some(subscribe) => subscribe(view, registry, request, ctx),
+                    None => cell_factory(view, registry, request, ctx)
+                        .map(myko::view::ErasedViewMap::from),
+                };
                 let registry = ctx.registry.clone();
                 let window = wrapped.window;
                 let sender = message_context.subscribe_tx.clone();
@@ -2410,7 +2416,7 @@ mod tests {
                 view_id,
                 cellmap,
                 window,
-            } => session.subscribe_view_with_id(tx_id, view_id, cellmap, window),
+            } => session.subscribe_erased_view(tx_id, view_id, cellmap, window),
         }
     }
 
@@ -2562,7 +2568,7 @@ mod tests {
             SubscriptionReady::View {
                 tx_id: tx.clone(),
                 view_id: "test-view".into(),
-                cellmap: hyphae::CellMap::new().lock(),
+                cellmap: hyphae::CellMap::new().lock().into(),
                 window: None,
             },
             SubscriptionReady::Report {

@@ -11,7 +11,10 @@ use crate::{
     item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
     query::{QueryCellFactory, QueryParseFn, QueryRegistration, QueryWindowCellFactory},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
-    view::{ViewCellFactory, ViewParseFn, ViewRegistration},
+    view::{
+        ViewCellFactory, ViewParseFn, ViewRegistration, ViewSubscribeFactory,
+        ViewSubscribeRegistration,
+    },
 };
 
 // AHash on the dispatch maps below: every wire-routed command/query/view/
@@ -74,6 +77,8 @@ pub struct HandlerRegistry {
     query_data: AMap<Arc<str>, StoredQueryData>,
     /// View data by view id
     view_data: AMap<Arc<str>, StoredViewData>,
+    /// View subscription factories by view id
+    view_subscribers: AMap<Arc<str>, ViewSubscribeFactory>,
     /// Report data by report id
     report_data: AMap<Arc<str>, StoredReportData>,
 }
@@ -86,6 +91,11 @@ impl HandlerRegistry {
         let mut query_data = AMap::default();
         let mut view_data = AMap::default();
         let mut report_data = AMap::default();
+        let view_subscribers: AMap<Arc<str>, ViewSubscribeFactory> =
+            inventory::iter::<ViewSubscribeRegistration>
+                .into_iter()
+                .map(|registration| (Arc::from(registration.view_id), registration.subscribe))
+                .collect();
 
         // Collect item registrations
         for registration in inventory::iter::<ItemRegistration> {
@@ -177,6 +187,7 @@ impl HandlerRegistry {
             item_buffer_policies,
             query_data,
             view_data,
+            view_subscribers,
             report_data,
         }
     }
@@ -212,6 +223,12 @@ impl HandlerRegistry {
     #[must_use]
     pub fn view(&self, view_id: &str) -> Option<&StoredViewData> {
         self.view_data.get(view_id)
+    }
+
+    /// Get the subscription factory for a view, when its registration has one.
+    #[must_use]
+    pub fn view_subscribe_factory(&self, view_id: &str) -> Option<ViewSubscribeFactory> {
+        self.view_subscribers.get(view_id).copied()
     }
 
     /// Check if an entity type has a registered parser.

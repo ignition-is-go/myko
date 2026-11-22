@@ -370,6 +370,17 @@ impl<W: WsWriter> ClientSession<W> {
         cell: hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
         window: Option<QueryWindow>,
     ) {
+        self.subscribe_erased_view(tx, view_id, crate::view::ErasedViewMap::from(cell), window);
+    }
+
+    /// Subscribe to a view read as erased rows from its typed map.
+    pub fn subscribe_erased_view(
+        &mut self,
+        tx: Arc<str>,
+        view_id: Arc<str>,
+        cell: crate::view::ErasedViewMap,
+        window: Option<QueryWindow>,
+    ) {
         let writer = self.writer.clone();
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();

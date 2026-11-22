@@ -3,7 +3,8 @@
 //! The cost tests count hyphae cell fanouts (one per scheduled write that
 //! reaches the drain) for a single changed row, with views subscribed the way
 //! the websocket handler subscribes them: one `cell_factory` call per
-//! subscription. Run with `--features profiling -- --test-threads=1 --nocapture`
+//! subscription, and one `subscribe_factory` call per subscription for the
+//! erase-on-read path the handler uses now. Run with `--features profiling -- --test-threads=1 --nocapture`
 //! to print the counts.
 
 use std::sync::{Arc, Mutex};
@@ -17,6 +18,7 @@ use crate::{
     prelude::*,
     server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
     store::StoreRegistry,
+    view::ErasedViewMap,
     view::ViewFactory,
     wire::{MEvent, MEventType},
 };
@@ -62,6 +64,24 @@ mod views {
         }
     }
 
+    /// Materializes its own typed map, the shape of a hand-written union.
+    #[myko_macros::myko_view(Client)]
+    pub struct EraseHopUnionView {}
+
+    impl ViewHandler for EraseHopUnionView {
+        fn build_cell(
+            ctx: ViewBuildArgs<Self>,
+        ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>
+        where
+            Self: Send + Sync + 'static,
+        {
+            ctx.view_context
+                .query_map_by_str(GetAllClients {})
+                .filter_map_values(|_, client| Some(client.clone()))
+                .materialize()
+        }
+    }
+
     /// Reads `EraseHopPlanView` through `ctx.view`.
     #[myko_macros::myko_view(Client)]
     pub struct EraseHopReaderView {}
@@ -80,7 +100,7 @@ mod views {
     }
 }
 
-use views::{EraseHopMapView, EraseHopPlanView, EraseHopReaderView};
+use views::{EraseHopMapView, EraseHopPlanView, EraseHopReaderView, EraseHopUnionView};
 
 type Erased = CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>;
 
@@ -150,6 +170,35 @@ where
     .expect("view builds")
 }
 
+/// One subscription the way the websocket handler makes it now.
+fn subscribe_live<V>(ctx: &Arc<MykoServerContext>, view: V, tx: &str) -> ErasedViewMap
+where
+    V: ViewFactory + Clone + Send + Sync + 'static,
+    V::Item: serde::de::DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+{
+    let req = crate::view::ViewRequest::with_tx(view, Arc::from(tx));
+    let any_view: Arc<dyn crate::view::AnyView> = Arc::new(req);
+    V::subscribe_factory(
+        any_view,
+        ctx.registry.clone(),
+        request(ctx, tx),
+        ctx.clone(),
+    )
+    .expect("view builds")
+}
+
+/// Both subscription paths for one view.
+fn both_paths<V>(ctx: &Arc<MykoServerContext>, view: V) -> [ErasedViewMap; 2]
+where
+    V: ViewFactory + Clone + Send + Sync + 'static,
+    V::Item: serde::de::DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+{
+    [
+        subscribe_ws(ctx, view.clone(), "sub-cell").into(),
+        subscribe_live(ctx, view, "sub-live"),
+    ]
+}
+
 /// A recorded diff, reduced to what a subscriber can observe.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Seen {
@@ -190,7 +239,7 @@ fn record(diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>, out: &mut Vec<Seen>) {
     }
 }
 
-fn watch(map: &Erased) -> (Arc<Mutex<Vec<Seen>>>, crate::hyphae::SubscriptionGuard) {
+fn watch(map: &ErasedViewMap) -> (Arc<Mutex<Vec<Seen>>>, crate::hyphae::SubscriptionGuard) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let sink = seen.clone();
     let guard = map.subscribe_diffs(move |diff| record(diff, &mut sink.lock().unwrap()));
@@ -201,7 +250,7 @@ fn some(s: &str) -> Option<String> {
     Some(s.to_owned())
 }
 
-fn assert_view_contract(ctx: &Arc<MykoServerContext>, map: &Erased) {
+fn assert_view_contract(ctx: &Arc<MykoServerContext>, map: &ErasedViewMap) {
     let (seen, guard) = watch(map);
     set(ctx, &client("c2", "s", Some("a2")), "t2");
     set(ctx, &client("c1", "s", Some("a1b")), "t3");
@@ -233,7 +282,10 @@ fn map_shaped_view_keeps_its_diff_contract() {
     let ctx = make_ctx();
     set(&ctx, &client("c1", "s", Some("a1")), "t1");
     let map = subscribe_ws(&ctx, EraseHopMapView {}, "sub");
-    assert_view_contract(&ctx, &map);
+    assert_view_contract(&ctx, &map.into());
+    let ctx = make_ctx();
+    set(&ctx, &client("c1", "s", Some("a1")), "t1");
+    assert_view_contract(&ctx, &subscribe_live(&ctx, EraseHopMapView {}, "sub"));
 }
 
 #[test]
@@ -242,7 +294,10 @@ fn plan_shaped_view_keeps_its_diff_contract() {
     let ctx = make_ctx();
     set(&ctx, &client("c1", "s", Some("a1")), "t1");
     let map = subscribe_ws(&ctx, EraseHopPlanView {}, "sub");
-    assert_view_contract(&ctx, &map);
+    assert_view_contract(&ctx, &map.into());
+    let ctx = make_ctx();
+    set(&ctx, &client("c1", "s", Some("a1")), "t1");
+    assert_view_contract(&ctx, &subscribe_live(&ctx, EraseHopPlanView {}, "sub"));
 }
 
 #[test]
@@ -251,37 +306,145 @@ fn view_read_through_ctx_view_keeps_its_diff_contract() {
     let ctx = make_ctx();
     set(&ctx, &client("c1", "s", Some("a1")), "t1");
     let map = subscribe_ws(&ctx, EraseHopReaderView {}, "sub");
-    assert_view_contract(&ctx, &map);
+    assert_view_contract(&ctx, &map.into());
+    let ctx = make_ctx();
+    set(&ctx, &client("c1", "s", Some("a1")), "t1");
+    assert_view_contract(&ctx, &subscribe_live(&ctx, EraseHopReaderView {}, "sub"));
+}
+
+#[test]
+fn union_shaped_view_keeps_its_diff_contract() {
+    let _serial = scheduler_test_serial();
+    for live in [false, true] {
+        let ctx = make_ctx();
+        set(&ctx, &client("c1", "s", Some("a1")), "t1");
+        let map = if live {
+            subscribe_live(&ctx, EraseHopUnionView {}, "sub")
+        } else {
+            subscribe_ws(&ctx, EraseHopUnionView {}, "sub").into()
+        };
+        assert_view_contract(&ctx, &map);
+    }
+}
+
+#[test]
+fn both_paths_deliver_identical_diff_sequences() {
+    let _serial = scheduler_test_serial();
+    for union in [false, true] {
+        let ctx = make_ctx();
+        set(&ctx, &client("c1", "s", Some("a1")), "t1");
+        let view_paths = if union {
+            both_paths(&ctx, EraseHopUnionView {})
+        } else {
+            both_paths(&ctx, EraseHopMapView {})
+        };
+        let watched: Vec<_> = view_paths.iter().map(watch).collect();
+        set(&ctx, &client("c2", "s", Some("a2")), "t2");
+        set(&ctx, &client("c1", "s", Some("a1b")), "t3");
+        set(&ctx, &client("c1", "s", Some("a1b")), "t4");
+        let events = vec![
+            MEvent::from_item(&client("c3", "s", Some("a3")), MEventType::SET, "t5"),
+            MEvent::from_item(&client("c1", "s", Some("a1c")), MEventType::SET, "t5"),
+            MEvent::from_item(&client("c3", "s", Some("a3")), MEventType::DEL, "t5"),
+        ];
+        assert!(ctx.apply_event_batch(events).is_ok());
+        del(&ctx, &client("c2", "s", Some("a2")), "t6");
+        let cell = watched[0].0.lock().unwrap().clone();
+        let live = watched[1].0.lock().unwrap().clone();
+        assert_eq!(cell, live);
+        let mut a = view_paths[0].snapshot();
+        let mut b = view_paths[1].snapshot();
+        a.sort_by(|x, y| x.0.cmp(&y.0));
+        b.sort_by(|x, y| x.0.cmp(&y.0));
+        assert_eq!(a, b);
+    }
+}
+
+/// The erased mirror drops an `Update` whose value equals the one it stores.
+/// Every `CellMap` writer already drops such an `Update` before emitting it,
+/// so reading the typed map directly sees the same sequence. Drive a typed
+/// map through each writer and compare.
+#[test]
+fn erased_mirror_drops_nothing_the_typed_map_emits() {
+    let _serial = scheduler_test_serial();
+    let typed = CellMap::<Arc<str>, Arc<Client>>::new();
+    let mirror: ErasedViewMap = super::cell::materialize_erased_view(typed.clone().lock()).into();
+    let direct = ErasedViewMap::from_typed(typed.clone().lock());
+    let (mirror_seen, _g1) = watch(&mirror);
+    let (direct_seen, _g2) = watch(&direct);
+    let a = Arc::new(client("c1", "s", Some("a")));
+    let b = Arc::new(client("c1", "s", Some("b")));
+    let equal_b = Arc::new(client("c1", "s", Some("b")));
+    let k: Arc<str> = "c1".into();
+    typed.insert(k.clone(), a.clone());
+    typed.insert(k.clone(), b.clone());
+    typed.insert(k.clone(), equal_b.clone());
+    typed.insert_many(vec![(k.clone(), equal_b.clone())]);
+    typed.replace_all(vec![(k.clone(), equal_b.clone())]);
+    typed.apply_diff_owned(MapDiff::Update {
+        key: k.clone(),
+        old_value: b.clone(),
+        new_value: equal_b.clone(),
+    });
+    typed.apply_batch(vec![
+        MapDiff::Update {
+            key: k.clone(),
+            old_value: b.clone(),
+            new_value: equal_b.clone(),
+        },
+        MapDiff::Update {
+            key: k.clone(),
+            old_value: b.clone(),
+            new_value: a.clone(),
+        },
+        MapDiff::Insert {
+            key: k.clone(),
+            value: a.clone(),
+        },
+    ]);
+    typed.remove(&k);
+    typed.apply_diff_owned(MapDiff::Remove {
+        key: k.clone(),
+        old_value: a.clone(),
+    });
+    assert_eq!(*mirror_seen.lock().unwrap(), *direct_seen.lock().unwrap());
+    assert!(direct_seen.lock().unwrap().len() > 3);
 }
 
 #[test]
 fn batched_changes_reach_subscribers_inside_one_batch() {
     let _serial = scheduler_test_serial();
-    let ctx = make_ctx();
-    set(&ctx, &client("c1", "s", Some("a1")), "t1");
-    let map = subscribe_ws(&ctx, EraseHopPlanView {}, "sub");
-    let emissions = Arc::new(Mutex::new(Vec::<usize>::new()));
-    let sink = emissions.clone();
-    let guard = map.subscribe_diffs(move |diff| {
-        let n = match diff {
-            MapDiff::Batch { changes } => changes.len(),
-            _ => 1,
+    for live in [false, true] {
+        let ctx = make_ctx();
+        set(&ctx, &client("c1", "s", Some("a1")), "t1");
+        let map: ErasedViewMap = if live {
+            subscribe_live(&ctx, EraseHopUnionView {}, "sub")
+        } else {
+            subscribe_ws(&ctx, EraseHopPlanView {}, "sub").into()
         };
-        sink.lock().unwrap().push(n);
-    });
-    let events = vec![
-        MEvent::from_item(&client("c2", "s", Some("a2")), MEventType::SET, "t2"),
-        MEvent::from_item(&client("c3", "s", Some("a3")), MEventType::SET, "t2"),
-    ];
-    assert!(ctx.apply_event_batch(events).is_ok());
-    let seen = emissions.lock().unwrap().clone();
-    assert_eq!(
-        seen.iter().skip(1).sum::<usize>(),
-        2,
-        "both rows arrive: {seen:?}"
-    );
-    assert_eq!(map.snapshot().len(), 3);
-    drop(guard);
+        let emissions = Arc::new(Mutex::new(Vec::<usize>::new()));
+        let sink = emissions.clone();
+        let guard = map.subscribe_diffs(move |diff| {
+            let n = match diff {
+                MapDiff::Batch { changes } => changes.len(),
+                _ => 1,
+            };
+            sink.lock().unwrap().push(n);
+        });
+        let events = vec![
+            MEvent::from_item(&client("c2", "s", Some("a2")), MEventType::SET, "t2"),
+            MEvent::from_item(&client("c3", "s", Some("a3")), MEventType::SET, "t2"),
+        ];
+        assert!(ctx.apply_event_batch(events).is_ok());
+        let seen = emissions.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            vec![1, 2],
+            "Initial, then both rows in one batch (live={live})"
+        );
+        assert_eq!(map.snapshot().len(), 3);
+        drop(guard);
+    }
 }
 
 #[test]
@@ -291,7 +454,7 @@ fn dropping_the_last_handle_tears_the_view_down() {
     set(&ctx, &client("c1", "s", Some("a1")), "t1");
     let map = subscribe_ws(&ctx, EraseHopPlanView {}, "sub");
     let weak = map.downgrade();
-    let (seen, guard) = watch(&map);
+    let (seen, guard) = watch(&map.clone().into());
     drop(guard);
     drop(map);
     assert!(
@@ -300,6 +463,42 @@ fn dropping_the_last_handle_tears_the_view_down() {
     );
     set(&ctx, &client("c1", "s", Some("a1c")), "t2");
     assert_eq!(seen.lock().unwrap().len(), 1, "no diffs after teardown");
+}
+
+#[test]
+fn dropping_the_last_live_subscription_tears_the_view_down() {
+    let _serial = scheduler_test_serial();
+    for union in [false, true] {
+        let ctx = make_ctx();
+        set(&ctx, &client("c1", "s", Some("a1")), "t1");
+        let map = if union {
+            subscribe_live(&ctx, EraseHopUnionView {}, "sub")
+        } else {
+            subscribe_live(&ctx, EraseHopPlanView {}, "sub")
+        };
+        let (seen, guard) = watch(&map);
+        let (late, late_guard) = watch(&map);
+        drop(map);
+        drop(guard);
+        set(&ctx, &client("c1", "s", Some("a1b")), "t2");
+        assert_eq!(
+            seen.lock().unwrap().len(),
+            1,
+            "dropped subscriber got no diffs"
+        );
+        assert_eq!(
+            late.lock().unwrap().len(),
+            2,
+            "remaining subscriber still live"
+        );
+        drop(late_guard);
+        set(&ctx, &client("c1", "s", Some("a1c")), "t3");
+        assert_eq!(
+            late.lock().unwrap().len(),
+            2,
+            "no diffs after the last one left"
+        );
+    }
 }
 
 #[cfg(feature = "profiling")]
@@ -317,8 +516,9 @@ mod cost {
     }
 
     /// Fanouts for one changed row with `subs` websocket subscriptions to `V`,
-    /// minus the same write with no view subscribed.
-    fn view_cost<V>(view: V, subs: usize) -> u64
+    /// minus the same write with no view subscribed. `live` subscribes through
+    /// `subscribe_factory`, otherwise through `cell_factory`.
+    fn view_cost<V>(view: V, subs: usize, live: bool) -> u64
     where
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: serde::de::DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -330,8 +530,15 @@ mod cost {
         let _q_guard = _query.subscribe_diffs(|_| {});
         fires_for_one_changed_row(&ctx, 1);
         let base = fires_for_one_changed_row(&ctx, 2);
-        let maps: Vec<Erased> = (0..subs)
-            .map(|i| subscribe_ws(&ctx, view.clone(), &format!("sub-{i}")))
+        let maps: Vec<ErasedViewMap> = (0..subs)
+            .map(|i| {
+                let tx = format!("sub-{i}");
+                if live {
+                    subscribe_live(&ctx, view.clone(), &tx)
+                } else {
+                    subscribe_ws(&ctx, view.clone(), &tx).into()
+                }
+            })
             .collect();
         let guards: Vec<_> = maps.iter().map(|m| m.subscribe_diffs(|_| {})).collect();
         fires_for_one_changed_row(&ctx, 3);
@@ -343,17 +550,31 @@ mod cost {
     #[test]
     fn report_fanouts_per_changed_row() {
         let _serial = scheduler_test_serial();
-        for subs in [1usize, 4] {
-            let map = view_cost(EraseHopMapView {}, subs);
-            let plan = view_cost(EraseHopPlanView {}, subs);
-            let reader = view_cost(EraseHopReaderView {}, subs);
-            println!(
-                "fanouts per changed row, {subs} subs: map-view {map} ({:.1}/sub), \
-                 plan-view {plan} ({:.1}/sub), ctx.view-reader {reader} ({:.1}/sub)",
-                map as f64 / subs as f64,
-                plan as f64 / subs as f64,
-                reader as f64 / subs as f64,
-            );
+        for live in [false, true] {
+            let path = if live {
+                "subscribe_factory"
+            } else {
+                "cell_factory"
+            };
+            for subs in [1usize, 4] {
+                let per_sub = |n: u64| n as f64 / subs as f64;
+                let map = view_cost(EraseHopMapView {}, subs, live);
+                let union = view_cost(EraseHopUnionView {}, subs, live);
+                let plan = view_cost(EraseHopPlanView {}, subs, live);
+                let reader = view_cost(EraseHopReaderView {}, subs, live);
+                println!(
+                    "{path}: fanouts per changed row, {subs} subs: map-view {map} ({:.1}/sub), \
+                     union-view {union} ({:.1}/sub), plan-view {plan} ({:.1}/sub), \
+                     ctx.view-reader {reader} ({:.1}/sub)",
+                    per_sub(map),
+                    per_sub(union),
+                    per_sub(plan),
+                    per_sub(reader),
+                );
+                if live {
+                    assert_eq!(map, 0, "a map-rooted view subscribes with no erase write");
+                }
+            }
         }
     }
 }
