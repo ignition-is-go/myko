@@ -49,7 +49,7 @@ mod relationship_manager;
 pub mod report_cache_stats;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
-pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
+pub use client_session::{ClientSession, CommandValueKey, PendingQueryResponse, WsWriter};
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 pub use handler_registry::HandlerRegistry;

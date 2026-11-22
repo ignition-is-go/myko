@@ -24,6 +24,27 @@ use crate::{
     },
 };
 
+/// Identifies the destination of a *value* command: a command whose latest
+/// instance fully supersedes every earlier unsent one with the same key.
+///
+/// The key is opaque to myko; the sender chooses what it names (for example
+/// one property on one executor instance). Two value commands with the same
+/// key must therefore be interchangeable except for recency.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CommandValueKey(Arc<str>);
+
+impl CommandValueKey {
+    #[must_use]
+    pub fn new(key: impl Into<Arc<str>>) -> Self {
+        Self(key.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Trait for sending WebSocket messages.
 ///
 /// Implemented by the actual WebSocket writer to allow abstraction
@@ -44,6 +65,22 @@ pub trait WsWriter: Send + Sync + 'static {
         command_id: String,
         payload: EncodedCommandMessage,
     );
+
+    /// Send a pre-serialized *value* command for `key`.
+    ///
+    /// A writer may replace an earlier command with the same key that it has
+    /// not yet handed to the transport; the replacement keeps the earlier
+    /// command's queue position. The default delivers it like any command.
+    fn send_serialized_value_command(
+        &self,
+        key: CommandValueKey,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) {
+        let _ = key;
+        self.send_serialized_command(tx, command_id, payload);
+    }
 
     /// Send a report response while allowing implementations to defer
     /// expensive serialization/conversion work off the reactive callback path.

@@ -68,6 +68,7 @@ struct State {
     send_ms: f64,
     failures: u64,
     untracked: u64,
+    superseded: u64,
 }
 
 fn subscription_response_tx(message: &MykoMessage) -> Option<&str> {
@@ -150,6 +151,7 @@ impl DeliveryDiagnostics {
                     send_ms: 0.0,
                     failures: 0,
                     untracked: 0,
+                    superseded: 0,
                 })
             }),
         };
@@ -281,6 +283,17 @@ impl DeliveryDiagnostics {
             self.metrics
                 .histogram(Histogram::Setup, subscription.requested.elapsed(), &attrs);
         }
+    }
+
+    /// A queued value command was replaced by a newer one for the same key.
+    pub fn superseded(&self) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let Ok(mut state) = state.lock() else {
+            return;
+        };
+        state.superseded = state.superseded.saturating_add(1);
     }
 
     pub fn queue(&self, depth: usize, wait: Option<(&str, Duration)>) {
@@ -566,6 +579,7 @@ impl DeliveryDiagnostics {
             equivalent_subscriptions = duplicates, queue_peak = state.queue_peak,
             max_queue_wait_ms = state.queue_wait_ms, max_serialize_ms = state.serialize_ms,
             max_materialize_ms = state.materialize_ms, max_send_ms = state.send_ms, failures = state.failures, untracked = state.untracked,
+            superseded_values = state.superseded,
             "client delivery summary");
         }
         let attrs = self.attributes();
@@ -626,6 +640,7 @@ impl DeliveryDiagnostics {
         state.send_ms = 0.0;
         state.failures = 0;
         state.untracked = 0;
+        state.superseded = 0;
     }
 }
 

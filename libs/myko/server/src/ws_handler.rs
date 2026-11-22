@@ -13,6 +13,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::outbound_queue::{self, Pushed};
 use futures_util::{SinkExt, StreamExt};
 use hyphae::SelectExt;
 use myko::{
@@ -28,7 +29,7 @@ use myko::{
     report::AnyOutput,
     request::RequestContext,
     server::{
-        ClientSession, MykoServerContext, PendingQueryResponse, WsWriter,
+        ClientSession, CommandValueKey, MykoServerContext, PendingQueryResponse, WsWriter,
         client_registry::try_client_registry,
     },
     wire::{
@@ -190,6 +191,15 @@ const MESSAGE_QUEUE_CAPACITY: usize = 10_000;
 
 static OUTBOUND_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static OVERLOAD_DISCONNECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SUPERSEDED_VALUE_COMMANDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Value commands replaced in a client's queue by a newer value for the same
+/// key before they were written, since the process started.
+#[must_use]
+pub fn ws_superseded_value_commands() -> u64 {
+    SUPERSEDED_VALUE_COMMANDS.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// What the server gave up delivering, since the process started.
 ///
@@ -412,12 +422,12 @@ enum OutboundMessage {
 /// Writer half of the ordered outbound queue; releases a `Message` frame's
 /// slot in the shared bound as the writer takes it.
 struct OutboundReceiver {
-    rx: mpsc::UnboundedReceiver<OutboundMessage>,
+    rx: outbound_queue::Receiver<OutboundMessage>,
     queued_messages: Arc<AtomicUsize>,
 }
 
 impl OutboundReceiver {
-    async fn recv(&mut self) -> Option<OutboundMessage> {
+    async fn recv(&self) -> Option<OutboundMessage> {
         let message = self.rx.recv().await?;
         if matches!(message, OutboundMessage::Message(_)) {
             self.queued_messages.fetch_sub(1, Ordering::AcqRel);
@@ -1233,7 +1243,7 @@ impl WsHandler {
             subscription_auth,
             auth,
             mut write,
-            mut rx,
+            rx,
             mut deferred_rx,
             mut view_delivery_rx,
             mut priority_rx,
@@ -1423,7 +1433,7 @@ impl WsHandler {
         // count against MESSAGE_QUEUE_CAPACITY (overflow resnapshots); commands
         // are events that a resnapshot cannot replay, so they are never refused
         // while the connection lives.
-        let (tx, rx) = mpsc::unbounded_channel::<OutboundMessage>();
+        let (tx, rx) = outbound_queue::channel::<OutboundMessage>();
         let queued_messages = Arc::new(AtomicUsize::new(0));
         let (deferred_tx, deferred_rx) = mpsc::channel::<DeferredOutbound>(10_000);
         let (priority_tx, priority_rx) = mpsc::channel::<MykoMessage>(1_000);
@@ -2227,7 +2237,7 @@ impl WsHandler {
 /// forwarded to the actual WebSocket.
 #[derive(Clone)]
 struct ChannelWriter {
-    tx: mpsc::UnboundedSender<OutboundMessage>,
+    tx: outbound_queue::Sender<OutboundMessage>,
     /// `Message` frames enqueued on `tx` and not yet taken by the writer.
     queued_messages: Arc<AtomicUsize>,
     deferred_tx: mpsc::Sender<DeferredOutbound>,
@@ -2273,7 +2283,7 @@ impl WsWriter for ChannelWriter {
         }
         // A send error means the writer task exited after the is_dead check;
         // the session is tearing down, so there is nothing to report.
-        if self.tx.send(OutboundMessage::Message(msg)).is_err() {
+        if self.tx.push(OutboundMessage::Message(msg)) == Pushed::Closed {
             self.queued_messages.fetch_sub(1, Ordering::AcqRel);
         }
     }
@@ -2292,12 +2302,43 @@ impl WsWriter for ChannelWriter {
             return;
         }
         // Unbounded: a command is an event, and dropping it would lose it for
-        // good. A send error means the writer already exited (disconnect).
-        let _ = self.tx.send(OutboundMessage::SerializedCommand {
+        // good. It is also a barrier no queued value may be replaced across.
+        // A closed queue means the writer already exited (disconnect).
+        let _ = self.tx.push_barrier(OutboundMessage::SerializedCommand {
             tx,
             command_id,
             payload,
         });
+    }
+
+    fn send_serialized_value_command(
+        &self,
+        key: CommandValueKey,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) {
+        if self.tx_dead() {
+            return;
+        }
+        // NOTE(ts): The newest value for a key makes a queued older one
+        // redundant, so it overwrites it in place unless an event was queued
+        // in between; a slow client then gets fresh values sooner and queued
+        // values are bounded by keys plus queued events.
+        let pushed = self.tx.push_value(
+            key,
+            OutboundMessage::SerializedCommand {
+                tx,
+                command_id,
+                payload,
+            },
+        );
+        if pushed == Pushed::Superseded {
+            SUPERSEDED_VALUE_COMMANDS.fetch_add(1, Ordering::Relaxed);
+            if let Some(diagnostics) = &self.drop_logger.diagnostics {
+                diagnostics.superseded();
+            }
+        }
     }
 
     fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
@@ -2850,7 +2891,7 @@ mod tests {
 
     #[test]
     fn test_channel_writer() {
-        let (tx, mut rx) = mpsc::unbounded_channel();
+        let (tx, rx) = outbound_queue::channel();
         let (deferred_tx, _deferred_rx) = mpsc::channel(10);
         let (overload_tx, _overload_rx) = watch::channel(false);
         let drop_logger = Arc::new(DropLogger::new("test-client".into(), overload_tx));
@@ -2869,8 +2910,8 @@ mod tests {
         writer.send(msg);
 
         let received = rx.try_recv();
-        assert!(received.is_ok(), "writer must enqueue ping");
-        let Ok(received) = received else {
+        assert!(received.is_some(), "writer must enqueue ping");
+        let Some(received) = received else {
             return;
         };
         assert!(matches!(
@@ -2881,10 +2922,10 @@ mod tests {
 
     fn bounded_test_writer() -> (
         ChannelWriter,
-        mpsc::UnboundedReceiver<OutboundMessage>,
+        outbound_queue::Receiver<OutboundMessage>,
         watch::Receiver<bool>,
     ) {
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = outbound_queue::channel();
         let (deferred_tx, _deferred_rx) = mpsc::channel(1);
         let (overload_tx, overload_rx) = watch::channel(false);
         let writer = ChannelWriter {
@@ -2906,7 +2947,7 @@ mod tests {
 
     #[test]
     fn commands_past_the_message_bound_are_all_queued_in_order() {
-        let (writer, mut rx, overload_rx) = bounded_test_writer();
+        let (writer, rx, overload_rx) = bounded_test_writer();
         let commands = MESSAGE_QUEUE_CAPACITY * 2;
         for sequence in 0..commands {
             writer.send_serialized_command(
@@ -2927,13 +2968,89 @@ mod tests {
             assert!(
                 matches!(
                     &received,
-                    Ok(OutboundMessage::SerializedCommand { command_id, .. })
+                    Some(OutboundMessage::SerializedCommand { command_id, .. })
                         if *command_id == sequence.to_string()
                 ),
                 "command {sequence} missing or out of order"
             );
         }
-        assert!(matches!(rx.try_recv(), Ok(OutboundMessage::Message(_))));
+        assert!(matches!(rx.try_recv(), Some(OutboundMessage::Message(_))));
+    }
+
+    #[test]
+    fn slow_reader_gets_every_event_once_and_the_latest_value_per_key() {
+        let (writer, rx, overload_rx) = bounded_test_writer();
+        let keys: Vec<_> = (0..10)
+            .map(|k| CommandValueKey::new(format!("k{k}")))
+            .collect();
+        let frame_id = |frame: &OutboundMessage| match frame {
+            OutboundMessage::SerializedCommand {
+                command_id,
+                payload: EncodedCommandMessage::Json(round),
+                ..
+            } => format!("{command_id}@{round}"),
+            _ => String::from("unexpected frame"),
+        };
+        let before = ws_superseded_value_commands();
+        let mut sent = Vec::new();
+        let mut received = Vec::new();
+        let mut peak = 0;
+        for round in 0..10_000 {
+            for (k, key) in keys.iter().enumerate() {
+                let payload = EncodedCommandMessage::Json(round.to_string());
+                sent.push(format!("v{k}@{round}"));
+                writer.send_serialized_value_command(
+                    key.clone(),
+                    "tx".into(),
+                    format!("v{k}"),
+                    payload,
+                );
+            }
+            if round % 50 == 0 {
+                sent.push(format!("e{round}@-"));
+                let payload = EncodedCommandMessage::Json("-".into());
+                writer.send_serialized_command("tx".into(), format!("e{round}"), payload);
+            }
+            peak = peak.max(rx.len());
+            // The socket writer is blocked; it takes one frame every few rounds.
+            if round % 7 == 0
+                && let Some(frame) = rx.try_recv()
+            {
+                received.push(frame_id(&frame));
+            }
+        }
+        received.extend(std::iter::from_fn(|| rx.try_recv()).map(|frame| frame_id(&frame)));
+        assert!(!*overload_rx.borrow());
+
+        // Values are bounded by keys per event interval, not by sends.
+        assert!(peak <= (10_000 / 50 + 1) * (keys.len() + 1), "peak {peak}");
+        // Delivery is the sent order with superseded values removed.
+        let mut sent_iter = sent.iter();
+        for frame in &received {
+            assert!(sent_iter.any(|s| s == frame), "{frame} out of order");
+        }
+        let events: Vec<_> = received
+            .iter()
+            .filter(|f| f.starts_with('e'))
+            .cloned()
+            .collect();
+        let sent_events: Vec<_> = sent
+            .iter()
+            .filter(|f| f.starts_with('e'))
+            .cloned()
+            .collect();
+        assert_eq!(events, sent_events);
+        for k in 0..keys.len() {
+            let last = received
+                .iter()
+                .rev()
+                .find(|f| f.starts_with(&format!("v{k}@")));
+            assert_eq!(
+                last.map(String::as_str),
+                Some(format!("v{k}@9999").as_str())
+            );
+        }
+        assert!(ws_superseded_value_commands() > before);
     }
 
     #[test]
@@ -2952,7 +3069,7 @@ mod tests {
 
     #[test]
     fn full_deferred_queue_marks_connection_for_resnapshot() {
-        let (tx, _rx) = mpsc::unbounded_channel();
+        let (tx, _rx) = outbound_queue::channel();
         let (deferred_tx, mut deferred_rx) = mpsc::channel(1);
         let (overload_tx, overload_rx) = watch::channel(false);
         let drop_logger = Arc::new(DropLogger::new("test-client".into(), overload_tx));

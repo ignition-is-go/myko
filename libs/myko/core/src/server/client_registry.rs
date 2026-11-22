@@ -13,7 +13,7 @@ use hyphae::{Cell, CellImmutable, CellMap, MapExt, Materialize};
 use hyphae::{MapEntriesExt, MapQuery};
 use serde::Serialize;
 
-use super::WsWriter;
+use super::{CommandValueKey, WsWriter};
 use crate::{
     command::{CommandId, CommandRequest},
     wire::{MykoMessage, encode_command_message},
@@ -96,6 +96,36 @@ impl ClientRegistry {
     where
         C: CommandId + Serialize,
     {
+        self.send_command(client_id, None, request)
+    }
+
+    /// Send a *value* command: while it is still queued for the client, a
+    /// later value command with the same `key` replaces it in place.
+    ///
+    /// Use this only when the newest command for `key` makes every older one
+    /// redundant. Commands whose every instance must arrive (events) go
+    /// through [`Self::send_command_request_to`], which never coalesces.
+    pub fn send_value_command_request_to<C>(
+        &self,
+        client_id: &str,
+        key: CommandValueKey,
+        request: &CommandRequest<C>,
+    ) -> bool
+    where
+        C: CommandId + Serialize,
+    {
+        self.send_command(client_id, Some(key), request)
+    }
+
+    fn send_command<C>(
+        &self,
+        client_id: &str,
+        key: Option<CommandValueKey>,
+        request: &CommandRequest<C>,
+    ) -> bool
+    where
+        C: CommandId + Serialize,
+    {
         let Some(writer) = self.writers.get_value(&Arc::<str>::from(client_id)) else {
             return false;
         };
@@ -105,9 +135,13 @@ impl ClientRegistry {
 
         match encode_command_message(protocol, request) {
             Ok(payload) => {
-                writer
-                    .0
-                    .send_serialized_command(request.tx.clone(), command_id, payload);
+                let tx = request.tx.clone();
+                match key {
+                    Some(key) => writer
+                        .0
+                        .send_serialized_value_command(key, tx, command_id, payload),
+                    None => writer.0.send_serialized_command(tx, command_id, payload),
+                }
                 true
             }
             Err(err) => {
