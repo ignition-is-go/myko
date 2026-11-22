@@ -15,6 +15,10 @@ use url::Url;
 use crate::{SocketConnectionStatus, SocketTransport, WsFrame};
 
 const OUTGOING_QUEUE_CAPACITY: usize = 1024;
+/// Received frames held for a consumer that has not taken them yet. Past this
+/// the socket is no longer read, so a slow consumer's backlog stays with the
+/// sender, which can still merge or reorder what it has not written.
+const INBOUND_FRAME_CAPACITY: usize = 256;
 const RECONNECT_DELAY: Duration = Duration::from_secs(1);
 
 struct OutgoingQueue {
@@ -147,7 +151,7 @@ impl AutoReconnectSocket {
             credentials: None,
         };
         let (desired_tx, desired_rx) = watch::channel(initial);
-        let (incoming_tx, incoming_rx) = flume::unbounded();
+        let (incoming_tx, incoming_rx) = flume::bounded(INBOUND_FRAME_CAPACITY);
         let intended_status =
             Cell::new(SocketConnectionStatus::Idle).with_name("autosocket.intended_status");
         let actual_status =
@@ -473,35 +477,39 @@ impl AutoReconnectSocket {
         let read_cancel = cancel.child_token();
         let mut reader_task = tokio::spawn(async move {
             loop {
-                tokio::select! {
+                let frame = tokio::select! {
                     biased;
                     () = read_cancel.cancelled() => return,
                     message = reader.next() => match message {
-                        Some(Ok(Message::Text(text))) => {
-                            let control = control
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if control.generation != generation {
-                                return;
-                            }
-                            if incoming_tx.send(WsFrame::Text(text.to_string())).is_err() {
-                                return;
-                            }
-                        }
-                        Some(Ok(Message::Binary(bytes))) => {
-                            let control = control
-                                .lock()
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                            if control.generation != generation {
-                                return;
-                            }
-                            if incoming_tx.send(WsFrame::Binary(bytes.to_vec())).is_err() {
-                                return;
-                            }
-                        }
+                        Some(Ok(Message::Text(text))) => WsFrame::Text(text.to_string()),
+                        Some(Ok(Message::Binary(bytes))) => WsFrame::Binary(bytes.to_vec()),
                         Some(Ok(Message::Close(_)) | Err(_)) | None => return,
-                        Some(Ok(_)) => {}
+                        Some(Ok(_)) => continue,
                     }
+                };
+                let full = {
+                    let control = control
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if control.generation != generation {
+                        return;
+                    }
+                    match incoming_tx.try_send(frame) {
+                        Ok(()) => continue,
+                        Err(flume::TrySendError::Full(frame)) => frame,
+                        Err(flume::TrySendError::Disconnected(_)) => return,
+                    }
+                };
+                // NOTE(ts): The consumer is behind. Waiting here stops reading
+                // the socket, so TCP pushes back on the server and its queue
+                // absorbs the burst. The frame was read under the current
+                // generation and waits in the channel's FIFO of blocked
+                // sends, ahead of anything a later generation enqueues, which
+                // is where it would sit had the channel had room.
+                tokio::select! {
+                    biased;
+                    () = read_cancel.cancelled() => return,
+                    sent = incoming_tx.send_async(full) => if sent.is_err() { return; },
                 }
             }
         });
@@ -1250,6 +1258,50 @@ mod tests {
             WsFrame::Binary(binary) if binary == expected_binary
         ));
         done_tx.send(()).map_err(std::io::Error::other)?;
+        socket.close();
+        server.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
+    fn a_consumer_that_stops_reading_pushes_back_on_the_sender() -> std::io::Result<()> {
+        const FRAMES: usize = 20_000;
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = format!("ws://{}/backpressure", listener.local_addr()?);
+        let (sent_tx, sent_rx) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let mut websocket = tungstenite::accept(stream).unwrap();
+            let padding = "x".repeat(4096);
+            for index in 0..FRAMES {
+                websocket
+                    .send(Message::Text(format!("{index} {padding}").into()))
+                    .unwrap();
+            }
+            sent_tx.send(()).unwrap();
+            let _ = websocket.read();
+        });
+        let socket = AutoReconnectSocket::with_auto_reconnect(false);
+        let incoming = SocketTransport::read_rx(&socket);
+        socket.set_addr(Some(address));
+        assert!(
+            sent_rx.recv_timeout(Duration::from_millis(1000)).is_err(),
+            "80 MB went out while nothing was consumed"
+        );
+        assert!(incoming.len() <= INBOUND_FRAME_CAPACITY);
+        for expected in 0..FRAMES {
+            let frame = incoming
+                .recv_timeout(Duration::from_secs(5))
+                .map_err(std::io::Error::other)?;
+            assert!(
+                matches!(&frame, WsFrame::Text(text)
+                    if text.split(' ').next() == Some(expected.to_string().as_str())),
+                "frame {expected} out of order"
+            );
+        }
+        sent_rx
+            .recv_timeout(Duration::from_secs(5))
+            .map_err(std::io::Error::other)?;
         socket.close();
         server.join().unwrap();
         Ok(())
