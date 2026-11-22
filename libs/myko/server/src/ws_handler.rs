@@ -201,6 +201,25 @@ pub fn ws_superseded_value_commands() -> u64 {
     SUPERSEDED_VALUE_COMMANDS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+static TEARDOWN_DISCARDED_EVENT_COMMANDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static TEARDOWN_DISCARDED_VALUE_COMMANDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Event commands still queued for a client when its connection closed, and
+/// so never written, since the process started.
+#[must_use]
+pub fn ws_teardown_discarded_event_commands() -> u64 {
+    TEARDOWN_DISCARDED_EVENT_COMMANDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Value commands still queued for a client when its connection closed, and
+/// so never written, since the process started.
+#[must_use]
+pub fn ws_teardown_discarded_value_commands() -> u64 {
+    TEARDOWN_DISCARDED_VALUE_COMMANDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// What the server gave up delivering, since the process started.
 ///
 /// Read it before and after a load test: a client that was disconnected for
@@ -424,6 +443,22 @@ enum OutboundMessage {
 struct OutboundReceiver {
     rx: outbound_queue::Receiver<OutboundMessage>,
     queued_messages: Arc<AtomicUsize>,
+    diagnostics: Option<Arc<DeliveryDiagnostics>>,
+}
+
+/// Runs however the writer ends, including when its task is aborted.
+impl Drop for OutboundReceiver {
+    fn drop(&mut self) {
+        let discarded = self.rx.close();
+        if discarded == outbound_queue::Discarded::default() {
+            return;
+        }
+        TEARDOWN_DISCARDED_EVENT_COMMANDS.fetch_add(discarded.events, Ordering::Relaxed);
+        TEARDOWN_DISCARDED_VALUE_COMMANDS.fetch_add(discarded.values, Ordering::Relaxed);
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.teardown_discarded(discarded.events, discarded.values);
+        }
+    }
 }
 
 impl OutboundReceiver {
@@ -1494,6 +1529,7 @@ impl WsHandler {
             rx: OutboundReceiver {
                 rx,
                 queued_messages: queued_messages.clone(),
+                diagnostics: Some(diagnostics.clone()),
             },
             deferred_rx,
             view_delivery_rx,
@@ -2298,17 +2334,26 @@ impl WsWriter for ChannelWriter {
         command_id: String,
         payload: EncodedCommandMessage,
     ) {
+        let _ = self.try_send_serialized_command(tx, command_id, payload);
+    }
+
+    fn try_send_serialized_command(
+        &self,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) -> bool {
         if self.tx_dead() {
-            return;
+            return false;
         }
         // Unbounded: a command is an event, and dropping it would lose it for
         // good. It is also a barrier no queued value may be replaced across.
         // A closed queue means the writer already exited (disconnect).
-        let _ = self.tx.push_barrier(OutboundMessage::SerializedCommand {
+        self.tx.push_barrier(OutboundMessage::SerializedCommand {
             tx,
             command_id,
             payload,
-        });
+        }) != Pushed::Closed
     }
 
     fn send_serialized_value_command(
@@ -2318,8 +2363,18 @@ impl WsWriter for ChannelWriter {
         command_id: String,
         payload: EncodedCommandMessage,
     ) {
+        let _ = self.try_send_serialized_value_command(key, tx, command_id, payload);
+    }
+
+    fn try_send_serialized_value_command(
+        &self,
+        key: CommandValueKey,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) -> bool {
         if self.tx_dead() {
-            return;
+            return false;
         }
         // NOTE(ts): The newest value for a key makes a queued older one
         // redundant, so it overwrites it in place unless an event was queued
@@ -2339,6 +2394,7 @@ impl WsWriter for ChannelWriter {
                 diagnostics.superseded();
             }
         }
+        pushed != Pushed::Closed
     }
 
     fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
@@ -3051,6 +3107,88 @@ mod tests {
             );
         }
         assert!(ws_superseded_value_commands() > before);
+    }
+
+    #[derive(serde::Serialize)]
+    struct Probe;
+
+    impl myko::command::CommandId for Probe {
+        fn command_id(&self) -> Arc<str> {
+            "Probe".into()
+        }
+    }
+
+    #[test]
+    fn registry_sends_report_false_once_the_client_queue_is_closed() {
+        let (writer, rx, _overload_rx) = bounded_test_writer();
+        let registry = myko::server::client_registry();
+        let client_id = Uuid::new_v4().to_string();
+        registry.register(client_id.as_str().into(), Arc::new(writer));
+        let request = myko::command::CommandRequest::new(Probe);
+        let key = CommandValueKey::new("probe");
+
+        assert!(registry.send_command_request_to(&client_id, &request));
+        assert!(registry.send_value_command_request_to(&client_id, key.clone(), &request));
+        assert_eq!(rx.len(), 2);
+
+        // The writer exited but the registry entry is still there.
+        drop(rx);
+        assert!(!registry.send_command_request_to(&client_id, &request));
+        assert!(!registry.send_value_command_request_to(&client_id, key, &request));
+        registry.unregister(&client_id);
+    }
+
+    #[test]
+    fn teardown_counts_queued_events_and_values_it_discards() {
+        let (writer, rx, _overload_rx) = bounded_test_writer();
+        let receiver = OutboundReceiver {
+            rx,
+            queued_messages: Arc::default(),
+            diagnostics: None,
+        };
+        let command = |id: &str| {
+            (
+                Arc::<str>::from("tx"),
+                id.to_string(),
+                EncodedCommandMessage::Json("{}".into()),
+            )
+        };
+        writer.send(ping());
+        for id in ["e1", "e2", "e3"] {
+            let (tx, id, payload) = command(id);
+            writer.send_serialized_command(tx, id, payload);
+        }
+        for k in ["a", "a", "b"] {
+            let (tx, id, payload) = command(k);
+            writer.send_serialized_value_command(CommandValueKey::new(k), tx, id, payload);
+        }
+        // The first event was written before the connection went away.
+        let _ = receiver.rx.try_recv();
+        let _ = receiver.rx.try_recv();
+
+        let events = ws_teardown_discarded_event_commands();
+        let values = ws_teardown_discarded_value_commands();
+        drop(receiver);
+        // Other tests in this binary may tear down queues too: floors.
+        assert!(ws_teardown_discarded_event_commands().saturating_sub(events) >= 2);
+        assert!(ws_teardown_discarded_value_commands().saturating_sub(values) >= 2);
+        let (tx, id, payload) = command("late");
+        assert!(!writer.try_send_serialized_command(tx, id, payload));
+    }
+
+    #[test]
+    fn teardown_with_nothing_queued_counts_nothing() {
+        let (_writer, rx, _overload_rx) = bounded_test_writer();
+        let receiver = OutboundReceiver {
+            rx,
+            queued_messages: Arc::default(),
+            diagnostics: None,
+        };
+        let events = ws_teardown_discarded_event_commands();
+        let values = ws_teardown_discarded_value_commands();
+        drop(receiver);
+        assert_eq!(ws_teardown_discarded_event_commands(), events);
+        assert_eq!(ws_teardown_discarded_value_commands(), values);
     }
 
     #[test]

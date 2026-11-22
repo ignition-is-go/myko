@@ -27,6 +27,8 @@ use tokio::sync::Notify;
 
 enum Entry<T> {
     Plain(T),
+    /// A barrier frame (an event command).
+    Event(T),
     /// Index into `Inner::slots`, whose payload a newer value may replace.
     Value(usize),
 }
@@ -59,6 +61,13 @@ pub struct Sender<T> {
 
 pub struct Receiver<T> {
     shared: Arc<Shared<T>>,
+}
+
+/// Commands still queued when the receiver closed, never handed off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Discarded {
+    pub events: u64,
+    pub values: u64,
 }
 
 /// Whether a push queued a new frame or replaced a queued value.
@@ -119,8 +128,17 @@ impl<T> Sender<T> {
             return Pushed::Closed;
         }
         let mut inner = self.shared.lock();
+        // Re-checked under the lock: `Receiver::close` holds it while it
+        // flips the flag, so nothing lands after the discard count is taken.
+        if self.is_closed() {
+            return Pushed::Closed;
+        }
         inner.barriers = inner.barriers.wrapping_add(u64::from(barrier));
-        inner.fifo.push_back(Entry::Plain(item));
+        inner.fifo.push_back(if barrier {
+            Entry::Event(item)
+        } else {
+            Entry::Plain(item)
+        });
         drop(inner);
         self.shared.ready.notify_one();
         Pushed::Queued
@@ -131,6 +149,9 @@ impl<T> Sender<T> {
             return Pushed::Closed;
         }
         let mut inner = self.shared.lock();
+        if self.is_closed() {
+            return Pushed::Closed;
+        }
         let epoch = inner.barriers;
         if let Some(&index) = inner.queued_values.get(&key)
             && let Some(Some(slot)) = inner.slots.get_mut(index)
@@ -199,7 +220,7 @@ impl<T> Receiver<T> {
 
     fn pop(inner: &mut Inner<T>) -> Option<T> {
         match inner.fifo.pop_front()? {
-            Entry::Plain(item) => Some(item),
+            Entry::Plain(item) | Entry::Event(item) => Some(item),
             Entry::Value(index) => {
                 let slot = inner.slots.get_mut(index)?.take()?;
                 inner.free.push(index);
@@ -215,11 +236,30 @@ impl<T> Receiver<T> {
     pub fn len(&self) -> usize {
         self.shared.lock().fifo.len()
     }
+
+    /// Refuse further pushes and discard what is queued, reporting the
+    /// commands among it. Later calls report nothing.
+    pub fn close(&self) -> Discarded {
+        let mut inner = self.shared.lock();
+        self.shared.receiver_alive.store(false, Ordering::Release);
+        let mut discarded = Discarded::default();
+        for entry in inner.fifo.drain(..) {
+            match entry {
+                Entry::Plain(_) => {}
+                Entry::Event(_) => discarded.events = discarded.events.saturating_add(1),
+                Entry::Value(_) => discarded.values = discarded.values.saturating_add(1),
+            }
+        }
+        inner.slots.clear();
+        inner.free.clear();
+        inner.queued_values.clear();
+        discarded
+    }
 }
 
 impl<T> Drop for Receiver<T> {
     fn drop(&mut self) {
-        self.shared.receiver_alive.store(false, Ordering::Release);
+        self.close();
     }
 }
 
@@ -323,6 +363,28 @@ mod tests {
         assert_eq!(rx.recv().await, Some("e1"));
         assert_eq!(rx.recv().await, Some("v1"));
         assert_eq!(rx.recv().await, None);
+    }
+
+    #[test]
+    fn close_counts_undelivered_events_and_values_but_not_frames() {
+        let (tx, rx) = channel();
+        tx.push("frame");
+        tx.push_barrier("event");
+        tx.push_value(key("a"), "a1");
+        tx.push_value(key("a"), "a2");
+        tx.push_value(key("b"), "b1");
+        tx.push_barrier("event 2");
+        assert_eq!(rx.try_recv(), Some("frame"));
+        assert_eq!(
+            rx.close(),
+            Discarded {
+                events: 2,
+                values: 2
+            }
+        );
+        assert_eq!(tx.push_barrier("late"), Pushed::Closed);
+        assert_eq!(tx.push_value(key("a"), "late"), Pushed::Closed);
+        assert_eq!(rx.close(), Discarded::default());
     }
 
     #[test]

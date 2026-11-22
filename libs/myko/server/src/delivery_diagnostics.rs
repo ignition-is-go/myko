@@ -296,6 +296,16 @@ impl DeliveryDiagnostics {
         state.superseded = state.superseded.saturating_add(1);
     }
 
+    /// The connection closed with commands still queued for it.
+    pub fn teardown_discarded(&self, events: u64, values: u64) {
+        if self.state.is_none() {
+            return;
+        }
+        tracing::warn!(target: "myko_server::delivery", client_id = %self.client_id, peer = %self.peer,
+            discarded_events = events, discarded_values = values,
+            "client teardown discarded queued commands");
+    }
+
     pub fn queue(&self, depth: usize, wait: Option<(&str, Duration)>) {
         let Some(state) = &self.state else {
             return;
