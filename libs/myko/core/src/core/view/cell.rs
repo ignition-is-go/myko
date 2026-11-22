@@ -1,64 +1,22 @@
 use std::sync::Arc;
 
-use hyphae::{CellImmutable, CellMap, MapDiff};
+use hyphae::{CellImmutable, CellMap, MapQuery, MapValuesExt};
 
 use crate::core::item::AnyItem;
 
 pub type TypedViewCellMap<T> = CellMap<Arc<str>, Arc<T>, CellImmutable>;
 pub type FilteredViewCellMap = CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>;
 
-pub fn erase_typed_view_map<T>(typed: TypedViewCellMap<T>) -> FilteredViewCellMap
+/// Materialize a view plan straight into its type-erased map.
+///
+/// The erasure is a `map_values` stage fused into the plan, so each changed
+/// row costs one scheduled write to the output map. Materializing typed and
+/// then forwarding into a second erased map cost two.
+pub fn materialize_erased_view<T, Q>(plan: Q) -> FilteredViewCellMap
 where
     T: AnyItem + PartialEq + Send + Sync + 'static,
+    Q: MapQuery<Key = Arc<str>, Value = Arc<T>>,
 {
-    fn erase_item<T>(value: &Arc<T>) -> Arc<dyn AnyItem>
-    where
-        T: AnyItem + PartialEq + Send + Sync + 'static,
-    {
-        value.clone()
-    }
-
-    fn map_any_diff<T>(diff: &MapDiff<Arc<str>, Arc<T>>) -> MapDiff<Arc<str>, Arc<dyn AnyItem>>
-    where
-        T: AnyItem + PartialEq + Send + Sync + 'static,
-    {
-        match diff {
-            MapDiff::Initial { entries } => MapDiff::Initial {
-                entries: entries
-                    .iter()
-                    .map(|(k, v)| (k.clone(), erase_item(v)))
-                    .collect(),
-            },
-            MapDiff::Insert { key, value } => MapDiff::Insert {
-                key: key.clone(),
-                value: erase_item(value),
-            },
-            MapDiff::Remove { key, old_value } => MapDiff::Remove {
-                key: key.clone(),
-                old_value: erase_item(old_value),
-            },
-            MapDiff::Update {
-                key,
-                old_value,
-                new_value,
-            } => MapDiff::Update {
-                key: key.clone(),
-                old_value: erase_item(old_value),
-                new_value: erase_item(new_value),
-            },
-            MapDiff::Batch { changes } => MapDiff::Batch {
-                changes: changes.iter().map(map_any_diff::<T>).collect(),
-            },
-        }
-    }
-
-    let output = CellMap::<Arc<str>, Arc<dyn AnyItem>>::new();
-    let weak = output.downgrade();
-    let guard = typed.subscribe_diffs(move |diff| {
-        let Some(output) = weak.upgrade() else { return };
-        output.apply_diff_owned(map_any_diff(diff));
-    });
-    output.own_guard(guard);
-    drop(typed);
-    output.lock()
+    plan.map_values(|_, value| -> Arc<dyn AnyItem> { value.clone() })
+        .materialize()
 }

@@ -6,7 +6,7 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use super::{
-    cell::{FilteredViewCellMap, erase_typed_view_map},
+    cell::{FilteredViewCellMap, materialize_erased_view},
     context::{ViewBuildContext, ViewContext},
     request::ViewRequest,
     traits::{AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams},
@@ -121,6 +121,6 @@ where
             "ViewFactory::cell_factory using build_cell view_id={}",
             V::view_id_static()
         );
-        Ok(erase_typed_view_map(hyphae::MapQuery::materialize(built)))
+        Ok(materialize_erased_view(built))
     }
 }
