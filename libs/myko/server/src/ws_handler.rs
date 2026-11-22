@@ -7,7 +7,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -183,6 +183,10 @@ fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::
         }
     }
 }
+
+/// Sequenced `Message` frames a connection may have queued before it is torn
+/// down for a clean resnapshot.
+const MESSAGE_QUEUE_CAPACITY: usize = 10_000;
 
 static OUTBOUND_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static OVERLOAD_DISCONNECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -383,7 +387,7 @@ struct WriterState {
     subscription_auth: Arc<SubscriptionAuthorization>,
     auth: Option<AuthSession>,
     write: futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
-    rx: mpsc::Receiver<OutboundMessage>,
+    rx: OutboundReceiver,
     deferred_rx: mpsc::Receiver<DeferredOutbound>,
     view_delivery_rx: mpsc::UnboundedReceiver<ViewDeliveryControl>,
     priority_rx: mpsc::Receiver<MykoMessage>,
@@ -403,6 +407,27 @@ enum OutboundMessage {
         command_id: String,
         payload: EncodedCommandMessage,
     },
+}
+
+/// Writer half of the ordered outbound queue; releases a `Message` frame's
+/// slot in the shared bound as the writer takes it.
+struct OutboundReceiver {
+    rx: mpsc::UnboundedReceiver<OutboundMessage>,
+    queued_messages: Arc<AtomicUsize>,
+}
+
+impl OutboundReceiver {
+    async fn recv(&mut self) -> Option<OutboundMessage> {
+        let message = self.rx.recv().await?;
+        if matches!(message, OutboundMessage::Message(_)) {
+            self.queued_messages.fetch_sub(1, Ordering::AcqRel);
+        }
+        Some(message)
+    }
+
+    fn len(&self) -> usize {
+        self.rx.len()
+    }
 }
 
 enum DeferredOutbound {
@@ -1394,9 +1419,12 @@ impl WsHandler {
         }
         let (write, read) = ws_stream.split();
 
-        // Create a bounded channel for sending messages to the client
-        // High limit (10k) since we have good memory availability
-        let (tx, rx) = mpsc::channel::<OutboundMessage>(10_000);
+        // Outbound frames share one ordered queue. Only sequenced messages
+        // count against MESSAGE_QUEUE_CAPACITY (overflow resnapshots); commands
+        // are events that a resnapshot cannot replay, so they are never refused
+        // while the connection lives.
+        let (tx, rx) = mpsc::unbounded_channel::<OutboundMessage>();
+        let queued_messages = Arc::new(AtomicUsize::new(0));
         let (deferred_tx, deferred_rx) = mpsc::channel::<DeferredOutbound>(10_000);
         let (priority_tx, priority_rx) = mpsc::channel::<MykoMessage>(1_000);
         let (command_tx, command_rx) = mpsc::unbounded_channel::<CommandJob>();
@@ -1417,6 +1445,7 @@ impl WsHandler {
         let drop_logger = Arc::new(logger);
         let writer = ChannelWriter {
             tx: tx.clone(),
+            queued_messages: queued_messages.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
             outgoing_format: outgoing_format.clone(),
@@ -1452,7 +1481,10 @@ impl WsHandler {
             subscription_auth: subscription_auth.clone(),
             auth: auth.clone(),
             write,
-            rx,
+            rx: OutboundReceiver {
+                rx,
+                queued_messages: queued_messages.clone(),
+            },
             deferred_rx,
             view_delivery_rx,
             priority_rx,
@@ -2195,7 +2227,9 @@ impl WsHandler {
 /// forwarded to the actual WebSocket.
 #[derive(Clone)]
 struct ChannelWriter {
-    tx: mpsc::Sender<OutboundMessage>,
+    tx: mpsc::UnboundedSender<OutboundMessage>,
+    /// `Message` frames enqueued on `tx` and not yet taken by the writer.
+    queued_messages: Arc<AtomicUsize>,
     deferred_tx: mpsc::Sender<DeferredOutbound>,
     drop_logger: Arc<DropLogger>,
     outgoing_format: Arc<AtomicU8>,
@@ -2231,12 +2265,16 @@ impl WsWriter for ChannelWriter {
         if self.tx_dead() {
             return;
         }
-        if let Err(e) = self.tx.try_send(OutboundMessage::Message(msg)) {
-            // Closed errors here race with the writer task exiting between
-            // the is_dead check and the try_send; suppress them too.
-            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
-                self.drop_logger.on_drop("message", &e);
-            }
+        if self.queued_messages.fetch_add(1, Ordering::AcqRel) >= MESSAGE_QUEUE_CAPACITY {
+            self.queued_messages.fetch_sub(1, Ordering::AcqRel);
+            self.drop_logger
+                .on_drop("message", &"outbound message queue full");
+            return;
+        }
+        // A send error means the writer task exited after the is_dead check;
+        // the session is tearing down, so there is nothing to report.
+        if self.tx.send(OutboundMessage::Message(msg)).is_err() {
+            self.queued_messages.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
@@ -2253,14 +2291,13 @@ impl WsWriter for ChannelWriter {
         if self.tx_dead() {
             return;
         }
-        if let Err(e) = self.tx.try_send(OutboundMessage::SerializedCommand {
+        // Unbounded: a command is an event, and dropping it would lose it for
+        // good. A send error means the writer already exited (disconnect).
+        let _ = self.tx.send(OutboundMessage::SerializedCommand {
             tx,
             command_id,
             payload,
-        }) && !matches!(e, mpsc::error::TrySendError::Closed(_))
-        {
-            self.drop_logger.on_drop("serialized_command", &e);
-        }
+        });
     }
 
     fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
@@ -2813,12 +2850,13 @@ mod tests {
 
     #[test]
     fn test_channel_writer() {
-        let (tx, mut rx) = mpsc::channel(10);
+        let (tx, mut rx) = mpsc::unbounded_channel();
         let (deferred_tx, _deferred_rx) = mpsc::channel(10);
         let (overload_tx, _overload_rx) = watch::channel(false);
         let drop_logger = Arc::new(DropLogger::new("test-client".into(), overload_tx));
         let writer = ChannelWriter {
             tx,
+            queued_messages: Arc::default(),
             deferred_tx,
             drop_logger,
             outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON.into())),
@@ -2841,14 +2879,86 @@ mod tests {
         ));
     }
 
+    fn bounded_test_writer() -> (
+        ChannelWriter,
+        mpsc::UnboundedReceiver<OutboundMessage>,
+        watch::Receiver<bool>,
+    ) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let (deferred_tx, _deferred_rx) = mpsc::channel(1);
+        let (overload_tx, overload_rx) = watch::channel(false);
+        let writer = ChannelWriter {
+            tx,
+            queued_messages: Arc::default(),
+            deferred_tx,
+            drop_logger: Arc::new(DropLogger::new("test-client".into(), overload_tx)),
+            outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON.into())),
+        };
+        (writer, rx, overload_rx)
+    }
+
+    fn ping() -> MykoMessage {
+        MykoMessage::Ping(myko::wire::PingData {
+            id: "test".to_string(),
+            timestamp: 0,
+        })
+    }
+
+    #[test]
+    fn commands_past_the_message_bound_are_all_queued_in_order() {
+        let (writer, mut rx, overload_rx) = bounded_test_writer();
+        let commands = MESSAGE_QUEUE_CAPACITY * 2;
+        for sequence in 0..commands {
+            writer.send_serialized_command(
+                "tx".into(),
+                sequence.to_string(),
+                EncodedCommandMessage::Json(String::new()),
+            );
+        }
+        assert!(
+            !*overload_rx.borrow(),
+            "a command burst must not tear down the session"
+        );
+        // Commands do not consume the message bound.
+        writer.send(ping());
+        assert!(!*overload_rx.borrow());
+        for sequence in 0..commands {
+            let received = rx.try_recv();
+            assert!(
+                matches!(
+                    &received,
+                    Ok(OutboundMessage::SerializedCommand { command_id, .. })
+                        if *command_id == sequence.to_string()
+                ),
+                "command {sequence} missing or out of order"
+            );
+        }
+        assert!(matches!(rx.try_recv(), Ok(OutboundMessage::Message(_))));
+    }
+
+    #[test]
+    fn messages_past_the_bound_mark_connection_for_resnapshot() {
+        let (writer, _rx, overload_rx) = bounded_test_writer();
+        for _ in 0..MESSAGE_QUEUE_CAPACITY {
+            writer.send(ping());
+        }
+        assert!(!*overload_rx.borrow());
+        writer.send(ping());
+        assert!(
+            *overload_rx.borrow(),
+            "message overflow must force a resnapshot"
+        );
+    }
+
     #[test]
     fn full_deferred_queue_marks_connection_for_resnapshot() {
-        let (tx, _rx) = mpsc::channel(1);
+        let (tx, _rx) = mpsc::unbounded_channel();
         let (deferred_tx, mut deferred_rx) = mpsc::channel(1);
         let (overload_tx, overload_rx) = watch::channel(false);
         let drop_logger = Arc::new(DropLogger::new("test-client".into(), overload_tx));
         let writer = ChannelWriter {
             tx,
+            queued_messages: Arc::default(),
             deferred_tx,
             drop_logger,
             outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON.into())),
