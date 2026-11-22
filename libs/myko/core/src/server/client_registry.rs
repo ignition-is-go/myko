@@ -92,6 +92,11 @@ impl ClientRegistry {
             })
     }
 
+    /// Queue an event command for a client.
+    ///
+    /// Returns `false` when the client is not connected, the command cannot
+    /// be encoded, or the client's queue is already closed; the command was
+    /// not queued and will not be delivered.
     pub fn send_command_request_to<C>(&self, client_id: &str, request: &CommandRequest<C>) -> bool
     where
         C: CommandId + Serialize,
@@ -139,10 +144,11 @@ impl ClientRegistry {
                 match key {
                     Some(key) => writer
                         .0
-                        .send_serialized_value_command(key, tx, command_id, payload),
-                    None => writer.0.send_serialized_command(tx, command_id, payload),
+                        .try_send_serialized_value_command(key, tx, command_id, payload),
+                    None => writer
+                        .0
+                        .try_send_serialized_command(tx, command_id, payload),
                 }
-                true
             }
             Err(err) => {
                 tracing::error!(

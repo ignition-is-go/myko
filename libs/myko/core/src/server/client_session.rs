@@ -82,6 +82,32 @@ pub trait WsWriter: Send + Sync + 'static {
         self.send_serialized_command(tx, command_id, payload);
     }
 
+    /// [`Self::send_serialized_command`], reporting whether the command was
+    /// accepted for delivery. `false` means it was not queued (for example
+    /// the connection is closing). The default accepts everything.
+    fn try_send_serialized_command(
+        &self,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) -> bool {
+        self.send_serialized_command(tx, command_id, payload);
+        true
+    }
+
+    /// [`Self::send_serialized_value_command`], reporting whether the command
+    /// was accepted for delivery, as [`Self::try_send_serialized_command`].
+    fn try_send_serialized_value_command(
+        &self,
+        key: CommandValueKey,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) -> bool {
+        self.send_serialized_value_command(key, tx, command_id, payload);
+        true
+    }
+
     /// Send a report response while allowing implementations to defer
     /// expensive serialization/conversion work off the reactive callback path.
     fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
