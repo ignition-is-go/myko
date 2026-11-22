@@ -4,6 +4,8 @@
 
 mod cell;
 mod context;
+#[cfg(test)]
+mod erase_tests;
 mod registration;
 mod request;
 mod traits;
