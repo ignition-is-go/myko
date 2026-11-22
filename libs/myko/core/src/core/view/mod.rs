@@ -10,9 +10,12 @@ mod registration;
 mod request;
 mod traits;
 
-pub use cell::{FilteredViewCellMap, TypedViewCellMap};
+pub use cell::{ErasedViewDiff, ErasedViewMap, FilteredViewCellMap, TypedViewCellMap};
 pub use context::{ViewBuildContext, ViewContext};
-pub use registration::{ViewCellFactory, ViewFactory, ViewParseFn, ViewRegistration};
+pub use registration::{
+    ViewCellFactory, ViewFactory, ViewParseFn, ViewRegistration, ViewSubscribeFactory,
+    ViewSubscribeRegistration,
+};
 pub use request::ViewRequest;
 pub use traits::{
     AnyView, ViewBuildArgs, ViewHandler, ViewId, ViewIdStatic, ViewItemType, ViewParams,

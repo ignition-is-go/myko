@@ -42,6 +42,14 @@ fn expand_view(expansion: &ViewExpansion<'_>) -> TokenStream {
             #registration
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        #krate::submit! {
+            #krate::prelude::ViewSubscribeRegistration {
+                view_id: stringify!(#struct_name),
+                subscribe: <#struct_name as #krate::view::ViewFactory>::subscribe_factory,
+            }
+        }
+
         #krate::register_typegen_type!(#struct_name);
 
         impl #krate::prelude::ViewId for #struct_name {
