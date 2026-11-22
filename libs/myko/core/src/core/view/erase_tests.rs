@@ -98,6 +98,30 @@ mod views {
                 .filter_map_values(|_, client| Some(client.clone()))
         }
     }
+
+    /// Serves live subscriptions by gating `EraseHopUnionView`, read once
+    /// through the shared view cache.
+    #[myko_macros::myko_view(Client)]
+    pub struct EraseHopGatedView {}
+
+    impl ViewHandler for EraseHopGatedView {
+        fn build_cell(
+            ctx: ViewBuildArgs<Self>,
+        ) -> impl MapQuery<Key = Arc<str>, Value = Arc<Self::Item>>
+        where
+            Self: Send + Sync + 'static,
+        {
+            ctx.view_context.view(EraseHopUnionView {})
+        }
+
+        fn subscribe(ctx: &ViewBuildArgs<Self>) -> Option<crate::view::ErasedViewMap> {
+            let view_ctx = ctx.view_context.clone();
+            Some(crate::view::ErasedViewMap::switched(
+                crate::hyphae::Cell::new(Some(())).lock(),
+                move |()| view_ctx.view_map_untyped(EraseHopUnionView {}).into(),
+            ))
+        }
+    }
 }
 
 use views::{EraseHopMapView, EraseHopPlanView, EraseHopReaderView, EraseHopUnionView};
@@ -503,6 +527,7 @@ fn dropping_the_last_live_subscription_tears_the_view_down() {
 
 #[cfg(feature = "profiling")]
 mod cost {
+    use super::views::EraseHopGatedView;
     use super::*;
     use crate::hyphae::profiling::{pass, take_report};
 
@@ -550,6 +575,7 @@ mod cost {
     #[test]
     fn report_fanouts_per_changed_row() {
         let _serial = scheduler_test_serial();
+        let mut gated_costs = Vec::new();
         for live in [false, true] {
             let path = if live {
                 "subscribe_factory"
@@ -562,19 +588,28 @@ mod cost {
                 let union = view_cost(EraseHopUnionView {}, subs, live);
                 let plan = view_cost(EraseHopPlanView {}, subs, live);
                 let reader = view_cost(EraseHopReaderView {}, subs, live);
+                let gated = view_cost(EraseHopGatedView {}, subs, live);
                 println!(
                     "{path}: fanouts per changed row, {subs} subs: map-view {map} ({:.1}/sub), \
                      union-view {union} ({:.1}/sub), plan-view {plan} ({:.1}/sub), \
-                     ctx.view-reader {reader} ({:.1}/sub)",
+                     ctx.view-reader {reader} ({:.1}/sub), gated {gated} ({:.1}/sub)",
                     per_sub(map),
                     per_sub(union),
                     per_sub(plan),
                     per_sub(reader),
+                    per_sub(gated),
                 );
                 if live {
                     assert_eq!(map, 0, "a map-rooted view subscribes with no erase write");
+                    gated_costs.push(gated);
                 }
             }
         }
+        // The shared map's own writes are paid once, so each further gated
+        // subscriber adds none.
+        assert_eq!(
+            gated_costs[0], gated_costs[1],
+            "a gated subscriber costs no write"
+        );
     }
 }
