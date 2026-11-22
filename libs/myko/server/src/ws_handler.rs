@@ -14,7 +14,7 @@ use std::{
 };
 
 use crate::outbound_queue::{self, Pushed};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt as _, SinkExt, StreamExt};
 use hyphae::SelectExt;
 use myko::{
     WS_MAX_FRAME_SIZE_BYTES, WS_MAX_MESSAGE_SIZE_BYTES,
@@ -607,6 +607,7 @@ impl WsHandler {
     fn dispatch_incoming<W: WsWriter>(
         session: &mut ClientSession<W>,
         state: &ReadLoopState,
+        pending: &mut Vec<MEvent>,
         mut message: MykoMessage,
     ) -> bool {
         if !state.access.allows(&message) {
@@ -678,27 +679,85 @@ impl WsHandler {
                 return true;
             }
         }
+        // NOTE(ts): admitted entity events wait in `pending` while the read
+        // loop drains the frames that have already arrived, so one read's
+        // events are applied as one store write (one drain claim) instead of
+        // one per frame. Anything else flushes them first to keep the order.
+        match message {
+            MykoMessage::Event(event) => {
+                Self::record_inbound(
+                    state,
+                    &MykoMessage::Event(event.clone()),
+                    &session.client_id,
+                );
+                pending.push(event);
+                return true;
+            }
+            MykoMessage::EventBatch(events) => {
+                let batch = MykoMessage::EventBatch(events);
+                Self::record_inbound(state, &batch, &session.client_id);
+                if let MykoMessage::EventBatch(events) = batch {
+                    pending.extend(events);
+                }
+                return true;
+            }
+            _ => {}
+        }
+        Self::flush_events(session, state, pending);
         Self::handle_message(
             session,
             state.ctx.clone(),
-            &MessageContext {
-                auth: &state.auth,
-                priority_tx: &state.priority_tx,
-                drop_logger: &state.drop_logger,
-                query_ids_by_tx: &state.query_ids_by_tx,
-                view_ids_by_tx: &state.view_ids_by_tx,
-                subscribe_started_by_tx: &state.subscribe_started_by_tx,
-                command_started_by_tx: &state.command_started_by_tx,
-                outbound_commands_by_tx: &state.outbound_commands_by_tx,
-                command_tx: &state.command_tx,
-                query_window_tx: &state.query_window_tx,
-                subscribe_tx: &state.subscribe_tx,
-                subscription_builds: &state.subscription_builds,
-                view_delivery_tx: &state.view_delivery_tx,
-            },
+            &Self::message_context(state),
             message,
         );
         true
+    }
+
+    fn record_inbound(state: &ReadLoopState, message: &MykoMessage, client_id: &str) {
+        if let Some(diagnostics) = &state.drop_logger.diagnostics {
+            diagnostics.inbound(message);
+        }
+        crate::ws_timing::record_inbound_message(message, client_id);
+    }
+
+    /// Applies the events admitted since the last flush as one inbound message.
+    fn flush_events<W: WsWriter>(
+        session: &ClientSession<W>,
+        state: &ReadLoopState,
+        pending: &mut Vec<MEvent>,
+    ) {
+        let message = match pending.len() {
+            0 => return,
+            1 => match pending.pop() {
+                Some(event) => MykoMessage::Event(event),
+                None => return,
+            },
+            _ => MykoMessage::EventBatch(std::mem::take(pending)),
+        };
+        Self::handle_report_or_event(
+            session,
+            state.ctx.clone(),
+            &Self::message_context(state),
+            message,
+        );
+    }
+
+    const fn message_context(state: &ReadLoopState) -> MessageContext<'_> {
+        MessageContext {
+            auth: &state.auth,
+            priority_tx: &state.priority_tx,
+            drop_logger: &state.drop_logger,
+            query_ids_by_tx: &state.query_ids_by_tx,
+            view_ids_by_tx: &state.view_ids_by_tx,
+            subscribe_started_by_tx: &state.subscribe_started_by_tx,
+            command_started_by_tx: &state.command_started_by_tx,
+            outbound_commands_by_tx: &state.outbound_commands_by_tx,
+            command_tx: &state.command_tx,
+            query_window_tx: &state.query_window_tx,
+            subscribe_tx: &state.subscribe_tx,
+            subscription_builds: &state.subscription_builds,
+            view_delivery_tx: &state.view_delivery_tx,
+        }
     }
 
     fn reject_incoming(state: &ReadLoopState, message: &MykoMessage, reason: String) {
@@ -742,9 +801,10 @@ impl WsHandler {
         }
     }
 
-    async fn handle_ws_frame<W: WsWriter>(
+    fn handle_ws_frame<W: WsWriter>(
         session: &mut ClientSession<W>,
         state: &ReadLoopState,
+        pending: &mut Vec<MEvent>,
         message: Message,
     ) -> bool {
         match message {
@@ -760,10 +820,9 @@ impl WsHandler {
                 }
                 match ciborium::de::from_reader::<MykoMessage, _>(data.as_ref()) {
                     Ok(message) => {
-                        if !Self::dispatch_incoming(session, state, message) {
+                        if !Self::dispatch_incoming(session, state, pending, message) {
                             return false;
                         }
-                        tokio::task::yield_now().await;
                     }
                     Err(error) => tracing::warn!(
                         "Failed to parse message from {}: {}",
@@ -774,10 +833,9 @@ impl WsHandler {
             }
             Message::Text(text) => match serde_json::from_str::<MykoMessage>(&text) {
                 Ok(message) => {
-                    if !Self::dispatch_incoming(session, state, message) {
+                    if !Self::dispatch_incoming(session, state, pending, message) {
                         return false;
                     }
-                    tokio::task::yield_now().await;
                 }
                 Err(error) => tracing::warn!(
                     "Failed to parse JSON message from {}: {} | raw: {}",
@@ -862,6 +920,34 @@ impl WsHandler {
             }
         }
         true
+    }
+
+    /// Handles `first` and every frame that has already arrived after it,
+    /// then applies their entity events together. `false` ends the connection.
+    fn handle_ws_frames<W: WsWriter>(
+        read: &mut futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
+        session: &mut ClientSession<W>,
+        state: &ReadLoopState,
+        first: Message,
+    ) -> bool {
+        let mut pending = Vec::new();
+        let mut open = Self::handle_ws_frame(session, state, &mut pending, first);
+        // NOTE(ts): take only frames already received; never wait for more.
+        while open {
+            match read.next().now_or_never() {
+                Some(Some(Ok(next))) => {
+                    open = Self::handle_ws_frame(session, state, &mut pending, next);
+                }
+                Some(Some(Err(error))) => {
+                    tracing::debug!("WebSocket read from {} ended: {}", state.client_id, error);
+                    open = false;
+                }
+                Some(None) => open = false,
+                None => break,
+            }
+        }
+        Self::flush_events(session, state, &mut pending);
+        open
     }
 
     async fn run_read_loop<W: WsWriter>(
@@ -966,9 +1052,10 @@ impl WsHandler {
                             break;
                         }
                     };
-                    if !Self::handle_ws_frame(session, &state, msg).await {
+                    if !Self::handle_ws_frames(&mut read, session, &state, msg) {
                         break;
                     }
+                    tokio::task::yield_now().await;
                 }
             }
         }
