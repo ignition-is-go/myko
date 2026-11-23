@@ -33,8 +33,12 @@ use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 mod history_feed;
+mod schema;
 mod transactions;
 mod undo_list;
+
+pub use schema::{REQUIRED_SCHEMA_VERSION, SCHEMA_VERSION, SchemaError, migrate};
+use schema::{check_server_settings, ensure_schema};
 
 const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
 const PG_CATCH_UP_TIMEOUT_SECS_DEFAULT: u64 = 300;
@@ -51,6 +55,7 @@ const PG_KEEPALIVE_RETRIES: u32 = 3;
 const PG_TCP_USER_TIMEOUT_SECS: u64 = 30;
 const PG_PRODUCER_MAX_BATCH: usize = 256;
 const PG_SNAPSHOT_STORE_BATCH: usize = 512;
+const PG_FETCH_BATCH: i64 = 1000;
 
 type SnapshotEntries = HashMap<Arc<str>, Vec<(Arc<str>, Arc<dyn AnyItem>)>>;
 
@@ -782,10 +787,7 @@ fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
         Ok(mut c) => match ensure_schema(&mut c, config) {
             Ok(()) => Some(c),
             Err(err) => {
-                error!(
-                    "{}",
-                    format_pg_error("ensure_schema(producer)", Some(&config.url), &err)
-                );
+                error!("{}", err.describe("ensure_schema(producer)", &config.url));
                 None
             }
         },
@@ -1074,45 +1076,50 @@ fn load_consumer_snapshot(
     host_id: &str,
     handler_registry: &Arc<HandlerRegistry>,
     registry: &Arc<StoreRegistry>,
-) -> Result<(i64, usize, String), String> {
+) -> Result<(i64, usize), String> {
     info!(
         "PostgresConsumer started (table={}, channel={})",
         config.table, config.channel
     );
-    let table = qi(&config.table);
-    let high_water_sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
-    let high_water_row = reader
-        .query_one(&high_water_sql, &[])
-        .map_err(|error| format_pg_error("query(high_water)", Some(&config.url), &error))?;
-    let high_water: i64 = high_water_row.get(0);
-    // NOTE(ts): Keep latest-ID selection covered by the item_latest index; inspect
-    // change_type only after selecting each entity's latest event, including deletes.
-    let snapshot_sql = format!(
-        "
-        WITH latest AS (
-            SELECT DISTINCT ON (item_type, item_id) id
-            FROM {table}
-            WHERE id <= $1
-            ORDER BY item_type, item_id, id DESC
+    let pg_error = |role: &str| {
+        let url = config.url.clone();
+        let role = role.to_owned();
+        move |error: postgres::Error| format_pg_error(&role, Some(&url), &error)
+    };
+    // NOTE(ts): One snapshot for the high-water mark and the state read, so the state is
+    // exactly the log up to high_water and catch-up resumes after it without a gap.
+    let mut snapshot = reader
+        .build_transaction()
+        .isolation_level(postgres::IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .map_err(pg_error("begin(snapshot)"))?;
+    let high_water: i64 = snapshot
+        .query_one(
+            &format!("SELECT COALESCE(MAX(id), 0) FROM {}", qi(&config.table)),
+            &[],
         )
-        SELECT e.id, e.event::text
-        FROM latest
-        JOIN {table} e ON e.id = latest.id
-        WHERE e.change_type = 'SET'
-        ORDER BY e.id ASC
-        "
-    );
-    let high_water_param: &(dyn postgres::types::ToSql + Sync) = &high_water;
-    let mut rows = reader
-        .query_raw(&snapshot_sql, [high_water_param])
-        .map_err(|error| {
-            format_pg_error("query(snapshot latest events)", Some(&config.url), &error)
-        })?;
+        .map_err(pg_error("query(high_water)"))?
+        .get(0);
+    let source = if schema::latest_table_ready(&mut snapshot, &config.table)
+        .map_err(pg_error("query(schema version)"))?
+    {
+        SnapshotSource::LatestTable
+    } else {
+        SnapshotSource::EventsSkipScan
+    };
+    info!("Postgres snapshot source: {source:?}");
+    let snapshot_types = snapshot_item_types(handler_registry);
+    let params: [&(dyn postgres::types::ToSql + Sync); 2] = [&high_water, &snapshot_types];
+    let mut rows = snapshot
+        .query_raw(&snapshot_sql(&config.table, source), params)
+        .map_err(pg_error("query(snapshot latest events)"))?;
     let mut count = 0_usize;
     let mut pending = SnapshotEntries::new();
-    while let Some(row) = rows.next().map_err(|error| {
-        format_pg_error("stream(snapshot latest events)", Some(&config.url), &error)
-    })? {
+    while let Some(row) = rows
+        .next()
+        .map_err(pg_error("stream(snapshot latest events)"))?
+    {
         let id: i64 = row.get(0);
         let event_json: String = row.get(1);
         match MEvent::from_str_trim(&event_json) {
@@ -1123,11 +1130,82 @@ fn load_consumer_snapshot(
         }
         count = count.saturating_add(1);
     }
+    drop(rows);
+    snapshot.commit().map_err(pg_error("commit(snapshot)"))?;
     flush_snapshot_entries(registry, pending);
-    let fetch_sql = format!(
-        "SELECT id, item_type, item_id, event::text FROM {table} WHERE id > $1 ORDER BY id ASC LIMIT $2"
-    );
-    Ok((high_water, count, fetch_sql))
+    Ok((high_water, count))
+}
+
+/// Types whose events this server can parse; the snapshot only hydrates those.
+fn snapshot_item_types(handler_registry: &HandlerRegistry) -> Vec<String> {
+    let mut types: Vec<String> = handler_registry
+        .entity_types()
+        .map(ToString::to_string)
+        .collect();
+    types.sort();
+    types
+}
+
+/// Parseable types plus their history storage aliases, which tailing observes for history feeds.
+fn tailed_item_types(handler_registry: &HandlerRegistry) -> Vec<String> {
+    let mut types: Vec<String> = handler_registry
+        .entity_types()
+        .flat_map(|kind| myko::server::history_storage_types(kind))
+        .collect();
+    types.sort();
+    types.dedup();
+    types
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotSource {
+    /// `{table}_latest`, once its backfill migration is recorded.
+    LatestTable,
+    /// Loose index scan over `item_latest_idx`: each step jumps to the next item of the
+    /// same type, so cost scales with this server's item count rather than the log length.
+    EventsSkipScan,
+}
+
+/// Latest event at or below `$1` for every item of the types in `$2`, keeping SET rows.
+fn snapshot_sql(table: &str, source: SnapshotSource) -> String {
+    let events = qi(table);
+    match source {
+        SnapshotSource::LatestTable => format!(
+            "SELECT last_id, event::text FROM {} \
+             WHERE change_type = 'SET' AND item_type = ANY($2) AND last_id <= $1 ORDER BY last_id ASC",
+            qi(&format!("{table}_latest"))
+        ),
+        // NOTE(ts): Select each item's latest event, deletes included, before filtering on
+        // change_type; filtering first would resurrect an item from its last SET.
+        SnapshotSource::EventsSkipScan => format!(
+            "
+            WITH RECURSIVE latest AS (
+                SELECT first.item_type, first.item_id, first.id
+                FROM unnest($2::text[]) AS kinds(item_type)
+                CROSS JOIN LATERAL (
+                    SELECT m.item_type, m.item_id, m.id FROM {events} m
+                    WHERE m.item_type = kinds.item_type AND m.id <= $1
+                    ORDER BY m.item_id, m.id DESC
+                    LIMIT 1
+                ) first
+                UNION ALL
+                SELECT next.item_type, next.item_id, next.id
+                FROM latest
+                CROSS JOIN LATERAL (
+                    SELECT m.item_type, m.item_id, m.id FROM {events} m
+                    WHERE m.item_type = latest.item_type AND m.item_id > latest.item_id AND m.id <= $1
+                    ORDER BY m.item_id, m.id DESC
+                    LIMIT 1
+                ) next
+            )
+            SELECT e.id, e.event::text
+            FROM latest
+            JOIN {events} e ON e.id = latest.id
+            WHERE e.change_type = 'SET'
+            ORDER BY e.id ASC
+            "
+        ),
+    }
 }
 
 /// Loads the SET events of a snapshot into the stores, as the startup load
@@ -1202,8 +1280,16 @@ fn run_consumer_loop(
 ) -> Result<(), String> {
     let mut reader = connect_consumer_client("reader", config)?;
     let mut listener = connect_listener_client(config)?;
-    let (high_water, snapshot_count, fetch_sql) =
+    check_server_settings(&mut reader);
+    let (high_water, snapshot_count) =
         load_consumer_snapshot(&mut reader, config, host_id, handler_registry, registry)?;
+    let table = qi(&config.table);
+    let high_water_sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
+    let fetch_sql = format!(
+        "SELECT id, item_type, item_id, event::text FROM {table} \
+         WHERE id > $1 AND id <= $2 AND item_type = ANY($3) ORDER BY id ASC LIMIT $4"
+    );
+    let tailed_types = tailed_item_types(handler_registry);
     info!(
         "Postgres snapshot loaded latest state rows={} high_water={}",
         snapshot_count, high_water
@@ -1213,8 +1299,25 @@ fn run_consumer_loop(
     let mut initial_done = false;
 
     loop {
-        let rows = match reader.query(&fetch_sql, &[&last_seen_id, &1000_i64]) {
-            Ok(rows) => rows,
+        // NOTE(ts): Bound each pass by the current max id so rows of foreign types advance
+        // last_seen_id too; otherwise every poll would rescan another app's tail.
+        let fetched = reader.query_one(&high_water_sql, &[]).and_then(|row| {
+            let bound: i64 = row.get(0);
+            reader
+                .query(
+                    &fetch_sql,
+                    &[&last_seen_id, &bound, &tailed_types, &PG_FETCH_BATCH],
+                )
+                .map(|rows| (bound, rows))
+        });
+        let rows = match fetched {
+            Ok((bound, rows)) => {
+                let full = i64::try_from(rows.len()).is_ok_and(|len| len >= PG_FETCH_BATCH);
+                if !full {
+                    last_seen_id = last_seen_id.max(bound);
+                }
+                rows
+            }
             Err(err) => {
                 warn!(
                     "{}",
@@ -1231,7 +1334,7 @@ fn run_consumer_loop(
                 let item_type: String = row.get(1);
                 let item_id: String = row.get(2);
                 let event_json: String = row.get(3);
-                last_seen_id = id;
+                last_seen_id = last_seen_id.max(id);
 
                 match MEvent::from_str_trim(&event_json) {
                     Ok(event) => {
@@ -1287,11 +1390,13 @@ fn connect_consumer_client(role: &str, config: &PostgresConfig) -> Result<Client
     loop {
         match connect_pg_client(config, role) {
             Ok(mut client) => {
-                if let Err(err) = ensure_schema(&mut client, config) {
-                    warn!(
+                match ensure_schema(&mut client, config) {
+                    Ok(()) => {}
+                    Err(err @ SchemaError::Outdated { .. }) => return Err(err.to_string()),
+                    Err(err) => warn!(
                         "{}",
-                        format_pg_error(&format!("ensure_schema({role})"), Some(&config.url), &err)
-                    );
+                        err.describe(&format!("ensure_schema({role})"), &config.url)
+                    ),
                 }
                 return Ok(client);
             }
@@ -1374,61 +1479,6 @@ fn apply_remote_event_coordinated(
             }
         }
     }
-}
-
-fn ensure_schema(client: &mut Client, config: &PostgresConfig) -> Result<(), ::postgres::Error> {
-    let table = qi(&config.table);
-    let idx_tx = qi(&format!("{}_tx_idx", config.table));
-    let idx_item = qi(&format!("{}_item_type_item_id_idx", config.table));
-    let idx_item_latest = qi(&format!("{}_item_latest_idx", config.table));
-    let idx_created = qi(&format!("{}_created_at_idx", config.table));
-    let completions = qi(&format!("{}_transactions", config.table));
-    let idx_completed_user = qi(&format!("{}_completed_user_idx", config.table));
-    let idx_undo = qi(&format!("{}_undo_history_idx", config.table));
-    let trigger_fn = qi(&format!("{}_notify_insert_fn", config.table));
-    let trigger_name = qi(&format!("{}_notify_insert_trigger", config.table));
-
-    client.batch_execute(&format!(
-        "
-        CREATE TABLE IF NOT EXISTS {table} (
-            id BIGSERIAL PRIMARY KEY,
-            item_type TEXT NOT NULL,
-            item_id TEXT NOT NULL,
-            change_type TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            tx TEXT NOT NULL,
-            source_id TEXT,
-            event JSONB NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS {completions} (
-            tx TEXT PRIMARY KEY,
-            user_id TEXT NOT NULL,
-            first_id BIGINT NOT NULL,
-            last_id BIGINT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS {idx_completed_user} ON {completions} (user_id, first_id DESC);
-        CREATE INDEX IF NOT EXISTS {idx_tx} ON {table} (tx);
-        CREATE INDEX IF NOT EXISTS {idx_item} ON {table} (item_type, item_id);
-        CREATE INDEX IF NOT EXISTS {idx_item_latest} ON {table} (item_type, item_id, id DESC);
-        CREATE INDEX IF NOT EXISTS {idx_created} ON {table} (created_at);
-        CREATE INDEX IF NOT EXISTS {idx_undo} ON {table} ((event->'item'->>'transactionId'))
-            WHERE item_type = 'TransactionUndo' AND change_type = 'SET';
-        CREATE OR REPLACE FUNCTION {trigger_fn}() RETURNS trigger AS $$
-        BEGIN
-            PERFORM pg_notify('{channel}', NEW.id::text);
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-        DROP TRIGGER IF EXISTS {trigger_name} ON {table};
-        CREATE TRIGGER {trigger_name}
-            AFTER INSERT ON {table}
-            FOR EACH ROW
-            EXECUTE FUNCTION {trigger_fn}();
-        ",
-        channel = config.channel
-    ))?;
-
-    Ok(())
 }
 
 fn validate_ident(name: &str) -> Result<(), String> {
@@ -1659,6 +1709,7 @@ mod provenance_tests {
 
     #[test]
     #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]
+    #[allow(clippy::too_many_lines)]
     fn command_transaction_survives_cascades_and_durable_history() -> anyhow::Result<()> {
         use myko::{
             command::CommandContext,
