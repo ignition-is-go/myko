@@ -24,6 +24,8 @@ pub mod blob {
     #[derive(Debug, Default)]
     pub struct Blob(pub Value);
 
+    myko::impl_ts_as!(Blob, "unknown");
+
     pub static COUNTING: AtomicBool = AtomicBool::new(false);
     pub static CLONES: AtomicU64 = AtomicU64::new(0);
     pub static EQS: AtomicU64 = AtomicU64::new(0);
