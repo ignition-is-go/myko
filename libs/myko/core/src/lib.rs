@@ -105,8 +105,8 @@ pub mod prelude;
 pub mod bench_entities;
 
 /// Shared websocket sizing used by Myko client/server on native platforms.
-pub const WS_MAX_MESSAGE_SIZE_BYTES: usize = 64 * 1024 * 1024;
-pub const WS_MAX_FRAME_SIZE_BYTES: usize = 64 * 1024 * 1024;
+pub const WS_MAX_MESSAGE_SIZE_BYTES: usize = 256 * 1024 * 1024;
+pub const WS_MAX_FRAME_SIZE_BYTES: usize = 256 * 1024 * 1024;
 
 // Re-export core modules at top level for backwards compatibility
 #[cfg(not(target_arch = "wasm32"))]
