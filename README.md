@@ -282,7 +282,9 @@ Many servers can share one events table, so a server never changes shared schema
 a side effect of booting. The schema is a numbered, forward-only list of migrations
 recorded in `<table>_schema_migrations`. By default, startup only reads the recorded
 version and fails when it is older than the server requires; a newer version is
-accepted. Servers require only the baseline migration, so they start while a runner
+accepted. An events table created before migrations existed counts as the baseline,
+so servers upgraded onto an existing database keep starting without a migration
+run. Servers require only the baseline migration, so they start while a runner
 is still applying the slower ones. The latest-state table and its backfill run
 before the index rebuilds, because they are what makes startup fast. The one exception is a database without the events table, which the first
 server bootstraps. To apply pending migrations, run

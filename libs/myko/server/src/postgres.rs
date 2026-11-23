@@ -68,8 +68,6 @@ pub struct PostgresConfig {
     pub table: String,
     /// LISTEN/NOTIFY channel name.
     pub channel: String,
-    /// Apply pending schema migrations on connect instead of only verifying them.
-    pub migrate: bool,
 }
 
 /// Persisted event row fetched from Postgres.
@@ -101,7 +99,6 @@ impl PostgresConfig {
             url,
             table: values.table,
             channel: values.channel,
-            migrate: values.migrate,
         }))
     }
 
@@ -110,7 +107,6 @@ impl PostgresConfig {
     /// - `MYKO_POSTGRES_URL` (required)
     /// - `MYKO_POSTGRES_TABLE` (optional, default `myko_events`)
     /// - `MYKO_POSTGRES_CHANNEL` (optional, default `myko_events_notify`)
-    /// - `MYKO_POSTGRES_MIGRATE` (optional, default `false`)
     #[must_use]
     pub fn from_env() -> Option<Self> {
         Self::try_from_env().ok().flatten()
@@ -125,8 +121,6 @@ struct PostgresEnvironment {
     table: String,
     #[config(env = "MYKO_POSTGRES_CHANNEL", default = "myko_events_notify")]
     channel: String,
-    #[config(env = "MYKO_POSTGRES_MIGRATE", default = false)]
-    migrate: bool,
 }
 
 pub(crate) fn postgres_catch_up_timeout_from_env() -> Result<Option<Duration>, String> {
@@ -1639,7 +1633,6 @@ mod tests {
             url: "postgres://test".to_string(),
             table: "events".to_string(),
             channel: "events_notify".to_string(),
-            migrate: false,
         });
         let committed = provider.committed_history_event();
         let key = HistoryEntityKey::new("TestItem", "item-1");
@@ -1717,7 +1710,6 @@ mod provenance_tests {
             url: std::env::var("MYKO_PROVENANCE_TEST_POSTGRES")?,
             table: "transaction_test_events".into(),
             channel: "transaction_test_events".into(),
-            migrate: false,
         };
         let mut client = Client::connect(&config.url, NoTls)?;
         ensure_schema(&mut client, &config)?;
@@ -1811,7 +1803,6 @@ mod provenance_tests {
             url: url.clone(),
             table: "provenance_test_events".into(),
             channel: "provenance_test_events".into(),
-            migrate: false,
         };
         let mut client = Client::connect(&url, NoTls)?;
         ensure_schema(&mut client, &config)?;

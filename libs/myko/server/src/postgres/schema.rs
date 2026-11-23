@@ -27,6 +27,8 @@ pub const SCHEMA_VERSION: i32 = 10;
 /// log, so servers start while a runner is still applying them. Until migration 6 (the latest-table backfill) is recorded,
 /// startup snapshots fall back to scanning the events table.
 pub const REQUIRED_SCHEMA_VERSION: i32 = 1;
+const LEGACY_BASELINE_VERSION: i32 = 1;
+const MIGRATE_ENV: &str = "MYKO_POSTGRES_MIGRATE";
 const LATEST_TABLE_BACKFILLED: i32 = 6;
 const BACKFILL_BATCH_ITEMS: i32 = 10_000;
 
@@ -37,6 +39,7 @@ const APPLIED_BY: &str = concat!("myko-server ", env!("CARGO_PKG_VERSION"));
 pub enum SchemaError {
     Postgres(::postgres::Error),
     Outdated { found: i32, required: i32 },
+    Config(String),
 }
 
 impl fmt::Display for SchemaError {
@@ -49,6 +52,7 @@ impl fmt::Display for SchemaError {
                  {required}; run the migrations (MYKO_POSTGRES_MIGRATE=true, or \
                  myko_server::postgres::migrate) before starting it"
             ),
+            Self::Config(message) => f.write_str(message),
         }
     }
 }
@@ -65,7 +69,7 @@ impl SchemaError {
     pub(crate) fn describe(&self, role: &str, url: &str) -> String {
         match self {
             Self::Postgres(error) => format_pg_error(role, Some(url), error),
-            Self::Outdated { .. } => format!("{role}: {self}"),
+            Self::Outdated { .. } | Self::Config(_) => format!("{role}: {self}"),
         }
     }
 }
@@ -293,17 +297,37 @@ pub fn migrate(config: &PostgresConfig) -> Result<Vec<i32>, String> {
     run_migrations(&mut client, config).map_err(|error| error.describe("migrate", &config.url))
 }
 
+fn migrate_on_connect_from_env() -> Result<bool, SchemaError> {
+    parse_migrate_flag(std::env::var(MIGRATE_ENV).ok().as_deref())
+}
+
+fn parse_migrate_flag(value: Option<&str>) -> Result<bool, SchemaError> {
+    match value.map(str::trim) {
+        None | Some("" | "0" | "false") => Ok(false),
+        Some("1" | "true") => Ok(true),
+        Some(other) => Err(SchemaError::Config(format!(
+            "{MIGRATE_ENV} must be true or false, got `{other}`"
+        ))),
+    }
+}
+
 /// Prepare a connection for use: migrate when asked, bootstrap an empty
 /// database, otherwise verify the recorded version.
 pub(super) fn ensure_schema(
     client: &mut Client,
     config: &PostgresConfig,
 ) -> Result<(), SchemaError> {
-    if config.migrate || !relation_exists(client, &config.table)? {
+    if migrate_on_connect_from_env()? || !relation_exists(client, &config.table)? {
         run_migrations(client, config)?;
         return Ok(());
     }
-    let found = recorded_version(client, &config.table)?;
+    // NOTE(ts): A table created before migrations existed already has the baseline
+    // schema, so it verifies as version 1 and its servers keep starting unchanged.
+    let found = if relation_exists(client, &format!("{}_schema_migrations", config.table))? {
+        recorded_version(client, &config.table)?
+    } else {
+        LEGACY_BASELINE_VERSION
+    };
     if found < REQUIRED_SCHEMA_VERSION {
         return Err(SchemaError::Outdated {
             found,
@@ -655,13 +679,24 @@ mod tests {
             url: String::new(),
             table: "t".into(),
             channel: "c".into(),
-            migrate: false,
         };
         let versions: Vec<i32> = migrations(&Names::new(&config))
             .iter()
             .map(|m| m.version)
             .collect();
         assert_eq!(versions, (1..=SCHEMA_VERSION).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn migrate_flag_accepts_booleans_and_rejects_anything_else() {
+        assert!(matches!(parse_migrate_flag(None), Ok(false)));
+        assert!(matches!(parse_migrate_flag(Some("false")), Ok(false)));
+        assert!(matches!(parse_migrate_flag(Some("true")), Ok(true)));
+        assert!(matches!(parse_migrate_flag(Some("1")), Ok(true)));
+        assert!(matches!(
+            parse_migrate_flag(Some("yes")),
+            Err(SchemaError::Config(_))
+        ));
     }
 
     #[test]
@@ -735,7 +770,6 @@ mod db_tests {
                 url,
                 channel: table.clone(),
                 table,
-                migrate: false,
             };
             let mut client = connect_pg_client(&config, "fixture").expect("fixture connection");
             ensure_schema(&mut client, &config).expect("bootstrap");
@@ -912,6 +946,25 @@ mod db_tests {
         backfill_latest(&mut f.client, &names, 37).expect("backfill");
         writer.join().unwrap();
         assert_eq!(f.latest_rows(), f.expected_latest());
+    }
+
+    #[test]
+    #[ignore = "requires MYKO_HISTORY_TEST_URL pointing to a dedicated temporary database"]
+    fn a_table_created_before_migrations_verifies_as_the_baseline() {
+        let mut f = Fixture::new();
+        let names = f.names();
+        f.client
+            .batch_execute(&format!("DROP TABLE {}", names.migrations))
+            .unwrap();
+        ensure_schema(&mut f.client, &f.config).expect("legacy schema verifies");
+        assert!(
+            !relation_exists(
+                &mut f.client,
+                &format!("{}_schema_migrations", f.config.table)
+            )
+            .unwrap()
+        );
+        assert!(!latest_table_ready(&mut f.client, &f.config.table).unwrap());
     }
 
     #[test]
