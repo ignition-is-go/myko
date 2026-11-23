@@ -2,6 +2,7 @@
 //!
 //! A subscriber mirrors its diffs the way the websocket session does:
 //! `Initial` replaces the mirror, the rest apply in order.
+#![allow(clippy::expect_used, clippy::indexing_slicing, clippy::redundant_clone)]
 
 use std::{
     collections::BTreeMap,
@@ -52,7 +53,7 @@ struct Log {
 fn apply(log: &mut Log, diff: &MapDiff<Arc<str>, Arc<dyn AnyItem>>) {
     match diff {
         MapDiff::Initial { entries } => {
-            log.initials += 1;
+            log.initials = log.initials.saturating_add(1);
             log.mirror = entries.iter().cloned().collect();
             log.diffs.push(format!("initial {}", entries.len()));
         }
@@ -94,7 +95,7 @@ impl Subscriber {
             apply(&mut log, diff);
             // Each source holds only keys with its own prefix, so a mirror
             // that mixes prefixes holds rows of a map no longer selected.
-            let mut prefixes = log.mirror.keys().map(|key| &key[..1]);
+            let mut prefixes = log.mirror.keys().map(|key| key.get(..1));
             if let Some(first) = prefixes.next()
                 && prefixes.any(|prefix| prefix != first)
                 && log.violation.is_none()
@@ -302,8 +303,8 @@ fn dropping_the_subscription_stops_delivery() {
 /// holds exactly what the final selection holds.
 #[test]
 fn concurrent_gate_flips_against_source_writes_settle_exactly() {
-    let _serial = serial();
     const ROUNDS: usize = 5000;
+    let _serial = serial();
     for round in 0..ROUNDS {
         let f = Arc::new(fixture(Some('a')));
         put(&f.a, "a-anchor", 0);

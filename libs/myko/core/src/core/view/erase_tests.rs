@@ -6,6 +6,12 @@
 //! subscription, and one `subscribe_factory` call per subscription for the
 //! erase-on-read path the handler uses now. Run with `--features profiling -- --test-threads=1 --nocapture`
 //! to print the counts.
+#![allow(
+    clippy::expect_used,
+    clippy::indexing_slicing,
+    clippy::redundant_clone,
+    clippy::unwrap_used
+)]
 
 use std::sync::{Arc, Mutex};
 
@@ -270,10 +276,6 @@ fn watch(map: &ErasedViewMap) -> (Arc<Mutex<Vec<Seen>>>, crate::hyphae::Subscrip
     (seen, guard)
 }
 
-fn some(s: &str) -> Option<String> {
-    Some(s.to_owned())
-}
-
 fn assert_view_contract(ctx: &Arc<MykoServerContext>, map: &ErasedViewMap) {
     let (seen, guard) = watch(map);
     set(ctx, &client("c2", "s", Some("a2")), "t2");
@@ -284,9 +286,9 @@ fn assert_view_contract(ctx: &Arc<MykoServerContext>, map: &ErasedViewMap) {
     assert_eq!(
         *seen.lock().unwrap(),
         vec![
-            Seen::Initial(vec![("c1".into(), some("a1"))]),
-            Seen::Insert("c2".into(), some("a2")),
-            Seen::Update("c1".into(), some("a1"), some("a1b")),
+            Seen::Initial(vec![("c1".into(), Some("a1".to_owned()))]),
+            Seen::Insert("c2".into(), Some("a2".to_owned())),
+            Seen::Update("c1".into(), Some("a1".to_owned()), Some("a1b".to_owned())),
             Seen::Remove("c2".into()),
         ]
     );
@@ -295,7 +297,7 @@ fn assert_view_contract(ctx: &Arc<MykoServerContext>, map: &ErasedViewMap) {
     let (late, late_guard) = watch(map);
     assert_eq!(
         *late.lock().unwrap(),
-        vec![Seen::Initial(vec![("c1".into(), some("a1b"))])]
+        vec![Seen::Initial(vec![("c1".into(), Some("a1b".to_owned()))])]
     );
     drop((guard, late_guard));
 }
@@ -543,7 +545,7 @@ mod cost {
     /// Fanouts for one changed row with `subs` websocket subscriptions to `V`,
     /// minus the same write with no view subscribed. `live` subscribes through
     /// `subscribe_factory`, otherwise through `cell_factory`.
-    fn view_cost<V>(view: V, subs: usize, live: bool) -> u64
+    fn view_cost<V>(view: &V, subs: usize, live: bool) -> u64
     where
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: serde::de::DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -551,8 +553,8 @@ mod cost {
         let ctx = make_ctx();
         set(&ctx, &client("c1", "s", Some("a0")), "t0");
         // Keep the query map alive so the baseline includes the query hop.
-        let _query = ctx.query_map_by_str(GetAllClients {}, request(&ctx, "base"));
-        let _q_guard = _query.subscribe_diffs(|_| {});
+        let query = ctx.query_map_by_str(GetAllClients {}, request(&ctx, "base"));
+        let _q_guard = query.subscribe_diffs(|_| {});
         fires_for_one_changed_row(&ctx, 1);
         let base = fires_for_one_changed_row(&ctx, 2);
         let maps: Vec<ErasedViewMap> = (0..subs)
@@ -569,7 +571,8 @@ mod cost {
         fires_for_one_changed_row(&ctx, 3);
         let with = fires_for_one_changed_row(&ctx, 4);
         drop((guards, maps));
-        with - base
+        with.checked_sub(base)
+            .expect("fanouts with subscribers are at least the baseline")
     }
 
     #[test]
@@ -583,12 +586,15 @@ mod cost {
                 "cell_factory"
             };
             for subs in [1usize, 4] {
-                let per_sub = |n: u64| n as f64 / subs as f64;
-                let map = view_cost(EraseHopMapView {}, subs, live);
-                let union = view_cost(EraseHopUnionView {}, subs, live);
-                let plan = view_cost(EraseHopPlanView {}, subs, live);
-                let reader = view_cost(EraseHopReaderView {}, subs, live);
-                let gated = view_cost(EraseHopGatedView {}, subs, live);
+                let per_sub = |n: u64| {
+                    f64::from(u32::try_from(n).expect("fanout count fits u32"))
+                        / f64::from(u32::try_from(subs).expect("subscriber count fits u32"))
+                };
+                let map = view_cost(&EraseHopMapView {}, subs, live);
+                let union = view_cost(&EraseHopUnionView {}, subs, live);
+                let plan = view_cost(&EraseHopPlanView {}, subs, live);
+                let reader = view_cost(&EraseHopReaderView {}, subs, live);
+                let gated = view_cost(&EraseHopGatedView {}, subs, live);
                 println!(
                     "{path}: fanouts per changed row, {subs} subs: map-view {map} ({:.1}/sub), \
                      union-view {union} ({:.1}/sub), plan-view {plan} ({:.1}/sub), \
