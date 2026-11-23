@@ -263,6 +263,7 @@ mod tests {
                 url,
                 table: format!("history_feed_{suffix}"),
                 channel: format!("history_feed_{suffix}"),
+                migrate: false,
             };
             let mut client = connect_pg_client(&config, "fixture").expect("fixture connection");
             ensure_schema(&mut client, &config).expect("fixture schema");

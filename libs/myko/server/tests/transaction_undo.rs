@@ -119,6 +119,7 @@ impl Fixture {
             url: std::env::var("MYKO_HISTORY_TEST_URL")?,
             channel: table.clone(),
             table,
+            migrate: false,
         };
         let host = uuid::Uuid::new_v4();
         let producer = PostgresProducer::new(&config, host).map_err(anyhow::Error::msg)?;

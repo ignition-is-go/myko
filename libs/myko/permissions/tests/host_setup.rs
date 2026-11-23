@@ -570,6 +570,7 @@ async fn entity_permissions_replay_through_the_normal_postgres_backend()
         url,
         table: format!("permission_events_{suffix}"),
         channel: format!("permission_updates_{suffix}"),
+        migrate: false,
     };
     let mut expected = None;
     for first in [true, false] {
