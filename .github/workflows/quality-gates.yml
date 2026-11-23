@@ -90,10 +90,12 @@ jobs:
       - name: Test PostgreSQL history subscriptions
         run: cargo flux run test-history-feed
       - name: Verify myko-gpui is publishable
-        # Package myko alongside myko-gpui so the verify build resolves myko
-        # from this checkout. Alone, it resolves the last published myko and
-        # fails any change that adds myko API and uses it in myko-gpui.
-        run: cargo publish --dry-run --locked --allow-dirty -p myko -p myko-gpui
+        # Package myko and myko-macros alongside myko-gpui so the verify build
+        # resolves them from this checkout. Alone, it resolves the last
+        # published myko and fails any change that adds myko API and uses it in
+        # myko-gpui; without myko-macros, it expands the last published macros
+        # and fails any change to what they generate against myko.
+        run: cargo publish --dry-run --locked --allow-dirty -p myko-macros -p myko -p myko-gpui
       - name: Test typegen renderer and macro defaults
         run: |
           cargo test -p myko --lib --features codegen-ts codegen::typescript::
