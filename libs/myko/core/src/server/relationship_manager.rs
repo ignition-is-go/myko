@@ -126,7 +126,7 @@ struct EnsureForLookup {
 
 /// Reverse `belongs_to` indexes over one registry's stores, per lookup.
 #[derive(Default)]
-pub(crate) struct BelongsToIndex {
+struct BelongsToIndex {
     /// `lookup_id` -> `parent_id` -> `child_ids`
     children_by_parent: DashMap<u64, DashMap<Arc<str>, BTreeSet<Arc<str>>>>,
     /// `lookup_id` -> `child_id` -> `parent_id`. A lookup is here once its

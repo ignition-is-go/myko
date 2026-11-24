@@ -805,10 +805,13 @@ impl Partition {
     /// Insert a row that was moved here.
     fn place(&self, entity_type: &str, row: Item) {
         let store = self.store(entity_type);
-        self.domain
-            .batch(|| drop(store.insert(row.id(), Arc::clone(&row))));
-        self.ctx
-            .track_relations(std::slice::from_ref(&row), MEventType::SET);
+        let rows = [row];
+        self.domain.batch(|| {
+            for row in &rows {
+                drop(store.insert(row.id(), Arc::clone(row)));
+            }
+        });
+        self.ctx.track_relations(&rows, MEventType::SET);
     }
 }
 

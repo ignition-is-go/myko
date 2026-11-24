@@ -399,6 +399,7 @@ impl MykoServer {
     }
 
     /// Create a new cell-based server.
+    #[must_use]
     pub fn new(config: MykoServerConfig) -> Self {
         let mut server = Self::assemble(config);
         server.start_postgres_consumer();

@@ -87,7 +87,7 @@ impl Landing {
     ) {
         match self {
             Self::Stores(registry) => {
-                apply_remote_event(event, host_id, handler_registry, registry)
+                apply_remote_event(event, host_id, handler_registry, registry);
             }
             Self::Context(ctx) => {
                 if event.source_id.as_deref().is_some_and(|id| id == host_id) {
