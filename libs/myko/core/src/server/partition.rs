@@ -606,6 +606,9 @@ pub(crate) struct Partition {
     sent: AtomicU64,
     applied: AtomicU64,
     sequencer: Sequencer,
+    /// What each service started here returned, by service, held until the
+    /// service stops or this partition is dropped.
+    services: Mutex<HashMap<u64, Box<dyn std::any::Any + Send>>>,
     _relay: SubscriptionGuard,
 }
 
@@ -652,6 +655,7 @@ impl Partition {
             sent: AtomicU64::new(0),
             applied: AtomicU64::new(0),
             sequencer: Sequencer::default(),
+            services: Mutex::new(HashMap::new()),
             _relay: relay,
         })
     }
@@ -819,6 +823,10 @@ impl Partition {
     fn close_behind_writes(self: Arc<Self>) {
         let partition = Arc::clone(&self);
         self.follow(Box::new(move || {
+            // Its services stop on its own worker, while its domain still
+            // runs what their drops write.
+            let services = std::mem::take(&mut *partition.services.lock());
+            drop(services);
             partition.domain.close();
             // Releasing a partition's graphs is not its worker's work.
             crate::core::off_wave::off_wave(move || drop(partition));
@@ -952,6 +960,38 @@ pub(crate) struct Partitions {
     /// Live client subscriptions, while the hook reads shared data.
     watches: Mutex<HashMap<u64, Watched>>,
     next_watch: AtomicU64,
+    /// Services started in every open partition, by id.
+    services: Mutex<BTreeMap<u64, Starter>>,
+    next_service: AtomicU64,
+}
+
+type Starter = Arc<dyn Fn(&MykoServerContext) -> Box<dyn std::any::Any + Send> + Send + Sync>;
+
+/// A service running in every open partition. Dropping it stops the
+/// service everywhere. See [`MykoServerContext::in_each_partition`].
+#[must_use = "the service stops when this is dropped"]
+pub struct PartitionServices(Services);
+
+enum Services {
+    /// Started once, on a context with no partitions or on one partition.
+    Once(#[allow(dead_code, reason = "held for its drop")] Box<dyn std::any::Any + Send>),
+    Each { partitions: Weak<Partitions>, id: u64 },
+}
+
+impl PartitionServices {
+    pub(crate) fn once(service: Box<dyn std::any::Any + Send>) -> Self {
+        Self(Services::Once(service))
+    }
+}
+
+impl Drop for PartitionServices {
+    fn drop(&mut self) {
+        if let Services::Each { partitions, id } = &self.0
+            && let Some(partitions) = partitions.upgrade()
+        {
+            partitions.stop_service(*id);
+        }
+    }
 }
 
 pub(crate) type SubscriptionMoved = Box<dyn Fn() + Send + Sync>;
@@ -1014,6 +1054,8 @@ impl Partitions {
             this: partitions.clone(),
             watches: Mutex::new(HashMap::new()),
             next_watch: AtomicU64::new(0),
+            services: Mutex::new(BTreeMap::new()),
+            next_service: AtomicU64::new(0),
         })
     }
 
@@ -1145,10 +1187,65 @@ impl Partitions {
         }
         let partition = Partition::open(self, key.clone());
         self.open.insert(key, Arc::clone(&partition));
+        for (id, starter) in self.services.lock().iter() {
+            self.start_service(&partition, *id, Arc::clone(starter));
+        }
         for entity_type in self.placements.keys() {
             self.reroute(entity_type, None);
         }
         partition
+    }
+
+    /// Start `starter` in every open partition now and in each one opened
+    /// later, until the returned handle drops.
+    pub(crate) fn run_in_each(self: &Arc<Self>, starter: Starter) -> PartitionServices {
+        let _topology = self.topology.lock();
+        let id = self.next_service.fetch_add(1, Ordering::Relaxed);
+        self.services.lock().insert(id, Arc::clone(&starter));
+        for partition in self.all() {
+            self.start_service(&partition, id, Arc::clone(&starter));
+        }
+        PartitionServices(Services::Each {
+            partitions: self.this.clone(),
+            id,
+        })
+    }
+
+    /// Start service `id` on `partition`'s worker, in its domain, behind
+    /// every delivery root has produced so far. A service stopped before it
+    /// starts there is dropped as soon as it is built.
+    fn start_service(&self, partition: &Arc<Partition>, id: u64, starter: Starter) {
+        let target = Arc::downgrade(partition);
+        let partitions = self.this.clone();
+        partition.follow(Box::new(move || {
+            let Some(partition) = target.upgrade() else {
+                return;
+            };
+            let service = partition.ctx.in_domain(|| starter(&partition.ctx));
+            let Some(partitions) = partitions.upgrade() else {
+                return;
+            };
+            let registered = partitions.services.lock();
+            if registered.contains_key(&id) {
+                partition.services.lock().insert(id, service);
+                drop(registered);
+            } else {
+                drop(registered);
+                drop(service);
+            }
+        }));
+    }
+
+    fn stop_service(&self, id: u64) {
+        let mut registered = self.services.lock();
+        registered.remove(&id);
+        let stopped: Vec<_> = self
+            .all()
+            .iter()
+            .filter_map(|partition| partition.services.lock().remove(&id))
+            .collect();
+        drop(registered);
+        drop(stopped);
     }
 
     pub(crate) fn close(&self, key: &PartitionKey) {

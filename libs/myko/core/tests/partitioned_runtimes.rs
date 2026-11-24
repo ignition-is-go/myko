@@ -2145,3 +2145,124 @@ fn replaying_the_log_rebuilds_what_live_execution_built() {
         "replay records nothing again"
     );
 }
+
+// services ---------------------------------------------------------------------
+
+/// What one partition's service saw: the partition it was started in, the
+/// domain it was built in, and the readings its live read holds.
+#[derive(Default)]
+struct ServiceLog {
+    started: Vec<(String, bool)>,
+    stopped: Vec<String>,
+    readings: std::collections::HashMap<String, Vec<i64>>,
+}
+
+struct Service {
+    key: String,
+    log: Arc<Mutex<ServiceLog>>,
+    _live: hyphae::SubscriptionGuard,
+}
+
+impl Drop for Service {
+    fn drop(&mut self) {
+        self.log.lock().stopped.push(self.key.clone());
+    }
+}
+
+fn start_service(ctx: &MykoServerContext, log: &Arc<Mutex<ServiceLog>>) -> Service {
+    let key = ctx.partition_key().map_or("root", PartitionKey::as_str).to_owned();
+    log.lock()
+        .started
+        .push((key.clone(), Domain::current() == ctx.domain()));
+    let readings = ctx.query_map(GetAllPrReadings {}, request(ctx));
+    let seen = Arc::clone(log);
+    let seen_key = key.clone();
+    let rows = readings.clone();
+    let live = readings.subscribe_diffs(move |_| {
+        let mut levels: Vec<i64> = rows
+            .snapshot()
+            .into_iter()
+            .map(|(_, row)| row.level)
+            .collect();
+        levels.sort_unstable();
+        seen.lock().readings.insert(seen_key.clone(), levels);
+    });
+    Service {
+        key,
+        log: Arc::clone(log),
+        _live: live,
+    }
+}
+
+#[test]
+fn a_service_runs_once_in_each_open_partition_and_stops_with_it() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let log = Arc::new(Mutex::new(ServiceLog::default()));
+    let starting = Arc::clone(&log);
+    let services = fixture
+        .root
+        .in_each_partition(move |ctx| start_service(ctx, &starting));
+    fixture.root.set(&reading("a", "a1", 3)).expect("reading a");
+    fixture.root.set(&reading("b", "b1", 5)).expect("reading b");
+    fixture
+        .root
+        .set(&runtime_row("c"))
+        .expect("runtime c opens");
+    fixture.root.set(&reading("c", "c1", 7)).expect("reading c");
+    fixture.root.settle();
+    {
+        let seen = log.lock();
+        let mut started = seen.started.clone();
+        started.sort();
+        assert_eq!(
+            started,
+            vec![
+                ("a".to_owned(), true),
+                ("b".to_owned(), true),
+                ("c".to_owned(), true)
+            ],
+            "started once per partition, each in its own domain"
+        );
+        assert_eq!(seen.readings.get("a"), Some(&vec![3]));
+        assert_eq!(seen.readings.get("b"), Some(&vec![5]));
+        assert_eq!(seen.readings.get("c"), Some(&vec![7]));
+        assert!(seen.stopped.is_empty());
+    }
+    fixture
+        .root
+        .del(&runtime_row("b"))
+        .expect("runtime b closes");
+    let deadline = Instant::now() + DEADLINE;
+    while log.lock().stopped.is_empty() && Instant::now() < deadline {
+        thread::yield_now();
+    }
+    assert_eq!(log.lock().stopped, vec!["b".to_owned()], "stops with its partition");
+    drop(services);
+    let mut stopped = log.lock().stopped.clone();
+    stopped.sort();
+    assert_eq!(stopped, vec!["a", "b", "c"], "dropping the handle stops every copy");
+    fixture
+        .root
+        .set(&runtime_row("d"))
+        .expect("runtime d opens");
+    fixture.root.settle();
+    assert!(
+        log.lock().started.iter().all(|(key, _)| key != "d"),
+        "a stopped service does not start in a partition opened later"
+    );
+}
+
+#[test]
+fn a_service_without_partitions_runs_once_on_the_context() {
+    let _serial = SERIAL.lock();
+    let root = root_context();
+    let log = Arc::new(Mutex::new(ServiceLog::default()));
+    let starting = Arc::clone(&log);
+    let services = root.in_each_partition(move |ctx| start_service(ctx, &starting));
+    root.set(&reading("a", "a1", 3)).expect("reading");
+    assert_eq!(log.lock().started, vec![("root".to_owned(), true)]);
+    assert_eq!(log.lock().readings.get("root"), Some(&vec![3]));
+    drop(services);
+    assert_eq!(log.lock().stopped, vec!["root".to_owned()]);
+}

@@ -596,6 +596,28 @@ impl MykoServerContext {
         Some(self.partitions()?.get(key)?.ctx().clone())
     }
 
+    /// Run a service in each open partition: `start` builds it on that
+    /// partition's context, in its domain, on its worker, and what `start`
+    /// returns is held until that partition closes or the returned handle
+    /// drops. A partition opened later starts it too.
+    ///
+    /// `start` runs inside the partition's propagation, so it must not
+    /// block on another domain (no [`settle`](Self::settle)), and a write
+    /// it makes to shared data is refused like any partition write to it.
+    ///
+    /// On a context without partitions, or on one partition's context,
+    /// `start` runs once, here, on this context.
+    pub fn in_each_partition<S: Send + 'static>(
+        &self,
+        start: impl Fn(&Self) -> S + Send + Sync + 'static,
+    ) -> super::partition::PartitionServices {
+        let boxed = move |ctx: &Self| -> Box<dyn std::any::Any + Send> { Box::new(start(ctx)) };
+        match (self.home.is_some(), self.partitions()) {
+            (false, Some(partitions)) => partitions.run_in_each(Arc::new(boxed)),
+            _ => super::partition::PartitionServices::once(self.in_domain(|| boxed(self))),
+        }
+    }
+
     /// Keys of the open partitions.
     #[must_use]
     pub fn partition_keys(&self) -> Vec<PartitionKey> {
