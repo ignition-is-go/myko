@@ -934,3 +934,24 @@ async fn a_command_runs_in_the_partition_the_hook_names() {
         "a root command reads a partition through a handle: {handle:?}"
     );
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_whose_partition_closes_is_refused_to_the_client() {
+    let _serial = SERIAL.lock().await;
+    let ctx = server();
+    ctx.set(&reading("a", 1))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    let mut client = Client::new("client");
+    client.subscribe_levels(&ctx, "a");
+    client.register().await;
+    client.wait_level(1);
+
+    ctx.del(&PtRuntime { id: "a".into() })
+        .unwrap_or_else(|error| panic!("close a: {error}"));
+    client.follow_move(&ctx).await;
+    let refused = client.error().await;
+    assert!(
+        matches!(&refused, MykoMessage::ReportError(error) if error.message.contains("not open")),
+        "a subscription whose partition closed is refused where its hook places it: {refused:?}"
+    );
+}

@@ -1099,7 +1099,9 @@ impl Partitions {
         moved: SubscriptionMoved,
     ) -> Option<SubscriptionWatch> {
         let subscriptions = self.schema.subscriptions.as_ref()?;
-        if subscriptions.inputs.is_empty() {
+        // One opened in a partition is followed even when its hook reads no
+        // shared data: the partition can close under it.
+        if subscriptions.inputs.is_empty() && opened_in.is_none() {
             return None;
         }
         let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
@@ -1113,12 +1115,31 @@ impl Partitions {
         // either shows here or places it again after this.
         let mut watches = self.watches.lock();
         self.place_again(&mut watch);
+        // A close that removed its partition before this lock was taken has
+        // already moved the subscriptions it saw; one after it sees this one.
+        if let Some(key) = &watch.current
+            && !self.open.contains_key(key)
+        {
+            watch.current = None;
+            (watch.moved)();
+        }
         watches.insert(id, watch);
         drop(watches);
         Some(SubscriptionWatch {
             partitions: self.this.clone(),
             id,
         })
+    }
+
+    /// Move every subscription open in the closing partition `key`: it is
+    /// opened again where its hook now places it, or refused there.
+    fn unplace_subscriptions(&self, key: &PartitionKey) {
+        for watch in self.watches.lock().values_mut() {
+            if watch.current.as_ref() == Some(key) {
+                watch.current = None;
+                (watch.moved)();
+            }
+        }
     }
 
     fn place_again(&self, watch: &mut Watched) {
@@ -1257,6 +1278,7 @@ impl Partitions {
         for entity_type in self.placements.keys() {
             self.reroute(entity_type, Some(&partition));
         }
+        self.unplace_subscriptions(key);
         partition.close_behind_writes();
     }
 

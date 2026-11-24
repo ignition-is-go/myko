@@ -810,8 +810,11 @@ impl MykoServerContext {
     /// the subscription belongs elsewhere now and must be opened again.
     /// `moved` must only hand the move off; it must not block or write.
     ///
-    /// `None` when this server has no partitions or the hook reads no shared
-    /// data, so the answer cannot change.
+    /// When the partition it is open in closes, `moved` is called too, so it
+    /// is opened again where the hook places it or refused there.
+    ///
+    /// `None` when this server has no partitions, or the subscription opened
+    /// in root and the hook reads no shared data, so it can never move.
     #[must_use]
     pub fn watch_subscription(
         &self,
