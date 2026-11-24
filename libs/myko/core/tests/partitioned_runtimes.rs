@@ -1429,3 +1429,146 @@ fn a_partitions_write_of_shared_data_from_outside_a_wave_is_roots_write() {
     );
     assert_eq!(levels_in(&fixture.b, "mixed"), None);
 }
+
+/// Park root inside a wave on another thread. Root's deliveries made while
+/// it is parked run once the returned gate drops and the writer is joined.
+fn park_root(
+    root: &MykoServerContext,
+) -> (
+    Armed,
+    thread::JoinHandle<Result<(), myko::server::PersistError>>,
+    Cell<Arc<i64>, hyphae::CellImmutable>,
+) {
+    let observed = root.report(PrGain {}, request(root));
+    let gate = arm(&Domain::root(), Stage::Wave);
+    let writer = {
+        let root = root.clone();
+        thread::spawn(move || {
+            root.set(&PrSetting {
+                id: "other".into(),
+                gain: 10,
+            })
+        })
+    };
+    assert!(gate.wait_entered(), "root never parked");
+    (gate, writer, observed)
+}
+
+#[test]
+fn a_write_behind_a_shared_write_is_applied_when_its_runtime_closes_first() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let runtime = PrRuntime {
+        id: "c".into(),
+        label: "c".into(),
+    };
+    fixture.root.set(&runtime).expect("runtime c");
+    let c = fixture
+        .root
+        .partition(&PartitionKey::new("c"))
+        .expect("runtime c is open");
+    let (applied, received) = mpsc::channel();
+    let store = c.registry.get_or_create(PrReading::ENTITY_NAME_STATIC);
+    let _applied = {
+        let applied = Mutex::new(applied);
+        c.in_domain(|| {
+            store.subscribe_diffs(move |diff| {
+                each_change(diff, &mut |change| {
+                    if let hyphae::MapDiff::Insert { key, .. } = change {
+                        drop(applied.lock().send(key.clone()));
+                    }
+                });
+            })
+        })
+    };
+
+    let (gate, writer, observed) = park_root(&fixture.root);
+    let shared: Arc<dyn AnyItem> = Arc::new(PrSetting {
+        id: "gain".into(),
+        gain: 5,
+    });
+    let partitioned: Arc<dyn AnyItem> = Arc::new(reading("c", "last", 1));
+    fixture
+        .root
+        .set_batch_any([shared, partitioned])
+        .expect("the write is admitted while runtime c is open");
+    // Runtime c closes while the write is still behind root's wave.
+    fixture.root.del(&runtime).expect("close runtime c");
+    assert!(
+        fixture.root.set(&reading("c", "late", 1)).is_err(),
+        "a write made after the close is refused"
+    );
+    drop(gate);
+    assert!(writer.join().expect("root writer").is_ok());
+
+    assert_eq!(
+        received.recv_timeout(DEADLINE).ok().as_deref(),
+        Some("last"),
+        "the admitted write was applied in its runtime before it closed"
+    );
+    drop(observed);
+}
+
+fn samples_in(ctx: &MykoServerContext, id: &str) -> Option<i64> {
+    ctx.registry
+        .get_or_create(PrSample::ENTITY_NAME_STATIC)
+        .get_value(&Arc::from(id))
+        .and_then(|row| {
+            AnyItem::as_any(row.as_ref())
+                .downcast_ref::<PrSample>()
+                .map(|row| row.level)
+        })
+}
+
+#[test]
+fn a_routed_write_from_a_shared_wave_lands_where_its_row_is_placed_on_arrival() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    assign(&fixture.root, "emitter-4", "b");
+    assign(&fixture.root, "emitter-5", "b");
+    let root = fixture.root.clone();
+    let (results, _guard) = on_row(
+        &fixture.root,
+        PrSetting::ENTITY_NAME_STATIC,
+        "gain",
+        move || {
+            root.set(&sample("emitter-4", 4))?;
+            // Written, then reassigned, in one wave: the row is in transit
+            // to b when its assignment moves it to a.
+            root.set(&sample("emitter-5", 5))?;
+            root.set(&PrAssignment {
+                id: "emitter-5".into(),
+                runtime: "a".into(),
+            })
+        },
+    );
+    drop(results.lock().drain(..));
+    fixture
+        .root
+        .set(&PrSetting {
+            id: "gain".into(),
+            gain: 2,
+        })
+        .expect("shared write");
+    settle(&fixture.a);
+    settle(&fixture.b);
+
+    assert_eq!(
+        *results.lock(),
+        [true],
+        "the routed writes from the shared wave were taken"
+    );
+    assert_eq!(samples_in(&fixture.b, "emitter-4"), Some(4));
+    assert_eq!(
+        samples_in(&fixture.a, "emitter-5"),
+        Some(5),
+        "the moved row is in a"
+    );
+    assert_eq!(samples_in(&fixture.b, "emitter-5"), None, "and not in b");
+    assert_eq!(
+        fixture
+            .root
+            .partition_of(PrSample::ENTITY_NAME_STATIC, &Arc::from("emitter-5")),
+        Some(PartitionKey::new("a"))
+    );
+}
