@@ -964,42 +964,75 @@ mod tests {
     }
 
     #[test]
-    fn peer_close_during_connected_callback_releases_queued_sender() -> std::io::Result<()> {
+    fn reconnects_after_peer_close_during_connected_callback() -> std::io::Result<()> {
         let listener = TcpListener::bind("127.0.0.1:0")?;
         let address = format!("ws://{}/close-during-replay", listener.local_addr()?);
         let (entered_tx, entered_rx) = mpsc::sync_channel(1);
         let (closed_tx, closed_rx) = flume::bounded(1);
-        let server = thread::spawn(move || {
-            let (stream, _) = listener.accept().unwrap();
-            let websocket = tungstenite::accept(stream).unwrap();
-            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
-            websocket
-                .get_ref()
-                .shutdown(std::net::Shutdown::Both)
-                .unwrap();
+        let (received_tx, received_rx) = mpsc::sync_channel(1);
+        let (stop_tx, stop_rx) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            let (stream, _) = listener.accept()?;
+            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            let websocket = tungstenite::accept(stream).map_err(std::io::Error::other)?;
+            entered_rx
+                .recv_timeout(Duration::from_secs(2))
+                .map_err(std::io::Error::other)?;
+            websocket.get_ref().shutdown(std::net::Shutdown::Both)?;
             drop(websocket);
-            closed_tx.send(()).unwrap();
+            closed_tx.send(()).map_err(std::io::Error::other)?;
+            listener.set_nonblocking(true)?;
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "replacement connection",
+                            ));
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            let mut websocket = tungstenite::accept(stream).map_err(std::io::Error::other)?;
+            let mut replayed = 0;
+            loop {
+                match websocket.read().map_err(std::io::Error::other)? {
+                    Message::Text(text) if text == "fresh" => break,
+                    Message::Text(_) => replayed += 1,
+                    _ => {}
+                }
+            }
+            received_tx.send(replayed).map_err(std::io::Error::other)?;
+            let _ = stop_rx.recv_timeout(Duration::from_secs(2));
+            Ok(())
         });
         let socket = Arc::new(AutoReconnectSocket::with_auto_reconnect(true));
         let callback_socket = Arc::clone(&socket);
         let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+        let first = std::sync::atomic::AtomicBool::new(true);
         let target = address.clone();
         let _guard = socket.actual_connection_state().subscribe(move |signal| {
             if let Signal::Value(status) = signal
                 && matches!(&**status, SocketConnectionStatus::Connected(current) if current == &target)
+                && first.swap(false, std::sync::atomic::Ordering::SeqCst)
             {
                 entered_tx.send(()).unwrap();
                 closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
                 for _ in 0..OUTGOING_QUEUE_CAPACITY * 2 {
-                    if SocketTransport::send(callback_socket.as_ref(), WsFrame::Text("replay".into())).is_err() {
-                        break;
-                    }
+                    SocketTransport::send(callback_socket.as_ref(), WsFrame::Text("replay".into())).unwrap();
                 }
+                SocketTransport::send(callback_socket.as_ref(), WsFrame::Text("fresh".into())).unwrap();
                 completed_tx.send(()).unwrap();
             }
         });
         socket.set_addr(Some(address));
-        let completed = completed_rx.recv_timeout(Duration::from_secs(2));
+        let completed = completed_rx.recv_timeout(Duration::from_secs(4));
         let queued = socket.write_tx().len();
         let status = socket.get_status();
         if completed.is_err() {
@@ -1021,13 +1054,15 @@ mod tests {
                 thread::sleep(Duration::from_millis(1));
             }
         }
-        server.join().unwrap();
+        let _ = stop_tx.send(());
+        let server_result = server.join().unwrap();
         socket.close();
         assert!(
             completed.is_ok(),
-            "peer closure must release a Connected callback blocked on the outgoing queue; queued={queued}, status={status:?}"
+            "a returning peer must unblock Connected replay; queued={queued}, status={status:?}, receiver={server_result:?}"
         );
-        Ok(())
+        assert!(received_rx.recv_timeout(Duration::from_secs(1)).unwrap() > 0);
+        server_result
     }
 
     #[test]
