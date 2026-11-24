@@ -975,14 +975,28 @@ impl Partition {
         drop(self.failure.set(error));
     }
 
+    /// Why this partition stopped: a refused derived write, or a panic in
+    /// its domain's propagation, which leaves its state no longer following
+    /// the writes it admitted. The first failure is kept.
     pub(crate) fn failure(&self) -> Option<PersistError> {
-        self.failure.get().cloned()
+        if let Some(cause) = self.failure.get() {
+            return Some(cause.clone());
+        }
+        let panicked = self.domain.failure()?;
+        let cause = PersistError {
+            entity_type: Arc::from("partition"),
+            message: format!("its propagation panicked: {panicked}"),
+        };
+        if self.failure.set(cause.clone()).is_ok() {
+            tracing::error!(partition = %self.key, %cause, "partition failed");
+        }
+        Some(self.failure.get().cloned().unwrap_or(cause))
     }
 
     /// The failure that stopped this partition, as a refusal of a write of
     /// `entity_type`.
     fn failed(&self, entity_type: &str) -> Option<PersistError> {
-        self.failure.get().map(|cause| PersistError {
+        self.failure().map(|cause| PersistError {
             entity_type: Arc::from(entity_type),
             message: format!("partition {} failed: {cause}", self.key),
         })

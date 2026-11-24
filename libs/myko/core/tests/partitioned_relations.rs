@@ -868,3 +868,37 @@ fn a_one_shot_read_builds_its_source_in_its_partition() {
         "the source is built in a's domain, not the caller's"
     );
 }
+
+#[test]
+fn a_panic_in_a_partitions_propagation_fails_it_and_refuses_later_writes() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    fixture
+        .a
+        .domain()
+        .hand_off(|| panic!("a partition's wave broke"));
+    settle(&fixture.a);
+    let key = PartitionKey::new("a");
+    let failure = fixture
+        .root
+        .partition_failure(&key)
+        .expect("a reports its failure");
+    assert!(
+        failure.message.contains("a partition's wave broke"),
+        "{failure}"
+    );
+    assert!(fixture.a.domain().is_closed(), "the failed partition's domain stops");
+    let refused = fixture
+        .root
+        .set(&note("a", "after"))
+        .expect_err("a failed partition admits no write");
+    assert!(refused.message.contains("partition a failed"), "{refused}");
+    assert!(
+        fixture.root.partition_failure(&PartitionKey::new("b")).is_none(),
+        "another partition is untouched"
+    );
+    fixture
+        .root
+        .set(&note("b", "n-b"))
+        .expect("b still admits writes");
+}
