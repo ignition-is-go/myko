@@ -964,6 +964,73 @@ mod tests {
     }
 
     #[test]
+    fn peer_close_during_connected_callback_releases_queued_sender() -> std::io::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        let address = format!("ws://{}/close-during-replay", listener.local_addr()?);
+        let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+        let (closed_tx, closed_rx) = flume::bounded(1);
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let websocket = tungstenite::accept(stream).unwrap();
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            websocket
+                .get_ref()
+                .shutdown(std::net::Shutdown::Both)
+                .unwrap();
+            drop(websocket);
+            closed_tx.send(()).unwrap();
+        });
+        let socket = Arc::new(AutoReconnectSocket::with_auto_reconnect(true));
+        let callback_socket = Arc::clone(&socket);
+        let (completed_tx, completed_rx) = mpsc::sync_channel(1);
+        let target = address.clone();
+        let _guard = socket.actual_connection_state().subscribe(move |signal| {
+            if let Signal::Value(status) = signal
+                && matches!(&**status, SocketConnectionStatus::Connected(current) if current == &target)
+            {
+                entered_tx.send(()).unwrap();
+                closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                for _ in 0..OUTGOING_QUEUE_CAPACITY * 2 {
+                    if SocketTransport::send(callback_socket.as_ref(), WsFrame::Text("replay".into())).is_err() {
+                        break;
+                    }
+                }
+                completed_tx.send(()).unwrap();
+            }
+        });
+        socket.set_addr(Some(address));
+        let completed = completed_rx.recv_timeout(Duration::from_secs(2));
+        let queued = socket.write_tx().len();
+        let status = socket.get_status();
+        if completed.is_err() {
+            let outgoing = socket.control.lock().unwrap().outgoing.rx.clone();
+            let cleanup_deadline = Instant::now() + Duration::from_secs(1);
+            loop {
+                for _ in 0..256 {
+                    if outgoing.try_recv().is_err() {
+                        break;
+                    }
+                }
+                if completed_rx.try_recv().is_ok() {
+                    break;
+                }
+                assert!(
+                    Instant::now() < cleanup_deadline,
+                    "release blocked test callback"
+                );
+                thread::sleep(Duration::from_millis(1));
+            }
+        }
+        server.join().unwrap();
+        socket.close();
+        assert!(
+            completed.is_ok(),
+            "peer closure must release a Connected callback blocked on the outgoing queue; queued={queued}, status={status:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn connected_callback_can_fill_more_than_one_outgoing_queue() -> std::io::Result<()> {
         const MESSAGES: usize = OUTGOING_QUEUE_CAPACITY + 64;
 
