@@ -1,10 +1,11 @@
 //! A partition reading shared data.
 //!
-//! Shared data, and everything myko derives from it and keeps for later
-//! readers (stores, indexes, index buckets), lives in the root domain,
-//! whichever context asks for it first. A partition reads it through the
-//! one-way hand-off from root, and what the partition derives from it lives
-//! in the partition. The tests build the same routed reads in every order a
+//! Shared stores live in the root domain and exist from the moment a server
+//! declares its partitions. Everything a partition derives from them, the
+//! indexes it routes reads through included, is the partition's own and
+//! lives in its domain, fed by the one-way hand-off from root. A partition
+//! never builds root state, so it can open any read at any time, from
+//! inside its own wave too. The tests build the same reads in every order a
 //! server can meet them and check that each reader keeps receiving root's
 //! writes.
 
@@ -69,6 +70,34 @@ pub mod goods {
     /// Shared child, read through its `belongs_to` index.
     #[myko_item]
     pub struct PsrItem {
+        #[belongs_to(PsrShelf)]
+        pub shelf_id: PsrShelfId,
+        pub label: Arc<str>,
+    }
+}
+
+pub mod note {
+    use std::sync::Arc;
+
+    use myko::prelude::*;
+
+    /// Shared, and read by nothing until a partition's wave first asks.
+    #[myko_item]
+    pub struct PsrNote {
+        pub label: Arc<str>,
+    }
+}
+
+pub mod late {
+    use std::sync::Arc;
+
+    use myko::prelude::*;
+
+    use super::shelf::{PsrShelf, PsrShelfId};
+
+    /// Shared child no reader routes through until a partition's wave asks.
+    #[myko_item]
+    pub struct PsrTag {
         #[belongs_to(PsrShelf)]
         pub shelf_id: PsrShelfId,
         pub label: Arc<str>,
@@ -176,7 +205,7 @@ fn assert_every_reader_follows_root(root: &MykoServerContext, readers: &[(&str, 
 }
 
 #[test]
-fn a_partition_that_reads_a_shared_index_first_does_not_own_it() {
+fn a_partition_reading_a_shared_route_first_leaves_root_reads_working() {
     let _serial = SERIAL.lock();
     let fixture = fixture();
     let in_a = Reader::open(&fixture.a, "x");
@@ -202,13 +231,13 @@ fn a_partition_reads_a_shared_index_root_built_first() {
 }
 
 #[test]
-fn two_partitions_share_one_bucket_of_a_shared_index() {
+fn two_partitions_reading_one_shared_route_each_follow_root() {
     let _serial = SERIAL.lock();
     let fixture = fixture();
     let in_a = Reader::open(&fixture.a, "x");
     let in_b = Reader::open(&fixture.b, "x");
     assert_every_reader_follows_root(&fixture.root, &[("x", &in_a)]);
-    assert!(in_b.shows(2), "the second partition reads the same bucket");
+    assert!(in_b.shows(2), "the second partition follows root too");
 }
 
 #[test]
@@ -233,7 +262,7 @@ fn partitions_reading_a_shared_index_at_once_each_follow_root() {
 }
 
 #[test]
-fn a_one_shot_read_from_a_partition_leaves_the_shared_index_in_root() {
+fn a_one_shot_read_from_a_partition_leaves_later_reads_following_root() {
     let _serial = SERIAL.lock();
     let fixture = fixture();
     put(&fixture.root, "first", "x");
@@ -252,7 +281,7 @@ fn a_one_shot_read_from_a_partition_leaves_the_shared_index_in_root() {
 }
 
 #[test]
-fn shared_state_is_born_in_root_whoever_asks_first() {
+fn shared_stores_live_in_root_whoever_asks_first() {
     let _serial = SERIAL.lock();
     let fixture = fixture();
     let store = fixture.a.in_domain(|| {
@@ -323,5 +352,101 @@ fn a_partition_wave_opens_a_routed_read_of_shared_data_no_one_read_before() {
     assert!(
         in_root.shows(2),
         "root's own read of the same rows is unaffected"
+    );
+}
+
+/// Run `open` once, inside a wave of `ctx`'s partition, and hand back what it
+/// built. The wave is the first diff root's write of a trigger row brings.
+fn open_in_wave<R: Send + 'static>(
+    fixture: &Fixture,
+    open: impl Fn(&MykoServerContext) -> R + Send + Sync + 'static,
+) -> R {
+    let opened: Arc<Mutex<Option<R>>> = Arc::new(Mutex::new(None));
+    let reader = fixture.a.clone();
+    let sink = Arc::clone(&opened);
+    let trigger = fixture
+        .a
+        .query_map(on_shelf("trigger"), fixture.a.new_server_transaction());
+    let _guard = trigger.subscribe_diffs(move |_| {
+        let mut opened = sink.lock();
+        if opened.is_none() && Domain::propagating().is_some_and(|domain| !domain.is_root()) {
+            *opened = Some(open(&reader));
+        }
+    });
+    put(&fixture.root, "trigger", "trigger");
+    fixture.a.domain().flush();
+    let built = opened.lock().take();
+    built.expect("the partition's wave opened the read")
+}
+
+/// Whether `len` reads `count` before the deadline.
+fn shows(len: impl Fn() -> usize, count: usize) -> bool {
+    let start = Instant::now();
+    while start.elapsed() < DEADLINE {
+        if len() == count {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
+    false
+}
+
+#[test]
+fn a_partition_wave_reads_a_shared_type_nothing_read_before() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let notes = open_in_wave(&fixture, |ctx| {
+        ctx.query_map(note::GetAllPsrNotes {}, ctx.new_server_transaction())
+    });
+    fixture
+        .root
+        .set(&note::PsrNote {
+            id: "n".into(),
+            label: "n".into(),
+        })
+        .expect("shared note");
+    assert!(
+        shows(|| notes.snapshot().len(), 1),
+        "a read the wave opened over an untouched shared type follows root"
+    );
+}
+
+#[test]
+fn a_partition_wave_routes_a_shared_read_through_an_index_nothing_built() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let tags = open_in_wave(&fixture, |ctx| {
+        ctx.query_map(
+            late::GetPsrTagsByQuery(late::PsrTagQuery {
+                shelf_id: Some(myko::query::IdFilter::Eq(PsrShelfId("x".into()))),
+                ..Default::default()
+            }),
+            ctx.new_server_transaction(),
+        )
+    });
+    let in_root = fixture.root.query_map(
+        late::GetPsrTagsByQuery(late::PsrTagQuery {
+            shelf_id: Some(myko::query::IdFilter::Eq(PsrShelfId("x".into()))),
+            ..Default::default()
+        }),
+        fixture.root.new_server_transaction(),
+    );
+    for id in ["t1", "t2"] {
+        fixture
+            .root
+            .set(&late::PsrTag {
+                id: id.into(),
+                shelf_id: PsrShelfId("x".into()),
+                label: id.into(),
+            })
+            .expect("shared tag");
+    }
+    assert!(
+        shows(|| tags.snapshot().len(), 2),
+        "a routed read the wave opened first follows root"
+    );
+    assert!(
+        shows(|| in_root.snapshot().len(), 2),
+        "root's own routed read is unaffected"
     );
 }

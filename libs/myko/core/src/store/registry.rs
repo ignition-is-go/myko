@@ -159,8 +159,18 @@ impl StoreRegistry {
         }
     }
 
-    /// Tell this root registry which entity types are partitioned.
+    /// Tell this root registry which entity types are partitioned, and
+    /// create the store of every shared entity type now.
+    ///
+    /// A partition reads shared stores from inside its own propagation, and
+    /// a store is a root graph node, so it must already exist when a
+    /// partition first asks for it.
     pub(crate) fn declare_partitioned(&self, is_partitioned: IsPartitioned) {
+        for entity_type in crate::item::registered_entity_types() {
+            if !is_partitioned(entity_type) {
+                drop(self.get_or_create(entity_type));
+            }
+        }
         drop(self.partitioned.set(is_partitioned));
     }
 
@@ -190,25 +200,29 @@ impl StoreRegistry {
     }
 
     /// The index named `key` over the stores of the registry that owns
-    /// `entity_type`, built by `build` on first use. A partition's registry
-    /// keeps its own indexes over its partitioned stores and shares root's
-    /// over shared stores.
+    /// `entity_type`, built by `build` on first use.
+    ///
+    /// Every registry keeps its own indexes, born in its own domain: a
+    /// partition's index over a shared store is the partition's copy, fed
+    /// from root's store. An index is a graph node, and a partition builds
+    /// only its own graph, whenever it first asks, including from inside its
+    /// own propagation.
     pub(crate) fn index<T: Send + Sync + 'static>(
         &self,
         entity_type: &str,
         key: String,
         build: impl FnOnce(&Self) -> Arc<T>,
     ) -> Arc<T> {
-        let owner = self.owner(entity_type);
-        if let Some(index) = owner.indexes.get(&key)
+        if let Some(index) = self.indexes.get(&key)
             && let Ok(index) = Arc::clone(index.value()).downcast::<T>()
         {
             return index;
         }
-        let index = owner.born_here(|| build(owner));
+        let owner = self.owner(entity_type);
+        let index = self.born_here(|| build(owner));
         let erased: Arc<dyn std::any::Any + Send + Sync> = index.clone();
         // A racing build loses to the first one stored.
-        Arc::clone(owner.indexes.entry(key).or_insert(erased).value())
+        Arc::clone(self.indexes.entry(key).or_insert(erased).value())
             .downcast::<T>()
             .unwrap_or(index)
     }
