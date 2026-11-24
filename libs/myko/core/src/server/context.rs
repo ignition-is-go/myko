@@ -636,6 +636,14 @@ impl MykoServerContext {
         }
     }
 
+    /// Why the open partition `key` stopped admitting writes: something an
+    /// admitted write derived there was refused after its writer was
+    /// answered. `None` while it follows every write it admitted.
+    #[must_use]
+    pub fn partition_failure(&self, key: &PartitionKey) -> Option<PersistError> {
+        self.partitions()?.get(key)?.failure()
+    }
+
     /// Keys of the open partitions.
     #[must_use]
     pub fn partition_keys(&self) -> Vec<PartitionKey> {
@@ -2307,7 +2315,6 @@ impl MykoServerContext {
         mode: EdgeApplyMode,
     ) -> Result<bool, PersistError> {
         if origin.should_prepare()
-            && !(origin.is_derived() && super::partition::applying_admitted())
             && matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import)
         {
             let (upserts, deletes) = if change == MEventType::SET {

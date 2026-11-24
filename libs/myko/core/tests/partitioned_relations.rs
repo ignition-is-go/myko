@@ -504,7 +504,7 @@ impl Drop for Refusing {
 }
 
 #[test]
-fn what_an_admitted_write_derives_is_not_refused_when_applied() {
+fn a_refused_derived_write_fails_its_partition_and_refuses_later_writes() {
     let _serial = SERIAL.lock();
     let fixture = fixture();
     let refusing = Refusing::begin();
@@ -515,11 +515,26 @@ fn what_an_admitted_write_derives_is_not_refused_when_applied() {
         .expect("room c");
     settle(&c);
     drop(refusing);
-    assert_eq!(
-        cursors(&c),
-        ["c"],
-        "the cursor derived from the room's write is applied"
+    assert!(cursors(&c).is_empty(), "the refused cursor is not applied");
+    let key = PartitionKey::new("c");
+    let failure = fixture
+        .root
+        .partition_failure(&key)
+        .expect("c reports its failure");
+    assert!(failure.message.contains("cursors refused"), "{failure}");
+    let refused = fixture
+        .root
+        .set(&note("c", "n-c"))
+        .expect_err("a failed partition admits no write");
+    assert!(
+        refused.message.contains("partition c failed") && refused.message.contains("cursors refused"),
+        "{refused}"
     );
+    assert!(
+        fixture.root.partition_failure(&PartitionKey::new("a")).is_none(),
+        "another partition is untouched"
+    );
+    fixture.root.set(&note("a", "n-a")).expect("a still admits writes");
 }
 
 #[test]

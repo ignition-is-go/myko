@@ -83,8 +83,11 @@
 //! schema is built.
 //!
 //! What an admitted write derives is part of it: it is applied in its own
-//! partition without validation, even once that partition stopped
-//! admitting writes, and recorded when it is applied.
+//! partition, even once that partition stopped admitting writes, and is
+//! validated and recorded when it is applied, as any derived write is. Its
+//! writer was answered by then, so a refusal there fails the partition:
+//! every later write to it is refused with that error, and
+//! [`MykoServerContext::partition_failure`] reports it.
 //!
 //! # Re-routing
 //!
@@ -655,6 +658,8 @@ pub(crate) struct Partition {
     /// What each service started here returned, by service, held until the
     /// service stops or this partition is dropped.
     services: Mutex<HashMap<u64, Box<dyn std::any::Any + Send>>>,
+    /// Set once something an admitted write derived here was refused.
+    failure: std::sync::OnceLock<PersistError>,
     _relay: SubscriptionGuard,
 }
 
@@ -706,6 +711,7 @@ impl Partition {
             applied: AtomicU64::new(0),
             sequencer: Sequencer::default(),
             services: Mutex::new(HashMap::new()),
+            failure: std::sync::OnceLock::new(),
             _relay: relay,
         })
     }
@@ -733,9 +739,13 @@ impl Partition {
         // on this partition's own domain derives from one it admitted, and
         // the close runs behind it.
         let admitting = self.admitting.read_recursive();
+        let entity_type = items.first().map_or("mutation", |item| item.entity_type());
         if !*admitting && Domain::current() != self.domain {
             drop(admitting);
-            return Err(self.closed(items.first().map_or("mutation", |item| item.entity_type())));
+            return Err(self.closed(entity_type));
+        }
+        if let Some(failed) = self.failed(entity_type) {
+            return Err(failed);
         }
         // A write that followed a shared write may still be on its way here.
         // This one was made later, so it waits for that one to be applied. A
@@ -802,9 +812,13 @@ impl Partition {
         provenance: Option<OperationProvenance>,
     ) -> Result<(), PersistError> {
         let admitting = self.admitting.read_recursive();
+        let entity_type = items.first().map_or("mutation", |item| item.entity_type());
         if !*admitting {
             drop(admitting);
-            return Err(self.closed(items.first().map_or("mutation", |item| item.entity_type())));
+            return Err(self.closed(entity_type));
+        }
+        if let Some(failed) = self.failed(entity_type) {
+            return Err(failed);
         }
         let origin = self.ctx.admit(&items, change, origin, mode, |item| {
             self.store(item.entity_type()).get_value(&item.id())
@@ -833,12 +847,11 @@ impl Partition {
     /// Apply an admitted write here, whether or not the partition still
     /// admits writes.
     fn apply(&self, items: Vec<Item>, change: MEventType, origin: Origin, mode: EdgeApplyMode) {
-        let result = self.domain.enter(|| {
-            let _admitted = AdmittedApply::begin();
-            self.ctx.submit_local(items, change, origin, mode)
-        });
+        let result = self
+            .domain
+            .enter(|| self.ctx.submit_local(items, change, origin, mode));
         if let Err(error) = result {
-            Self::failed(&self.key, &error);
+            self.fail(error);
         }
     }
 
@@ -847,23 +860,37 @@ impl Partition {
     /// is applied as part of it.
     fn derive(&self, items: &[Item], change: MEventType, opened: bool) {
         let result = self.domain.enter(|| {
-            let _admitted = AdmittedApply::begin();
             if opened {
                 self.ctx.ensure_relations()?;
             }
             self.ctx.derive_relations(items, change)
         });
         if let Err(error) = result {
-            Self::failed(&self.key, &error);
+            self.fail(error);
         }
     }
 
-    /// Nothing refuses what an admitted write derives: it is applied in its
-    /// own partition, unvalidated, and its relations are checked when the
-    /// schema is built. What remains is the persister failing to take an
-    /// event and the derived-mutation budget, which stops a runaway cascade.
-    fn failed(key: &PartitionKey, error: &PersistError) {
-        tracing::error!(partition = %key, %error, "a write derived from an admitted write failed");
+    /// What an admitted write derives is validated, persisted and budgeted
+    /// like any derived write, but after its writer was answered. When that
+    /// is refused, this partition's state no longer follows what was
+    /// admitted, so it fails: every later write to it is refused with this
+    /// error. The first failure is kept.
+    fn fail(&self, error: PersistError) {
+        tracing::error!(partition = %self.key, %error, "a write derived from an admitted write failed");
+        drop(self.failure.set(error));
+    }
+
+    pub(crate) fn failure(&self) -> Option<PersistError> {
+        self.failure.get().cloned()
+    }
+
+    /// The failure that stopped this partition, as a refusal of a write of
+    /// `entity_type`.
+    fn failed(&self, entity_type: &str) -> Option<PersistError> {
+        self.failure.get().map(|cause| PersistError {
+            entity_type: Arc::from(entity_type),
+            message: format!("partition {} failed: {cause}", self.key),
+        })
     }
 
     /// Close the domain once every admitted write has been applied. The
@@ -935,33 +962,6 @@ thread_local! {
 }
 
 struct SharedWrite;
-
-thread_local! {
-    /// Depth of the admitted writes the thread is applying.
-    static ADMITTED_APPLIES: ThreadCell<usize> = const { ThreadCell::new(0) };
-}
-
-/// Marks the calling thread as applying a write a partition admitted.
-struct AdmittedApply;
-
-impl AdmittedApply {
-    fn begin() -> Self {
-        ADMITTED_APPLIES.with(|depth| depth.set(depth.get().saturating_add(1)));
-        Self
-    }
-}
-
-impl Drop for AdmittedApply {
-    fn drop(&mut self) {
-        ADMITTED_APPLIES.with(|depth| depth.set(depth.get().saturating_sub(1)));
-    }
-}
-
-/// Whether the calling thread is applying a write a partition admitted, so
-/// that a write a relationship derives from it is part of it.
-pub(crate) fn applying_admitted() -> bool {
-    ADMITTED_APPLIES.with(|depth| depth.get() > 0)
-}
 
 impl SharedWrite {
     fn begin() -> Self {
@@ -1529,6 +1529,9 @@ impl Partitions {
             && !**admitting
         {
             return Err(target.closed(entity_type));
+        }
+        if let Some(failed) = target.as_ref().and_then(|target| target.failed(entity_type)) {
+            return Err(failed);
         }
         let ctx = target.as_ref().map_or(&self.root, |target| &target.ctx);
         let write = Write {
