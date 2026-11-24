@@ -4107,6 +4107,67 @@ fn admit_send(
 mod send_admission_tests {
     use super::*;
 
+    struct RejectingTransport {
+        status: Cell<ConnectionStatus, CellMutable>,
+        reject: AtomicBool,
+        attempted: Mutex<Vec<WsFrame>>,
+    }
+
+    impl SocketTransport for RejectingTransport {
+        fn set_addr(&self, _: Option<String>) {}
+        fn close(&self) {}
+        fn intended_connection_state(&self) -> Cell<ConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+        fn actual_connection_state(&self) -> Cell<ConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+        fn read_rx(&self) -> flume::Receiver<WsFrame> {
+            flume::unbounded().1
+        }
+        fn send(&self, frame: WsFrame) -> Result<(), String> {
+            self.attempted.lock().unwrap().push(frame.clone());
+            if self.reject.load(Ordering::SeqCst)
+                && matches!(frame, WsFrame::Text(ref text) if text == "rejected")
+            {
+                Err("connection retired".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn reconnect_retains_rejected_and_remaining_frames_in_order() {
+        let transport = Arc::new(RejectingTransport {
+            status: Cell::new(ConnectionStatus::Disconnected),
+            reject: AtomicBool::new(true),
+            attempted: Mutex::new(Vec::new()),
+        });
+        let client = MykoClient::with_transport(transport.clone());
+        *client.inner.pending_sends.lock().unwrap() = ["first", "rejected", "last"]
+            .map(|text| WsFrame::Text(text.into()))
+            .to_vec();
+
+        transport.status.set(ConnectionStatus::Connected("fixture".into()));
+
+        let text_frames = |frames: &[WsFrame]| {
+            frames.iter().map(|frame| match frame {
+                WsFrame::Text(text) => text.clone(),
+                _ => panic!("unexpected frame"),
+            }).collect::<Vec<_>>()
+        };
+        assert_eq!(text_frames(&transport.attempted.lock().unwrap()), ["first", "rejected"]);
+        assert_eq!(text_frames(&client.inner.pending_sends.lock().unwrap()), ["rejected", "last"]);
+
+        transport.reject.store(false, Ordering::SeqCst);
+        transport.status.set(ConnectionStatus::Disconnected);
+        transport.status.set(ConnectionStatus::Connected("fixture".into()));
+
+        assert_eq!(text_frames(&transport.attempted.lock().unwrap()), ["first", "rejected", "rejected", "last"]);
+        assert!(client.inner.pending_sends.lock().unwrap().is_empty());
+    }
+
     #[test]
     #[allow(
         clippy::panic_in_result_fn,
