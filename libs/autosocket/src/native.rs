@@ -50,6 +50,77 @@ enum DelayOutcome {
     Closed,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct ObservedConnection {
+    generation: u64,
+    attempt: u64,
+    status: SocketConnectionStatus,
+}
+
+struct StatusPublisher {
+    latest: Arc<Mutex<ObservedConnection>>,
+    wake: flume::Sender<()>,
+}
+
+impl StatusPublisher {
+    #[allow(clippy::expect_used)]
+    fn new(status: Cell<SocketConnectionStatus, CellMutable>) -> (Self, thread::JoinHandle<()>) {
+        let latest = Arc::new(Mutex::new(ObservedConnection {
+            generation: 0,
+            attempt: 0,
+            status: SocketConnectionStatus::Idle,
+        }));
+        let (wake, pending) = flume::bounded(1);
+        let observed = Arc::clone(&latest);
+        let worker = thread::Builder::new()
+            .name("autosocket-status".into())
+            .spawn(move || {
+                let mut previous = ObservedConnection {
+                    generation: 0,
+                    attempt: 0,
+                    status: status.get(),
+                };
+                while pending.recv().is_ok() {
+                    let current = observed
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
+                    if current == previous {
+                        continue;
+                    }
+                    if matches!(previous.status, SocketConnectionStatus::Connected(_))
+                        && (previous.generation, previous.attempt)
+                            != (current.generation, current.attempt)
+                        && matches!(
+                            current.status,
+                            SocketConnectionStatus::Connected(_)
+                                | SocketConnectionStatus::Connecting(_)
+                                | SocketConnectionStatus::Reconnecting(_)
+                        )
+                    {
+                        status.set(SocketConnectionStatus::Disconnected);
+                    }
+                    status.set(current.status.clone());
+                    previous = current;
+                }
+            })
+            .expect("spawn autosocket status publisher");
+        (Self { latest, wake }, worker)
+    }
+
+    fn publish(&self, generation: u64, attempt: u64, status: SocketConnectionStatus) {
+        *self
+            .latest
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = ObservedConnection {
+            generation,
+            attempt,
+            status,
+        };
+        let _ = self.wake.try_send(());
+    }
+}
+
 pub struct AutoReconnectSocket {
     intended_status: Cell<SocketConnectionStatus, CellMutable>,
     actual_status: Cell<SocketConnectionStatus, CellMutable>,
@@ -255,25 +326,27 @@ impl AutoReconnectSocket {
             .thread_name("autosocket-io")
             .build()
             .expect("build autosocket runtime");
+        let (publisher, status_worker) = StatusPublisher::new(actual_status);
         thread::Builder::new()
             .name("autosocket-driver".into())
             .spawn(move || {
                 runtime.block_on(Self::run_driver(
                     desired_rx,
-                    actual_status,
+                    publisher,
                     incoming_tx,
                     control,
                     auto_reconnect,
                     max_message_size_bytes,
                     max_frame_size_bytes,
                 ));
+                let _ = status_worker.join();
             })
             .expect("spawn autosocket driver");
     }
 
     async fn run_driver(
         mut desired_rx: watch::Receiver<DesiredConnection>,
-        actual_status: Cell<SocketConnectionStatus, CellMutable>,
+        actual_status: StatusPublisher,
         incoming_tx: flume::Sender<WsFrame>,
         control: Arc<Mutex<ConnectionControl>>,
         auto_reconnect: bool,
@@ -283,7 +356,7 @@ impl AutoReconnectSocket {
         loop {
             let desired = desired_rx.borrow_and_update().clone();
             let Some(addr) = desired.addr.clone() else {
-                actual_status.set(SocketConnectionStatus::Idle);
+                actual_status.publish(desired.generation, 0, SocketConnectionStatus::Idle);
                 if desired_rx.changed().await.is_err() {
                     return;
                 }
@@ -313,7 +386,7 @@ impl AutoReconnectSocket {
         desired: DesiredConnection,
         addr: String,
         desired_rx: &mut watch::Receiver<DesiredConnection>,
-        actual_status: &Cell<SocketConnectionStatus, CellMutable>,
+        actual_status: &StatusPublisher,
         incoming_tx: &flume::Sender<WsFrame>,
         control: &Arc<Mutex<ConnectionControl>>,
         auto_reconnect: bool,
@@ -321,9 +394,13 @@ impl AutoReconnectSocket {
         max_frame_size_bytes: usize,
     ) -> bool {
         let mut attempt = 0_u64;
+        let mut connection_attempt = 0_u64;
         loop {
             attempt = attempt.saturating_add(1);
-            actual_status.set(if attempt == 1 {
+            connection_attempt = connection_attempt.saturating_add(1);
+            let publish =
+                |status| actual_status.publish(desired.generation, connection_attempt, status);
+            publish(if attempt == 1 {
                 SocketConnectionStatus::Connecting(addr.clone())
             } else {
                 SocketConnectionStatus::Reconnecting(addr.clone())
@@ -340,7 +417,7 @@ impl AutoReconnectSocket {
                     continue;
                 }
                 Err(()) => {
-                    actual_status.set(SocketConnectionStatus::Disconnected);
+                    publish(SocketConnectionStatus::Disconnected);
                     return Self::wait_for_change(desired_rx).await;
                 }
             };
@@ -376,7 +453,7 @@ impl AutoReconnectSocket {
                     websocket
                 } else {
                     error!("Failed to establish WebSocket connection to {url} (attempt {attempt})");
-                    actual_status.set(SocketConnectionStatus::Disconnected);
+                    publish(SocketConnectionStatus::Disconnected);
                     if !auto_reconnect {
                         return Self::wait_for_change(desired_rx).await;
                     }
@@ -416,7 +493,7 @@ impl AutoReconnectSocket {
                 ready = ready_rx => {
                     if ready.is_err() {
                         let _ = session.await;
-                        actual_status.set(SocketConnectionStatus::Disconnected);
+                        publish(SocketConnectionStatus::Disconnected);
                         continue;
                     }
                 }
@@ -427,7 +504,7 @@ impl AutoReconnectSocket {
                 return false;
             }
             attempt = 0;
-            actual_status.set(SocketConnectionStatus::Connected(addr.clone()));
+            publish(SocketConnectionStatus::Connected(addr.clone()));
             info!("Autoreconnect socket connected to {url}");
 
             tokio::select! {
@@ -443,7 +520,7 @@ impl AutoReconnectSocket {
                     }
                 }
             }
-            actual_status.set(SocketConnectionStatus::Disconnected);
+            publish(SocketConnectionStatus::Disconnected);
             if !auto_reconnect {
                 return Self::wait_for_change(desired_rx).await;
             }
@@ -961,6 +1038,143 @@ mod tests {
                 .is_err()
         );
         blocked.join().unwrap();
+    }
+
+    #[test]
+    fn close_and_readdress_release_a_connected_callback_on_the_retired_queue() -> std::io::Result<()>
+    {
+        for readdress in [false, true] {
+            let listener = TcpListener::bind("127.0.0.1:0")?;
+            let address = format!("ws://{}/retired-replay", listener.local_addr()?);
+            let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+            let (closed_tx, closed_rx) = flume::bounded(1);
+            let server = thread::spawn(move || {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let websocket = tungstenite::accept(stream).unwrap();
+                entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                websocket
+                    .get_ref()
+                    .shutdown(std::net::Shutdown::Both)
+                    .unwrap();
+                drop(websocket);
+                closed_tx.send(()).unwrap();
+            });
+            let socket = Arc::new(AutoReconnectSocket::with_auto_reconnect(true));
+            let callback_socket = Arc::clone(&socket);
+            let (queued_tx, queued_rx) = mpsc::sync_channel(1);
+            let (finished_tx, finished_rx) = mpsc::sync_channel(1);
+            let target = address.clone();
+            let _guard = socket.actual_connection_state().subscribe(move |signal| {
+                if let Signal::Value(status) = signal
+                    && matches!(&**status, SocketConnectionStatus::Connected(current) if current == &target)
+                {
+                    entered_tx.send(()).unwrap();
+                    closed_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                    let queue = callback_socket.write_tx();
+                    queued_tx.send(queue.clone()).unwrap();
+                    for _ in 0..OUTGOING_QUEUE_CAPACITY * 2 {
+                        if let Err(error) = queue.send_timeout(WsFrame::Text("replay".into()), Duration::from_secs(2)) {
+                            finished_tx.send(matches!(error, flume::SendTimeoutError::Disconnected(_))).unwrap();
+                            return;
+                        }
+                    }
+                    finished_tx.send(false).unwrap();
+                }
+            });
+            socket.set_addr(Some(address));
+            let queue = queued_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while queue.len() != OUTGOING_QUEUE_CAPACITY && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert_eq!(queue.len(), OUTGOING_QUEUE_CAPACITY);
+            let replacement = if readdress {
+                Some(websocket_receiver()?)
+            } else {
+                None
+            };
+            if let Some((address, _, _)) = &replacement {
+                socket.set_addr(Some(address.clone()));
+            } else {
+                socket.close();
+            }
+            let released = finished_rx.recv_timeout(Duration::from_millis(500));
+            if released.is_err() {
+                let _ = finished_rx.recv_timeout(Duration::from_secs(3));
+            }
+            server.join().unwrap();
+            if let Some((address, messages, server)) = replacement {
+                if released == Ok(true) {
+                    assert!(wait_until_connected(&socket, &address));
+                    SocketTransport::send(socket.as_ref(), WsFrame::Text("fresh".into())).unwrap();
+                    assert_eq!(
+                        messages.recv_timeout(Duration::from_secs(2)).unwrap(),
+                        "fresh"
+                    );
+                }
+                socket.close();
+                server.join().unwrap();
+            }
+            assert_eq!(
+                released,
+                Ok(true),
+                "retired queue releases the blocked subscriber without waiting for its timeout"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn coalesced_connection_epochs_publish_disconnect_and_stop_worker() {
+        for (generation, attempt) in [(1, 2), (3, 1)] {
+            let status = Cell::new(SocketConnectionStatus::Idle);
+            let (messages, received) = mpsc::channel();
+            let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+            let (release_tx, release_rx) = flume::bounded(1);
+            let first = std::sync::atomic::AtomicBool::new(true);
+            let _guard = status.subscribe(move |signal| {
+                if let Signal::Value(current) = signal {
+                    messages.send((**current).clone()).unwrap();
+                    if matches!(&**current, SocketConnectionStatus::Connected(_))
+                        && first.swap(false, std::sync::atomic::Ordering::SeqCst)
+                    {
+                        entered_tx.send(()).unwrap();
+                        release_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+                    }
+                }
+            });
+            let (publisher, worker) = StatusPublisher::new(status);
+            let connected = SocketConnectionStatus::Connected("ws://a".into());
+            publisher.publish(1, 1, connected.clone());
+            entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+            publisher.publish(1, 1, SocketConnectionStatus::Disconnected);
+            publisher.publish(2, 1, SocketConnectionStatus::Connected("ws://b".into()));
+            publisher.publish(generation, attempt, connected.clone());
+            release_tx.send(()).unwrap();
+            drop(publisher);
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while !worker.is_finished() && Instant::now() < deadline {
+                thread::sleep(Duration::from_millis(1));
+            }
+            assert!(
+                worker.is_finished(),
+                "status worker exits after its producer drops"
+            );
+            worker.join().unwrap();
+            let values: Vec<_> = received.try_iter().collect();
+            assert_eq!(
+                values,
+                [
+                    SocketConnectionStatus::Idle,
+                    connected.clone(),
+                    SocketConnectionStatus::Disconnected,
+                    connected
+                ]
+            );
+        }
     }
 
     #[test]
