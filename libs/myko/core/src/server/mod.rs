@@ -61,7 +61,9 @@ pub use history_replay::{
     CommittedHistoryEvent, EntityHistory, EntityHistoryAliasRegistration, HistoryEntityKey,
     HistoryEvent, HistoryPage, HistoryReplayProvider, history_storage_types,
 };
-pub use partition::{PartitionKey, PartitionSchema};
+pub use partition::{
+    PartitionError, PartitionKey, PartitionKeyField, PartitionKeyRegistration, PartitionSchema,
+};
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,
 };

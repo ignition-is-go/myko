@@ -66,6 +66,14 @@ pub struct ClientIdFieldInfo {
     pub field_name_json: String,
 }
 
+/// Information about a `myko_partition_key` attribute on a field: the field
+/// names the partition an item of a partitioned entity type lives in.
+#[derive(Debug)]
+pub struct PartitionKeyFieldInfo {
+    /// Field name in Rust (`snake_case`)
+    pub field_name: String,
+}
+
 /// Information about a `fallback_to_id` attribute on a field.
 /// When present, the server will auto-populate this field with the entity's `id`
 /// if the value is null or missing at ingest time.
@@ -124,6 +132,7 @@ pub fn is_relationship_attr(attr: &Attribute) -> bool {
         || path.is_ident("ensure_for")
         || path.is_ident("default_value")
         || path.is_ident("myko_client_id")
+        || path.is_ident("myko_partition_key")
         || path.is_ident("fallback_to_id")
         || path.is_ident("searchable")
         || path.is_ident("exclude_from_tree")
@@ -308,6 +317,26 @@ pub fn parse_client_id(field: &Field) -> Option<ClientIdFieldInfo> {
     None
 }
 
+/// Parse `myko_partition_key` attribute from a field.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// #[myko_item]
+/// pub struct Reading {
+///     #[myko_partition_key]
+///     pub runtime: Arc<str>,
+/// }
+/// ```
+pub fn parse_partition_key(field: &Field) -> Option<PartitionKeyFieldInfo> {
+    let field_name = field.ident.as_ref()?.to_string();
+    field
+        .attrs
+        .iter()
+        .any(|attr| attr.path().is_ident("myko_partition_key"))
+        .then_some(PartitionKeyFieldInfo { field_name })
+}
+
 /// Parse `fallback_to_id` attribute from a field.
 ///
 /// When present, the server will auto-populate this field with the entity's own `id`
@@ -409,6 +438,7 @@ pub struct RelationshipInfo {
     pub ensure_for_fields: Vec<EnsureForFieldInfo>,
     pub default_values: Vec<DefaultValueInfo>,
     pub client_id_field: Option<ClientIdFieldInfo>,
+    pub partition_key_field: Option<PartitionKeyFieldInfo>,
     pub fallback_to_id_fields: Vec<FallbackToIdFieldInfo>,
     pub searchable_fields: Vec<SearchableFieldInfo>,
     pub server_owned_field: Option<ServerOwnedFieldInfo>,
@@ -459,6 +489,15 @@ pub fn collect_relationships(input: &ItemStruct) -> syn::Result<RelationshipInfo
             }
             if let Some(ci) = parse_client_id(field) {
                 info.client_id_field = Some(ci);
+            }
+            if let Some(pk) = parse_partition_key(field) {
+                if info.partition_key_field.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        field,
+                        "an item has at most one #[myko_partition_key] field",
+                    ));
+                }
+                info.partition_key_field = Some(pk);
             }
             if let Some(fi) = parse_fallback_to_id(field) {
                 info.fallback_to_id_fields.push(fi);
@@ -639,6 +678,23 @@ fn generate_marker_registrations(local_type: &str, info: &RelationshipInfo) -> V
                 #krate::relationship::ClientIdRegistration {
                     entity_type: #local_type,
                     field_name_json: #field_name_json,
+                }
+            }
+        });
+    }
+    if let Some(pk) = &info.partition_key_field {
+        let local_type_ident = syn::Ident::new(local_type, proc_macro2::Span::call_site());
+        let field = syn::Ident::new(&pk.field_name, proc_macro2::Span::call_site());
+        registrations.push(quote! {
+            #[cfg(not(target_arch = "wasm32"))]
+            #krate::submit! {
+                #krate::server::PartitionKeyRegistration {
+                    entity_type: #local_type,
+                    key_of: |item| {
+                        let item = #krate::item::AnyItem::as_any(item)
+                            .downcast_ref::<#local_type_ident>()?;
+                        #krate::server::PartitionKeyField::partition_key(&item.#field)
+                    },
                 }
             }
         });

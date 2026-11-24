@@ -53,6 +53,44 @@ struct PartitionStores {
 
 pub type IsPartitioned = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+thread_local! {
+    /// The first partitioned entity type a root registry was asked for on
+    /// this thread since the innermost `watch_root_reads` began.
+    static ROOT_READ: std::cell::RefCell<Option<Arc<str>>> = const { std::cell::RefCell::new(None) };
+}
+
+pub fn record_root_read(entity_type: &str) {
+    let first = ROOT_READ.with(|read| {
+        let mut read = read.borrow_mut();
+        let first = read.is_none();
+        if first {
+            *read = Some(Arc::from(entity_type));
+        }
+        first
+    });
+    if first {
+        tracing::error!(
+            entity_type,
+            "a partitioned entity type was read from the root context; it has rows only in its \
+             partitions' contexts"
+        );
+    }
+}
+
+/// Run `construct` and return the first partitioned entity type it asked a root
+/// registry for, on this thread. Nested watches report to their caller too.
+pub fn watch_root_reads<R>(construct: impl FnOnce() -> R) -> (R, Option<Arc<str>>) {
+    let outer = ROOT_READ.with(|read| read.borrow_mut().take());
+    let built = construct();
+    let inner = ROOT_READ.with(|read| {
+        let mut read = read.borrow_mut();
+        let inner = read.take();
+        *read = outer.or_else(|| inner.clone());
+        inner
+    });
+    (built, inner)
+}
+
 impl StoreRegistry {
     /// Create a new empty registry.
     #[must_use]
@@ -120,21 +158,18 @@ impl StoreRegistry {
         if let Some(root) = self.shared(entity_type) {
             return root.get_or_create(entity_type);
         }
-        if let Some(store) = self.stores.get(entity_type) {
-            return store.clone();
-        }
         if self
             .partitioned
             .get()
             .is_some_and(|is_partitioned| is_partitioned(entity_type))
         {
-            // NOTE(ts): the signature cannot refuse. The store returned is
-            // one no partition writes, so the reader sees no rows.
-            tracing::error!(
-                entity_type,
-                "a partitioned entity type was read from the root context; it has rows only in \
-                 its partitions' contexts"
-            );
+            // NOTE(ts): the signature cannot refuse. The read is recorded,
+            // and a build watched by `watch_root_reads` is refused; the
+            // store returned is one no partition writes.
+            record_root_read(entity_type);
+        }
+        if let Some(store) = self.stores.get(entity_type) {
+            return store.clone();
         }
         let key: Arc<str> = entity_type.into();
         let create = || Arc::new(EntityStore::new().with_name(format!("store:{key}")));

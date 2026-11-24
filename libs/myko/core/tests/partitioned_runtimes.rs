@@ -24,8 +24,8 @@ use myko::{
     report::{AnyOutput, ReportContext, ReportHandler},
     request::RequestContext,
     server::{
-        ClientSession, HandlerRegistry, MykoServerContext, MykoServerRuntime, PartitionKey,
-        PartitionSchema, RelationshipManager, WsWriter, persister::PersisterRouter,
+        ClientSession, HandlerRegistry, MykoServerContext, MykoServerRuntime, PartitionError,
+        PartitionKey, PartitionSchema, RelationshipManager, WsWriter, persister::PersisterRouter,
     },
     store::StoreRegistry,
     wire::{EncodedCommandMessage, MykoMessage},
@@ -82,6 +82,7 @@ pub mod reading {
     /// Partitioned by the runtime each row names.
     #[myko_item]
     pub struct PrReading {
+        #[myko_partition_key]
         pub runtime: Arc<str>,
         pub level: i64,
     }
@@ -507,7 +508,6 @@ fn root_context() -> MykoServerContext {
 fn schema() -> PartitionSchema {
     PartitionSchema::new()
         .lifecycle::<PrRuntime>()
-        .partition_by::<PrReading>(|reading| PartitionKey::new(reading.runtime.clone()))
         .route::<PrSample>(&[PrAssignment::ENTITY_NAME_STATIC], |root, sample| {
             let assignment = root
                 .registry
@@ -1089,4 +1089,240 @@ fn a_row_written_while_it_is_reassigned_is_never_lost_or_in_two_runtimes() {
         usize::try_from(WRITES).expect("count"),
         "every written level was observed in a runtime"
     );
+}
+
+// (e) declared reads and flow direction -------------------------------------
+
+fn refused_root_read<R>(result: Result<R, PartitionError>) -> Option<Arc<str>> {
+    match result {
+        Err(PartitionError::RootRead { entity_type }) => Some(entity_type),
+        _ => None,
+    }
+}
+
+#[test]
+fn a_reactive_read_of_a_partitioned_type_from_root_is_refused() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let root = &fixture.root;
+    root.set(&reading("a", "first", 4)).expect("reading");
+    let partitioned = Some(Arc::<str>::from(PrReading::ENTITY_NAME_STATIC));
+
+    for attempt in ["first", "again, not served from a cache"] {
+        assert_eq!(
+            refused_root_read(root.checked(|| root.query_map(GetAllPrReadings {}, request(root)))),
+            partitioned,
+            "a root query over a partitioned type is refused ({attempt})"
+        );
+        assert_eq!(
+            refused_root_read(root.checked(|| root.report(PrTotal {}, request(root)))),
+            partitioned,
+            "a root report that reads a partitioned type is refused ({attempt})"
+        );
+    }
+    assert!(
+        root.checked(|| root.query_map(GetAllPrSettings {}, request(root)))
+            .is_ok(),
+        "a root query over a shared type is built"
+    );
+    let rows = fixture
+        .a
+        .checked(|| {
+            fixture
+                .a
+                .query_map(GetAllPrReadings {}, request(&fixture.a))
+        })
+        .expect("the partition builds its own read");
+    assert_eq!(
+        fixture
+            .a
+            .in_domain(|| rows.entries().materialize())
+            .get()
+            .len(),
+        1,
+        "the partition's read sees its row"
+    );
+}
+
+#[test]
+fn a_subscription_opens_in_the_partition_its_request_names() {
+    let _serial = SERIAL.lock();
+    let root = root_context().with_partitions(schema().subscribe_in(|_, payload| {
+        payload
+            .get("partition")
+            .and_then(|key| key.as_str())
+            .map(PartitionKey::new)
+    }));
+    root.set(&PrRuntime {
+        id: "b".into(),
+        label: "b".into(),
+    })
+    .expect("runtime");
+    let request = request(&root);
+    let in_b = myko::serde_json::json!({ "partition": "b" });
+    let in_none = myko::serde_json::json!({});
+    let in_missing = myko::serde_json::json!({ "partition": "missing" });
+    let reading = Some(PrReading::ENTITY_NAME_STATIC);
+    let setting = Some(PrSetting::ENTITY_NAME_STATIC);
+
+    let opened = root
+        .subscription_context(&request, &in_b, reading)
+        .expect("partition b is open");
+    assert_eq!(opened.partition_key(), Some(&PartitionKey::new("b")));
+    let report = root
+        .subscription_context(&request, &in_b, None)
+        .expect("a report opens where the request names");
+    assert_eq!(report.partition_key(), Some(&PartitionKey::new("b")));
+    let shared = root
+        .subscription_context(&request, &in_b, setting)
+        .expect("a shared read");
+    assert_eq!(shared.partition_key(), None, "a shared read stays in root");
+    assert!(refused_root_read(root.subscription_context(&request, &in_none, reading)).is_some());
+    assert_eq!(
+        root.subscription_context(&request, &in_missing, reading)
+            .err(),
+        Some(PartitionError::NotOpen(PartitionKey::new("missing")))
+    );
+}
+
+/// Subscribe to `entity_type` rows in `ctx`'s domain and, each time the row
+/// `trigger` arrives, run `write` and keep its result.
+fn on_row(
+    ctx: &MykoServerContext,
+    entity_type: &str,
+    trigger: &'static str,
+    write: impl Fn() -> Result<(), myko::server::PersistError> + Send + Sync + 'static,
+) -> (Arc<Mutex<Vec<bool>>>, hyphae::SubscriptionGuard) {
+    let results: Arc<Mutex<Vec<bool>>> = Arc::default();
+    let store = ctx.registry.get_or_create(entity_type);
+    let guard = {
+        let results = Arc::clone(&results);
+        ctx.in_domain(|| {
+            store.subscribe_diffs(move |diff| {
+                let mut hit = false;
+                each_change(diff, &mut |change| {
+                    if let hyphae::MapDiff::Insert { key, .. }
+                    | hyphae::MapDiff::Update { key, .. } = change
+                    {
+                        hit |= key.as_ref() == trigger;
+                    }
+                });
+                if hit {
+                    results.lock().push(write().is_ok());
+                }
+            })
+        })
+    };
+    (results, guard)
+}
+
+#[test]
+fn a_partition_wave_cannot_write_shared_data_or_another_partition() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let b = fixture.b.clone();
+    let (to_shared, _shared) = on_row(
+        &fixture.b,
+        PrReading::ENTITY_NAME_STATIC,
+        "to-shared",
+        move || {
+            b.set(&PrSetting {
+                id: "gain".into(),
+                gain: 99,
+            })
+        },
+    );
+    let b = fixture.b.clone();
+    let (to_a, _across) = on_row(
+        &fixture.b,
+        PrReading::ENTITY_NAME_STATIC,
+        "to-a",
+        move || b.set(&reading("a", "from-b", 99)),
+    );
+    let b = fixture.b.clone();
+    let (to_b, _own) = on_row(
+        &fixture.b,
+        PrReading::ENTITY_NAME_STATIC,
+        "to-b",
+        move || b.set(&reading("b", "from-b", 7)),
+    );
+
+    for trigger in ["to-shared", "to-a", "to-b"] {
+        fixture
+            .root
+            .set(&reading("b", trigger, 1))
+            .expect("trigger");
+    }
+    settle(&fixture.b);
+    settle(&fixture.a);
+
+    assert_eq!(
+        *to_shared.lock(),
+        [false],
+        "the write to shared data was refused"
+    );
+    assert_eq!(
+        *to_a.lock(),
+        [false],
+        "the write to another partition was refused"
+    );
+    assert_eq!(
+        *to_b.lock(),
+        [true],
+        "a write to its own partition is taken"
+    );
+    let gain = fixture
+        .root
+        .registry
+        .get(PrSetting::ENTITY_NAME_STATIC)
+        .and_then(|store| store.get_value(&Arc::from("gain")));
+    let gain = gain
+        .as_ref()
+        .and_then(|row| AnyItem::as_any(row.as_ref()).downcast_ref::<PrSetting>())
+        .map(|setting| setting.gain);
+    assert_eq!(gain, Some(1), "shared data is unchanged");
+    let in_a = fixture
+        .a
+        .registry
+        .get_or_create(PrReading::ENTITY_NAME_STATIC)
+        .get_value(&Arc::from("from-b"));
+    assert!(in_a.is_none(), "partition a is unchanged");
+}
+
+#[test]
+fn a_shared_wave_writes_into_a_partition_behind_it() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let root = fixture.root.clone();
+    let (results, _guard) = on_row(
+        &fixture.root,
+        PrSetting::ENTITY_NAME_STATIC,
+        "gain",
+        move || root.set(&reading("b", "from-shared", 3)),
+    );
+    drop(results.lock().drain(..));
+    fixture
+        .root
+        .set(&PrSetting {
+            id: "gain".into(),
+            gain: 2,
+        })
+        .expect("shared write");
+    settle(&fixture.b);
+    assert_eq!(
+        *results.lock(),
+        [true],
+        "the write from the shared wave was taken"
+    );
+    let level = fixture
+        .b
+        .registry
+        .get_or_create(PrReading::ENTITY_NAME_STATIC)
+        .get_value(&Arc::from("from-shared"))
+        .and_then(|row| {
+            AnyItem::as_any(row.as_ref())
+                .downcast_ref::<PrReading>()
+                .map(|row| row.level)
+        });
+    assert_eq!(level, Some(3), "partition b took the row");
 }

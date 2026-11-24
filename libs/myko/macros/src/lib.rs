@@ -511,6 +511,20 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 /// }
 /// ```
 ///
+/// ## `#[myko_partition_key]`
+/// Partitions the entity type: each item lives in the partition this field
+/// names. A server that declares partitions with `PartitionSchema::new()`
+/// routes the type by it. The field is `Arc<str>`, `String`, or an `Option`
+/// of either; `None` names no partition and the write is refused.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Reading {
+///     #[myko_partition_key]
+///     pub runtime: Arc<str>,
+/// }
+/// ```
+///
 /// ## `#[searchable]`
 /// Marks a field for full-text search indexing.
 ///

@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use super::{
     HandlerRegistry, RelationshipManager,
-    partition::{PartitionKey, PartitionSchema, Partitions},
+    partition::{PartitionError, PartitionKey, PartitionSchema, Partitions},
     persister::{PersistError, PersistHealth, PersisterRouter},
 };
 use crate::{
@@ -50,7 +50,7 @@ use crate::{
     report::{ReportContext, ReportHandler, ReportId},
     request::{RequestCacheScope, RequestContext},
     search::SearchIndex,
-    store::StoreRegistry,
+    store::{StoreRegistry, watch_root_reads},
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
     wire::{MEvent, MEventType},
 };
@@ -395,6 +395,9 @@ pub struct MykoServerContext {
     /// Per-key coordination for concurrent report/query/view computation.
     /// Prevents duplicate computation when multiple threads request the same key.
     compute_gates: Arc<DashMap<String, Arc<std::sync::Mutex<()>>, ahash::RandomState>>,
+    /// Cache keys of root builds that read a partitioned entity type, with
+    /// that type. A cache hit on one is refused as its build was.
+    refused_builds: Arc<DashMap<String, Arc<str>, ahash::RandomState>>,
     /// Optional ingest buffers keyed by entity type for opt-in burst smoothing.
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>, ahash::RandomState>>,
     /// Optional history replay provider for point-in-time snapshots.
@@ -478,6 +481,7 @@ impl MykoServerContext {
             view_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             report_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             compute_gates: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
+            refused_builds: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
             graph_index,
@@ -521,6 +525,7 @@ impl MykoServerContext {
         partition.view_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.report_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.compute_gates = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.refused_builds = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.ingest_buffers = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.causal_counters = Arc::new(CausalCounters::default());
         // NOTE(ts): graph edges between partitioned entities are not
@@ -587,6 +592,71 @@ impl MykoServerContext {
     pub fn partitioned_snapshot(&self, entity_type: &str) -> Vec<(PartitionKey, Vec<AnyItemArc>)> {
         self.partitions()
             .map_or_else(Vec::new, |partitions| partitions.snapshot(entity_type))
+    }
+
+    /// Run `construct`, a construction of reactive reads on this context, in
+    /// this context's domain, and refuse it when it read a partitioned entity type from the root
+    /// context. Such a read sees no rows, because the type's rows live only
+    /// in its partitions; it must be built on the partition's context.
+    ///
+    /// The check covers what `construct` builds on the calling thread. An
+    /// inner graph a wave builds later, such as a `switch_map` branch, is
+    /// not covered; its root read is only logged.
+    ///
+    /// # Errors
+    /// [`PartitionError::RootRead`] naming the first such entity type. What
+    /// `construct` returned is dropped.
+    pub fn checked<R>(&self, construct: impl FnOnce() -> R) -> Result<R, PartitionError> {
+        let (built, refused) = watch_root_reads(|| self.in_domain(construct));
+        match refused {
+            None => Ok(built),
+            Some(entity_type) => {
+                drop(built);
+                Err(PartitionError::RootRead { entity_type })
+            }
+        }
+    }
+
+    /// The context a client subscription opens in.
+    ///
+    /// `reads` is the entity type the subscription reads when the request
+    /// names one (a query or a view), and `None` for a report. A
+    /// subscription over a shared type opens in root. Otherwise it opens in
+    /// the partition the schema's [`PartitionSchema::subscribe_in`] hook
+    /// names for the request, or in root when it names none.
+    ///
+    /// # Errors
+    /// [`PartitionError::RootRead`] when `reads` is partitioned and the hook
+    /// names no partition, and [`PartitionError::NotOpen`] when the named
+    /// partition is not open.
+    pub fn subscription_context(
+        &self,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+        reads: Option<&str>,
+    ) -> Result<Self, PartitionError> {
+        let Some(partitions) = self.partitions() else {
+            return Ok(self.clone());
+        };
+        if self.home.is_some()
+            || reads.is_some_and(|entity_type| !partitions.is_partitioned(entity_type))
+        {
+            return Ok(self.clone());
+        }
+        let Some(key) = partitions.subscription_partition(request, payload) else {
+            return reads.map_or_else(
+                || Ok(self.clone()),
+                |entity_type| {
+                    Err(PartitionError::RootRead {
+                        entity_type: Arc::from(entity_type),
+                    })
+                },
+            );
+        };
+        partitions
+            .get(&key)
+            .map(|partition| partition.ctx().clone())
+            .ok_or(PartitionError::NotOpen(key))
     }
 
     /// The scheduling domain this context builds and writes in.
@@ -1048,12 +1118,19 @@ impl MykoServerContext {
         &self,
         mut entity_types: impl Iterator<Item = &'a str>,
     ) -> Result<(), PersistError> {
-        if self.home.is_some() {
-            return Ok(());
-        }
         let Some(partitions) = self.partitions() else {
             return Ok(());
         };
+        if self.home.is_some() {
+            // A partition context resolves a shared type to root's store. Its
+            // wave writing there would flow backwards.
+            let in_wave = Domain::propagating().is_some_and(|domain| !domain.is_root());
+            return entity_types
+                .find(|entity_type| in_wave && !partitions.is_partitioned(entity_type))
+                .map_or(Ok(()), |entity_type| {
+                    Err(super::partition::backwards(entity_type, None))
+                });
+        }
         entity_types
             .find(|entity_type| partitions.is_partitioned(entity_type))
             .map_or(Ok(()), |entity_type| {
@@ -3044,6 +3121,18 @@ impl MykoServerContext {
     /// Fast-path lookup shared by the query and view untyped-map caches:
     /// return the live shared map if the weak ref still upgrades, otherwise
     /// evict the dead entry and report a miss.
+    fn remember_refusal(&self, key: &str, refused: Option<Arc<str>>) {
+        if let Some(entity_type) = refused {
+            self.refused_builds.insert(key.to_owned(), entity_type);
+        }
+    }
+
+    fn repeat_refusal(&self, key: &str) {
+        if let Some(entity_type) = self.refused_builds.get(key) {
+            crate::store::record_root_read(entity_type.value());
+        }
+    }
+
     fn try_get_cached(
         cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
         key: &str,
@@ -3105,6 +3194,7 @@ impl MykoServerContext {
     ) -> FilteredCellMap {
         // Fast path
         if let Some(cell) = Self::try_get_cached(cache, key) {
+            self.repeat_refusal(key);
             return cell;
         }
 
@@ -3119,10 +3209,12 @@ impl MykoServerContext {
 
         // Re-check after gate
         if let Some(cell) = Self::try_get_cached(cache, key) {
+            self.repeat_refusal(key);
             return cell;
         }
 
-        let computed = self.in_domain(compute);
+        let (computed, refused) = watch_root_reads(|| self.in_domain(compute));
+        self.remember_refusal(key, refused);
         cache.insert(key.to_string(), MapCacheEntry::new(&computed));
         // The gate's only job was deduping concurrent first-computation; once
         // the cache entry above is visible, any racing caller's re-check will
@@ -3288,6 +3380,7 @@ impl MykoServerContext {
 
         // Fast path: cache hit with live cell.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            self.repeat_refusal(&key);
             crate::server::report_cache_stats::record_hit(&report_id);
             tracing::trace!(
                 target: "myko::server::context::report_cache",
@@ -3311,6 +3404,7 @@ impl MykoServerContext {
 
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            self.repeat_refusal(&key);
             crate::server::report_cache_stats::record_hit_after_gate(&report_id);
             tracing::trace!(
                 target: "myko::server::context::report_cache",
@@ -3345,7 +3439,8 @@ impl MykoServerContext {
         // The trait returns `impl Pipeline<...>`; materialize once here so the
         // cache and downstream consumers get a concrete `Cell`. This is the only
         // materialization per report, regardless of how deep the inner chain is.
-        let built = self.in_domain(|| report.compute(nested_ctx).materialize());
+        let (built, refused) =
+            watch_root_reads(|| self.in_domain(|| report.compute(nested_ctx).materialize()));
         drop(report);
         // Named by report id (bounded cardinality — one name per report
         // *type*, not per invocation) so hyphae's `hyphae.fanout` span
@@ -3355,6 +3450,7 @@ impl MykoServerContext {
         // — query/view result maps can't be named at this seam the same way).
         #[cfg(feature = "profiling")]
         let built = built.with_name(report_id.as_ref());
+        self.remember_refusal(&key, refused);
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
         // See the matching comment in `query_map_untyped` — the gate is only

@@ -41,6 +41,18 @@
 //! write. A later write to the same partition waits until they are applied,
 //! which keeps the partition's writes in the order they were made.
 //!
+//! Data flows from shared into partitions only. A write made while a
+//! partition's wave runs is refused when it would land in shared data or in
+//! another partition. A write made while root's wave runs reaches a
+//! partition behind that wave.
+//!
+//! # Reads
+//!
+//! A reactive read of a partitioned type built on the root context sees no
+//! rows. [`MykoServerContext::checked`] refuses such a build, and
+//! [`MykoServerContext::subscription_context`] opens a client subscription
+//! in the partition the application's hook names.
+//!
 //! # Re-routing
 //!
 //! Each routed type keeps the placement of every row it has seen. A write to
@@ -66,12 +78,15 @@ use super::{MykoServerContext, OperationProvenance, context::Origin, persister::
 use crate::{
     core::item::{AnyItem, Eventable},
     graph::EdgeApplyMode,
+    request::RequestContext,
     store::StoreRegistry,
     wire::MEventType,
 };
 
 type Item = Arc<dyn AnyItem>;
 type KeyOf = Arc<dyn Fn(&dyn AnyItem) -> Option<PartitionKey> + Send + Sync>;
+type SubscriptionPartition =
+    Arc<dyn Fn(&RequestContext, &serde_json::Value) -> Option<PartitionKey> + Send + Sync>;
 type Resolve = Arc<dyn Fn(&MykoServerContext, &dyn AnyItem) -> Option<PartitionKey> + Send + Sync>;
 
 /// Names one partition.
@@ -96,6 +111,63 @@ impl std::fmt::Display for PartitionKey {
     }
 }
 
+/// Why a read could not be built where it was asked for.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PartitionError {
+    /// A reactive read of a partitioned entity type was built on the root
+    /// context, where the type has no rows.
+    RootRead { entity_type: Arc<str> },
+    /// The partition named for a read is not open.
+    NotOpen(PartitionKey),
+}
+
+impl std::fmt::Display for PartitionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RootRead { entity_type } => write!(
+                f,
+                "{entity_type} is partitioned: read it from the context of its partition, not \
+                 from the root context"
+            ),
+            Self::NotOpen(key) => write!(f, "partition {key} is not open"),
+        }
+    }
+}
+
+impl std::error::Error for PartitionError {}
+
+/// Registered by `#[myko_partition_key]` on a field of an item: the entity
+/// type is partitioned by that field.
+pub struct PartitionKeyRegistration {
+    pub entity_type: &'static str,
+    pub key_of: fn(&dyn AnyItem) -> Option<PartitionKey>,
+}
+
+inventory::collect!(PartitionKeyRegistration);
+
+/// A field type that can name a partition.
+pub trait PartitionKeyField {
+    fn partition_key(&self) -> Option<PartitionKey>;
+}
+
+impl PartitionKeyField for Arc<str> {
+    fn partition_key(&self) -> Option<PartitionKey> {
+        Some(PartitionKey(Self::clone(self)))
+    }
+}
+
+impl PartitionKeyField for String {
+    fn partition_key(&self) -> Option<PartitionKey> {
+        Some(PartitionKey::new(self.as_str()))
+    }
+}
+
+impl<T: PartitionKeyField> PartitionKeyField for Option<T> {
+    fn partition_key(&self) -> Option<PartitionKey> {
+        self.as_ref()?.partition_key()
+    }
+}
+
 enum Route {
     /// The item names its partition.
     Keyed(KeyOf),
@@ -108,10 +180,10 @@ enum Route {
 }
 
 /// Which entity types are partitioned, and how an item finds its partition.
-#[derive(Default)]
 pub struct PartitionSchema {
     routes: HashMap<&'static str, Route>,
     lifecycle: Option<&'static str>,
+    subscriptions: Option<SubscriptionPartition>,
 }
 
 fn typed<T: Eventable, R>(
@@ -120,10 +192,29 @@ fn typed<T: Eventable, R>(
     move |item| item.as_any().downcast_ref::<T>().and_then(&read)
 }
 
+impl Default for PartitionSchema {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PartitionSchema {
+    /// A schema that partitions every entity type with a
+    /// `#[myko_partition_key]` field by that field.
     #[must_use]
     pub fn new() -> Self {
-        Self::default()
+        let routes = inventory::iter::<PartitionKeyRegistration>()
+            .map(|registration| {
+                let key_of = registration.key_of;
+                let route = Route::Keyed(Arc::new(move |item: &dyn AnyItem| key_of(item)));
+                (registration.entity_type, route)
+            })
+            .collect();
+        Self {
+            routes,
+            lifecycle: None,
+            subscriptions: None,
+        }
     }
 
     /// Partition `T` by a key each item carries.
@@ -170,6 +261,22 @@ impl PartitionSchema {
     #[must_use]
     pub const fn lifecycle<T: Eventable>(mut self) -> Self {
         self.lifecycle = Some(T::ENTITY_NAME_STATIC);
+        self
+    }
+
+    /// Name the partition a client's subscription opens in, from the
+    /// request and the subscription's payload. A subscription for which it
+    /// names none opens in root, where a read of a partitioned type is
+    /// refused.
+    #[must_use]
+    pub fn subscribe_in(
+        mut self,
+        partition: impl Fn(&RequestContext, &serde_json::Value) -> Option<PartitionKey>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.subscriptions = Some(Arc::new(partition));
         self
     }
 
@@ -343,6 +450,11 @@ impl Partition {
                 if let Err(error) = result {
                     tracing::error!(partition = %partition.key, %error, "partition write failed");
                 }
+            } else {
+                tracing::error!(
+                    partition = %partition.key,
+                    "a write that followed a shared write found its partition closed"
+                );
             }
             drop(admitting);
         });
@@ -393,6 +505,22 @@ impl Drop for SharedWrite {
     }
 }
 
+/// A write from a partition's wave to data outside that partition: shared
+/// data when `to` is `None`, another partition's otherwise.
+pub(crate) fn backwards(entity_type: &str, to: Option<&PartitionKey>) -> PersistError {
+    let target = to.map_or_else(
+        || "shared data".to_owned(),
+        |key| format!("partition {key}"),
+    );
+    PersistError {
+        entity_type: Arc::from(entity_type),
+        message: format!(
+            "a partition's wave cannot write {target}: data flows from shared data into \
+             partitions, never back or across"
+        ),
+    }
+}
+
 /// The partitions of one server.
 pub(crate) struct Partitions {
     schema: Arc<PartitionSchema>,
@@ -433,6 +561,17 @@ impl Partitions {
 
     pub(crate) fn is_partitioned(&self, entity_type: &str) -> bool {
         self.schema.is_partitioned(entity_type)
+    }
+
+    pub(crate) fn subscription_partition(
+        &self,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+    ) -> Option<PartitionKey> {
+        self.schema
+            .subscriptions
+            .as_ref()
+            .and_then(|partition| partition(request, payload))
     }
 
     pub(crate) fn get(&self, key: &PartitionKey) -> Option<Arc<Partition>> {
@@ -542,9 +681,41 @@ impl Partitions {
             }
         }
 
+        // Data flows from shared into partitions, never back. A partition's
+        // wave writes only its own partition.
+        let propagating = Domain::propagating();
+        if let Some(wave) = propagating.as_ref().filter(|domain| !domain.is_root()) {
+            if let Some(item) = shared.first() {
+                return Err(backwards(item.entity_type(), None));
+            }
+            if let Some((_, (partition, items))) = keyed
+                .iter()
+                .find(|(_, (partition, _))| partition.domain != *wave)
+            {
+                let entity_type = items.first().map_or("mutation", |item| item.entity_type());
+                return Err(backwards(entity_type, Some(&partition.key)));
+            }
+            for (entity_type, items) in &resolved {
+                self.refuse_resolved_outside(entity_type, items, wave)?;
+            }
+        }
+        let root_wave = propagating.as_ref().is_some_and(Domain::is_root);
+        if root_wave && !resolved.is_empty() {
+            // NOTE(ts): a routed write from root's wave would have to cross
+            // into the partition behind the wave, and the placement a move
+            // takes must cover that write. Neither exists yet.
+            let entity_type = resolved.keys().next().copied().unwrap_or("mutation");
+            return Err(PersistError {
+                entity_type: Arc::from(entity_type),
+                message: "a routed partitioned type cannot be written from a shared wave yet"
+                    .into(),
+            });
+        }
+
         // Shared data first: a partition applies the shared part of a write
-        // before the partition part.
-        let follows_shared = !shared.is_empty() || SharedWrite::active();
+        // before the partition part. A write made from root's wave reaches a
+        // partition the same way, after the wave's own deliveries.
+        let follows_shared = !shared.is_empty() || SharedWrite::active() || root_wave;
         if !shared.is_empty() {
             let _shared = SharedWrite::begin();
             self.root.submit_local(shared, change, origin, mode)?;
@@ -558,6 +729,27 @@ impl Partitions {
         }
         for (entity_type, items) in resolved {
             self.submit_resolved(entity_type, items, change, origin, mode)?;
+        }
+        Ok(())
+    }
+
+    /// Refuse routed rows that a partition's wave writes into another
+    /// partition, or that no open partition takes.
+    fn refuse_resolved_outside(
+        &self,
+        entity_type: &'static str,
+        items: &[Item],
+        wave: &Domain,
+    ) -> Result<(), PersistError> {
+        let Some(placements) = self.placements.get(entity_type) else {
+            return Ok(());
+        };
+        for item in items {
+            let key = (placements.resolve)(&self.root, item.as_ref());
+            let partition = key.as_ref().and_then(|key| self.get(key));
+            if partition.is_none_or(|partition| partition.domain != *wave) {
+                return Err(backwards(entity_type, key.as_ref()));
+            }
         }
         Ok(())
     }
