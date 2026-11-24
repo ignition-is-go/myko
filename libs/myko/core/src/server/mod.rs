@@ -62,8 +62,9 @@ pub use history_replay::{
     HistoryEvent, HistoryPage, HistoryReplayProvider, history_storage_types,
 };
 pub use partition::{
-    PartitionError, PartitionKey, PartitionKeyField, PartitionKeyRegistration, PartitionSchema,
-    PartitionServices, SubscriptionWatch,
+    MergedAcrossPartitions, MergedViewRegistration, PartitionError, PartitionKey,
+    PartitionKeyField, PartitionKeyRegistration, PartitionSchema, PartitionServices,
+    SubscriptionWatch,
 };
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,

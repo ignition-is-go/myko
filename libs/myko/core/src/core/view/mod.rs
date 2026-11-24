@@ -6,6 +6,7 @@ mod cell;
 mod context;
 #[cfg(test)]
 mod erase_tests;
+mod merged;
 mod registration;
 mod request;
 #[cfg(test)]

@@ -101,6 +101,18 @@ impl ErasedViewMap {
     }
 }
 
+impl ErasedViewMap {
+    /// The union of `parts`, each of which may live in a different domain,
+    /// merged outside every domain's propagation. When parts disagree on a
+    /// row, the earlier part's is read.
+    #[must_use]
+    pub fn merged(parts: Vec<Self>) -> Self {
+        Self {
+            source: Arc::new(super::merged::Merged { parts }),
+        }
+    }
+}
+
 impl From<FilteredViewCellMap> for ErasedViewMap {
     fn from(map: FilteredViewCellMap) -> Self {
         Self {
@@ -109,9 +121,9 @@ impl From<FilteredViewCellMap> for ErasedViewMap {
     }
 }
 
-type ErasedCallback = Box<dyn Fn(&ErasedViewDiff) + Send + Sync>;
+pub(super) type ErasedCallback = Box<dyn Fn(&ErasedViewDiff) + Send + Sync>;
 
-trait ErasedSource: Send + Sync {
+pub(super) trait ErasedSource: Send + Sync {
     fn subscribe_erased(&self, callback: ErasedCallback) -> SubscriptionGuard;
     fn snapshot_erased(&self) -> Vec<(Arc<str>, Arc<dyn AnyItem>)>;
 }

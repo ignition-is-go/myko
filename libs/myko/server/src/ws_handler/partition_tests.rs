@@ -4,7 +4,10 @@
 
 #![allow(clippy::panic)]
 
-use std::sync::{Condvar, Mutex as StdMutex, mpsc as std_mpsc};
+use std::{
+    collections::BTreeSet,
+    sync::{Condvar, Mutex as StdMutex, mpsc as std_mpsc},
+};
 
 use myko::{
     hyphae::{Definite, MapExt, MapQuery, MapValuesExt, Materialize, scheduler::Domain},
@@ -62,6 +65,20 @@ mod seat {
     }
 }
 
+mod member {
+    use std::sync::Arc;
+
+    use myko::prelude::*;
+
+    /// Shared. Makes a partition a member of a group a merged view spans.
+    #[myko::myko_item]
+    pub struct PtMember {
+        pub partition: Arc<str>,
+        pub group: Arc<str>,
+    }
+}
+
+use member::PtMember;
 use reading::{GetAllPtReadings, PtReading};
 use runtime::{GetAllPtRuntimes, PtRuntime};
 use seat::PtSeat;
@@ -235,6 +252,65 @@ impl ViewHandler for PtSeatView {
     ) -> impl MapQuery<Key = Arc<str>, Value = Arc<PtReading>> {
         ctx.view_context.query_map_by_str(GetAllPtReadings {})
     }
+}
+
+/// Every reading of the partitions in a group, merged across them.
+#[myko::myko_view(PtReading)]
+pub struct PtGroupReadings {
+    pub group: Arc<str>,
+}
+
+myko::merged_across_partitions!(PtGroupReadings);
+
+/// The domain of every build of [`PtGroupReadings`]'s parts.
+static GROUP_BUILDS: StdMutex<Vec<Domain>> = StdMutex::new(Vec::new());
+
+fn group_builds_in(domain: &Domain) -> usize {
+    GROUP_BUILDS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|built| *built == domain)
+        .count()
+}
+
+impl ViewHandler for PtGroupReadings {
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<PtReading>> {
+        GROUP_BUILDS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Domain::current());
+        ctx.view_context.query_map_by_str(GetAllPtReadings {})
+    }
+}
+
+/// The partitions whose members name the group `payload` asks for.
+fn group_members(root: &MykoServerContext, payload: &serde_json::Value) -> BTreeSet<PartitionKey> {
+    let Some(group) = payload.get("group").and_then(serde_json::Value::as_str) else {
+        return BTreeSet::new();
+    };
+    root.registry
+        .get_or_create(<PtMember as myko::prelude::Eventable>::ENTITY_NAME_STATIC)
+        .snapshot()
+        .into_iter()
+        .filter_map(|(_, row)| {
+            AnyItem::as_any(row.as_ref())
+                .downcast_ref::<PtMember>()
+                .filter(|member| &*member.group == group)
+                .map(|member| PartitionKey::new(member.partition.clone()))
+        })
+        .collect()
+}
+
+/// `schema` with the spanning rule every schema in this binary needs: the
+/// binary declares a merged view.
+fn spanned(schema: PartitionSchema) -> PartitionSchema {
+    schema.span::<PtGroupReadings>(
+        &[<PtMember as myko::prelude::Eventable>::ENTITY_NAME_STATIC],
+        |root, _, payload| group_members(root, payload),
+    )
 }
 
 /// The sum of the levels its context reads.
@@ -571,7 +647,9 @@ fn server() -> Arc<MykoServerContext> {
                 .filter(|key| !key.is_empty())
                 .map(PartitionKey::new)
         });
-    let server = crate::MykoServer::builder().with_partitions(schema).build();
+    let server = crate::MykoServer::builder()
+        .with_partitions(spanned(schema))
+        .build();
     let ctx = Arc::new(server.ctx());
     for partition in ["a", "b"] {
         ctx.set(&PtRuntime {
@@ -707,7 +785,7 @@ async fn a_view_over_a_partitioned_type_delivers_only_its_partitions_rows() {
 
 fn partitioned_server() -> crate::MykoServer {
     crate::MykoServer::builder()
-        .with_partitions(PartitionSchema::new().lifecycle::<PtRuntime>())
+        .with_partitions(spanned(PartitionSchema::new().lifecycle::<PtRuntime>()))
         .build()
 }
 
@@ -834,7 +912,9 @@ fn seated_server() -> Arc<MykoServerContext> {
                     .map(|seat| PartitionKey::new(seat.partition.clone()))
             },
         );
-    let server = crate::MykoServer::builder().with_partitions(schema).build();
+    let server = crate::MykoServer::builder()
+        .with_partitions(spanned(schema))
+        .build();
     let ctx = Arc::new(server.ctx());
     for partition in ["a", "b"] {
         ctx.set(&PtRuntime {
@@ -954,4 +1034,264 @@ async fn a_subscription_whose_partition_closes_is_refused_to_the_client() {
         matches!(&refused, MykoMessage::ReportError(error) if error.message.contains("not open")),
         "a subscription whose partition closed is refused where its hook places it: {refused:?}"
     );
+}
+
+// Views merged across partitions ----------------------------------------------
+
+fn member(partition: &str, group: &str) -> PtMember {
+    PtMember {
+        id: format!("{partition}-in-{group}").into(),
+        partition: partition.into(),
+        group: group.into(),
+    }
+}
+
+fn grouped_server(partitions: &[&str]) -> Arc<MykoServerContext> {
+    let schema = PartitionSchema::new()
+        .lifecycle::<PtRuntime>()
+        .subscribe_in(&[], |_, _, payload| {
+            payload
+                .get("partition")
+                .and_then(serde_json::Value::as_str)
+                .filter(|key| !key.is_empty())
+                .map(PartitionKey::new)
+        });
+    let server = crate::MykoServer::builder()
+        .with_partitions(spanned(schema))
+        .build();
+    let ctx = Arc::new(server.ctx());
+    for partition in partitions {
+        ctx.set(&PtRuntime {
+            id: (*partition).into(),
+        })
+        .unwrap_or_else(|error| panic!("open {partition}: {error}"));
+        ctx.set(&reading(partition, 1))
+            .unwrap_or_else(|error| panic!("reading: {error}"));
+    }
+    ctx.settle();
+    ctx
+}
+
+fn domain_of(ctx: &MykoServerContext, partition: &str) -> Domain {
+    ctx.partition(&PartitionKey::new(partition))
+        .unwrap_or_else(|| panic!("partition {partition}"))
+        .domain()
+}
+
+impl Client {
+    fn subscribe_group(&mut self, ctx: &Arc<MykoServerContext>, group: &str) {
+        let view = wrap_view(
+            "group".into(),
+            &PtGroupReadings {
+                group: group.into(),
+            },
+        )
+        .unwrap_or_else(|error| panic!("view: {error}"));
+        self.send(ctx, MykoMessage::View(view));
+    }
+
+    /// Wait until the rows the client holds are `(partition, level)` of
+    /// `want`, applying every view response, and an initial response as a
+    /// replacement.
+    fn wait_rows(&self, held: &mut HashMap<Arc<str>, (Arc<str>, i64)>, want: &[(&str, i64)]) {
+        let mut want: Vec<(Arc<str>, i64)> =
+            want.iter().map(|(p, l)| (Arc::from(*p), *l)).collect();
+        want.sort();
+        self.wait_held(held, &format!("{want:?}"), |now| now == want.as_slice());
+    }
+
+    /// Wait until the rows the client holds satisfy `done`.
+    fn wait_held(
+        &self,
+        held: &mut HashMap<Arc<str>, (Arc<str>, i64)>,
+        want: &str,
+        done: impl Fn(&[(Arc<str>, i64)]) -> bool,
+    ) {
+        let deadline = deadline();
+        loop {
+            let mut now: Vec<_> = held.values().cloned().collect();
+            now.sort();
+            if done(&now) {
+                return;
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.received.recv_timeout(left) {
+                Ok(MykoMessage::ViewResponse(response)) => {
+                    if response.sequence == 0 {
+                        held.clear();
+                    }
+                    for id in &response.deletes {
+                        held.remove(id);
+                    }
+                    for upsert in &response.upserts {
+                        if let Some(row) =
+                            AnyItem::as_any(upsert.item.as_ref()).downcast_ref::<PtReading>()
+                        {
+                            held.insert(row.id.0.clone(), (row.partition.clone(), row.level));
+                        }
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => panic!("rows {want} never held ({error}): held {now:?}"),
+            }
+        }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merged_view_delivers_the_union_of_its_partitions_and_builds_nothing_elsewhere() {
+    let _serial = SERIAL.lock().await;
+    let ctx = grouped_server(&["a", "b", "c"]);
+    for partition in ["a", "b"] {
+        ctx.set(&member(partition, "g"))
+            .unwrap_or_else(|error| panic!("member: {error}"));
+    }
+    let outside = group_builds_in(&domain_of(&ctx, "c"));
+    let mut client = Client::new("client");
+    client.subscribe_group(&ctx, "g");
+    client.register().await;
+    let mut held = HashMap::new();
+    client.wait_rows(&mut held, &[("a", 1), ("b", 1)]);
+    ctx.set(&reading("b", 7))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    client.wait_rows(&mut held, &[("a", 1), ("b", 7)]);
+    ctx.settle();
+    assert_eq!(
+        group_builds_in(&domain_of(&ctx, "c")),
+        outside,
+        "a partition outside the span builds no part"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_merged_view_follows_membership_of_its_span() {
+    let _serial = SERIAL.lock().await;
+    let ctx = grouped_server(&["a", "b", "c"]);
+    ctx.set(&member("a", "g"))
+        .unwrap_or_else(|error| panic!("member: {error}"));
+    let mut client = Client::new("client");
+    client.subscribe_group(&ctx, "g");
+    client.register().await;
+    let mut held = HashMap::new();
+    client.wait_rows(&mut held, &[("a", 1)]);
+
+    let c = domain_of(&ctx, "c");
+    let before = group_builds_in(&c);
+    ctx.set(&member("c", "g"))
+        .unwrap_or_else(|error| panic!("member: {error}"));
+    client.follow_move(&ctx).await;
+    client.register().await;
+    client.wait_rows(&mut held, &[("a", 1), ("c", 1)]);
+    assert_eq!(
+        group_builds_in(&c),
+        before + 1,
+        "joining builds c's part once"
+    );
+    assert_eq!(group_builds_in(&domain_of(&ctx, "b")), 0, "b never joined");
+
+    ctx.del(&member("c", "g"))
+        .unwrap_or_else(|error| panic!("member: {error}"));
+    client.follow_move(&ctx).await;
+    client.register().await;
+    client.wait_rows(&mut held, &[("a", 1)]);
+
+    ctx.set(&member("b", "g"))
+        .unwrap_or_else(|error| panic!("member: {error}"));
+    client.follow_move(&ctx).await;
+    client.register().await;
+    client.wait_rows(&mut held, &[("a", 1), ("b", 1)]);
+    let runtime = ctx
+        .query_snapshot(
+            runtime::GetPtRuntimesByIds {
+                ids: vec!["b".into()],
+            },
+            ctx.new_server_transaction(),
+        )
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("runtime b"));
+    ctx.del(runtime.as_ref())
+        .unwrap_or_else(|error| panic!("close b: {error}"));
+    client.follow_move(&ctx).await;
+    client.register().await;
+    client.wait_rows(&mut held, &[("a", 1)]);
+
+    ctx.set(&member("d", "g"))
+        .unwrap_or_else(|error| panic!("member: {error}"));
+    client.follow_move(&ctx).await;
+    client.register().await;
+    client.wait_rows(&mut held, &[("a", 1)]);
+    ctx.set(&PtRuntime { id: "d".into() })
+        .unwrap_or_else(|error| panic!("open d: {error}"));
+    client.follow_move(&ctx).await;
+    ctx.set(&reading("d", 3))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    client.register().await;
+    client.wait_rows(&mut held, &[("a", 1), ("d", 3)]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_parked_partition_does_not_delay_another_partitions_part_of_a_merged_view() {
+    let _serial = SERIAL.lock().await;
+    let ctx = grouped_server(&["a", "b"]);
+    for partition in ["a", "b"] {
+        ctx.set(&member(partition, "g"))
+            .unwrap_or_else(|error| panic!("member: {error}"));
+    }
+    let mut readers = Client::new("levels");
+    readers.subscribe_levels(&ctx, "a");
+    readers.register().await;
+    readers.wait_level(1);
+    let mut client = Client::new("client");
+    client.subscribe_group(&ctx, "g");
+    client.register().await;
+    let mut held = HashMap::new();
+    client.wait_rows(&mut held, &[("a", 1), ("b", 1)]);
+
+    let gate = arm(domain_of(&ctx, "a"));
+    let writer = {
+        let ctx = Arc::clone(&ctx);
+        thread::spawn(move || ctx.set(&reading("a", 2)))
+    };
+    assert!(gate.0.wait_entered(), "partition a never parked");
+    ctx.set(&reading("b", 5))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    client.wait_held(&mut held, "b at 5", |rows| {
+        rows.iter()
+            .any(|(partition, level)| &**partition == "b" && *level == 5)
+    });
+    assert!(gate.0.is_parked(), "partition a was busy throughout");
+    drop(gate);
+    assert!(writer.join().is_ok_and(|written| written.is_ok()));
+    client.wait_rows(&mut held, &[("a", 2), ("b", 5)]);
+}
+
+#[test]
+fn a_server_with_a_merged_view_and_no_spanning_rule_refuses_to_start() {
+    let unpartitioned = crate::MykoServer::builder().build().ctx();
+    let refused = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        unpartitioned.with_partitions(PartitionSchema::new().lifecycle::<PtRuntime>())
+    }));
+    assert!(
+        refused.is_err(),
+        "the server started without a spanning rule"
+    );
+}
+
+#[test]
+fn no_graph_reads_a_merged_view() {
+    let ctx = grouped_server(&["a"]);
+    ctx.set(&member("a", "g"))
+        .unwrap_or_else(|error| panic!("member: {error}"));
+    let in_a = ctx
+        .partition(&PartitionKey::new("a"))
+        .unwrap_or_else(|| panic!("partition a"));
+    for reader in [ctx.as_ref(), &in_a] {
+        let rows = reader.view_map_untyped(
+            PtGroupReadings { group: "g".into() },
+            reader.new_server_transaction(),
+        );
+        reader.settle();
+        assert!(rows.snapshot().is_empty(), "a graph read a merged view");
+    }
 }

@@ -926,6 +926,52 @@ impl MykoServerContext {
             .watch_subscription(request, payload, opened_in, Box::new(moved))
     }
 
+    /// Where a client subscription of the merged view `view_id` runs: the
+    /// partitions its spanning rule names, and the context of each of them
+    /// that is open, by key. `None` when the view is not merged across this
+    /// server's partitions.
+    #[must_use]
+    pub fn span_contexts(
+        &self,
+        view_id: &str,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+    ) -> Option<(std::collections::BTreeSet<PartitionKey>, Vec<Self>)> {
+        let partitions = self.partitions()?;
+        let keys = partitions.span_keys(view_id, request, payload)?;
+        let contexts = keys
+            .iter()
+            .filter_map(|key| partitions.get(key))
+            .map(|partition| partition.ctx().clone())
+            .collect();
+        Some((keys, contexts))
+    }
+
+    /// Follow a merged view's subscription built over `contexts` from what
+    /// [`span_contexts`](Self::span_contexts) returned, until the returned
+    /// watch is dropped. `moved` is called, as for
+    /// [`watch_subscription`](Self::watch_subscription), when the rule
+    /// names another set or a partition of the set opens or closes.
+    #[must_use]
+    pub fn watch_span(
+        &self,
+        view_id: Arc<str>,
+        (request, payload): (Arc<RequestContext>, serde_json::Value),
+        (keys, contexts): (std::collections::BTreeSet<PartitionKey>, &[Self]),
+        moved: impl Fn() + Send + Sync + 'static,
+    ) -> Option<SubscriptionWatch> {
+        let built = contexts
+            .iter()
+            .filter_map(|ctx| ctx.partition_key().cloned())
+            .collect();
+        Some(self.partitions()?.watch_span(
+            view_id,
+            (request, payload),
+            (keys, &built),
+            Box::new(moved),
+        ))
+    }
+
     /// Block until every write admitted before the call has been applied
     /// and delivered: in every open partition from the root context, in this
     /// partition from a partition's context. Rows a root write hands to a
@@ -3664,6 +3710,14 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
+        if self.partitions().is_some() && super::partition::is_merged(&V::view_id_static()) {
+            tracing::error!(
+                view_id = %V::view_id_static(),
+                "a view merged across partitions exists only for its subscriber; no graph \
+                 may read it, so this read is refused and returns no rows"
+            );
+            return CellMap::new().lock();
+        }
         let key = Self::cache_key_with_scope(
             "view",
             V::view_id_static().as_ref(),

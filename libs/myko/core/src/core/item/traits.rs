@@ -107,7 +107,7 @@ fn item_registry_index() -> &'static AMap<&'static str, &'static ItemRegistratio
 }
 
 /// Every entity type registered in this binary.
-pub(crate) fn registered_entity_types() -> impl Iterator<Item = &'static str> {
+pub fn registered_entity_types() -> impl Iterator<Item = &'static str> {
     item_registry_index().keys().copied()
 }
 

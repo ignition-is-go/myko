@@ -141,6 +141,23 @@ pub use ts_rs::{self, TS};
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko::TS)]
 
+/// Declare the view `$view` merged across partitions.
+///
+/// A server builds a client's subscription of it in each partition its
+/// schema's [`PartitionSchema::span`](crate::server::PartitionSchema::span)
+/// rule names and delivers the union. No graph may read it.
+#[macro_export]
+macro_rules! merged_across_partitions {
+    ($view:ty) => {
+        impl $crate::server::MergedAcrossPartitions for $view {}
+        $crate::inventory::submit! {
+            $crate::server::MergedViewRegistration {
+                view_id: <$view as $crate::view::ViewIdStatic>::view_id_static,
+            }
+        }
+    };
+}
+
 /// Register a Rust type for generated-language export.
 ///
 /// Registration is emitted only for native typegen builds. Runtime builds,

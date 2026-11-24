@@ -208,6 +208,53 @@ impl<T: PartitionKeyField> PartitionKeyField for Option<T> {
     }
 }
 
+/// A view whose client subscriptions run in a set of partitions and are
+/// merged for the client outside every partition.
+///
+/// Each partition of the set builds a part. The merge is the union of the
+/// parts' rows by id; when parts disagree on a row, the part of the lowest
+/// partition key is the one the client sees.
+///
+/// Declare it with [`merged_across_partitions!`](crate::merged_across_partitions),
+/// and give it a spanning rule with [`PartitionSchema::span`]. A server
+/// refuses to start with a merged view that has no spanning rule, and no
+/// graph may read one: its output exists only for the client.
+pub trait MergedAcrossPartitions: crate::view::ViewFactory {}
+
+/// Registered by [`merged_across_partitions!`](crate::merged_across_partitions).
+pub struct MergedViewRegistration {
+    pub view_id: fn() -> Arc<str>,
+}
+
+inventory::collect!(MergedViewRegistration);
+
+/// Whether the view `view_id` is merged across partitions.
+pub(crate) fn is_merged(view_id: &str) -> bool {
+    static MERGED: std::sync::OnceLock<std::collections::HashSet<Arc<str>>> =
+        std::sync::OnceLock::new();
+    MERGED
+        .get_or_init(|| {
+            inventory::iter::<MergedViewRegistration>()
+                .map(|registration| (registration.view_id)())
+                .collect()
+        })
+        .contains(view_id)
+}
+
+type SpanRule = Arc<
+    dyn Fn(&MykoServerContext, &RequestContext, &serde_json::Value) -> BTreeSet<PartitionKey>
+        + Send
+        + Sync,
+>;
+
+/// Which partitions a merged view's subscription runs in.
+struct Span {
+    rule: SpanRule,
+    /// Shared entity types the rule reads: a write to one of them asks it
+    /// again for every live subscription of the view.
+    inputs: Vec<&'static str>,
+}
+
 enum Route {
     /// The item names its partition.
     Keyed(KeyOf),
@@ -225,6 +272,7 @@ pub struct PartitionSchema {
     lifecycle: Option<&'static str>,
     subscriptions: Option<Subscriptions>,
     commands: Option<SubscriptionPartition>,
+    spans: HashMap<Arc<str>, Span>,
 }
 
 /// Where client subscriptions open.
@@ -264,6 +312,7 @@ impl PartitionSchema {
             lifecycle: None,
             subscriptions: None,
             commands: None,
+            spans: HashMap::new(),
         }
     }
 
@@ -338,6 +387,48 @@ impl PartitionSchema {
             inputs: inputs.to_vec(),
         });
         self
+    }
+
+    /// Name the partitions a client's subscription of the merged view `V`
+    /// runs in, from the root context, the request and the view's payload.
+    /// `V` is built in each of them that is open, and the client receives
+    /// the merge. A partition outside the set builds nothing for it.
+    ///
+    /// `rule` reads shared data from the root context with one-shot reads.
+    /// `inputs` names the shared entity types it reads: a write to one of
+    /// them asks it again for every live subscription of `V`, and one whose
+    /// set changed opens again over the new set. A partition of the set
+    /// opening or closing opens it again too.
+    #[must_use]
+    pub fn span<V: MergedAcrossPartitions>(
+        mut self,
+        inputs: &[&'static str],
+        rule: impl Fn(&MykoServerContext, &RequestContext, &serde_json::Value) -> BTreeSet<PartitionKey>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.spans.insert(
+            V::view_id_static(),
+            Span {
+                rule: Arc::new(rule),
+                inputs: inputs.to_vec(),
+            },
+        );
+        self
+    }
+
+    /// Every merged view must have a spanning rule.
+    fn check_spans(&self) -> Result<(), String> {
+        inventory::iter::<MergedViewRegistration>()
+            .map(|registration| (registration.view_id)())
+            .find(|view_id| !self.spans.contains_key(view_id))
+            .map_or(Ok(()), |view_id| {
+                Err(format!(
+                    "view {view_id} is merged across partitions but the schema gives it no \
+                     spanning rule: declare one with PartitionSchema::span"
+                ))
+            })
     }
 
     /// Name the partition a client's command runs in, from the root
@@ -1056,6 +1147,9 @@ struct Watched {
     payload: serde_json::Value,
     /// Where it is open now.
     current: Option<PartitionKey>,
+    /// For a merged view's subscription: the view, and the partitions its
+    /// rule named when it opened.
+    span: Option<(Arc<str>, BTreeSet<PartitionKey>)>,
     moved: SubscriptionMoved,
 }
 
@@ -1086,7 +1180,7 @@ impl Partitions {
                 Route::Keyed(_) => None,
             })
             .collect();
-        if let Err(refused) = schema.check_relations() {
+        if let Err(refused) = schema.check_relations().and_then(|()| schema.check_spans()) {
             #[allow(
                 clippy::panic,
                 reason = "a schema whose data flows backwards is a program error"
@@ -1132,6 +1226,54 @@ impl Partitions {
             .and_then(|subscriptions| (subscriptions.place)(&self.root, request, payload))
     }
 
+    /// The partitions the spanning rule of view `view_id` names, or `None`
+    /// when the view has none.
+    pub(crate) fn span_keys(
+        &self,
+        view_id: &str,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+    ) -> Option<BTreeSet<PartitionKey>> {
+        let span = self.schema.spans.get(view_id)?;
+        Some((span.rule)(&self.root, request, payload))
+    }
+
+    /// Follow a merged view's subscription opened over `keys`.
+    pub(crate) fn watch_span(
+        &self,
+        view_id: Arc<str>,
+        (request, payload): (Arc<RequestContext>, serde_json::Value),
+        (keys, built): (BTreeSet<PartitionKey>, &BTreeSet<PartitionKey>),
+        moved: SubscriptionMoved,
+    ) -> SubscriptionWatch {
+        let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
+        let mut watch = Watched {
+            request,
+            payload,
+            current: None,
+            span: Some((view_id, keys)),
+            moved,
+        };
+        let mut watches = self.watches.lock();
+        // Asked again under the lock: a write, open or close since it was
+        // built either shows here or reaches it after this.
+        self.place_again(&mut watch);
+        if let Some((_, keys)) = &watch.span
+            && keys
+                .iter()
+                .filter(|key| self.open.contains_key(*key))
+                .ne(built.iter())
+        {
+            (watch.moved)();
+        }
+        watches.insert(id, watch);
+        drop(watches);
+        SubscriptionWatch {
+            partitions: self.this.clone(),
+            id,
+        }
+    }
+
     pub(crate) fn command_partition(
         &self,
         request: &RequestContext,
@@ -1163,6 +1305,7 @@ impl Partitions {
             request,
             payload,
             current: opened_in,
+            span: None,
             moved,
         };
         // Asked again under the lock: a write since the subscription opened
@@ -1193,10 +1336,25 @@ impl Partitions {
                 watch.current = None;
                 (watch.moved)();
             }
+            if watch
+                .span
+                .as_ref()
+                .is_some_and(|(_, keys)| keys.contains(key))
+            {
+                (watch.moved)();
+            }
         }
     }
 
     fn place_again(&self, watch: &mut Watched) {
+        if let Some((view_id, keys)) = &mut watch.span {
+            let answer = self.span_keys(view_id, &watch.request, &watch.payload);
+            if answer.as_ref() != Some(keys) {
+                *keys = answer.unwrap_or_default();
+                (watch.moved)();
+            }
+            return;
+        }
         let answer = self.subscription_partition(&watch.request, &watch.payload);
         if answer != watch.current {
             watch.current = answer;
@@ -1267,6 +1425,15 @@ impl Partitions {
         }
         for entity_type in self.placements.keys() {
             self.reroute(entity_type, None);
+        }
+        for watch in self.watches.lock().values() {
+            if watch
+                .span
+                .as_ref()
+                .is_some_and(|(_, keys)| keys.contains(&partition.key))
+            {
+                (watch.moved)();
+            }
         }
         partition
     }
@@ -1883,6 +2050,11 @@ impl Partitions {
             .subscriptions
             .as_ref()
             .is_some_and(|subscriptions| subscriptions.inputs.contains(&entity_type))
+            || self
+                .schema
+                .spans
+                .values()
+                .any(|span| span.inputs.contains(&entity_type))
         {
             let mut watches = self.watches.lock();
             for watch in watches.values_mut() {

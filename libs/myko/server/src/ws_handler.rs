@@ -1874,6 +1874,10 @@ impl WsHandler {
             drop(ctx);
             return;
         };
+        if let Some(span) = ctx.span_contexts(&view_id, &request, &wrapped.view) {
+            Self::open_merged_view(&ctx, message_context, (&tx_id, &request), &wrapped, span);
+            return;
+        }
         let Some(ctx) = Self::open_subscription(
             &ctx,
             message_context,
@@ -1962,6 +1966,84 @@ impl WsHandler {
                 None
             }
         }
+    }
+
+    /// Open a subscription of a view merged across partitions: build its part
+    /// in each partition of `span` and deliver the union. It is opened again
+    /// when the span changes or one of its partitions opens or closes.
+    fn open_merged_view(
+        root: &MykoServerContext,
+        message_context: &MessageContext<'_>,
+        (tx_id, request): (&Arc<str>, &Arc<RequestContext>),
+        wrapped: &WrappedView,
+        (keys, contexts): (
+            std::collections::BTreeSet<myko::server::PartitionKey>,
+            Vec<MykoServerContext>,
+        ),
+    ) {
+        let view_id = wrapped.view_id.clone();
+        let moved = message_context.placements.moved.clone();
+        let moved_tx = Arc::clone(tx_id);
+        let resend = MykoMessage::View(wrapped.clone());
+        let watch = root.watch_span(
+            Arc::clone(&view_id),
+            (Arc::clone(request), wrapped.view.clone()),
+            (keys, &contexts),
+            move || drop(moved.send((Arc::clone(&moved_tx), resend.clone()))),
+        );
+        if let (Some(watch), Ok(mut watches)) = (watch, message_context.placements.watches.lock()) {
+            watches.insert(Arc::clone(tx_id), watch);
+        }
+        let Some(view_data) = root.handler_registry.view(&view_id) else {
+            return;
+        };
+        let subscribe_factory = root.handler_registry.view_subscribe_factory(&view_id);
+        let cell_factory = view_data.cell_factory;
+        let parse = view_data.parse;
+        let payload = wrapped.view.clone();
+        let request = Arc::clone(request);
+        let tx = Arc::clone(tx_id);
+        let window = wrapped.window.clone();
+        message_context.subscription_builds.spawn(
+            "merged-view-subscription",
+            Arc::clone(tx_id),
+            message_context.subscribe_tx.clone(),
+            move || {
+                let mut parts = Vec::with_capacity(contexts.len());
+                for part in contexts {
+                    let built = parse(payload.clone())
+                        .map_err(|error| error.to_string())
+                        .and_then(|view| {
+                            let registry = part.registry.clone();
+                            let request = Arc::clone(&request);
+                            let ctx = Arc::new(part.clone());
+                            part.checked(|| match subscribe_factory {
+                                Some(subscribe) => subscribe(view, registry, request, ctx),
+                                None => cell_factory(view, registry, request, ctx)
+                                    .map(myko::view::ErasedViewMap::from),
+                            })
+                            .map_err(|error| error.to_string())
+                            .and_then(|built| built)
+                        });
+                    match built {
+                        Ok(map) => parts.push(map),
+                        Err(error) => {
+                            return Some(Err(MykoMessage::ViewError(ViewError::new(
+                                tx.to_string(),
+                                view_id.to_string(),
+                                error,
+                            ))));
+                        }
+                    }
+                }
+                Some(Ok(SubscriptionReady::View {
+                    tx_id: tx,
+                    view_id,
+                    cellmap: myko::view::ErasedViewMap::merged(parts),
+                    window,
+                }))
+            },
+        );
     }
 
     fn send_view_error(
