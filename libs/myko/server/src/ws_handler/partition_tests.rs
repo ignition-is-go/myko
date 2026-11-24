@@ -512,3 +512,76 @@ async fn a_view_over_a_partitioned_type_delivers_only_its_partitions_rows() {
         "a view in root over a partitioned type is refused: {refused:?}"
     );
 }
+
+// Startup and the log ---------------------------------------------------------
+
+fn partitioned_server() -> crate::MykoServer {
+    crate::MykoServer::builder()
+        .with_partitions(PartitionSchema::new().lifecycle::<PtRuntime>())
+        .build()
+}
+
+fn logged_by(item: &impl myko::prelude::Eventable, host: &str) -> myko::wire::MEvent {
+    let mut event = myko::wire::MEvent::from_item(item, myko::wire::MEventType::SET, "logged");
+    event.source_id = Some(host.into());
+    event
+}
+
+fn logged(item: &impl myko::prelude::Eventable) -> myko::wire::MEvent {
+    logged_by(item, "another-host")
+}
+
+fn reading_in(ctx: &MykoServerContext, partition: &str) -> Option<i64> {
+    let ctx = ctx.partition(&PartitionKey::new(partition))?;
+    let row = ctx
+        .registry
+        .get_or_create(<PtReading as myko::prelude::Eventable>::ENTITY_NAME_STATIC)
+        .get_value(&format!("{partition}-row").into())?;
+    AnyItem::as_any(row.as_ref())
+        .downcast_ref::<PtReading>()
+        .map(|reading| reading.level)
+}
+
+#[test]
+fn a_hydrated_snapshot_places_each_partitioned_row_in_its_partition() {
+    let _serial = SERIAL.blocking_lock();
+    let server = partitioned_server();
+    // A partitioned row before the shared row that opens its partition.
+    let loaded = server.hydrate_snapshot([
+        logged(&reading("a", 1)),
+        logged(&PtRuntime { id: "a".into() }),
+        logged(&PtRuntime { id: "b".into() }),
+        logged(&reading("b", 2)),
+    ]);
+    assert_eq!(loaded, Ok(4));
+    let ctx = server.ctx();
+    assert_eq!(reading_in(&ctx, "a"), Some(1));
+    assert_eq!(reading_in(&ctx, "b"), Some(2));
+    assert!(
+        server
+            .registry
+            .get(<PtReading as myko::prelude::Eventable>::ENTITY_NAME_STATIC)
+            .is_none_or(|store| store.snapshot().is_empty()),
+        "root holds no partitioned row"
+    );
+}
+
+#[test]
+fn a_tailed_event_lands_in_its_partition() {
+    let _serial = SERIAL.blocking_lock();
+    let server = partitioned_server();
+    let ctx = server.ctx();
+    ctx.set(&PtRuntime { id: "a".into() })
+        .unwrap_or_else(|error| panic!("open a: {error}"));
+    let landing = crate::postgres::Landing::Context(ctx.clone());
+    let handlers = server.handler_registry();
+    let host = server.host_id.to_string();
+    landing.apply_remote(&logged(&reading("a", 5)), &host, &handlers);
+    assert_eq!(reading_in(&ctx, "a"), Some(5));
+    landing.apply_remote(&logged_by(&reading("a", 6), &host), &host, &handlers);
+    assert_eq!(
+        reading_in(&ctx, "a"),
+        Some(5),
+        "this host's own event is skipped"
+    );
+}

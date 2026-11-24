@@ -301,7 +301,7 @@ impl MykoServerBuilder {
 
         let server_info = Arc::new(self.server_info.unwrap_or_default());
 
-        let mut server = MykoServer::new(MykoServerConfig {
+        let mut server = MykoServer::assemble(MykoServerConfig {
             bind_addr,
             tcp_nodelay: self.tcp_nodelay.unwrap_or(true),
             postgres: self.postgres,
@@ -319,7 +319,9 @@ impl MykoServerBuilder {
         if let Some(provider) = self.history_replay {
             server.history_replay = Some(provider);
         }
+        server.partitioned = self.partitions.is_some();
         server.partitions = std::sync::Mutex::new(self.partitions);
+        server.start_postgres_consumer();
         server
     }
 }
@@ -351,6 +353,8 @@ pub struct MykoServer {
     _postgres_producer_owner: Option<PostgresProducer>,
     /// Postgres consumer (kept alive)
     postgres_consumer: Option<PostgresConsumer>,
+    /// The history provider the consumer reports to, until it starts.
+    consumer_history: Option<Arc<PostgresHistoryReplayProvider>>,
     history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>>,
     /// Whether the server is ready to accept connections
     ready: Arc<AtomicBool>,
@@ -383,6 +387,8 @@ pub struct MykoServer {
     ctx_cache: std::sync::OnceLock<MykoServerContext>,
     /// Taken by the first `ctx()`, which partitions the memoized context.
     partitions: std::sync::Mutex<Option<myko::server::PartitionSchema>>,
+    /// Whether the server declared partitions.
+    partitioned: bool,
 }
 
 impl MykoServer {
@@ -394,6 +400,37 @@ impl MykoServer {
 
     /// Create a new cell-based server.
     pub fn new(config: MykoServerConfig) -> Self {
+        let mut server = Self::assemble(config);
+        server.start_postgres_consumer();
+        server
+    }
+
+    /// Start tailing Postgres into this server, once it is configured: with
+    /// partitions, every row read back lands through the partitioned
+    /// context, so the context is built first.
+    fn start_postgres_consumer(&mut self) {
+        let (Some(postgres_config), Some(history_replay)) =
+            (self.config.postgres.clone(), self.consumer_history.take())
+        else {
+            return;
+        };
+        let landing = self.landing();
+        match PostgresConsumer::start(
+            &postgres_config,
+            self.host_id,
+            self.handler_registry.clone(),
+            landing,
+            history_replay,
+        ) {
+            Ok(consumer) => self.postgres_consumer = Some(consumer),
+            Err(e) => tracing::error!("Failed to start Postgres consumer: {}", e),
+        }
+        // Without a durable consumer the server is ready at once.
+        self.ready
+            .store(self.postgres_consumer.is_none(), Ordering::SeqCst);
+    }
+
+    fn assemble(config: MykoServerConfig) -> Self {
         let host_id = config.host_id.unwrap_or_else(Uuid::new_v4);
         let registry = Arc::new(StoreRegistry::new());
         let handler_registry = Arc::new(HandlerRegistry::new());
@@ -403,7 +440,7 @@ impl MykoServer {
         init_client_registry();
 
         let (saga_event_tx, saga_event_rx) = flume::unbounded::<MEvent>();
-        let (history_replay, postgres_producer_owner, postgres_producer, postgres_consumer) =
+        let (history_replay, postgres_producer_owner, postgres_producer, consumer_history) =
             config.postgres.as_ref().map_or_else(
                 || (None, None, None, None),
                 |postgres_config| {
@@ -412,20 +449,12 @@ impl MykoServer {
                     match PostgresProducer::new(postgres_config, host_id) {
                         Ok(producer) => {
                             let handle = producer.handle();
-                            let consumer = match PostgresConsumer::start(
-                                postgres_config,
-                                host_id,
-                                handler_registry.clone(),
-                                registry.clone(),
-                                history_replay.clone(),
-                            ) {
-                                Ok(c) => Some(c),
-                                Err(e) => {
-                                    tracing::error!("Failed to start Postgres consumer: {}", e);
-                                    None
-                                }
-                            };
-                            (Some(history_replay), Some(producer), Some(handle), consumer)
+                            (
+                                Some(history_replay.clone()),
+                                Some(producer),
+                                Some(handle),
+                                Some(history_replay),
+                            )
                         }
                         Err(e) => {
                             tracing::error!("Failed to create Postgres producer: {}", e);
@@ -435,8 +464,7 @@ impl MykoServer {
                 },
             );
 
-        // If no durable consumer, server is immediately ready
-        let ready = Arc::new(AtomicBool::new(postgres_consumer.is_none()));
+        let ready = Arc::new(AtomicBool::new(true));
 
         // Initialize full-text search index
         let search_index = Arc::new(SearchIndex::new());
@@ -473,7 +501,8 @@ impl MykoServer {
             host_id,
             config,
             _postgres_producer_owner: postgres_producer_owner,
-            postgres_consumer,
+            postgres_consumer: None,
+            consumer_history,
             history_replay: history_replay
                 .map(|provider| -> Arc<dyn myko::server::HistoryReplayProvider> { provider }),
             ready,
@@ -489,6 +518,7 @@ impl MykoServer {
             server_ownership_guard: std::sync::Mutex::new(None),
             ctx_cache: std::sync::OnceLock::new(),
             partitions: std::sync::Mutex::new(None),
+            partitioned: false,
         }
     }
 
@@ -760,16 +790,36 @@ impl MykoServer {
     ///
     /// Use it to bring a server to a known state before it serves, for
     /// example from a fixture in a test.
-    pub fn hydrate_snapshot(&self, events: impl IntoIterator<Item = MEvent>) -> usize {
+    ///
+    /// With partitions, every shared row is loaded first, then each
+    /// partitioned row is placed in its partition.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a row cannot be placed, such as a partitioned
+    /// row that names no partition.
+    pub fn hydrate_snapshot(
+        &self,
+        events: impl IntoIterator<Item = MEvent>,
+    ) -> Result<usize, String> {
         let loaded = postgres::hydrate_stores(
             events,
             &self.host_id.to_string(),
             &self.handler_registry,
-            &self.registry,
-        );
+            &self.landing(),
+        )?;
         self.search_index.build_from_registry(&self.registry);
         self.establish_relations();
-        loaded
+        Ok(loaded)
+    }
+
+    /// Where rows read back from a log land in this server.
+    fn landing(&self) -> postgres::Landing {
+        if self.partitioned {
+            postgres::Landing::Context(self.ctx())
+        } else {
+            postgres::Landing::Stores(self.registry.clone())
+        }
     }
 
     /// Establish relationship invariants.
