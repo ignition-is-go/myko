@@ -536,18 +536,29 @@ fn in_process_execute_query(
         );
     }
 
+    let request_context = mcp_request_context(tx, ctx.host_id, session);
+    let ctx = Arc::new(
+        ctx.subscription_context(
+            &request_context,
+            &query_json,
+            Some(registration.query_item_type),
+        )
+        .map_err(|e| e.to_string())?,
+    );
     let parsed = (query_data.parse)(query_json)
         .map_err(|e| format!("Failed to parse query {query_id}: {e}"))?;
 
-    let request_context = mcp_request_context(tx, ctx.host_id, session);
-
-    let cellmap = (query_data.cell_factory)(
-        parsed,
-        ctx.registry.clone(),
-        request_context,
-        Some(ctx.clone()),
-    )
-    .map_err(|e| format!("Failed to build query cell: {e}"))?;
+    let cellmap = ctx
+        .checked(|| {
+            (query_data.cell_factory)(
+                parsed,
+                ctx.registry.clone(),
+                request_context,
+                Some(ctx.clone()),
+            )
+        })
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Failed to build query cell: {e}"))?;
 
     let items: Vec<Value> = cellmap
         .snapshot()
@@ -589,14 +600,24 @@ fn in_process_execute_view(
         );
     }
 
+    let request_context = mcp_request_context(tx, ctx.host_id, session);
+    let ctx = Arc::new(
+        ctx.subscription_context(
+            &request_context,
+            &view_json,
+            Some(registration.view_item_type),
+        )
+        .map_err(|e| e.to_string())?,
+    );
     let parsed =
         (view_data.parse)(view_json).map_err(|e| format!("Failed to parse view {view_id}: {e}"))?;
 
-    let request_context = mcp_request_context(tx, ctx.host_id, session);
-
-    let cellmap =
-        (view_data.cell_factory)(parsed, ctx.registry.clone(), request_context, ctx.clone())
-            .map_err(|e| format!("Failed to build view cell: {e}"))?;
+    let cellmap = ctx
+        .checked(|| {
+            (view_data.cell_factory)(parsed, ctx.registry.clone(), request_context, ctx.clone())
+        })
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("Failed to build view cell: {e}"))?;
 
     let items: Vec<Value> = cellmap
         .snapshot()
@@ -634,12 +655,17 @@ async fn in_process_execute_report(
         obj.insert("tx".to_string(), json!(tx.as_ref()));
     }
 
+    let request_context = mcp_request_context(tx, ctx.host_id, session);
+    let ctx = Arc::new(
+        ctx.subscription_context(&request_context, &report_json, None)
+            .map_err(|e| e.to_string())?,
+    );
     let parsed = (report_data.parse)(report_json)
         .map_err(|e| format!("Failed to parse report {report_id}: {e}"))?;
 
-    let request_context = mcp_request_context(tx, ctx.host_id, session);
-
-    let cell = (report_data.cell_factory)(parsed, request_context, ctx)
+    let cell = ctx
+        .checked(|| (report_data.cell_factory)(parsed, request_context, ctx.clone()))
+        .map_err(|e| e.to_string())?
         .map_err(|e| format!("Failed to build report cell: {e}"))?;
 
     // Subscribe to drive reactive evaluation; capture the first emission.
@@ -682,6 +708,10 @@ fn in_process_execute_command(
             let executor = (registration.factory)();
             let req = mcp_request_context(tx, ctx.host_id, session);
             let cmd_id: Arc<str> = Arc::from(command_id);
+            let ctx = Arc::new(
+                ctx.command_context(&req, &command_json)
+                    .map_err(|e| e.to_string())?,
+            );
             let cmd_ctx = CommandContext::new(cmd_id, req, ctx);
             if let Some(session) = session {
                 session

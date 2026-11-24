@@ -98,6 +98,45 @@ impl CommandContext {
     // Convenience accessors
     // ─────────────────────────────────────────────────────────────────────────
 
+    /// This command, run on the context of the open partition `key`: its
+    /// one-shot reads read that partition, and its reactive reads are built
+    /// there. Writes are routed by their items from any context.
+    ///
+    /// # Errors
+    /// Returns a command error when the partition is not open.
+    pub fn in_partition(&self, key: &crate::server::PartitionKey) -> Result<Self, CommandError> {
+        let server_ctx = self
+            .server_ctx
+            .partition(key)
+            .ok_or_else(|| self.error(crate::server::PartitionError::NotOpen(key.clone())))?;
+        Ok(Self {
+            server_ctx: Arc::new(server_ctx),
+            ..self.clone()
+        })
+    }
+
+    /// The partition this command runs in. `None` on the root context.
+    #[must_use]
+    pub fn partition_key(&self) -> Option<&crate::server::PartitionKey> {
+        self.server_ctx.partition_key()
+    }
+
+    fn error(&self, message: impl std::fmt::Display) -> CommandError {
+        CommandError::new(
+            self.req.tx.to_string(),
+            self.command_id.to_string(),
+            message.to_string(),
+        )
+    }
+
+    /// Run a one-shot read on this command's context, refused when it reads
+    /// a partitioned type from the root context, where it has no rows.
+    fn read<R>(&self, read: impl FnOnce() -> R) -> Result<R, CommandError> {
+        self.server_ctx
+            .checked(read)
+            .map_err(|refused| self.error(refused))
+    }
+
     /// Get the request creation timestamp.
     #[must_use]
     pub fn created_at(&self) -> &str {
@@ -110,19 +149,14 @@ impl CommandContext {
     ///
     /// # Errors
     ///
-    /// Returns an error when the requested operation cannot be completed.
+    /// Returns an error when the query reads a partitioned type from the
+    /// root context.
     pub fn exec_query_first<Q>(&self, query: Q) -> Result<Option<Arc<Q::Item>>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
-        {
-            Ok(self
-                .server_ctx
-                .query_snapshot(query, self.req.clone())
-                .into_iter()
-                .next())
-        }
+        self.exec_query(query).map(|rows| rows.into_iter().next())
     }
 
     /// Execute a query and return all results.
@@ -131,19 +165,14 @@ impl CommandContext {
     ///
     /// # Errors
     ///
-    /// Returns an error when the requested operation cannot be completed.
+    /// Returns an error when the query reads a partitioned type from the
+    /// root context.
     pub fn exec_query<Q>(&self, query: Q) -> Result<Vec<Arc<Q::Item>>, CommandError>
     where
         Q: QueryParams,
         Q::Item: DeserializeOwned + std::fmt::Debug + Send + Sync + Clone + 'static,
     {
-        {
-            Ok(self
-                .server_ctx
-                .query_snapshot(query, self.req.clone())
-                .into_iter()
-                .collect())
-        }
+        self.read(|| self.server_ctx.query_snapshot(query, self.req.clone()))
     }
 
     /// Execute a report and return the current value.
@@ -152,7 +181,8 @@ impl CommandContext {
     ///
     /// # Errors
     ///
-    /// Returns an error when the requested operation cannot be completed.
+    /// Returns an error when the report reads a partitioned type from the
+    /// root context.
     pub fn exec_report<R>(
         &self,
         report: R,
@@ -160,15 +190,14 @@ impl CommandContext {
     where
         R: crate::report::ReportParams + Clone,
     {
-        {
-            use hyphae::Gettable;
-            Ok(self
-                .server_ctx
+        use hyphae::Gettable;
+        self.read(|| {
+            self.server_ctx
                 .report(report, self.req.clone())
                 .get()
                 .as_ref()
-                .clone())
-        }
+                .clone()
+        })
     }
 
     /// Look up the existing edge occupying the candidate's unique pair and

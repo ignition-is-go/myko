@@ -221,6 +221,7 @@ pub struct PartitionSchema {
     routes: HashMap<&'static str, Route>,
     lifecycle: Option<&'static str>,
     subscriptions: Option<Subscriptions>,
+    commands: Option<SubscriptionPartition>,
 }
 
 /// Where client subscriptions open.
@@ -259,6 +260,7 @@ impl PartitionSchema {
             routes,
             lifecycle: None,
             subscriptions: None,
+            commands: None,
         }
     }
 
@@ -332,6 +334,23 @@ impl PartitionSchema {
             place: Arc::new(place),
             inputs: inputs.to_vec(),
         });
+        self
+    }
+
+    /// Name the partition a client's command runs in, from the root
+    /// context, the request and the command's payload. A command for which
+    /// it names none runs on the root context, where a one-shot read of a
+    /// partitioned type is refused. A command reaches another partition
+    /// through [`CommandContext::in_partition`](crate::command::CommandContext::in_partition).
+    #[must_use]
+    pub fn command_in(
+        mut self,
+        place: impl Fn(&MykoServerContext, &RequestContext, &serde_json::Value) -> Option<PartitionKey>
+        + Send
+        + Sync
+        + 'static,
+    ) -> Self {
+        self.commands = Some(Arc::new(place));
         self
     }
 
@@ -1009,6 +1028,17 @@ impl Partitions {
             .subscriptions
             .as_ref()
             .and_then(|subscriptions| (subscriptions.place)(&self.root, request, payload))
+    }
+
+    pub(crate) fn command_partition(
+        &self,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+    ) -> Option<PartitionKey> {
+        self.schema
+            .commands
+            .as_ref()
+            .and_then(|place| place(&self.root, request, payload))
     }
 
     /// Follow where a live subscription belongs. `None` when the hook reads

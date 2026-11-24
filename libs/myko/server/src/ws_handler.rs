@@ -2371,6 +2371,22 @@ impl WsHandler {
                         .with_auth(job.auth.clone()),
                 );
                 let cmd_id: Arc<str> = Arc::from(command_id.clone());
+                let ctx = match ctx.command_context(&req, &job.command) {
+                    Ok(placed) => Arc::new(placed),
+                    Err(refused) => {
+                        let error = MykoMessage::CommandError(CommandError::new(
+                            job.tx_id.to_string(),
+                            command_id.clone(),
+                            refused.to_string(),
+                        ));
+                        if let Err(err) =
+                            deferred_tx.try_send(DeferredOutbound::CommandResult(error))
+                        {
+                            drop_logger.on_drop("CommandError", &err);
+                        }
+                        return;
+                    }
+                };
                 let cmd_ctx = CommandContext::new(cmd_id, req, ctx);
                 let execute_started = Instant::now();
 

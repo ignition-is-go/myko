@@ -746,6 +746,34 @@ impl MykoServerContext {
         }
     }
 
+    /// The context a client's command runs in: the partition the schema's
+    /// [`PartitionSchema::command_in`] hook names, or this context when it
+    /// names none or this is a partition's context.
+    ///
+    /// # Errors
+    /// [`PartitionError::NotOpen`] when the named partition is not open.
+    pub fn command_context(
+        &self,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+    ) -> Result<Self, PartitionError> {
+        let Some(partitions) = self.partitions() else {
+            return Ok(self.clone());
+        };
+        if self.home.is_some() {
+            return Ok(self.clone());
+        }
+        partitions.command_partition(request, payload).map_or_else(
+            || Ok(self.clone()),
+            |key| {
+                partitions
+                    .get(&key)
+                    .map(|partition| partition.ctx().clone())
+                    .ok_or(PartitionError::NotOpen(key))
+            },
+        )
+    }
+
     /// Follow where a live client subscription belongs, until the returned
     /// watch is dropped. `opened_in` is the partition it opened in, as
     /// [`subscription_context`](Self::subscription_context) chose it.

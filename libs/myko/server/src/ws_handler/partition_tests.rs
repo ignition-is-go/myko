@@ -237,6 +237,77 @@ impl ViewHandler for PtSeatView {
     }
 }
 
+/// The sum of the levels its context reads.
+#[myko::myko_command(i64)]
+pub struct PtLevelHere {
+    pub partition: Arc<str>,
+}
+
+impl myko::command::CommandHandler for PtLevelHere {
+    fn execute(
+        self,
+        ctx: myko::command::CommandContext,
+    ) -> Result<i64, myko::command::CommandError> {
+        Ok(ctx
+            .exec_query(GetAllPtReadings {})?
+            .iter()
+            .map(|row| row.level)
+            .sum())
+    }
+}
+
+/// The sum of one partition's levels, read through an explicit handle.
+#[myko::myko_command(i64)]
+pub struct PtLevelIn {
+    pub key: Arc<str>,
+}
+
+impl myko::command::CommandHandler for PtLevelIn {
+    fn execute(
+        self,
+        ctx: myko::command::CommandContext,
+    ) -> Result<i64, myko::command::CommandError> {
+        Ok(ctx
+            .in_partition(&PartitionKey::new(self.key))?
+            .exec_query(GetAllPtReadings {})?
+            .iter()
+            .map(|row| row.level)
+            .sum())
+    }
+}
+
+/// Run `command` as the connection's command worker does, and return the
+/// response or error message it sends.
+fn run_command(
+    ctx: &Arc<MykoServerContext>,
+    command: &impl serde::Serialize,
+    id: &str,
+) -> MykoMessage {
+    let (deferred_tx, mut deferred_rx) = mpsc::channel(4);
+    let mut payload = serde_json::to_value(command).unwrap_or_else(|error| panic!("{error}"));
+    if let Some(object) = payload.as_object_mut() {
+        object.insert("tx".into(), "command".into());
+    }
+    WsHandler::execute_command_job(
+        Arc::clone(ctx),
+        &deferred_tx,
+        &mpsc::channel(4).0,
+        &DropLogger::new("client".into(), watch::channel(false).0),
+        "client".into(),
+        CommandJob {
+            auth: None,
+            tx_id: "command".into(),
+            command_id: id.into(),
+            command: payload,
+            received_at: Instant::now(),
+        },
+    );
+    match deferred_rx.try_recv() {
+        Ok(DeferredOutbound::CommandResult(message)) => message,
+        _ => panic!("the command sent no result"),
+    }
+}
+
 #[derive(Clone)]
 struct Socket(Arc<StdMutex<std_mpsc::Sender<MykoMessage>>>);
 
@@ -486,6 +557,13 @@ mod tests_support {
 fn server() -> Arc<MykoServerContext> {
     let schema = PartitionSchema::new()
         .lifecycle::<PtRuntime>()
+        .command_in(|_, _, payload| {
+            payload
+                .get("partition")
+                .and_then(serde_json::Value::as_str)
+                .filter(|key| !key.is_empty())
+                .map(PartitionKey::new)
+        })
         .subscribe_in(&[], |_, _, payload| {
             payload
                 .get("partition")
@@ -815,5 +893,44 @@ async fn a_subscription_moves_when_the_shared_data_placing_it_changes() {
     assert!(
         client.moved_rx.try_recv().is_err(),
         "an unchanged answer moves nothing"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_command_runs_in_the_partition_the_hook_names() {
+    let _serial = SERIAL.lock().await;
+    let ctx = server();
+    ctx.set(&reading("a", 1))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    ctx.set(&reading("b", 5))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+
+    let level = |partition: &str| {
+        run_command(
+            &ctx,
+            &PtLevelHere {
+                partition: partition.into(),
+            },
+            "PtLevelHere",
+        )
+    };
+    assert!(
+        matches!(level("b"), MykoMessage::CommandResponse(response) if response.response == 5),
+        "the command read b"
+    );
+    let refused = level("");
+    assert!(
+        matches!(&refused, MykoMessage::CommandError(error) if error.message.contains("partitioned")),
+        "a root read of a partitioned type is an error, not empty: {refused:?}"
+    );
+    let missing = level("missing");
+    assert!(
+        matches!(&missing, MykoMessage::CommandError(error) if error.message.contains("not open")),
+        "{missing:?}"
+    );
+    let handle = run_command(&ctx, &PtLevelIn { key: "a".into() }, "PtLevelIn");
+    assert!(
+        matches!(&handle, MykoMessage::CommandResponse(response) if response.response == 1),
+        "a root command reads a partition through a handle: {handle:?}"
     );
 }
