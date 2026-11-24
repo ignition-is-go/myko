@@ -1041,6 +1041,66 @@ mod tests {
     }
 
     #[test]
+    fn connected_callbacks_retain_tokio_runtime_context() -> std::io::Result<()> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let address = format!("ws://{}/runtime-context", listener.local_addr()?);
+        let (stop_tx, stop_rx) = mpsc::sync_channel(1);
+        let server = thread::spawn(move || -> std::io::Result<()> {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let stream = loop {
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        if Instant::now() >= deadline {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "runtime-context fixture connection",
+                            ));
+                        }
+                        thread::sleep(Duration::from_millis(1));
+                    }
+                    Err(error) => return Err(error),
+                }
+            };
+            stream.set_read_timeout(Some(Duration::from_secs(2)))?;
+            let _websocket = tungstenite::accept(stream).map_err(std::io::Error::other)?;
+            let _ = stop_rx.recv_timeout(Duration::from_secs(2));
+            Ok(())
+        });
+        let socket = AutoReconnectSocket::with_auto_reconnect(false);
+        let (context_tx, context_rx) = mpsc::sync_channel(1);
+        let (task_tx, task_rx) = mpsc::sync_channel(1);
+        let _guard = socket.actual_connection_state().subscribe(move |signal| {
+            if let Signal::Value(status) = signal
+                && matches!(&**status, SocketConnectionStatus::Connected(_))
+            {
+                let available = tokio::runtime::Handle::try_current().is_ok();
+                context_tx.send(available).unwrap();
+                if available {
+                    let task_tx = task_tx.clone();
+                    tokio::spawn(async move {
+                        task_tx.send(()).unwrap();
+                    });
+                }
+            }
+        });
+        socket.set_addr(Some(address));
+        let context = context_rx.recv_timeout(Duration::from_secs(2));
+        let spawned = if context == Ok(true) {
+            task_rx.recv_timeout(Duration::from_secs(2))
+        } else {
+            Err(mpsc::RecvTimeoutError::Timeout)
+        };
+        socket.close();
+        let _ = stop_tx.send(());
+        let server_result = server.join().unwrap();
+        assert_eq!(context, Ok(true), "connection subscriber retains Tokio runtime context");
+        assert!(spawned.is_ok(), "connection subscriber can spawn a running Tokio task");
+        server_result
+    }
+
+    #[test]
     fn close_and_readdress_release_a_connected_callback_on_the_retired_queue() -> std::io::Result<()>
     {
         for readdress in [false, true] {
