@@ -1955,6 +1955,11 @@ impl WsHandler {
                 Some(Arc::new(opened))
             }
             Err(error) => {
+                // A subscription the hook placed nowhere opens once a write
+                // makes the hook place it.
+                if matches!(error, myko::server::PartitionError::RootRead { .. }) {
+                    message_context.placements.follow(ctx, ctx, opening, resend);
+                }
                 if let Err(error) = message_context
                     .priority_tx
                     .try_send(refuse(error.to_string()))

@@ -1295,3 +1295,73 @@ fn no_graph_reads_a_merged_view() {
         assert!(rows.snapshot().is_empty(), "a graph read a merged view");
     }
 }
+
+// A subscription naming a row that does not exist yet --------------------------
+
+/// Every reading of the partition holding the reading it names.
+#[myko::myko_view(PtReading)]
+pub struct PtNamedReading {
+    pub reading: Arc<str>,
+}
+
+impl ViewHandler for PtNamedReading {
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<PtReading>> {
+        ctx.view_context.query_map_by_str(GetAllPtReadings {})
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_naming_a_row_not_written_yet_opens_when_it_is() {
+    let _serial = SERIAL.lock().await;
+    let schema = PartitionSchema::new()
+        .lifecycle::<PtRuntime>()
+        .subscribe_in(
+            &[<PtReading as myko::prelude::Eventable>::ENTITY_NAME_STATIC],
+            |root, _, payload| {
+                let reading: Arc<str> = payload.get("reading")?.as_str()?.into();
+                root.partition_keys().into_iter().find(|key| {
+                    root.partition(key).is_some_and(|partition| {
+                        partition
+                            .registry
+                            .get_or_create(
+                                <PtReading as myko::prelude::Eventable>::ENTITY_NAME_STATIC,
+                            )
+                            .get_value(&reading)
+                            .is_some()
+                    })
+                })
+            },
+        );
+    let server = crate::MykoServer::builder()
+        .with_partitions(spanned(schema))
+        .build();
+    let ctx = Arc::new(server.ctx());
+    for partition in ["a", "b"] {
+        ctx.set(&PtRuntime {
+            id: partition.into(),
+        })
+        .unwrap_or_else(|error| panic!("open {partition}: {error}"));
+    }
+    let mut client = Client::new("client");
+    let view = wrap_view(
+        "named".into(),
+        &PtNamedReading {
+            reading: "b-row".into(),
+        },
+    )
+    .unwrap_or_else(|error| panic!("view: {error}"));
+    client.send(&ctx, MykoMessage::View(view));
+    let refused = client.error().await;
+    assert!(
+        matches!(&refused, MykoMessage::ViewError(_)),
+        "nothing holds the row yet: {refused:?}"
+    );
+    ctx.set(&reading("b", 4))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    client.follow_move(&ctx).await;
+    client.register().await;
+    let mut held = HashMap::new();
+    client.wait_rows(&mut held, &[("b", 4)]);
+}

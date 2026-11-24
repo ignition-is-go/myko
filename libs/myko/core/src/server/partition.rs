@@ -369,10 +369,13 @@ impl PartitionSchema {
     /// partitioned type is refused.
     ///
     /// `place` receives the root context and reads shared data from it with
-    /// one-shot reads. `inputs` names the shared entity types it reads: a
-    /// write to one of them asks it again for every live subscription, and a
+    /// one-shot reads. `inputs` names the entity types it reads: a write to a
+    /// shared one asks it again for every live subscription, and a
     /// subscription whose answer changed moves (see
-    /// [`MykoServerContext::watch_subscription`]).
+    /// [`MykoServerContext::watch_subscription`]). A write to a partitioned
+    /// one, in any partition, asks it again for every subscription it placed
+    /// nowhere, so one naming a row that does not exist yet opens once it
+    /// does.
     #[must_use]
     pub fn subscribe_in(
         mut self,
@@ -1342,6 +1345,26 @@ impl Partitions {
                 .is_some_and(|(_, keys)| keys.contains(key))
             {
                 (watch.moved)();
+            }
+        }
+    }
+
+    /// Whether a write of `entity_type` can change where the subscription
+    /// hook places a subscription.
+    pub(crate) fn places_by(&self, entity_type: &str) -> bool {
+        self.schema
+            .subscriptions
+            .as_ref()
+            .is_some_and(|subscriptions| subscriptions.inputs.contains(&entity_type))
+    }
+
+    /// Ask the hook again for every subscription it placed nowhere. A
+    /// partitioned row the hook reads, written in a partition, can place
+    /// one that named a row not there yet.
+    pub(crate) fn place_unplaced(&self) {
+        for watch in self.watches.lock().values_mut() {
+            if watch.current.is_none() && watch.span.is_none() {
+                self.place_again(watch);
             }
         }
     }

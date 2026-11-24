@@ -577,7 +577,7 @@ impl MykoServerContext {
         partition
     }
 
-    fn partitions(&self) -> Option<Arc<Partitions>> {
+    pub(crate) fn partitions(&self) -> Option<Arc<Partitions>> {
         match self.partitions.as_ref()? {
             PartitionsHandle::Owner(partitions) => Some(partitions.clone()),
             PartitionsHandle::Member(partitions) => partitions.upgrade(),
@@ -2301,10 +2301,22 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
+        let entity_type = items
+            .first()
+            .map(|item| Arc::<str>::from(item.entity_type()));
         self.registry.transactions.coordinate(
             super::proposed_state::requires_authority(items.iter()),
             || self.submit_mutation_mode_coordinated(items, change, origin, mode),
-        )
+        )?;
+        if self.home.is_some()
+            && let (Some(entity_type), Some(partitions)) = (entity_type, self.partitions())
+            && partitions.places_by(&entity_type)
+        {
+            // Placed off this partition's work: the watches are shared by
+            // every partition, and the hook reads root.
+            crate::core::off_wave::off_wave(move || partitions.place_unplaced());
+        }
+        Ok(())
     }
 
     /// Admit a write that is applied later or elsewhere: run everything that
