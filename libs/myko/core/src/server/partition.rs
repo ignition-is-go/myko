@@ -609,32 +609,24 @@ impl Partition {
             self.store(item.entity_type()).get_value(&item.id())
         })?;
         let partition = Arc::clone(self);
-        let followed = self.follow(
-            items.first().map_or("mutation", |item| item.entity_type()),
-            Box::new(move || {
-                let _operation = partition.ctx.restore_operation(provenance);
-                partition.apply(items, change, origin, mode);
-            }),
-        );
+        self.follow(Box::new(move || {
+            let _operation = partition.ctx.restore_operation(provenance);
+            partition.apply(items, change, origin, mode);
+        }));
         drop(admitting);
-        followed
+        Ok(())
     }
 
     /// Queue `job` to run on this partition's worker after every delivery
     /// root has produced so far.
-    fn follow(&self, entity_type: &str, job: Job) -> Result<(), PersistError> {
-        // Held until the job is queued: a close that takes it exclusively
-        // finds the job and applies it.
-        let admitting = self.admitting.read_recursive();
-        if !*admitting {
-            drop(admitting);
-            return Err(self.closed(entity_type));
-        }
+    ///
+    /// The caller has admitted the job: it holds `admitting` open, or the
+    /// topology lock a close takes. A close therefore finds the job queued
+    /// and runs its own job behind it.
+    fn follow(&self, job: Job) {
         self.waiting.lock().push_back(job);
-        drop(admitting);
         let sent = self.sent.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
         hyphae::batch(|| self.courier.set(sent));
-        Ok(())
     }
 
     /// Apply an admitted write here, whether or not the partition still
@@ -656,13 +648,11 @@ impl Partition {
     /// root's wave cannot wait for them, and one made anywhere else need not.
     fn close_behind_writes(self: Arc<Self>) {
         let partition = Arc::clone(&self);
-        self.waiting.lock().push_back(Box::new(move || {
+        self.follow(Box::new(move || {
             partition.domain.close();
             // Releasing a partition's graphs is not its worker's work.
             crate::core::off_wave::off_wave(move || drop(partition));
         }));
-        let sent = self.sent.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
-        hyphae::batch(|| self.courier.set(sent));
     }
 
     fn store(&self, entity_type: &str) -> Arc<crate::store::EntityStore> {
@@ -1088,9 +1078,10 @@ impl Partitions {
                 .rows
                 .insert(id, Placement::Sent(target.key.clone(), pending));
             for (resend, resend_write) in resent {
-                self.send(entity_type, &target, vec![resend], resend_write)?;
+                self.send(entity_type, &target, vec![resend], resend_write);
             }
-            return self.send(entity_type, &target, vec![item], write);
+            self.send(entity_type, &target, vec![item], write);
+            return Ok(());
         }
         match write.change {
             MEventType::SET => drop(
@@ -1110,21 +1101,14 @@ impl Partitions {
     }
 
     /// Send routed rows to `to` behind root's deliveries.
-    fn send(
-        &self,
-        entity_type: &'static str,
-        to: &Arc<Partition>,
-        items: Vec<Item>,
-        write: Write,
-    ) -> Result<(), PersistError> {
+    fn send(&self, entity_type: &'static str, to: &Arc<Partition>, items: Vec<Item>, write: Write) {
         let Some(partitions) = self.this.upgrade() else {
-            return Ok(());
+            return;
         };
         let via = Arc::clone(to);
-        to.follow(
-            entity_type,
-            Box::new(move || partitions.land(entity_type, &via, items, write)),
-        )
+        to.follow(Box::new(move || {
+            partitions.land(entity_type, &via, items, write);
+        }));
     }
 
     /// Apply routed writes that arrived at `via`, on its worker. A write is
@@ -1241,9 +1225,7 @@ impl Partitions {
                         .rows
                         .insert(id, Placement::Sent(target.key.clone(), pending.clone()));
                     for (item, write) in pending {
-                        if let Err(error) = self.send(entity_type, &target, vec![item], write) {
-                            tracing::error!(partition = %target.key, %error, "re-send failed");
-                        }
+                        self.send(entity_type, &target, vec![item], write);
                     }
                 }
                 (Some(target), _) if behind => {
@@ -1261,9 +1243,7 @@ impl Partitions {
                             vec![(Arc::clone(&row), write.clone())],
                         ),
                     );
-                    if let Err(error) = self.send(entity_type, &target, vec![row], write) {
-                        tracing::error!(partition = %target.key, %error, "move failed");
-                    }
+                    self.send(entity_type, &target, vec![row], write);
                 }
                 (Some(target), _) => {
                     placements
