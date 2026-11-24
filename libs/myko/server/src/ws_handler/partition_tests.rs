@@ -7,11 +7,12 @@
 use std::sync::{Condvar, Mutex as StdMutex, mpsc as std_mpsc};
 
 use myko::{
-    hyphae::{Definite, MapExt, Materialize, scheduler::Domain},
-    prelude::Querying,
+    hyphae::{Definite, MapExt, MapQuery, Materialize, scheduler::Domain},
+    prelude::{AnyItem, Querying},
     report::{ReportContext, ReportHandler},
     server::{PartitionKey, PartitionSchema},
-    wire::{wrap_query, wrap_report},
+    view::{ViewBuildArgs, ViewHandler},
+    wire::{wrap_query, wrap_report, wrap_view},
 };
 
 use super::*;
@@ -160,6 +161,21 @@ impl ReportHandler for PtLevels {
     }
 }
 
+/// Every reading of one partition. Its `partition` parameter is what the
+/// server's subscription hook reads.
+#[myko::myko_view(PtReading)]
+pub struct PtReadingsView {
+    pub partition: Arc<str>,
+}
+
+impl ViewHandler for PtReadingsView {
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<PtReading>> {
+        ctx.view_context.query_map_by_str(GetAllPtReadings {})
+    }
+}
+
 #[derive(Clone)]
 struct Socket(Arc<StdMutex<std_mpsc::Sender<MykoMessage>>>);
 
@@ -274,6 +290,42 @@ impl Client {
                 }
                 Ok(_) => {}
                 Err(error) => panic!("level {level} never arrived ({error}): saw {seen:?}"),
+            }
+        }
+    }
+
+    fn subscribe_readings(&mut self, ctx: &Arc<MykoServerContext>, partition: &str) {
+        let view = wrap_view(
+            format!("readings-{partition}").into(),
+            &PtReadingsView {
+                partition: partition.into(),
+            },
+        )
+        .unwrap_or_else(|error| panic!("view: {error}"));
+        self.send(ctx, MykoMessage::View(view));
+    }
+
+    /// Wait until the view delivers a row with `level`, and return every
+    /// `(partition, level)` upserted on the way.
+    fn wait_reading(&self, level: i64) -> Vec<(Arc<str>, i64)> {
+        let deadline = deadline();
+        let mut seen = Vec::new();
+        loop {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.received.recv_timeout(left) {
+                Ok(MykoMessage::ViewResponse(response)) => {
+                    let rows = response.upserts.iter().filter_map(|upsert| {
+                        AnyItem::as_any(upsert.item.as_ref())
+                            .downcast_ref::<PtReading>()
+                            .map(|row| (row.partition.clone(), row.level))
+                    });
+                    seen.extend(rows);
+                    if seen.iter().any(|(_, seen)| *seen == level) {
+                        return seen;
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => panic!("reading {level} never arrived ({error}): saw {seen:?}"),
             }
         }
     }
@@ -422,5 +474,41 @@ async fn a_subscription_that_names_no_open_partition_is_refused_to_the_client() 
     assert!(
         client.priority_rx.try_recv().is_err(),
         "a query over a shared type opens in root"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_view_over_a_partitioned_type_delivers_only_its_partitions_rows() {
+    let _serial = SERIAL.lock().await;
+    let ctx = server();
+    ctx.set(&reading("a", 1))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    ctx.set(&reading("b", 5))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    let mut client = Client::new("client");
+
+    client.subscribe_readings(&ctx, "a");
+    client.register().await;
+    let first = client.wait_reading(1);
+    ctx.set(&reading("b", 6))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    ctx.set(&reading("a", 2))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    let later = client.wait_reading(2);
+    let partitions: Vec<&str> = first
+        .iter()
+        .chain(&later)
+        .map(|(key, _)| key.as_ref())
+        .collect();
+    assert!(
+        partitions.iter().all(|key| *key == "a"),
+        "the view delivered rows of another partition: {first:?} {later:?}"
+    );
+
+    client.subscribe_readings(&ctx, "");
+    let refused = client.error().await;
+    assert!(
+        matches!(&refused, MykoMessage::ViewError(error) if error.message.contains("partitioned")),
+        "a view in root over a partitioned type is refused: {refused:?}"
     );
 }
