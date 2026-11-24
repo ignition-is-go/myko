@@ -118,10 +118,10 @@ impl Subscriber {
 /// A selection change opens the new map off the propagating thread; wait for
 /// the subscriber to reach `done`. The deadline only bounds a failure.
 fn eventually(mut done: impl FnMut() -> bool) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    let started = std::time::Instant::now();
     while !done() {
         assert!(
-            std::time::Instant::now() < deadline,
+            started.elapsed() < std::time::Duration::from_secs(30),
             "subscriber never settled"
         );
         std::thread::sleep(std::time::Duration::from_millis(1));
@@ -416,20 +416,21 @@ fn a_selection_change_does_not_wait_for_the_new_map_to_open() {
     let (release, opening) = std::sync::mpsc::channel::<()>();
     let opening = Arc::new(Mutex::new(opening));
     let (open_a, open_b) = (a.clone().lock(), b.clone().lock());
-    let map = ErasedViewMap::switched(selector.clone().lock(), move |key| match key {
-        'a' => open_a.clone().into(),
-        _ => {
+    let map = ErasedViewMap::switched(selector.clone().lock(), move |key| {
+        if *key == 'a' {
+            open_a.clone().into()
+        } else {
             opening.lock().expect("opening").recv().expect("released");
             open_b.clone().into()
         }
     });
     let sub = Subscriber::new(&map);
     assert_eq!(sub.take_diffs(), ["initial 0"]);
-    let (switched, settled) = std::sync::mpsc::channel();
+    let (done, settled) = std::sync::mpsc::channel();
     let switcher = selector.clone();
     std::thread::spawn(move || {
         crate::hyphae::batch(|| switcher.set(Some('b')));
-        switched.send(()).expect("switched");
+        done.send(()).expect("switched");
     });
     settled
         .recv_timeout(std::time::Duration::from_secs(30))

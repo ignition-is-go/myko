@@ -16,10 +16,7 @@
 use std::sync::{Arc, Mutex};
 
 use crate::{
-    entities::{
-        client::{Client, GetAllClients},
-        server::ServerId,
-    },
+    entities::{client::Client, server::ServerId},
     hyphae::{CellImmutable, CellMap, MapDiff},
     prelude::*,
     server::{HandlerRegistry, MykoServerContext, RelationshipManager, persister::PersisterRouter},
@@ -531,6 +528,7 @@ fn dropping_the_last_live_subscription_tears_the_view_down() {
 mod cost {
     use super::views::EraseHopGatedView;
     use super::*;
+    use crate::entities::client::GetAllClients;
     use crate::hyphae::profiling::{pass, take_report};
 
     fn fires_for_one_changed_row(ctx: &MykoServerContext, n: usize) -> u64 {

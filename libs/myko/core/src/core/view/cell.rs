@@ -78,7 +78,7 @@ impl ErasedViewMap {
     /// longer selected is never delivered.
     ///
     /// The first selection is opened before `subscribe_diffs` returns. A later
-    /// selection change is opened on a separate thread, never inside the
+    /// selection change is opened on the shared builder pool, never inside the
     /// selector's propagation: `open` may build the selected map from scratch,
     /// and propagation is shared by everything in the process. Until the new
     /// map is open the subscriber receives nothing; selections passed over
@@ -171,10 +171,7 @@ impl<K: CellValue> ErasedSource for Switched<K> {
             if let (Signal::Value(_), Some(subscription)) = (signal, weak.upgrade())
                 && subscription.follow_selector()
             {
-                std::thread::Builder::new()
-                    .name("myko-view-switch".into())
-                    .spawn(move || subscription.build_pending())
-                    .expect("spawn view switch builder");
+                crate::core::off_wave::off_wave(move || subscription.build_pending());
             }
         });
         // The first selection is opened on the subscribing thread, so the
