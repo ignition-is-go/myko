@@ -559,6 +559,10 @@ impl Partitions {
         })
     }
 
+    pub(crate) const fn root(&self) -> &MykoServerContext {
+        &self.root
+    }
+
     pub(crate) fn is_partitioned(&self, entity_type: &str) -> bool {
         self.schema.is_partitioned(entity_type)
     }

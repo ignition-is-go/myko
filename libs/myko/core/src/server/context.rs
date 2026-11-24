@@ -1106,41 +1106,64 @@ impl MykoServerContext {
         id: &str,
         origin: Origin,
     ) -> Result<(), PersistError> {
-        self.reject_unrouted(std::iter::once(entity_type))?;
+        if let Some(root) = self.unrouted_owner(std::iter::once(entity_type))? {
+            return root.del_by_id_with_origin(entity_type, id, origin);
+        }
         self.registry
             .with_mutation(|| self.del_by_id_coordinated(entity_type, id, origin))
     }
 
-    /// Writes that bypass routing apply to this context's own stores. On the
-    /// root context a partitioned type has none, so such a write is refused
-    /// instead of landing in a store no partition reads.
-    fn reject_unrouted<'a>(
+    /// The context that owns a write which bypasses routing: `None` for this
+    /// one, or root for a partition context's write of shared data, so that
+    /// write is coordinated and applied as root's own.
+    ///
+    /// # Errors
+    /// On the root context, a partitioned type, which has no store there. On
+    /// a partition context, shared data written from the partition's wave,
+    /// which would flow backwards, and a call that mixes shared and
+    /// partitioned types, which no single domain can apply at once.
+    fn unrouted_owner<'a>(
         &self,
-        mut entity_types: impl Iterator<Item = &'a str>,
-    ) -> Result<(), PersistError> {
+        entity_types: impl Iterator<Item = &'a str>,
+    ) -> Result<Option<Self>, PersistError> {
         let Some(partitions) = self.partitions() else {
-            return Ok(());
+            return Ok(None);
         };
-        if self.home.is_some() {
-            // A partition context resolves a shared type to root's store. Its
-            // wave writing there would flow backwards.
-            let in_wave = Domain::propagating().is_some_and(|domain| !domain.is_root());
-            return entity_types
-                .find(|entity_type| in_wave && !partitions.is_partitioned(entity_type))
-                .map_or(Ok(()), |entity_type| {
-                    Err(super::partition::backwards(entity_type, None))
+        let types: Vec<&str> = entity_types.collect();
+        if self.home.is_none() {
+            return types
+                .into_iter()
+                .find(|entity_type| partitions.is_partitioned(entity_type))
+                .map_or(Ok(None), |entity_type| {
+                    Err(PersistError {
+                        entity_type: Arc::from(entity_type),
+                        message: "this write of a partitioned type is only available on the \
+                                  context of its partition"
+                            .into(),
+                    })
                 });
         }
-        entity_types
-            .find(|entity_type| partitions.is_partitioned(entity_type))
-            .map_or(Ok(()), |entity_type| {
-                Err(PersistError {
-                    entity_type: Arc::from(entity_type),
-                    message: "this write of a partitioned type is only available on the \
-                              context of its partition"
-                        .into(),
-                })
-            })
+        let Some(shared) = types
+            .iter()
+            .find(|entity_type| !partitions.is_partitioned(entity_type))
+        else {
+            return Ok(None);
+        };
+        if Domain::propagating().is_some_and(|domain| !domain.is_root()) {
+            return Err(super::partition::backwards(shared, None));
+        }
+        if types
+            .iter()
+            .any(|entity_type| partitions.is_partitioned(entity_type))
+        {
+            return Err(PersistError {
+                entity_type: Arc::from(*shared),
+                message: "this write mixes shared and partitioned types; write each part on \
+                          its own context"
+                    .into(),
+            });
+        }
+        Ok(Some(partitions.root().clone()))
     }
 
     fn del_by_id_coordinated(
@@ -1166,8 +1189,8 @@ impl MykoServerContext {
 
         // Persist: produce unless this origin must not (e.g. a peer tombstone).
         if origin.should_produce() {
-            if let Some(item) = existing {
-                self.produce_del_dyn(&item)?;
+            if let Some(item) = &existing {
+                self.produce_del_dyn(item)?;
             } else {
                 tracing::warn!(
                     "del_by_id could not persist DEL without full entity: {}:{}",
@@ -1175,6 +1198,13 @@ impl MykoServerContext {
                     id
                 );
             }
+        }
+
+        if let Some(item) = existing
+            && self.home.is_none()
+            && let Some(partitions) = self.partitions()
+        {
+            partitions.shared_write_applied(&[item], MEventType::DEL);
         }
 
         tracing::trace!("Published DEL {}:{}", entity_type, id);
@@ -2037,12 +2067,19 @@ impl MykoServerContext {
         origin: Origin,
         expected_graph_generation: Option<u64>,
     ) -> Result<bool, PersistError> {
-        self.reject_unrouted(
+        if let Some(root) = self.unrouted_owner(
             upserts
                 .iter()
                 .chain(&deletes)
                 .map(|item| item.entity_type()),
-        )?;
+        )? {
+            return root.submit_replace_mutation_inner(
+                upserts,
+                deletes,
+                origin,
+                expected_graph_generation,
+            );
+        }
         self.registry.transactions.coordinate(
             super::proposed_state::requires_authority(upserts.iter().chain(&deletes)),
             || {

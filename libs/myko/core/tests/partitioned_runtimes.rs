@@ -1359,3 +1359,73 @@ fn levels_in(ctx: &MykoServerContext, id: &str) -> Option<i64> {
                 .map(|row| row.level)
         })
 }
+
+#[test]
+fn a_partitions_write_of_shared_data_from_outside_a_wave_is_roots_write() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    assign(&fixture.root, "emitter-3", "b");
+    fixture
+        .root
+        .set(&sample("emitter-3", 5))
+        .expect("routed write");
+    let key = Arc::<str>::from("emitter-3");
+    assert_eq!(
+        fixture
+            .root
+            .partition_of(PrSample::ENTITY_NAME_STATIC, &key),
+        Some(PartitionKey::new("b"))
+    );
+
+    // Root re-routes on its own writes of what the resolver reads; a
+    // partition's replacement of that data is root's write too.
+    let moved: Arc<dyn AnyItem> = Arc::new(PrAssignment {
+        id: "emitter-3".into(),
+        runtime: "a".into(),
+    });
+    fixture
+        .b
+        .replace_batch_any([moved], [])
+        .expect("shared replacement from a partition");
+    assert_eq!(
+        fixture
+            .root
+            .partition_of(PrSample::ENTITY_NAME_STATIC, &key),
+        Some(PartitionKey::new("a")),
+        "the row followed the assignment a partition wrote"
+    );
+
+    let opened: Arc<dyn AnyItem> = Arc::new(PrRuntime {
+        id: "c".into(),
+        label: "c".into(),
+    });
+    fixture
+        .b
+        .replace_batch_any([opened], [])
+        .expect("lifecycle write from a partition");
+    assert!(
+        fixture.root.partition(&PartitionKey::new("c")).is_some(),
+        "a runtime a partition wrote opened"
+    );
+    fixture
+        .b
+        .del_by_id(PrRuntime::ENTITY_NAME_STATIC, "c")
+        .expect("lifecycle delete from a partition");
+    assert!(
+        fixture.root.partition(&PartitionKey::new("c")).is_none(),
+        "a runtime a partition deleted by id closed"
+    );
+
+    let mixed: [Arc<dyn AnyItem>; 2] = [
+        Arc::new(PrSetting {
+            id: "gain".into(),
+            gain: 3,
+        }),
+        Arc::new(reading("b", "mixed", 1)),
+    ];
+    assert!(
+        fixture.b.replace_batch_any(mixed, []).is_err(),
+        "a replacement that mixes shared and partition data is refused"
+    );
+    assert_eq!(levels_in(&fixture.b, "mixed"), None);
+}
