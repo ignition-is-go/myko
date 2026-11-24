@@ -1,6 +1,6 @@
 //! Startup load cost of a server without partitions, from an in-memory log.
-//! Run: cargo test --release -p myko-server --test load_bench -- --ignored --nocapture
-//! LOAD_BENCH_ROWS sets the row count (default 1000000).
+//! Run: `cargo test --release -p myko-server --test load_bench -- --ignored --nocapture`
+//! `LOAD_BENCH_ROWS` sets the row count (default 1000000).
 
 #![allow(clippy::expect_used, clippy::print_stderr)]
 

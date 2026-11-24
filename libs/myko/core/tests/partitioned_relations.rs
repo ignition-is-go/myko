@@ -109,7 +109,7 @@ pub mod cursor {
 pub mod shelf {
     use myko::prelude::*;
 
-    use super::book::{PrlBook, PrlBookId};
+    use super::book::PrlBookId;
 
     /// Shared, owning books. Refused once books are partitioned.
     #[myko_item]

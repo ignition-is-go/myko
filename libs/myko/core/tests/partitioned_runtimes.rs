@@ -2231,6 +2231,7 @@ fn a_service_runs_once_in_each_open_partition_and_stops_with_it() {
         assert_eq!(seen.readings.get("b"), Some(&vec![5]));
         assert_eq!(seen.readings.get("c"), Some(&vec![7]));
         assert!(seen.stopped.is_empty());
+        drop(seen);
     }
     fixture
         .root
