@@ -1892,3 +1892,120 @@ fn a_wave_that_rewrites_the_routed_row_it_applies_does_not_deadlock() {
     assert_eq!(samples_in(&fixture.b, "echo"), Some(4));
     assert!(results.lock().iter().all(|ok| *ok));
 }
+
+/// Park `ctx`'s runtime worker: work handed to the runtime waits behind it
+/// until the returned gate is dropped.
+fn park_worker(ctx: &MykoServerContext) -> Armed {
+    let gate = Armed(Arc::new(Gate::default()));
+    let parked = Arc::clone(&gate.0);
+    ctx.domain().hand_off(move || parked.pass());
+    assert!(gate.wait_entered(), "the runtime's worker never parked");
+    gate
+}
+
+#[test]
+fn a_routed_write_that_reaches_its_old_runtime_after_a_move_is_skipped_there() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    assign(&fixture.root, "emitter-6", "b");
+    let (in_b, _in_b) = sample_log(&fixture.b);
+    let root = fixture.root.clone();
+    let (results, _guard) = on_row(
+        &fixture.root,
+        PrSetting::ENTITY_NAME_STATIC,
+        "gain",
+        move || {
+            // Sent to b, then moved to a, in one wave.
+            root.set(&sample("emitter-6", 6))?;
+            assign(&root, "emitter-6", "a");
+            Ok(())
+        },
+    );
+    drop(results.lock().drain(..));
+    // Runtime a's worker is parked, so the copy sent to b lands first.
+    let gate = park_worker(&fixture.a);
+    fixture
+        .root
+        .set(&PrSetting {
+            id: "gain".into(),
+            gain: 2,
+        })
+        .expect("shared write");
+    assert_eq!(*results.lock(), [true]);
+    settle(&fixture.b);
+    assert!(gate.is_parked(), "runtime a had not taken its copy yet");
+    assert!(
+        in_b.lock().iter().all(|(_, level)| *level != 6),
+        "the copy that reached b after its row moved was not applied there"
+    );
+    drop(gate);
+    settle(&fixture.a);
+    assert_eq!(samples_in(&fixture.a, "emitter-6"), Some(6));
+    assert_eq!(samples_in(&fixture.b, "emitter-6"), None);
+}
+
+fn runtime_row(id: &str) -> PrRuntime {
+    PrRuntime {
+        id: id.into(),
+        label: id.into(),
+    }
+}
+
+#[test]
+fn a_write_racing_a_close_is_either_refused_or_logged_and_applied() {
+    let _serial = SERIAL.lock();
+    for seed in 0..40_u32 {
+        let log = Log::default();
+        let fixture = log.fixture();
+        fixture.root.set(&runtime_row("c")).expect("open c");
+        let c = fixture.root.partition(&PartitionKey::new("c")).expect("c");
+        let (applied, _applied) = reading_log(&c);
+        let (wrote, written) = mpsc::channel();
+        let writer = {
+            let root = fixture.root.clone();
+            thread::spawn(move || {
+                (0..20_i64)
+                    .filter(|level| {
+                        let _ = wrote.send(());
+                        let shared: Arc<dyn AnyItem> = Arc::new(PrSetting {
+                            id: "gain".into(),
+                            gain: *level,
+                        });
+                        let keyed: Arc<dyn AnyItem> =
+                            Arc::new(reading("c", &format!("r{level}"), *level));
+                        root.set_batch_any([shared, keyed]).is_ok()
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        // Close while the writer is between, or inside, its writes.
+        for _ in 0..seed % 20 {
+            written.recv_timeout(DEADLINE).expect("writer is writing");
+        }
+        for _ in 0..seed / 2 {
+            thread::yield_now();
+        }
+        fixture.root.del(&runtime_row("c")).expect("close c");
+        let admitted = writer.join().expect("writer");
+        c.domain().flush();
+        let logged: Vec<i64> = log
+            .of(PrReading::ENTITY_NAME_STATIC)
+            .into_iter()
+            .map(|(_, _, level)| level)
+            .collect();
+        assert_eq!(
+            logged, admitted,
+            "seed {seed}: logged exactly the admitted writes"
+        );
+        let landed: Vec<i64> = applied
+            .lock()
+            .iter()
+            .filter(|(inserted, _)| *inserted)
+            .map(|(_, level)| *level)
+            .collect();
+        assert_eq!(
+            landed, admitted,
+            "seed {seed}: applied exactly the admitted writes"
+        );
+    }
+}
