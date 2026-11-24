@@ -4125,6 +4125,7 @@ mod send_admission_tests {
 
     struct RejectingTransport {
         status: Cell<ConnectionStatus, CellMutable>,
+        intended: Cell<ConnectionStatus, CellMutable>,
         reject: AtomicBool,
         attempted: Mutex<Vec<WsFrame>>,
     }
@@ -4133,7 +4134,7 @@ mod send_admission_tests {
         fn set_addr(&self, _: Option<String>) {}
         fn close(&self) {}
         fn intended_connection_state(&self) -> Cell<ConnectionStatus, CellImmutable> {
-            self.status.clone().lock()
+            self.intended.clone().lock()
         }
         fn actual_connection_state(&self) -> Cell<ConnectionStatus, CellImmutable> {
             self.status.clone().lock()
@@ -4160,6 +4161,7 @@ mod send_admission_tests {
     fn reconnect_retains_rejected_and_remaining_frames_in_order() {
         let transport = Arc::new(RejectingTransport {
             status: Cell::new(ConnectionStatus::Disconnected),
+            intended: Cell::new(ConnectionStatus::Connected("fixture".into())),
             reject: AtomicBool::new(true),
             attempted: Mutex::new(Vec::new()),
         });
@@ -4233,6 +4235,7 @@ mod send_admission_tests {
     fn connected_sender_retries_retained_frames_before_new_data() {
         let transport = Arc::new(RejectingTransport {
             status: Cell::new(ConnectionStatus::Disconnected),
+            intended: Cell::new(ConnectionStatus::Connected("fixture".into())),
             reject: AtomicBool::new(true),
             attempted: Mutex::new(Vec::new()),
         });
@@ -4269,6 +4272,48 @@ mod send_admission_tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn stale_connected_publication_does_not_flush_after_intent_changes() {
+        for intended in [
+            ConnectionStatus::Idle,
+            ConnectionStatus::Connected("next".into()),
+        ] {
+            let transport = Arc::new(RejectingTransport {
+                status: Cell::new(ConnectionStatus::Connected("fixture".into())),
+                intended: Cell::new(intended),
+                reject: AtomicBool::new(false),
+                attempted: Mutex::new(Vec::new()),
+            });
+            let client = MykoClient::with_transport(transport.clone());
+            *client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                vec![WsFrame::Binary(vec![1])];
+
+            client.send_or_queue(WsFrame::Binary(vec![2]));
+
+            assert!(
+                !transport
+                    .attempted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .any(|frame| matches!(frame, WsFrame::Binary(_)))
+            );
+            let pending = client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                matches!(pending.as_slice(), [WsFrame::Binary(first), WsFrame::Binary(second)] if first == &[1] && second == &[2])
+            );
+            drop(pending);
+        }
     }
 
     #[test]
