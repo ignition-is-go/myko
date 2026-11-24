@@ -64,7 +64,10 @@ struct StatusPublisher {
 
 impl StatusPublisher {
     #[allow(clippy::expect_used)]
-    fn new(status: Cell<SocketConnectionStatus, CellMutable>) -> (Self, thread::JoinHandle<()>) {
+    fn new(
+        status: Cell<SocketConnectionStatus, CellMutable>,
+        runtime: tokio::runtime::Handle,
+    ) -> (Self, thread::JoinHandle<()>) {
         let latest = Arc::new(Mutex::new(ObservedConnection {
             generation: 0,
             attempt: 0,
@@ -75,6 +78,7 @@ impl StatusPublisher {
         let worker = thread::Builder::new()
             .name("autosocket-status".into())
             .spawn(move || {
+                let _runtime = runtime.enter();
                 let mut previous = ObservedConnection {
                     generation: 0,
                     attempt: 0,
@@ -326,7 +330,8 @@ impl AutoReconnectSocket {
             .thread_name("autosocket-io")
             .build()
             .expect("build autosocket runtime");
-        let (publisher, status_worker) = StatusPublisher::new(actual_status);
+        let (publisher, status_worker) =
+            StatusPublisher::new(actual_status, runtime.handle().clone());
         thread::Builder::new()
             .name("autosocket-driver".into())
             .spawn(move || {
@@ -1095,8 +1100,15 @@ mod tests {
         socket.close();
         let _ = stop_tx.send(());
         let server_result = server.join().unwrap();
-        assert_eq!(context, Ok(true), "connection subscriber retains Tokio runtime context");
-        assert!(spawned.is_ok(), "connection subscriber can spawn a running Tokio task");
+        assert_eq!(
+            context,
+            Ok(true),
+            "connection subscriber retains Tokio runtime context"
+        );
+        assert!(
+            spawned.is_ok(),
+            "connection subscriber can spawn a running Tokio task"
+        );
         server_result
     }
 
@@ -1206,7 +1218,11 @@ mod tests {
                     }
                 }
             });
-            let (publisher, worker) = StatusPublisher::new(status);
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let (publisher, worker) = StatusPublisher::new(status, runtime.handle().clone());
             let connected = SocketConnectionStatus::Connected("ws://a".into());
             publisher.publish(1, 1, connected.clone());
             entered_rx.recv_timeout(Duration::from_secs(2)).unwrap();
