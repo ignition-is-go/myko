@@ -463,9 +463,9 @@ impl PartitionSchema {
             ] {
                 let names = requirement_names(&(endpoint.requirement)());
                 if partitioned {
-                    let may_be_shared = names.as_ref().is_none_or(|names| {
-                        names.iter().any(|name| !self.is_partitioned(name))
-                    });
+                    let may_be_shared = names
+                        .as_ref()
+                        .is_none_or(|names| names.iter().any(|name| !self.is_partitioned(name)));
                     if policy == EndpointDeletePolicy::RestrictEndpointDelete && may_be_shared {
                         refused.push(format!(
                             "partitioned edge {edge_type} restricts deleting a shared endpoint: \
@@ -1015,7 +1015,8 @@ pub(crate) struct Partitions {
     next_service: AtomicU64,
 }
 
-type Starter = Arc<dyn Fn(&MykoServerContext) -> Box<dyn std::any::Any + Send> + Send + Sync>;
+pub(crate) type Starter =
+    Arc<dyn Fn(&MykoServerContext) -> Box<dyn std::any::Any + Send> + Send + Sync>;
 
 /// A service running in every open partition. Dropping it stops the
 /// service everywhere. See [`MykoServerContext::in_each_partition`].
@@ -1025,7 +1026,10 @@ pub struct PartitionServices(Services);
 enum Services {
     /// Started once, on a context with no partitions or on one partition.
     Once(#[allow(dead_code, reason = "held for its drop")] Box<dyn std::any::Any + Send>),
-    Each { partitions: Weak<Partitions>, id: u64 },
+    Each {
+        partitions: Weak<Partitions>,
+        id: u64,
+    },
 }
 
 impl PartitionServices {
@@ -1269,12 +1273,12 @@ impl Partitions {
 
     /// Start `starter` in every open partition now and in each one opened
     /// later, until the returned handle drops.
-    pub(crate) fn run_in_each(self: &Arc<Self>, starter: Starter) -> PartitionServices {
+    pub(crate) fn run_in_each(self: &Arc<Self>, starter: &Starter) -> PartitionServices {
         let _topology = self.topology.lock();
         let id = self.next_service.fetch_add(1, Ordering::Relaxed);
-        self.services.lock().insert(id, Arc::clone(&starter));
+        self.services.lock().insert(id, Arc::clone(starter));
         for partition in self.all() {
-            self.start_service(&partition, id, Arc::clone(&starter));
+            self.start_service(&partition, id, Arc::clone(starter));
         }
         PartitionServices(Services::Each {
             partitions: self.this.clone(),
@@ -1530,7 +1534,10 @@ impl Partitions {
         {
             return Err(target.closed(entity_type));
         }
-        if let Some(failed) = target.as_ref().and_then(|target| target.failed(entity_type)) {
+        if let Some(failed) = target
+            .as_ref()
+            .and_then(|target| target.failed(entity_type))
+        {
             return Err(failed);
         }
         let ctx = target.as_ref().map_or(&self.root, |target| &target.ctx);

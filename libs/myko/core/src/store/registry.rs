@@ -78,13 +78,31 @@ pub fn record_root_read(entity_type: &str) {
         }
         read.0 > 0
     });
-    #[allow(clippy::panic, reason = "a root read of partition data is a program error")]
-    if !watched {
-        panic!(
+    #[allow(
+        clippy::panic,
+        reason = "a root read of partition data is a program error"
+    )]
+    {
+        assert!(
+            watched,
             "partitioned entity type {entity_type} was read from the root context, where it has \
              no rows: read it on its partition's context, or build the read inside \
              MykoServerContext::checked to be refused with an error"
         );
+    }
+}
+
+/// Closes one `watch_root_reads` on this thread, also when its construction
+/// unwinds, handing the outer watch its first read.
+struct WatchScope(Option<Arc<str>>);
+
+impl Drop for WatchScope {
+    fn drop(&mut self) {
+        ROOT_READ.with(|read| {
+            let mut read = read.borrow_mut();
+            read.0 = read.0.saturating_sub(1);
+            read.1 = self.0.take().or_else(|| read.1.take());
+        });
     }
 }
 
@@ -93,20 +111,10 @@ pub fn record_root_read(entity_type: &str) {
 pub fn watch_root_reads<R>(construct: impl FnOnce() -> R) -> (R, Option<Arc<str>>) {
     let outer = ROOT_READ.with(|read| {
         let mut read = read.borrow_mut();
-        read.0 += 1;
+        read.0 = read.0.saturating_add(1);
         read.1.take()
     });
-    struct Close(Option<Arc<str>>);
-    impl Drop for Close {
-        fn drop(&mut self) {
-            ROOT_READ.with(|read| {
-                let mut read = read.borrow_mut();
-                read.0 -= 1;
-                read.1 = self.0.take().or_else(|| read.1.take());
-            });
-        }
-    }
-    let mut close = Close(outer);
+    let mut close = WatchScope(outer);
     let built = construct();
     let inner = ROOT_READ.with(|read| read.borrow().1.clone());
     // The outer watch keeps its own first read, else learns this one.

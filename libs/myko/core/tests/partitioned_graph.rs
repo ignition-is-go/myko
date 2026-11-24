@@ -198,10 +198,9 @@ fn each_partition_projects_its_own_edges() {
     assert_eq!(labelled(&fixture.a), [Arc::<str>::from("labelling-a")]);
     assert_eq!(labelled(&fixture.b), [Arc::<str>::from("labelling-b")]);
     assert!(
-        fixture
-            .root
-            .graph_index()
-            .is_none_or(|graph| graph.registration(PgLabelling::ENTITY_NAME_STATIC).is_none()),
+        fixture.root.graph_index().is_none_or(|graph| graph
+            .registration(PgLabelling::ENTITY_NAME_STATIC)
+            .is_none()),
         "root projects no partitioned edge type"
     );
 }
@@ -281,7 +280,10 @@ fn a_saga_reads_a_partitioned_events_row_in_its_partition() {
         "the saga reads the card where b holds it"
     );
 
-    fixture.root.del(&PgBoard { id: "b".into() }).expect("close b");
+    fixture
+        .root
+        .del(&PgBoard { id: "b".into() })
+        .expect("close b");
     assert!(
         matches!(
             saga.for_event(&event),
@@ -295,14 +297,33 @@ fn a_saga_reads_a_partitioned_events_row_in_its_partition() {
 fn reading_a_partitioned_type_from_root_outside_checked_panics() {
     let _serial = SERIAL.lock();
     let fixture = fixture();
-    let refused = fixture
-        .root
-        .checked(|| drop(fixture.root.registry.get_or_create(PgCard::ENTITY_NAME_STATIC)));
-    assert!(refused.is_err(), "inside checked the read is refused with an error");
+    let refused = fixture.root.checked(|| {
+        drop(
+            fixture
+                .root
+                .registry
+                .get_or_create(PgCard::ENTITY_NAME_STATIC),
+        );
+    });
+    assert!(
+        refused.is_err(),
+        "inside checked the read is refused with an error"
+    );
     let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        drop(fixture.root.registry.get_or_create(PgCard::ENTITY_NAME_STATIC));
+        drop(
+            fixture
+                .root
+                .registry
+                .get_or_create(PgCard::ENTITY_NAME_STATIC),
+        );
     }))
     .expect_err("outside checked the read panics");
-    let message = panicked.downcast_ref::<String>().cloned().unwrap_or_default();
-    assert!(message.contains("PgCard was read from the root context"), "{message}");
+    let message = panicked
+        .downcast_ref::<String>()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        message.contains("PgCard was read from the root context"),
+        "{message}"
+    );
 }

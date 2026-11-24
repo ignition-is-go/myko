@@ -2170,7 +2170,10 @@ impl Drop for Service {
 }
 
 fn start_service(ctx: &MykoServerContext, log: &Arc<Mutex<ServiceLog>>) -> Service {
-    let key = ctx.partition_key().map_or("root", PartitionKey::as_str).to_owned();
+    let key = ctx
+        .partition_key()
+        .map_or("root", PartitionKey::as_str)
+        .to_owned();
     log.lock()
         .started
         .push((key.clone(), Domain::current() == ctx.domain()));
@@ -2237,11 +2240,19 @@ fn a_service_runs_once_in_each_open_partition_and_stops_with_it() {
     while log.lock().stopped.is_empty() && Instant::now() < deadline {
         thread::yield_now();
     }
-    assert_eq!(log.lock().stopped, vec!["b".to_owned()], "stops with its partition");
+    assert_eq!(
+        log.lock().stopped,
+        vec!["b".to_owned()],
+        "stops with its partition"
+    );
     drop(services);
     let mut stopped = log.lock().stopped.clone();
     stopped.sort();
-    assert_eq!(stopped, vec!["a", "b", "c"], "dropping the handle stops every copy");
+    assert_eq!(
+        stopped,
+        vec!["a", "b", "c"],
+        "dropping the handle stops every copy"
+    );
     fixture
         .root
         .set(&runtime_row("d"))

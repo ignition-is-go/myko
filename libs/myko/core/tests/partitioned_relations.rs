@@ -527,14 +527,21 @@ fn a_refused_derived_write_fails_its_partition_and_refuses_later_writes() {
         .set(&note("c", "n-c"))
         .expect_err("a failed partition admits no write");
     assert!(
-        refused.message.contains("partition c failed") && refused.message.contains("cursors refused"),
+        refused.message.contains("partition c failed")
+            && refused.message.contains("cursors refused"),
         "{refused}"
     );
     assert!(
-        fixture.root.partition_failure(&PartitionKey::new("a")).is_none(),
+        fixture
+            .root
+            .partition_failure(&PartitionKey::new("a"))
+            .is_none(),
         "another partition is untouched"
     );
-    fixture.root.set(&note("a", "n-a")).expect("a still admits writes");
+    fixture
+        .root
+        .set(&note("a", "n-a"))
+        .expect("a still admits writes");
 }
 
 #[test]
@@ -791,7 +798,8 @@ fn lines_of(ctx: &MykoServerContext, note: &str) -> usize {
         note_id: Some(myko::query::IdFilter::Eq(PrlNoteId(note.into()))),
         ..Default::default()
     });
-    ctx.query_snapshot(query, ctx.new_server_transaction()).len()
+    ctx.query_snapshot(query, ctx.new_server_transaction())
+        .len()
 }
 
 #[test]
@@ -817,13 +825,19 @@ fn a_one_shot_read_during_a_partitions_open_batch_sees_the_row_written_in_it() {
     };
     let deadline = std::time::Instant::now() + DEADLINE;
     while !gate.parked() {
-        assert!(std::time::Instant::now() < deadline, "the writer never parked");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the writer never parked"
+        );
         std::thread::yield_now();
     }
     let seen = lines_of(&fixture.a, "n1");
     gate.open();
     writer.join().expect("writer").expect("line");
-    assert_eq!(seen, 1, "a read while a's batch is open falls back to the store");
+    assert_eq!(
+        seen, 1,
+        "a read while a's batch is open falls back to the store"
+    );
 }
 
 /// The domain the last registered memo source was built in.
@@ -843,10 +857,11 @@ myko::inventory::submit! {
 fn a_one_shot_read_builds_its_source_in_its_partition() {
     let _serial = SERIAL.lock();
     let fixture = fixture();
-    drop(fixture.a.query_snapshot(
-        memo::GetAllPrlMemos {},
-        fixture.a.new_server_transaction(),
-    ));
+    drop(
+        fixture
+            .a
+            .query_snapshot(memo::GetAllPrlMemos {}, fixture.a.new_server_transaction()),
+    );
     assert_eq!(
         MEMO_SOURCE_BUILT_IN.lock().take(),
         Some(fixture.a.domain()),

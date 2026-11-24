@@ -119,13 +119,6 @@ impl Origin {
         !matches!(self, Self::Admitted | Self::Replay)
     }
 
-    /// Whether this origin's mutations are derived from another mutation by
-    /// a relationship. Derived from an admitted write, they are part of what
-    /// was admitted, so nothing refuses them when they are applied.
-    const fn is_derived(self) -> bool {
-        matches!(self, Self::Cascade | Self::RelationshipFixup)
-    }
-
     /// Whether this origin's mutations should be produced to persisters/sink.
     ///
     /// Both origins produce; per-type durability is the persister router's job
@@ -570,7 +563,8 @@ impl MykoServerContext {
         is_partitioned: &dyn Fn(&str) -> bool,
     ) -> Self {
         let mut partition = self.clone();
-        partition.registry = Arc::clone(&registry);
+        partition.graph_index = Self::project_graph(&registry, is_partitioned);
+        partition.registry = registry;
         partition.search_index = search_index;
         partition.query_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.view_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
@@ -579,7 +573,6 @@ impl MykoServerContext {
         partition.refused_builds = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.ingest_buffers = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.causal_counters = Arc::new(CausalCounters::default());
-        partition.graph_index = Self::project_graph(&registry, is_partitioned);
         partition.home = Some(Arc::new(PartitionHome { key, domain }));
         partition
     }
@@ -631,7 +624,10 @@ impl MykoServerContext {
     ) -> super::partition::PartitionServices {
         let boxed = move |ctx: &Self| -> Box<dyn std::any::Any + Send> { Box::new(start(ctx)) };
         match (self.home.is_some(), self.partitions()) {
-            (false, Some(partitions)) => partitions.run_in_each(Arc::new(boxed)),
+            (false, Some(partitions)) => {
+                let starter: super::partition::Starter = Arc::new(boxed);
+                partitions.run_in_each(&starter)
+            }
             _ => super::partition::PartitionServices::once(self.in_domain(|| boxed(self))),
         }
     }
@@ -767,7 +763,10 @@ impl MykoServerContext {
     /// [`PartitionError::NotOpen`] when that partition is not open, and
     /// [`PartitionError::RootRead`] when the row names no partition, so
     /// only root, which holds no such rows, could be read.
-    pub(crate) fn event_context(&self, event: &crate::wire::MEvent) -> Result<Self, PartitionError> {
+    pub(crate) fn event_context(
+        &self,
+        event: &crate::wire::MEvent,
+    ) -> Result<Self, PartitionError> {
         let Some(partitions) = self.partitions() else {
             return Ok(self.clone());
         };
