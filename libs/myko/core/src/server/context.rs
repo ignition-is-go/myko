@@ -2303,16 +2303,14 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
-        let entity_type = items
-            .first()
-            .map(|item| Arc::<str>::from(item.entity_type()));
+        let entity_type = items.first().map(|item| item.entity_type());
         self.registry.transactions.coordinate(
             super::proposed_state::requires_authority(items.iter()),
             || self.submit_mutation_mode_coordinated(items, change, origin, mode),
         )?;
         if self.home.is_some()
             && let (Some(entity_type), Some(partitions)) = (entity_type, self.partitions())
-            && partitions.places_by(&entity_type)
+            && partitions.places_by(entity_type)
         {
             // Placed off this partition's work: the watches are shared by
             // every partition, and the hook reads root.
