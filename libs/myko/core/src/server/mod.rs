@@ -63,6 +63,7 @@ pub use history_replay::{
 };
 pub use partition::{
     PartitionError, PartitionKey, PartitionKeyField, PartitionKeyRegistration, PartitionSchema,
+    SubscriptionWatch,
 };
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,

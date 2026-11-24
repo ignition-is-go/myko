@@ -28,7 +28,7 @@ use uuid::Uuid;
 
 use super::{
     HandlerRegistry, RelationshipManager,
-    partition::{PartitionError, PartitionKey, PartitionSchema, Partitions},
+    partition::{PartitionError, PartitionKey, PartitionSchema, Partitions, SubscriptionWatch},
     persister::{PersistError, PersistHealth, PersisterRouter},
 };
 use crate::{
@@ -711,11 +711,10 @@ impl MykoServerContext {
 
     /// The context a client subscription opens in.
     ///
-    /// `reads` is the entity type the subscription reads when the request
-    /// names one (a query or a view), and `None` for a report. A
-    /// subscription over a shared type opens in root. Otherwise it opens in
-    /// the partition the schema's [`PartitionSchema::subscribe_in`] hook
-    /// names for the request, or in root when it names none.
+    /// It opens in the partition the schema's
+    /// [`PartitionSchema::subscribe_in`] hook names for the request, whatever
+    /// it reads. When the hook names none it opens in root, unless `reads`,
+    /// the entity type a query or view reads, is partitioned.
     ///
     /// # Errors
     /// [`PartitionError::RootRead`] when `reads` is partitioned and the hook
@@ -730,25 +729,45 @@ impl MykoServerContext {
         let Some(partitions) = self.partitions() else {
             return Ok(self.clone());
         };
-        if self.home.is_some()
-            || reads.is_some_and(|entity_type| !partitions.is_partitioned(entity_type))
-        {
+        if self.home.is_some() {
             return Ok(self.clone());
         }
-        let Some(key) = partitions.subscription_partition(request, payload) else {
-            return reads.map_or_else(
-                || Ok(self.clone()),
-                |entity_type| {
-                    Err(PartitionError::RootRead {
-                        entity_type: Arc::from(entity_type),
-                    })
-                },
-            );
-        };
-        partitions
-            .get(&key)
-            .map(|partition| partition.ctx().clone())
-            .ok_or(PartitionError::NotOpen(key))
+        match partitions.subscription_partition(request, payload) {
+            Some(key) => partitions
+                .get(&key)
+                .map(|partition| partition.ctx().clone())
+                .ok_or(PartitionError::NotOpen(key)),
+            None => match reads.filter(|entity_type| partitions.is_partitioned(entity_type)) {
+                Some(entity_type) => Err(PartitionError::RootRead {
+                    entity_type: Arc::from(entity_type),
+                }),
+                None => Ok(self.clone()),
+            },
+        }
+    }
+
+    /// Follow where a live client subscription belongs, until the returned
+    /// watch is dropped. `opened_in` is the partition it opened in, as
+    /// [`subscription_context`](Self::subscription_context) chose it.
+    ///
+    /// When a write to one of the shared types the
+    /// [`PartitionSchema::subscribe_in`] hook reads changes the hook's answer
+    /// for it, `moved` is called, once per change, on the writer's thread:
+    /// the subscription belongs elsewhere now and must be opened again.
+    /// `moved` must only hand the move off; it must not block or write.
+    ///
+    /// `None` when this server has no partitions or the hook reads no shared
+    /// data, so the answer cannot change.
+    #[must_use]
+    pub fn watch_subscription(
+        &self,
+        request: Arc<RequestContext>,
+        payload: serde_json::Value,
+        opened_in: Option<PartitionKey>,
+        moved: impl Fn() + Send + Sync + 'static,
+    ) -> Option<SubscriptionWatch> {
+        self.partitions()?
+            .watch_subscription(request, payload, opened_in, Box::new(moved))
     }
 
     /// The scheduling domain this context builds and writes in.

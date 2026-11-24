@@ -119,8 +119,11 @@ use crate::{
 
 type Item = Arc<dyn AnyItem>;
 type KeyOf = Arc<dyn Fn(&dyn AnyItem) -> Option<PartitionKey> + Send + Sync>;
-type SubscriptionPartition =
-    Arc<dyn Fn(&RequestContext, &serde_json::Value) -> Option<PartitionKey> + Send + Sync>;
+type SubscriptionPartition = Arc<
+    dyn Fn(&MykoServerContext, &RequestContext, &serde_json::Value) -> Option<PartitionKey>
+        + Send
+        + Sync,
+>;
 type Resolve = Arc<dyn Fn(&MykoServerContext, &dyn AnyItem) -> Option<PartitionKey> + Send + Sync>;
 
 /// Names one partition.
@@ -217,7 +220,15 @@ enum Route {
 pub struct PartitionSchema {
     routes: HashMap<&'static str, Route>,
     lifecycle: Option<&'static str>,
-    subscriptions: Option<SubscriptionPartition>,
+    subscriptions: Option<Subscriptions>,
+}
+
+/// Where client subscriptions open.
+struct Subscriptions {
+    place: SubscriptionPartition,
+    /// Shared entity types the hook reads: a write to one of them places
+    /// every live subscription again.
+    inputs: Vec<&'static str>,
 }
 
 fn typed<T: Eventable, R>(
@@ -298,19 +309,29 @@ impl PartitionSchema {
         self
     }
 
-    /// Name the partition a client's subscription opens in, from the
-    /// request and the subscription's payload. A subscription for which it
-    /// names none opens in root, where a read of a partitioned type is
-    /// refused.
+    /// Name the partition a client's subscription opens in, whatever it
+    /// reads, from the request and the subscription's payload. A
+    /// subscription for which it names none opens in root, where a read of a
+    /// partitioned type is refused.
+    ///
+    /// `place` receives the root context and reads shared data from it with
+    /// one-shot reads. `inputs` names the shared entity types it reads: a
+    /// write to one of them asks it again for every live subscription, and a
+    /// subscription whose answer changed moves (see
+    /// [`MykoServerContext::watch_subscription`]).
     #[must_use]
     pub fn subscribe_in(
         mut self,
-        partition: impl Fn(&RequestContext, &serde_json::Value) -> Option<PartitionKey>
+        inputs: &[&'static str],
+        place: impl Fn(&MykoServerContext, &RequestContext, &serde_json::Value) -> Option<PartitionKey>
         + Send
         + Sync
         + 'static,
     ) -> Self {
-        self.subscriptions = Some(Arc::new(partition));
+        self.subscriptions = Some(Subscriptions {
+            place: Arc::new(place),
+            inputs: inputs.to_vec(),
+        });
         self
     }
 
@@ -903,6 +924,35 @@ pub(crate) struct Partitions {
     topology: Mutex<()>,
     /// These partitions, for a write that lands after the call that sent it.
     this: Weak<Self>,
+    /// Live client subscriptions, while the hook reads shared data.
+    watches: Mutex<HashMap<u64, Watched>>,
+    next_watch: AtomicU64,
+}
+
+pub(crate) type SubscriptionMoved = Box<dyn Fn() + Send + Sync>;
+
+/// One live subscription the hook places.
+struct Watched {
+    request: Arc<RequestContext>,
+    payload: serde_json::Value,
+    /// Where it is open now.
+    current: Option<PartitionKey>,
+    moved: SubscriptionMoved,
+}
+
+/// Follows a live client subscription's placement until dropped. See
+/// [`MykoServerContext::watch_subscription`].
+pub struct SubscriptionWatch {
+    partitions: Weak<Partitions>,
+    id: u64,
+}
+
+impl Drop for SubscriptionWatch {
+    fn drop(&mut self) {
+        if let Some(partitions) = self.partitions.upgrade() {
+            drop(partitions.watches.lock().remove(&self.id));
+        }
+    }
 }
 
 impl Partitions {
@@ -937,6 +987,8 @@ impl Partitions {
             placements,
             topology: Mutex::new(()),
             this: partitions.clone(),
+            watches: Mutex::new(HashMap::new()),
+            next_watch: AtomicU64::new(0),
         })
     }
 
@@ -956,7 +1008,47 @@ impl Partitions {
         self.schema
             .subscriptions
             .as_ref()
-            .and_then(|partition| partition(request, payload))
+            .and_then(|subscriptions| (subscriptions.place)(&self.root, request, payload))
+    }
+
+    /// Follow where a live subscription belongs. `None` when the hook reads
+    /// no shared data, so its answer never changes.
+    pub(crate) fn watch_subscription(
+        &self,
+        request: Arc<RequestContext>,
+        payload: serde_json::Value,
+        opened_in: Option<PartitionKey>,
+        moved: SubscriptionMoved,
+    ) -> Option<SubscriptionWatch> {
+        let subscriptions = self.schema.subscriptions.as_ref()?;
+        if subscriptions.inputs.is_empty() {
+            return None;
+        }
+        let id = self.next_watch.fetch_add(1, Ordering::Relaxed);
+        let mut watch = Watched {
+            request,
+            payload,
+            current: opened_in,
+            moved,
+        };
+        // Asked again under the lock: a write since the subscription opened
+        // either shows here or places it again after this.
+        let mut watches = self.watches.lock();
+        self.place_again(&mut watch);
+        watches.insert(id, watch);
+        drop(watches);
+        Some(SubscriptionWatch {
+            partitions: self.this.clone(),
+            id,
+        })
+    }
+
+    fn place_again(&self, watch: &mut Watched) {
+        let answer = self.subscription_partition(&watch.request, &watch.payload);
+        if answer != watch.current {
+            watch.current = answer;
+            (watch.moved)();
+        }
     }
 
     pub(crate) fn get(&self, key: &PartitionKey) -> Option<Arc<Partition>> {
@@ -1571,6 +1663,17 @@ impl Partitions {
             {
                 let _topology = self.topology.lock();
                 self.reroute(routed, None);
+            }
+        }
+        if self
+            .schema
+            .subscriptions
+            .as_ref()
+            .is_some_and(|subscriptions| subscriptions.inputs.contains(&entity_type))
+        {
+            let mut watches = self.watches.lock();
+            for watch in watches.values_mut() {
+                self.place_again(watch);
             }
         }
     }

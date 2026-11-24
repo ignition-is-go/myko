@@ -1158,7 +1158,7 @@ fn a_reactive_read_of_a_partitioned_type_from_root_is_refused() {
 #[test]
 fn a_subscription_opens_in_the_partition_its_request_names() {
     let _serial = SERIAL.lock();
-    let root = root_context().with_partitions(schema().subscribe_in(|_, payload| {
+    let root = root_context().with_partitions(schema().subscribe_in(&[], |_, _, payload| {
         payload
             .get("partition")
             .and_then(|key| key.as_str())
@@ -1187,7 +1187,15 @@ fn a_subscription_opens_in_the_partition_its_request_names() {
     let shared = root
         .subscription_context(&request, &in_b, setting)
         .expect("a shared read");
-    assert_eq!(shared.partition_key(), None, "a shared read stays in root");
+    assert_eq!(
+        shared.partition_key(),
+        Some(&PartitionKey::new("b")),
+        "the hook places a subscription whatever it reads"
+    );
+    let unnamed = root
+        .subscription_context(&request, &in_none, setting)
+        .expect("a shared read the hook places nowhere");
+    assert_eq!(unnamed.partition_key(), None, "it opens in root");
     assert!(refused_root_read(root.subscription_context(&request, &in_none, reading)).is_some());
     assert_eq!(
         root.subscription_context(&request, &in_missing, reading)

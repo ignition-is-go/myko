@@ -7,7 +7,7 @@
 use std::sync::{Condvar, Mutex as StdMutex, mpsc as std_mpsc};
 
 use myko::{
-    hyphae::{Definite, MapExt, MapQuery, Materialize, scheduler::Domain},
+    hyphae::{Definite, MapExt, MapQuery, MapValuesExt, Materialize, scheduler::Domain},
     prelude::{AnyItem, Querying},
     report::{ReportContext, ReportHandler},
     server::{PartitionKey, PartitionSchema},
@@ -39,8 +39,33 @@ mod reading {
     }
 }
 
+mod summary {
+    use myko::prelude::*;
+
+    /// Rows a view derives from readings. Never stored, and not named by
+    /// the partition schema.
+    #[myko::myko_item]
+    pub struct PtSummary {
+        pub level: i64,
+    }
+}
+
+mod seat {
+    use std::sync::Arc;
+
+    use myko::prelude::*;
+
+    /// Shared. Assigns a seat to the partition a client of it reads.
+    #[myko::myko_item]
+    pub struct PtSeat {
+        pub partition: Arc<str>,
+    }
+}
+
 use reading::{GetAllPtReadings, PtReading};
 use runtime::{GetAllPtRuntimes, PtRuntime};
+use seat::PtSeat;
+use summary::PtSummary;
 
 const DEADLINE: Duration = Duration::from_secs(10);
 
@@ -176,6 +201,42 @@ impl ViewHandler for PtReadingsView {
     }
 }
 
+/// Every reading of one partition as a summary row. Its `partition`
+/// parameter is what the server's subscription hook reads.
+#[myko::myko_view(PtSummary)]
+pub struct PtSummaryView {
+    pub partition: Arc<str>,
+}
+
+impl ViewHandler for PtSummaryView {
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<PtSummary>> {
+        ctx.view_context
+            .query_map_by_str(GetAllPtReadings {})
+            .map_values(|id, reading| {
+                Arc::new(PtSummary {
+                    id: summary::PtSummaryId(Arc::clone(id)),
+                    level: reading.level,
+                })
+            })
+    }
+}
+
+/// Every reading of the partition a seat is assigned to.
+#[myko::myko_view(PtReading)]
+pub struct PtSeatView {
+    pub seat: Arc<str>,
+}
+
+impl ViewHandler for PtSeatView {
+    fn build_cell(
+        ctx: ViewBuildArgs<Self>,
+    ) -> impl MapQuery<Key = Arc<str>, Value = Arc<PtReading>> {
+        ctx.view_context.query_map_by_str(GetAllPtReadings {})
+    }
+}
+
 #[derive(Clone)]
 struct Socket(Arc<StdMutex<std_mpsc::Sender<MykoMessage>>>);
 
@@ -209,6 +270,8 @@ struct Client {
     priority_tx: mpsc::Sender<MykoMessage>,
     priority_rx: mpsc::Receiver<MykoMessage>,
     logger: Arc<DropLogger>,
+    placements: SubscriptionPlacements,
+    moved_rx: MovedSubscriptions,
 }
 
 impl Client {
@@ -216,6 +279,7 @@ impl Client {
         let (sender, received) = std_mpsc::channel();
         let (built_tx, built_rx) = mpsc::unbounded_channel();
         let (priority_tx, priority_rx) = mpsc::channel(16);
+        let (placements, moved_rx) = SubscriptionPlacements::new();
         Self {
             session: ClientSession::new(name.into(), Socket(Arc::new(StdMutex::new(sender)))),
             received,
@@ -225,10 +289,35 @@ impl Client {
             priority_tx,
             priority_rx,
             logger: Arc::new(DropLogger::new(name.into(), watch::channel(false).0)),
+            placements,
+            moved_rx,
         }
     }
 
     fn send(&mut self, ctx: &Arc<MykoServerContext>, message: MykoMessage) {
+        self.handle(ctx, |session, ctx, context| {
+            WsHandler::handle_message(session, ctx, context, message);
+        });
+    }
+
+    /// Wait for a subscription of this client to move, and open it again
+    /// where it now belongs, as the read loop does.
+    async fn follow_move(&mut self, ctx: &Arc<MykoServerContext>) {
+        let moved = tokio::time::timeout(DEADLINE, self.moved_rx.recv())
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| panic!("no subscription moved"));
+        self.handle(ctx, |session, ctx, context| {
+            WsHandler::replace_subscription(session, ctx, context, moved);
+        });
+    }
+
+    fn handle(
+        &mut self,
+        ctx: &Arc<MykoServerContext>,
+        action: impl FnOnce(&mut ClientSession<Socket>, Arc<MykoServerContext>, &MessageContext<'_>),
+    ) {
         let context = MessageContext {
             auth: &None,
             priority_tx: &self.priority_tx,
@@ -243,8 +332,9 @@ impl Client {
             subscribe_tx: &self.built_tx,
             subscription_builds: &self.builds,
             view_delivery_tx: &mpsc::unbounded_channel().0,
+            placements: &self.placements,
         };
-        WsHandler::handle_message(&mut self.session, ctx.clone(), &context, message);
+        action(&mut self.session, ctx.clone(), &context);
     }
 
     /// Wait for the build the last request started and register it, as the
@@ -330,6 +420,28 @@ impl Client {
         }
     }
 
+    /// The next view response, its sequence and `(partition, level)` rows.
+    fn next_view(&self) -> (u64, Vec<(Arc<str>, i64)>) {
+        loop {
+            match self.received.recv_timeout(DEADLINE) {
+                Ok(MykoMessage::ViewResponse(response)) => {
+                    let rows = response
+                        .upserts
+                        .iter()
+                        .filter_map(|upsert| {
+                            AnyItem::as_any(upsert.item.as_ref())
+                                .downcast_ref::<PtReading>()
+                                .map(|row| (row.partition.clone(), row.level))
+                        })
+                        .collect();
+                    return (response.sequence, rows);
+                }
+                Ok(_) => {}
+                Err(error) => panic!("no view response ({error})"),
+            }
+        }
+    }
+
     /// The next error the server sent this client.
     async fn error(&mut self) -> MykoMessage {
         tokio::time::timeout(DEADLINE, self.priority_rx.recv())
@@ -374,7 +486,7 @@ mod tests_support {
 fn server() -> Arc<MykoServerContext> {
     let schema = PartitionSchema::new()
         .lifecycle::<PtRuntime>()
-        .subscribe_in(|_, payload| {
+        .subscribe_in(&[], |_, _, payload| {
             payload
                 .get("partition")
                 .and_then(serde_json::Value::as_str)
@@ -583,5 +695,125 @@ fn a_tailed_event_lands_in_its_partition() {
         reading_in(&ctx, "a"),
         Some(5),
         "this host's own event is skipped"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_view_of_rows_never_stored_opens_where_the_hook_places_it() {
+    let _serial = SERIAL.lock().await;
+    let ctx = server();
+    ctx.set(&reading("a", 1))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    ctx.set(&reading("b", 5))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    let mut client = Client::new("client");
+    let view = wrap_view(
+        "summaries".into(),
+        &PtSummaryView {
+            partition: "b".into(),
+        },
+    )
+    .unwrap_or_else(|error| panic!("view: {error}"));
+    client.send(&ctx, MykoMessage::View(view));
+    client.register().await;
+    assert!(
+        client.priority_rx.try_recv().is_err(),
+        "the view opened in its partition, not refused in root"
+    );
+    let levels: Vec<i64> = loop {
+        match client.received.recv_timeout(DEADLINE) {
+            Ok(MykoMessage::ViewResponse(response)) => {
+                break response
+                    .upserts
+                    .iter()
+                    .filter_map(|upsert| {
+                        AnyItem::as_any(upsert.item.as_ref())
+                            .downcast_ref::<PtSummary>()
+                            .map(|row| row.level)
+                    })
+                    .collect();
+            }
+            Ok(_) => {}
+            Err(error) => panic!("no view response ({error})"),
+        }
+    };
+    assert_eq!(levels, [5], "b's summaries, and only b's");
+}
+
+fn seated_server() -> Arc<MykoServerContext> {
+    let schema = PartitionSchema::new()
+        .lifecycle::<PtRuntime>()
+        .subscribe_in(
+            &[<PtSeat as myko::prelude::Eventable>::ENTITY_NAME_STATIC],
+            |root, _, payload| {
+                let seat = payload.get("seat")?.as_str()?;
+                let row = root
+                    .registry
+                    .get_or_create(<PtSeat as myko::prelude::Eventable>::ENTITY_NAME_STATIC)
+                    .get_value(&Arc::from(seat))?;
+                AnyItem::as_any(row.as_ref())
+                    .downcast_ref::<PtSeat>()
+                    .map(|seat| PartitionKey::new(seat.partition.clone()))
+            },
+        );
+    let server = crate::MykoServer::builder().with_partitions(schema).build();
+    let ctx = Arc::new(server.ctx());
+    for partition in ["a", "b"] {
+        ctx.set(&PtRuntime {
+            id: partition.into(),
+        })
+        .unwrap_or_else(|error| panic!("open {partition}: {error}"));
+    }
+    ctx
+}
+
+fn seat(partition: &str) -> PtSeat {
+    PtSeat {
+        id: "s1".into(),
+        partition: partition.into(),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subscription_moves_when_the_shared_data_placing_it_changes() {
+    let _serial = SERIAL.lock().await;
+    let ctx = seated_server();
+    ctx.set(&seat("a"))
+        .unwrap_or_else(|error| panic!("seat: {error}"));
+    ctx.set(&reading("a", 1))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    ctx.set(&reading("b", 5))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    let mut client = Client::new("client");
+    let view = wrap_view("seated".into(), &PtSeatView { seat: "s1".into() })
+        .unwrap_or_else(|error| panic!("view: {error}"));
+    client.send(&ctx, MykoMessage::View(view));
+    client.register().await;
+    assert_eq!(client.next_view(), (0, vec![("a".into(), 1)]));
+
+    ctx.set(&seat("b"))
+        .unwrap_or_else(|error| panic!("seat: {error}"));
+    client.follow_move(&ctx).await;
+    client.register().await;
+    assert_eq!(
+        client.next_view(),
+        (0, vec![("b".into(), 5)]),
+        "an initial response of b replaces what the client held"
+    );
+    ctx.set(&reading("a", 2))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    ctx.set(&reading("b", 6))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    assert_eq!(
+        client.next_view(),
+        (1, vec![("b".into(), 6)]),
+        "nothing of a follows the move"
+    );
+
+    ctx.set(&seat("b"))
+        .unwrap_or_else(|error| panic!("seat: {error}"));
+    assert!(
+        client.moved_rx.try_recv().is_err(),
+        "an unchanged answer moves nothing"
     );
 }

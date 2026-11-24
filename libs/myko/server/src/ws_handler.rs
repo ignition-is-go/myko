@@ -374,6 +374,58 @@ type SharedTxNames = Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>;
 type SharedTxTimes = Arc<Mutex<HashMap<Arc<str>, Instant>>>;
 type SharedOutboundCommands = Arc<Mutex<HashMap<String, (String, Instant)>>>;
 
+/// The live subscriptions whose partition follows shared data, by tx. One
+/// whose partition changed is handed to the read loop through `moved`, with
+/// the request that opened it, and opened again where it now belongs.
+#[derive(Clone)]
+struct SubscriptionPlacements {
+    watches: Arc<Mutex<HashMap<Arc<str>, myko::server::SubscriptionWatch>>>,
+    moved: mpsc::UnboundedSender<(Arc<str>, MykoMessage)>,
+}
+
+type MovedSubscriptions = mpsc::UnboundedReceiver<(Arc<str>, MykoMessage)>;
+
+impl SubscriptionPlacements {
+    fn new() -> (Self, MovedSubscriptions) {
+        let (moved, moved_rx) = mpsc::unbounded_channel();
+        (
+            Self {
+                watches: Arc::default(),
+                moved,
+            },
+            moved_rx,
+        )
+    }
+
+    /// Follow the subscription `tx`, opened in `opened` from `root` by
+    /// `request`, which `resend` makes again.
+    fn follow(
+        &self,
+        root: &MykoServerContext,
+        opened: &MykoServerContext,
+        (tx, request, payload): (&Arc<str>, &Arc<RequestContext>, &serde_json::Value),
+        resend: MykoMessage,
+    ) {
+        let moved = self.moved.clone();
+        let moved_tx = Arc::clone(tx);
+        let watch = root.watch_subscription(
+            Arc::clone(request),
+            payload.clone(),
+            opened.partition_key().cloned(),
+            move || drop(moved.send((Arc::clone(&moved_tx), resend.clone()))),
+        );
+        if let (Some(watch), Ok(mut watches)) = (watch, self.watches.lock()) {
+            watches.insert(Arc::clone(tx), watch);
+        }
+    }
+
+    fn forget(&self, tx: &str) {
+        if let Ok(mut watches) = self.watches.lock() {
+            watches.remove(tx);
+        }
+    }
+}
+
 struct MessageContext<'a> {
     auth: &'a Option<AuthSession>,
     priority_tx: &'a mpsc::Sender<MykoMessage>,
@@ -388,6 +440,7 @@ struct MessageContext<'a> {
     subscribe_tx: &'a mpsc::UnboundedSender<SubscriptionBuilt>,
     subscription_builds: &'a SubscriptionBuilds,
     view_delivery_tx: &'a mpsc::UnboundedSender<ViewDeliveryControl>,
+    placements: &'a SubscriptionPlacements,
 }
 
 struct ReadLoopState {
@@ -409,6 +462,7 @@ struct ReadLoopState {
     subscribe_tx: mpsc::UnboundedSender<SubscriptionBuilt>,
     subscription_builds: SubscriptionBuilds,
     view_delivery_tx: mpsc::UnboundedSender<ViewDeliveryControl>,
+    placements: SubscriptionPlacements,
     overload_rx: watch::Receiver<bool>,
 }
 
@@ -681,24 +735,44 @@ impl WsHandler {
         Self::handle_message(
             session,
             state.ctx.clone(),
-            &MessageContext {
-                auth: &state.auth,
-                priority_tx: &state.priority_tx,
-                drop_logger: &state.drop_logger,
-                query_ids_by_tx: &state.query_ids_by_tx,
-                view_ids_by_tx: &state.view_ids_by_tx,
-                subscribe_started_by_tx: &state.subscribe_started_by_tx,
-                command_started_by_tx: &state.command_started_by_tx,
-                outbound_commands_by_tx: &state.outbound_commands_by_tx,
-                command_tx: &state.command_tx,
-                query_window_tx: &state.query_window_tx,
-                subscribe_tx: &state.subscribe_tx,
-                subscription_builds: &state.subscription_builds,
-                view_delivery_tx: &state.view_delivery_tx,
-            },
+            &Self::message_context(state),
             message,
         );
         true
+    }
+
+    fn message_context(state: &ReadLoopState) -> MessageContext<'_> {
+        MessageContext {
+            auth: &state.auth,
+            priority_tx: &state.priority_tx,
+            drop_logger: &state.drop_logger,
+            query_ids_by_tx: &state.query_ids_by_tx,
+            view_ids_by_tx: &state.view_ids_by_tx,
+            subscribe_started_by_tx: &state.subscribe_started_by_tx,
+            command_started_by_tx: &state.command_started_by_tx,
+            outbound_commands_by_tx: &state.outbound_commands_by_tx,
+            command_tx: &state.command_tx,
+            query_window_tx: &state.query_window_tx,
+            subscribe_tx: &state.subscribe_tx,
+            subscription_builds: &state.subscription_builds,
+            view_delivery_tx: &state.view_delivery_tx,
+            placements: &state.placements,
+        }
+    }
+
+    /// Open the subscription `tx` again where its partition now is. The
+    /// client keeps what it holds until the new subscription's initial
+    /// response replaces it.
+    fn replace_subscription<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        ctx: Arc<MykoServerContext>,
+        message_context: &MessageContext<'_>,
+        (tx, message): (Arc<str>, MykoMessage),
+    ) {
+        message_context.placements.forget(&tx);
+        message_context.subscription_builds.cancel(&tx);
+        session.cancel(&tx);
+        Self::handle_message(session, ctx, message_context, message);
     }
 
     fn reject_incoming(state: &ReadLoopState, message: &MykoMessage, reason: String) {
@@ -869,6 +943,7 @@ impl WsHandler {
         session: &mut ClientSession<W>,
         mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionBuilt>,
         mut denied_rx: mpsc::UnboundedReceiver<Arc<str>>,
+        mut moved_rx: MovedSubscriptions,
         state: ReadLoopState,
     ) {
         let mut diagnostics_interval = interval(Duration::from_secs(5));
@@ -902,7 +977,16 @@ impl WsHandler {
             }
             tokio::select! {
                 _ = auth_interval.tick(), if state.auth.is_some() => {}
+                Some(moved) = moved_rx.recv() => {
+                    Self::replace_subscription(
+                        session,
+                        state.ctx.clone(),
+                        &Self::message_context(&state),
+                        moved,
+                    );
+                }
                 Some(tx) = denied_rx.recv() => {
+                    state.placements.forget(&tx);
                     state.subscription_builds.cancel(&tx);
                     session.cancel(&tx);
                     let _ = state.view_delivery_tx.send(ViewDeliveryControl::Cancel(tx.clone()));
@@ -1521,6 +1605,7 @@ impl WsHandler {
         let command_client_id = client_id.clone();
 
         let (denied_tx, denied_rx) = mpsc::unbounded_channel();
+        let (placements, moved_rx) = SubscriptionPlacements::new();
         let subscription_auth = Arc::new(SubscriptionAuthorization::new(denied_tx));
         let write_task = tokio::spawn(Self::run_writer(WriterState {
             subscription_auth: subscription_auth.clone(),
@@ -1564,6 +1649,7 @@ impl WsHandler {
             &mut session,
             subscribe_rx,
             denied_rx,
+            moved_rx,
             ReadLoopState {
                 subscription_auth,
                 auth,
@@ -1583,6 +1669,7 @@ impl WsHandler {
                 subscribe_tx: subscribe_tx.clone(),
                 subscription_builds: SubscriptionBuilds::default(),
                 view_delivery_tx,
+                placements,
                 overload_rx,
             },
         )
@@ -1632,8 +1719,11 @@ impl WsHandler {
         let Some(ctx) = Self::open_subscription(
             ctx,
             message_context,
-            (&request, &wrapped.query),
-            Some(&wrapped.query_item_type),
+            (&tx_id, &request, &wrapped.query),
+            (
+                Some(&wrapped.query_item_type),
+                MykoMessage::Query(wrapped.clone()),
+            ),
             |error| {
                 MykoMessage::QueryError(myko::wire::QueryError::new(&*tx_id, &*query_id, error))
             },
@@ -1773,8 +1863,11 @@ impl WsHandler {
         let Some(ctx) = Self::open_subscription(
             &ctx,
             message_context,
-            (&request, &wrapped.view),
-            Some(&view_data.view_item_type),
+            (&tx_id, &request, &wrapped.view),
+            (
+                Some(&view_data.view_item_type),
+                MykoMessage::View(wrapped.clone()),
+            ),
             |error| MykoMessage::ViewError(ViewError::new(&*tx_id, &*view_id, error)),
         ) else {
             return;
@@ -1825,15 +1918,24 @@ impl WsHandler {
 
     /// The context a subscription opens in, or `None` after sending the
     /// client `refuse` of why it cannot open.
+    ///
+    /// A subscription the hook places from shared data is followed, and
+    /// `resend` opens it again when it belongs elsewhere.
     fn open_subscription(
         ctx: &MykoServerContext,
         message_context: &MessageContext<'_>,
-        (request, payload): (&RequestContext, &serde_json::Value),
-        reads: Option<&str>,
+        opening: (&Arc<str>, &Arc<RequestContext>, &serde_json::Value),
+        (reads, resend): (Option<&str>, MykoMessage),
         refuse: impl FnOnce(String) -> MykoMessage,
     ) -> Option<Arc<MykoServerContext>> {
+        let (_, request, payload) = opening;
         match ctx.subscription_context(request, payload, reads) {
-            Ok(opened) => Some(Arc::new(opened)),
+            Ok(opened) => {
+                message_context
+                    .placements
+                    .follow(ctx, &opened, opening, resend);
+                Some(Arc::new(opened))
+            }
             Err(error) => {
                 if let Err(error) = message_context
                     .priority_tx
@@ -1976,6 +2078,7 @@ impl WsHandler {
     ) {
         match message {
             MykoMessage::QueryCancel(CancelSubscription { tx }) => {
+                message_context.placements.forget(&tx);
                 message_context.subscription_builds.cancel(&tx);
                 let tx: Arc<str> = tx.into();
                 if let Ok(mut map) = message_context.query_ids_by_tx.lock() {
@@ -2002,6 +2105,7 @@ impl WsHandler {
                 session.update_query_cursor_window(&Arc::from(tx), window);
             }
             MykoMessage::ViewCancel(CancelSubscription { tx }) => {
+                message_context.placements.forget(&tx);
                 message_context.subscription_builds.cancel(&tx);
                 let tx: Arc<str> = tx.into();
                 let _ = message_context
@@ -2027,6 +2131,7 @@ impl WsHandler {
                 session.update_view_window(&Arc::from(tx), window);
             }
             MykoMessage::ReportCancel(CancelSubscription { tx }) => {
+                message_context.placements.forget(&tx);
                 message_context.subscription_builds.cancel(&tx);
                 session.cancel(&Arc::from(tx));
             }
@@ -2048,7 +2153,7 @@ impl WsHandler {
                     .and_then(|value| value.as_str())
                     .unwrap_or("unknown")
                     .into();
-                let report_id = wrapped.report_id;
+                let report_id = wrapped.report_id.clone();
                 let Some(data) = ctx.handler_registry.report(&report_id) else {
                     tracing::warn!("No registered handler for report: {}", report_id);
                     return;
@@ -2066,8 +2171,8 @@ impl WsHandler {
                         let Some(ctx) = Self::open_subscription(
                             &ctx,
                             message_context,
-                            (&request, &wrapped.report),
-                            None,
+                            (&tx, &request, &wrapped.report),
+                            (None, MykoMessage::Report(wrapped.clone())),
                             |error| {
                                 MykoMessage::ReportError(myko::wire::ReportError::new(
                                     &*tx, &report_id, error,
@@ -2594,6 +2699,7 @@ mod tests {
             subscribe_tx: &mpsc::unbounded_channel().0,
             subscription_builds: builds,
             view_delivery_tx: &mpsc::unbounded_channel().0,
+            placements: &SubscriptionPlacements::new().0,
         };
         action(&context)
     }
