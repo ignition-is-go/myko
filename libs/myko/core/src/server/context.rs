@@ -447,6 +447,12 @@ enum PartitionsHandle {
     Member(std::sync::Weak<Partitions>),
 }
 
+enum OneShot {
+    Here,
+    In(Box<MykoServerContext>),
+    NoRows,
+}
+
 struct PartitionHome {
     key: PartitionKey,
     domain: Domain,
@@ -1120,17 +1126,19 @@ impl MykoServerContext {
         self.persisters.default_health()
     }
 
-    /// Get a one-shot typed entity snapshot by id.
-    ///
-    /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
-    /// multi-action executor resolves a single Action this way, deliberately
-    /// avoiding a reactive subscription for a point lookup.
+    /// Get a one-shot typed entity snapshot by id: a point lookup with no
+    /// reactive subscription. Like [`query_snapshot`](Self::query_snapshot),
+    /// it may be taken from inside a partition's wave on the root context.
     pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
     where
         T: Eventable + WithTypedId + Send + Sync + 'static,
         <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
     {
-        let store = self.registry.get_or_create(T::entity_name_static());
+        let store = match self.one_shot_reader(T::entity_name_static()) {
+            OneShot::Here => self.registry.get_or_create(T::entity_name_static()),
+            OneShot::In(partition) => partition.registry.get_or_create(T::entity_name_static()),
+            OneShot::NoRows => return None,
+        };
         let map_key = <<T as WithTypedId>::Id as hyphae::IdFor<T>>::map_key(id);
         let item = store.get_value(&map_key)?;
         downcast_any_item_arc::<T>(&item, "MykoServerContext::entity_snapshot")
@@ -3799,7 +3807,37 @@ impl MykoServerContext {
         Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
-        self.in_domain(|| self.query_snapshot_here(query, request))
+        match self.one_shot_reader(&Q::query_item_type_static()) {
+            OneShot::Here => self.in_domain(|| self.query_snapshot_here(query, request)),
+            OneShot::In(partition) => partition.query_snapshot_here(query, request),
+            OneShot::NoRows => Vec::new(),
+        }
+    }
+
+    /// Where a one-shot read of `entity_type` on this context runs.
+    ///
+    /// A one-shot read may be taken from any thread, a partition's wave
+    /// included, and may build what it routes through (an index, a
+    /// registered source). From inside a partition's wave, a read on the
+    /// root context cannot build root state, so it runs on that partition's
+    /// context: the same shared rows, through the partition's own copies of
+    /// root's indexes, as of the point in root's order the partition has
+    /// reached. A partitioned type read on root has no rows, as everywhere.
+    fn one_shot_reader(&self, entity_type: &str) -> OneShot {
+        if self.home.is_some() {
+            return OneShot::Here;
+        }
+        let Some(partitions) = self.partitions() else {
+            return OneShot::Here;
+        };
+        let Some(partition) = partitions.propagating() else {
+            return OneShot::Here;
+        };
+        if partitions.is_partitioned(entity_type) {
+            OneShot::NoRows
+        } else {
+            OneShot::In(Box::new(partition))
+        }
     }
 
     fn query_snapshot_here<Q>(&self, query: Q, request: Arc<RequestContext>) -> Vec<Arc<Q::Item>>

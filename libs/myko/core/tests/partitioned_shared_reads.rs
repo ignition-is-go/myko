@@ -450,3 +450,30 @@ fn a_partition_wave_routes_a_shared_read_through_an_index_nothing_built() {
         "root's own routed read is unaffected"
     );
 }
+
+#[test]
+fn a_partition_wave_takes_one_shot_reads_through_the_root_context() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    put(&fixture.root, "shelved", "x");
+    fixture
+        .root
+        .set(&note::PsrNote {
+            id: "n".into(),
+            label: "n".into(),
+        })
+        .expect("shared note");
+    let root = fixture.root.clone();
+    let (routed, notes, item) = open_in_wave(&fixture, move |_| {
+        let request = root.new_server_transaction();
+        (
+            root.query_snapshot(on_shelf("x"), Arc::clone(&request)).len(),
+            root.query_snapshot(note::GetAllPsrNotes {}, request).len(),
+            root.entity_snapshot::<PsrItem>(&PsrItemId("shelved".into()))
+                .is_some(),
+        )
+    });
+    assert_eq!(routed, 1, "a routed one-shot read on root sees the shared row");
+    assert_eq!(notes, 1, "a one-shot read of a whole shared type on root sees it");
+    assert!(item, "a one-shot read by id on root sees the shared row");
+}

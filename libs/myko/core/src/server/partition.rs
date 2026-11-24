@@ -332,7 +332,8 @@ impl PartitionSchema {
     /// its partition.
     ///
     /// `resolve` receives the root context and reads shared data from it with
-    /// one-shot reads. `inputs` names the shared entity types it reads: a
+    /// one-shot reads. It runs from inside partitions' waves too, where a
+    /// one-shot read on root reads through that partition. `inputs` names the shared entity types it reads: a
     /// write to one of them re-routes the rows of `T`.
     #[must_use]
     pub fn route<T: Eventable>(
@@ -1096,6 +1097,9 @@ pub(crate) struct Partitions {
     /// The root context. It names these partitions weakly.
     root: MykoServerContext,
     open: DashMap<PartitionKey, Arc<Partition>, ahash::RandomState>,
+    /// Every partition still alive, closing ones included, for a one-shot
+    /// read on root made from inside one of their waves.
+    alive: Mutex<Vec<Weak<Partition>>>,
     placements: HashMap<&'static str, Placements>,
     /// Serializes opening, closing and re-routing.
     topology: Mutex<()>,
@@ -1200,6 +1204,7 @@ impl Partitions {
             schema,
             root: root.as_partition_member(partitions.clone()),
             open: DashMap::with_hasher(ahash::RandomState::new()),
+            alive: Mutex::new(Vec::new()),
             placements,
             topology: Mutex::new(()),
             this: partitions.clone(),
@@ -1393,6 +1398,18 @@ impl Partitions {
             .collect()
     }
 
+    /// The context of the partition whose propagation the calling thread is
+    /// running, closing or not. `None` outside any partition's propagation.
+    pub(crate) fn propagating(&self) -> Option<MykoServerContext> {
+        let wave = Domain::propagating().filter(|domain| !domain.is_root())?;
+        self.alive
+            .lock()
+            .iter()
+            .filter_map(Weak::upgrade)
+            .find(|partition| partition.domain == wave)
+            .map(|partition| partition.ctx.clone())
+    }
+
     pub(crate) fn get(&self, key: &PartitionKey) -> Option<Arc<Partition>> {
         self.open.get(key).map(|partition| Arc::clone(&partition))
     }
@@ -1442,6 +1459,11 @@ impl Partitions {
             return partition;
         }
         let partition = Partition::open(self, key.clone());
+        {
+            let mut alive = self.alive.lock();
+            alive.retain(|member| member.strong_count() > 0);
+            alive.push(Arc::downgrade(&partition));
+        }
         self.open.insert(key, Arc::clone(&partition));
         for (id, starter) in self.services.lock().iter() {
             self.start_service(&partition, *id, Arc::clone(starter));
