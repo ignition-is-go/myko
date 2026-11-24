@@ -25,11 +25,13 @@ use myko::{
     report::{AnyOutput, ReportContext, ReportHandler},
     request::RequestContext,
     server::{
-        ClientSession, HandlerRegistry, MykoServerContext, MykoServerRuntime, PartitionError,
-        PartitionKey, PartitionSchema, RelationshipManager, WsWriter, persister::PersisterRouter,
+        ClientSession, HandlerRegistry, MutationValidatorRegistration, MykoServerContext,
+        MykoServerRuntime, PartitionError, PartitionKey, PartitionSchema, PersistError,
+        ProposedState, RelationshipManager, WsWriter,
+        persister::{Persister, PersisterRouter},
     },
     store::StoreRegistry,
-    wire::{EncodedCommandMessage, MykoMessage},
+    wire::{EncodedCommandMessage, MEvent, MEventType, MykoMessage},
 };
 use parking_lot::{Condvar, Mutex};
 use uuid::Uuid;
@@ -491,12 +493,16 @@ fn gain_log(ctx: &MykoServerContext) -> (Arc<Mutex<Vec<i64>>>, hyphae::Subscript
 // fixtures -------------------------------------------------------------------
 
 fn root_context() -> MykoServerContext {
+    root_context_logging(PersisterRouter::default())
+}
+
+fn root_context_logging(persisters: PersisterRouter) -> MykoServerContext {
     MykoServerContext::new(
         Uuid::new_v4(),
         Arc::new(StoreRegistry::new()),
         Arc::new(HandlerRegistry::new()),
         Arc::new(RelationshipManager::new()),
-        Arc::new(PersisterRouter::default()),
+        Arc::new(persisters),
         Arc::new(myko::search::SearchIndex::new()),
         MykoServerRuntime {
             peer_clients: Arc::new(dashmap::DashMap::new()),
@@ -528,7 +534,11 @@ struct Fixture {
 
 /// One shared setting, and the runtimes `a` and `b`.
 fn fixture() -> Fixture {
-    let root = root_context().with_partitions(schema());
+    fixture_on(root_context())
+}
+
+fn fixture_on(root: MykoServerContext) -> Fixture {
+    let root = root.with_partitions(schema());
     root.set(&PrSetting {
         id: "gain".into(),
         gain: 1,
@@ -1591,4 +1601,294 @@ fn a_routed_write_from_a_shared_wave_lands_where_its_row_is_placed_on_arrival() 
             .partition_of(PrSample::ENTITY_NAME_STATIC, &Arc::from("emitter-5")),
         Some(PartitionKey::new("a"))
     );
+}
+
+// (f) the event log ----------------------------------------------------------
+
+/// A persister that keeps every event it is given, in order.
+#[derive(Clone, Default)]
+struct Log(Arc<Mutex<Vec<MEvent>>>);
+
+impl Persister for Log {
+    fn persist(&self, event: MEvent) -> Result<(), PersistError> {
+        self.0.lock().push(event);
+        Ok(())
+    }
+}
+
+impl Log {
+    fn fixture(&self) -> Fixture {
+        let mut persisters = PersisterRouter::default();
+        persisters.set_default(Some(Arc::new(self.clone())));
+        fixture_on(root_context_logging(persisters))
+    }
+
+    /// `(change, id, level)` of every logged event of `entity_type`.
+    fn of(&self, entity_type: &str) -> Vec<(MEventType, String, i64)> {
+        self.0
+            .lock()
+            .iter()
+            .filter(|event| event.item_type.as_ref() == entity_type)
+            .map(|event| {
+                (
+                    event.change_type,
+                    event
+                        .item
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                    event
+                        .item
+                        .get("level")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or_default(),
+                )
+            })
+            .collect()
+    }
+}
+
+fn set(id: &str, level: i64) -> (MEventType, String, i64) {
+    (MEventType::SET, id.to_owned(), level)
+}
+
+fn del(id: &str, level: i64) -> (MEventType, String, i64) {
+    (MEventType::DEL, id.to_owned(), level)
+}
+
+/// Refuses a partitioned row with a negative level.
+fn no_negative_levels(state: &ProposedState<'_>, _reversal: bool) -> Result<(), String> {
+    let negative = state.upserts.iter().any(|item| {
+        let any = AnyItem::as_any(item.as_ref());
+        any.downcast_ref::<PrReading>()
+            .map(|row| row.level)
+            .or_else(|| any.downcast_ref::<PrSample>().map(|row| row.level))
+            .is_some_and(|level| level < 0)
+    });
+    if negative {
+        Err("negative level".into())
+    } else {
+        Ok(())
+    }
+}
+
+myko::inventory::submit! {
+    MutationValidatorRegistration {
+        validate_reversal_deletes: false,
+        entity_types: &[PrReading::ENTITY_NAME_STATIC, PrSample::ENTITY_NAME_STATIC],
+        validate: no_negative_levels,
+    }
+}
+
+#[test]
+fn a_routed_row_is_logged_once_per_write_whatever_its_placement() {
+    let _serial = SERIAL.lock();
+    let log = Log::default();
+    let fixture = log.fixture();
+    let samples = || log.of(PrSample::ENTITY_NAME_STATIC);
+
+    // Held, then placed when its partition is named.
+    fixture.root.set(&sample("held", 1)).expect("held write");
+    assert_eq!(samples(), [set("held", 1)], "a held row's write is logged");
+    assign(&fixture.root, "held", "b");
+    assert_eq!(samples_in(&fixture.b, "held"), Some(1));
+    // Moved.
+    assign(&fixture.root, "held", "a");
+    assert_eq!(samples_in(&fixture.a, "held"), Some(1));
+    assert_eq!(
+        samples(),
+        [set("held", 1)],
+        "placing and moving log nothing"
+    );
+    fixture.root.set(&sample("held", 2)).expect("write in a");
+
+    // In transit behind a shared wave, then held by the same wave.
+    let root = fixture.root.clone();
+    let (results, _guard) = on_row(
+        &fixture.root,
+        PrSetting::ENTITY_NAME_STATIC,
+        "gain",
+        move || {
+            root.set(&sample("held", 3))?;
+            root.set(&PrAssignment {
+                id: "held".into(),
+                runtime: "nowhere".into(),
+            })
+        },
+    );
+    drop(results.lock().drain(..));
+    fixture
+        .root
+        .set(&PrSetting {
+            id: "gain".into(),
+            gain: 3,
+        })
+        .expect("shared write");
+    assert_eq!(*results.lock(), [true]);
+    assert_eq!(
+        fixture
+            .root
+            .partition_of(PrSample::ENTITY_NAME_STATIC, &Arc::from("held")),
+        None,
+        "the row in transit is held"
+    );
+    fixture
+        .root
+        .del(&sample("held", 3))
+        .expect("delete of the held row");
+    settle(&fixture.a);
+    settle(&fixture.b);
+    assert_eq!(samples_in(&fixture.a, "held"), None);
+    assert_eq!(samples_in(&fixture.b, "held"), None);
+
+    // A closed partition's row is held and its writes are logged.
+    assign(&fixture.root, "closing", "a");
+    fixture.root.set(&sample("closing", 4)).expect("write in a");
+    fixture
+        .root
+        .del(&PrRuntime {
+            id: "a".into(),
+            label: "a".into(),
+        })
+        .expect("close a");
+    fixture.root.set(&sample("closing", 5)).expect("held write");
+    settle(&fixture.b);
+
+    assert_eq!(
+        samples(),
+        [
+            set("held", 1),
+            set("held", 2),
+            set("held", 3),
+            del("held", 3),
+            set("closing", 4),
+            set("closing", 5),
+        ],
+        "every admitted write is logged exactly once, in admission order"
+    );
+}
+
+#[test]
+fn a_keyed_write_behind_a_shared_write_is_logged_when_admitted() {
+    let _serial = SERIAL.lock();
+    let log = Log::default();
+    let fixture = log.fixture();
+    let (gate, writer, observed) = park_root(&fixture.root);
+    let shared: Arc<dyn AnyItem> = Arc::new(PrSetting {
+        id: "gain".into(),
+        gain: 3,
+    });
+    let keyed: Arc<dyn AnyItem> = Arc::new(reading("b", "behind", 7));
+    fixture
+        .root
+        .set_batch_any([shared, keyed])
+        .expect("admitted");
+    assert_eq!(
+        log.of(PrReading::ENTITY_NAME_STATIC),
+        [set("behind", 7)],
+        "logged on the writer's path, before it is applied"
+    );
+    drop(gate);
+    assert!(writer.join().expect("root writer").is_ok());
+    drop(observed);
+    settle(&fixture.b);
+    assert_eq!(levels_in(&fixture.b, "behind"), Some(7));
+    assert_eq!(
+        log.of(PrReading::ENTITY_NAME_STATIC),
+        [set("behind", 7)],
+        "and not logged again when applied"
+    );
+}
+
+#[test]
+fn a_write_that_would_fail_when_applied_is_refused_when_made() {
+    let _serial = SERIAL.lock();
+    let log = Log::default();
+    let fixture = log.fixture();
+    assign(&fixture.root, "emitter", "b");
+    let (gate, writer, observed) = park_root(&fixture.root);
+    let shared = || -> Arc<dyn AnyItem> {
+        Arc::new(PrSetting {
+            id: "gain".into(),
+            gain: 3,
+        })
+    };
+    let keyed: Arc<dyn AnyItem> = Arc::new(reading("b", "bad", -1));
+    let routed: Arc<dyn AnyItem> = Arc::new(sample("emitter", -1));
+    assert!(
+        fixture.root.set_batch_any([shared(), keyed]).is_err(),
+        "a keyed write behind a shared write is refused to its writer"
+    );
+    assert!(
+        fixture.root.set_batch_any([shared(), routed]).is_err(),
+        "a routed write behind a shared write is refused to its writer"
+    );
+    assert!(
+        fixture.root.set(&sample("unplaced", -1)).is_err(),
+        "a write that would be held is refused to its writer"
+    );
+    drop(gate);
+    assert!(writer.join().expect("root writer").is_ok());
+    drop(observed);
+    settle(&fixture.b);
+    assert_eq!(levels_in(&fixture.b, "bad"), None);
+    assert_eq!(samples_in(&fixture.b, "emitter"), None);
+    assert!(log.of(PrReading::ENTITY_NAME_STATIC).is_empty());
+    assert!(log.of(PrSample::ENTITY_NAME_STATIC).is_empty());
+}
+
+/// Run `write` on its own thread and fail rather than hang when it does
+/// not return.
+fn returns(write: impl FnOnce() + Send + 'static) -> bool {
+    let (done, finished) = mpsc::channel();
+    thread::spawn(move || {
+        write();
+        let _ = done.send(());
+    });
+    finished.recv_timeout(DEADLINE).is_ok()
+}
+
+#[test]
+fn a_wave_that_rewrites_the_routed_row_it_applies_does_not_deadlock() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    assign(&fixture.root, "echo", "b");
+    let b = fixture.b.clone();
+    let (results, _guard) = on_row(
+        &fixture.b,
+        PrSample::ENTITY_NAME_STATIC,
+        "echo",
+        move || match samples_in(&b, "echo") {
+            Some(level) if level % 2 == 1 => b.set(&sample("echo", level + 1)),
+            _ => Ok(()),
+        },
+    );
+
+    let root = fixture.root.clone();
+    assert!(
+        returns(move || drop(root.set(&sample("echo", 1)))),
+        "a write applied on its writer's path"
+    );
+    settle(&fixture.b);
+    assert_eq!(samples_in(&fixture.b, "echo"), Some(2));
+
+    let root = fixture.root.clone();
+    assert!(
+        returns(move || {
+            let shared: Arc<dyn AnyItem> = Arc::new(PrSetting {
+                id: "gain".into(),
+                gain: 4,
+            });
+            let routed: Arc<dyn AnyItem> = Arc::new(sample("echo", 3));
+            drop(root.set_batch_any([shared, routed]));
+            root.partition(&PartitionKey::new("b"))
+                .expect("b")
+                .domain()
+                .flush();
+        }),
+        "a write landing behind a shared write"
+    );
+    assert_eq!(samples_in(&fixture.b, "echo"), Some(4));
+    assert!(results.lock().iter().all(|ok| *ok));
 }

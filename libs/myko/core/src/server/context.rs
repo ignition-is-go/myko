@@ -77,6 +77,10 @@ pub enum Origin {
     /// A live-only mutation such as an in-progress editor gesture. It updates
     /// local reactive state and relationships without durable persistence.
     Transient,
+    /// A write already admitted, validated and recorded on its writer's path,
+    /// applied later where its rows live. It cascades like `Local`, and is
+    /// neither validated nor persisted again.
+    Admitted,
 }
 
 impl Origin {
@@ -95,9 +99,21 @@ impl Origin {
     /// a cascade-deleted child cannot resurrect its already-removed parent.
     const fn should_cascade(self, _change: MEventType) -> bool {
         match self {
-            Self::Local | Self::Cascade => true,
+            Self::Local | Self::Cascade | Self::Admitted => true,
             Self::RelationshipFixup | Self::Transient => false,
         }
+    }
+
+    /// Whether this origin's mutations are written to the durable persister
+    /// when applied. An admitted write was written when it was admitted.
+    const fn should_persist(self) -> bool {
+        self.should_produce() && !matches!(self, Self::Admitted)
+    }
+
+    /// Whether a rewrite or validation still has to run when the mutation is
+    /// applied.
+    const fn should_prepare(self) -> bool {
+        !matches!(self, Self::Admitted)
     }
 
     /// Whether this origin's mutations should be produced to persisters/sink.
@@ -1916,6 +1932,51 @@ impl MykoServerContext {
         )
     }
 
+    /// Admit a write that is applied later or elsewhere: run everything that
+    /// can refuse it and record its events now, on the writer's path, so
+    /// applying it cannot fail and its events are in admission order.
+    /// `before` gives each row's value as of this admission.
+    ///
+    /// Returns the origin to apply it with.
+    pub(crate) fn admit(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+        before: impl Fn(&Arc<dyn AnyItem>) -> Option<Arc<dyn AnyItem>>,
+    ) -> Result<Origin, PersistError> {
+        if origin.should_prepare()
+            && matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import)
+        {
+            let (upserts, deletes) = if change == MEventType::SET {
+                (items, &[][..])
+            } else {
+                (&[][..], items)
+            };
+            if self.rewrite_plan(upserts, deletes, origin)?.is_some() {
+                return Err(PersistError {
+                    entity_type: Arc::from(
+                        items.first().map_or("mutation", |item| item.entity_type()),
+                    ),
+                    message: "a write a rewriter would change cannot be applied after its \
+                              admission; write it outside a shared write"
+                        .into(),
+                });
+            }
+            self.validate_mutation(items, change)?;
+        }
+        if origin.should_persist() {
+            for item in items {
+                self.persist_mutation(item, change, before(item).as_ref())?;
+            }
+        }
+        Ok(match origin {
+            Origin::Local | Origin::Cascade => Origin::Admitted,
+            other => other,
+        })
+    }
+
     fn prepare_mutation(
         &self,
         items: &[Arc<dyn AnyItem>],
@@ -1923,7 +1984,9 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<bool, PersistError> {
-        if matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import) {
+        if origin.should_prepare()
+            && matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import)
+        {
             let (upserts, deletes) = if change == MEventType::SET {
                 (items, &[][..])
             } else {
@@ -2284,7 +2347,7 @@ impl MykoServerContext {
                     .apply(old.as_deref(), new)
                     .map_err(|error| Self::graph_error(item.as_ref(), error))?;
             }
-            let persist_result = if origin.should_produce() {
+            let persist_result = if origin.should_persist() {
                 self.persist_mutation(&item, change, old.as_ref())
             } else {
                 Ok(())
@@ -2486,7 +2549,7 @@ impl MykoServerContext {
                                 .apply(old, new)
                                 .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                         }
-                        if origin.should_produce() {
+                        if origin.should_persist() {
                             self.persist_mutation(
                                 item,
                                 change,
@@ -2692,7 +2755,7 @@ impl MykoServerContext {
                         .apply(old, None)
                         .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
-                if origin.should_produce() {
+                if origin.should_persist() {
                     self.persist_mutation(
                         item,
                         MEventType::DEL,
@@ -2711,7 +2774,7 @@ impl MykoServerContext {
                         .apply(old, Some(item.as_ref()))
                         .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
-                if origin.should_produce() {
+                if origin.should_persist() {
                     self.persist_mutation(
                         item,
                         MEventType::SET,

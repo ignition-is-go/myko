@@ -42,9 +42,18 @@
 //! which keeps the partition's writes in the order they were made.
 //!
 //! Such a write is admitted or refused when it is made: a partition that is
-//! closed by then refuses it with an error. Once admitted it is applied,
-//! even when the partition closes before it arrives, because the close
-//! waits behind every write the partition admitted.
+//! closed by then, or a validator, refuses it with an error. Once admitted
+//! it is applied, even when the partition closes before it arrives, because
+//! the close waits behind every write the partition admitted.
+//!
+//! Every admitted write is recorded in the event log when it is admitted,
+//! on the writer's path, whatever its placement: applied now, in transit,
+//! or held. Placement only decides which store holds the row, and moving a
+//! row records nothing.
+//!
+//! A partition applies its routed writes and moves one at a time in the
+//! order they were admitted. The rows' locks are released before a write is
+//! applied, so a wave the write runs may write the same rows again.
 //!
 //! A routed row whose write is in transit keeps that write in its
 //! placement. A move re-sends it to the row's new partition, where it is
@@ -78,11 +87,12 @@ use std::{
         Arc, Weak,
         atomic::{AtomicU64, Ordering},
     },
+    thread::ThreadId,
 };
 
 use dashmap::DashMap;
 use hyphae::{Cell, CellMutable, Mutable, SubscriptionGuard, Watchable, scheduler::Domain};
-use parking_lot::{Mutex, MutexGuard, RwLock};
+use parking_lot::{Condvar, Mutex, MutexGuard, RwLock};
 
 use super::{MykoServerContext, OperationProvenance, context::Origin, persister::PersistError};
 use crate::{
@@ -300,7 +310,9 @@ impl PartitionSchema {
 enum Placement {
     /// No open partition takes the row. It is kept here, outside every domain.
     Held(Item),
-    In(PartitionKey),
+    /// In this partition, or queued there behind earlier writes. The row is
+    /// its latest admitted value.
+    In(PartitionKey, Item),
     /// Writes of the row are on their way to this partition behind a shared
     /// write, oldest first, and are not in its store yet. A move re-sends
     /// them to the row's new partition.
@@ -308,6 +320,21 @@ enum Placement {
 }
 
 impl Placement {
+    /// The row's latest admitted value.
+    fn row(&self) -> Option<&Item> {
+        match self {
+            Self::Held(row) | Self::In(_, row) => Some(row),
+            Self::Sent(_, pending) => Self::sent_row(pending),
+        }
+    }
+
+    const fn key(&self) -> Option<&PartitionKey> {
+        match self {
+            Self::In(key, _) | Self::Sent(key, _) => Some(key),
+            Self::Held(_) => None,
+        }
+    }
+
     /// The row a write in transit leaves, or `None` when it deletes it.
     fn sent_row(pending: &[(Item, Write)]) -> Option<&Item> {
         let (item, write) = pending.last()?;
@@ -352,6 +379,71 @@ impl Placements {
 
 type Job = Box<dyn FnOnce() + Send>;
 
+/// Applies one partition's routed writes and moves one at a time, in the
+/// order they were admitted. A job is queued while its rows' stripes are
+/// held, and run after they are released, so a wave a job runs can write the
+/// same rows again.
+#[derive(Default)]
+struct Sequencer {
+    state: Mutex<Sequence>,
+    turn: Condvar,
+}
+
+#[derive(Default)]
+struct Sequence {
+    queue: VecDeque<Job>,
+    queued: u64,
+    applied: u64,
+    /// The thread running the queue, while one is.
+    runner: Option<ThreadId>,
+}
+
+impl Sequencer {
+    /// Queue `job` behind every job queued before it. Returns its ticket.
+    fn queue(&self, job: Job) -> u64 {
+        let mut sequence = self.state.lock();
+        sequence.queue.push_back(job);
+        sequence.queued = sequence.queued.wrapping_add(1);
+        sequence.queued
+    }
+
+    /// Return once the job of `ticket` has run, running the queue on this
+    /// thread when no other thread is. A job queued by the job this thread is
+    /// running runs right after it, on this thread.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the lock is released while each job runs and held between them"
+    )]
+    fn run_until(&self, ticket: u64) {
+        let me = std::thread::current().id();
+        let mut sequence = self.state.lock();
+        loop {
+            if sequence.applied >= ticket || sequence.runner == Some(me) {
+                return;
+            }
+            if sequence.runner.is_some() {
+                self.turn.wait(&mut sequence);
+                continue;
+            }
+            sequence.runner = Some(me);
+            while let Some(job) = sequence.queue.pop_front() {
+                let ran = MutexGuard::unlocked(&mut sequence, || {
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(job))
+                });
+                sequence.applied = sequence.applied.wrapping_add(1);
+                self.turn.notify_all();
+                if let Err(panic) = ran {
+                    sequence.runner = None;
+                    drop(sequence);
+                    std::panic::resume_unwind(panic);
+                }
+            }
+            sequence.runner = None;
+            self.turn.notify_all();
+        }
+    }
+}
+
 /// How a write is applied, carried with it across a domain boundary.
 #[derive(Clone)]
 struct Write {
@@ -380,6 +472,7 @@ pub(crate) struct Partition {
     /// them this partition is known to have applied.
     sent: AtomicU64,
     applied: AtomicU64,
+    sequencer: Sequencer,
     _relay: SubscriptionGuard,
 }
 
@@ -419,6 +512,7 @@ impl Partition {
             courier,
             sent: AtomicU64::new(0),
             applied: AtomicU64::new(0),
+            sequencer: Sequencer::default(),
             _relay: relay,
         })
     }
@@ -451,11 +545,7 @@ impl Partition {
         // A write that followed a shared write may still be on its way here.
         // This one was made later, so it waits for that one to be applied. A
         // write made from this partition's own wave is already in order.
-        let sent = self.sent.load(Ordering::Acquire);
-        if self.applied.load(Ordering::Acquire) < sent && Domain::current() != self.domain {
-            self.domain.flush();
-            self.applied.fetch_max(sent, Ordering::AcqRel);
-        }
+        self.catch_up();
         let result = self
             .domain
             .enter(|| self.ctx.submit_local(items, change, origin, mode));
@@ -463,12 +553,45 @@ impl Partition {
         result
     }
 
+    /// Wait until every write sent here behind a shared write is applied,
+    /// unless this thread runs this partition's wave and is already behind
+    /// them.
+    fn catch_up(&self) {
+        let sent = self.sent.load(Ordering::Acquire);
+        if self.applied.load(Ordering::Acquire) < sent && Domain::current() != self.domain {
+            self.domain.flush();
+            self.applied.fetch_max(sent, Ordering::AcqRel);
+        }
+    }
+
+    /// Queue a job in admission order. Call it with the rows' stripes held,
+    /// and [`settle`](Self::settle) the ticket once they are released.
+    fn sequence(&self, job: impl FnOnce() + Send + 'static) -> u64 {
+        self.sequencer.queue(Box::new(job))
+    }
+
+    /// Run queued jobs through `ticket`: now, or, from root's wave, behind it.
+    fn settle(self: &Arc<Self>, ticket: u64) {
+        match Domain::propagating() {
+            Some(wave) if wave != self.domain => {
+                let partition = Arc::clone(self);
+                self.domain
+                    .hand_off(move || partition.sequencer.run_until(ticket));
+            }
+            Some(_) => self.sequencer.run_until(ticket),
+            None => {
+                self.catch_up();
+                self.sequencer.run_until(ticket);
+            }
+        }
+    }
+
     /// Apply a write after the shared write the calling thread just made, on
     /// this partition's worker. A closed partition refuses it here. Once
     /// admitted it is applied: a close applies every admitted write first.
     ///
-    /// The result of applying it is not returned; a validator's refusal is
-    /// logged.
+    /// Everything that can refuse it runs here, on the writer's path, and
+    /// its events are recorded here.
     fn write_following(
         self: &Arc<Self>,
         items: Vec<Item>,
@@ -477,14 +600,24 @@ impl Partition {
         mode: EdgeApplyMode,
         provenance: Option<OperationProvenance>,
     ) -> Result<(), PersistError> {
+        let admitting = self.admitting.read_recursive();
+        if !*admitting {
+            drop(admitting);
+            return Err(self.closed(items.first().map_or("mutation", |item| item.entity_type())));
+        }
+        let origin = self.ctx.admit(&items, change, origin, mode, |item| {
+            self.store(item.entity_type()).get_value(&item.id())
+        })?;
         let partition = Arc::clone(self);
-        self.follow(
+        let followed = self.follow(
             items.first().map_or("mutation", |item| item.entity_type()),
             Box::new(move || {
                 let _operation = partition.ctx.restore_operation(provenance);
                 partition.apply(items, change, origin, mode);
             }),
-        )
+        );
+        drop(admitting);
+        followed
     }
 
     /// Queue `job` to run on this partition's worker after every delivery
@@ -511,7 +644,9 @@ impl Partition {
             .domain
             .enter(|| self.ctx.submit_local(items, change, origin, mode));
         if let Err(error) = result {
-            tracing::error!(partition = %self.key, %error, "partition write failed");
+            // An admitted write was validated and recorded when admitted, so
+            // only a write it derives can fail here.
+            tracing::error!(partition = %self.key, %error, "a write derived in a partition failed");
         }
     }
 
@@ -541,16 +676,17 @@ impl Partition {
         self.domain.batch(|| store.remove(id))
     }
 
-    /// Remove a row that moved away, now or, from root's wave, behind it.
-    fn take_behind(self: &Arc<Self>, entity_type: &'static str, id: &Arc<str>) {
-        if Domain::propagating().is_some() {
-            let partition = Arc::clone(self);
-            let id = Arc::clone(id);
-            self.domain
-                .hand_off(move || drop(partition.take(entity_type, &id)));
-        } else {
-            drop(self.take(entity_type, id));
-        }
+    /// Remove a row that moved away, behind the writes queued before.
+    fn take_in_order(self: &Arc<Self>, entity_type: &'static str, id: &Arc<str>) -> u64 {
+        let partition = Arc::clone(self);
+        let id = Arc::clone(id);
+        self.sequence(move || drop(partition.take(entity_type, &id)))
+    }
+
+    /// Insert a row that was moved here, behind the writes queued before.
+    fn place_in_order(self: &Arc<Self>, entity_type: &'static str, row: Item) -> u64 {
+        let partition = Arc::clone(self);
+        self.sequence(move || partition.place(entity_type, row))
     }
 
     /// Insert a row that was moved here.
@@ -670,10 +806,13 @@ impl Partitions {
 
     /// The partition a routed row is in, if it is in one.
     pub(crate) fn placement(&self, entity_type: &str, id: &Arc<str>) -> Option<PartitionKey> {
-        match self.placements.get(entity_type)?.rows.get(id)?.value() {
-            Placement::In(key) | Placement::Sent(key, _) => Some(key.clone()),
-            Placement::Held(_) => None,
-        }
+        self.placements
+            .get(entity_type)?
+            .rows
+            .get(id)?
+            .value()
+            .key()
+            .cloned()
     }
 
     /// The rows of a partitioned type in every open partition, read now.
@@ -851,88 +990,122 @@ impl Partitions {
             return Ok(());
         };
         let ids: Vec<Arc<str>> = items.iter().map(|item| item.id()).collect();
-        let _rows = placements.lock(&ids);
-        let mut by_partition: BTreeMap<PartitionKey, (Arc<Partition>, Vec<Item>, bool)> =
-            BTreeMap::new();
-        for (item, id) in items.into_iter().zip(ids) {
-            let previous = placements.rows.get(&id).map(|row| row.value().clone());
-            let target = match write.change {
-                MEventType::SET => {
-                    (placements.resolve)(&self.root, item.as_ref()).and_then(|key| self.get(&key))
-                }
-                MEventType::DEL => match &previous {
-                    Some(Placement::In(key) | Placement::Sent(key, _)) => self.get(key),
-                    Some(Placement::Held(_)) | None => None,
-                },
-            };
-            // Writes of this row still in transit go first: this one is sent
-            // behind them, and they go where it goes.
-            let mut pending = match &previous {
-                Some(Placement::Sent(_, pending)) => pending.clone(),
-                _ => Vec::new(),
-            };
-            let from = match &previous {
-                Some(Placement::In(key) | Placement::Sent(key, _)) => self.get(key),
-                _ => None,
-            };
-            let Some(target) = target else {
-                // NOTE(ts): a held row is kept in memory and is not persisted
-                // until a partition takes it; writes in transit are folded
-                // into it.
-                match write.change {
-                    MEventType::SET => {
-                        drop(placements.rows.insert(id.clone(), Placement::Held(item)));
-                    }
-                    MEventType::DEL => drop(placements.rows.remove(&id)),
-                }
-                if let Some(from) = from {
-                    from.take_behind(entity_type, &id);
-                }
-                continue;
-            };
-            let moved = from.as_ref().is_some_and(|from| from.key != target.key);
-            if moved && let Some(from) = &from {
-                from.take_behind(entity_type, &id);
+        let mut queued = Vec::new();
+        let result = {
+            let _rows = placements.lock(&ids);
+            items.into_iter().zip(ids).try_for_each(|(item, id)| {
+                self.admit_routed(
+                    entity_type,
+                    placements,
+                    (item, id),
+                    write,
+                    follows_shared,
+                    &mut queued,
+                )
+            })
+        };
+        // Applied with the stripes released: a wave a write runs may write
+        // the same rows again.
+        for (partition, ticket) in queued {
+            partition.settle(ticket);
+        }
+        result
+    }
+
+    /// Admit one routed write and decide where its row goes. Called with the
+    /// row's stripe held. The write's event is recorded here, whatever its
+    /// placement; placement only decides which store holds the row.
+    fn admit_routed(
+        &self,
+        entity_type: &'static str,
+        placements: &Placements,
+        (item, id): (Item, Arc<str>),
+        write: &Write,
+        follows_shared: bool,
+        queued: &mut Vec<(Arc<Partition>, u64)>,
+    ) -> Result<(), PersistError> {
+        let previous = placements.rows.get(&id).map(|row| row.value().clone());
+        let target = match write.change {
+            MEventType::SET => {
+                (placements.resolve)(&self.root, item.as_ref()).and_then(|key| self.get(&key))
             }
-            let follows =
-                !pending.is_empty() || follows_shared && Domain::current() != target.domain;
-            if follows {
-                let resent = if moved { pending.clone() } else { Vec::new() };
-                pending.push((Arc::clone(&item), write.clone()));
+            MEventType::DEL => previous
+                .as_ref()
+                .and_then(Placement::key)
+                .and_then(|key| self.get(key)),
+        };
+        let from = previous
+            .as_ref()
+            .and_then(Placement::key)
+            .and_then(|key| self.get(key));
+        let before = previous.as_ref().and_then(Placement::row).cloned();
+        // Held until the write is queued: a close that takes it exclusively
+        // finds the row placed and moves it.
+        let gate = target.clone();
+        let admitting = gate
+            .as_ref()
+            .map(|target| target.admitting.read_recursive());
+        if let (Some(target), Some(admitting)) = (&target, &admitting)
+            && !**admitting
+        {
+            return Err(target.closed(entity_type));
+        }
+        let ctx = target.as_ref().map_or(&self.root, |target| &target.ctx);
+        let write = Write {
+            origin: ctx.admit(
+                std::slice::from_ref(&item),
+                write.change,
+                write.origin,
+                write.mode,
+                |_| before.clone(),
+            )?,
+            ..write.clone()
+        };
+        let mut pending = match previous {
+            Some(Placement::Sent(_, pending)) => pending,
+            _ => Vec::new(),
+        };
+        let moved = from
+            .as_ref()
+            .is_some_and(|from| target.as_ref().is_none_or(|target| from.key != target.key));
+        if moved && let Some(from) = &from {
+            queued.push((Arc::clone(from), from.take_in_order(entity_type, &id)));
+        }
+        let Some(target) = target else {
+            match write.change {
+                MEventType::SET => drop(placements.rows.insert(id, Placement::Held(item))),
+                MEventType::DEL => drop(placements.rows.remove(&id)),
+            }
+            return Ok(());
+        };
+        let follows = !pending.is_empty() || follows_shared && Domain::current() != target.domain;
+        if follows {
+            // Writes of this row still in transit go first, where this one
+            // goes.
+            let resent = if moved { pending.clone() } else { Vec::new() };
+            pending.push((Arc::clone(&item), write.clone()));
+            placements
+                .rows
+                .insert(id, Placement::Sent(target.key.clone(), pending));
+            for (resend, resend_write) in resent {
+                self.send(entity_type, &target, vec![resend], resend_write)?;
+            }
+            return self.send(entity_type, &target, vec![item], write);
+        }
+        match write.change {
+            MEventType::SET => drop(
                 placements
                     .rows
-                    .insert(id, Placement::Sent(target.key.clone(), pending));
-                let entry = by_partition
-                    .entry(target.key.clone())
-                    .or_insert_with(|| (Arc::clone(&target), Vec::new(), true));
-                // The writes in transit to the old partition go first.
-                for (resend, resend_write) in resent {
-                    self.send(entity_type, &target, vec![resend], resend_write)?;
-                }
-                entry.1.push(item);
-            } else {
-                match write.change {
-                    MEventType::SET => {
-                        placements
-                            .rows
-                            .insert(id, Placement::In(target.key.clone()));
-                    }
-                    MEventType::DEL => drop(placements.rows.remove(&id)),
-                }
-                by_partition
-                    .entry(target.key.clone())
-                    .or_insert_with(|| (Arc::clone(&target), Vec::new(), false))
-                    .1
-                    .push(item);
-            }
+                    .insert(id, Placement::In(target.key.clone(), Arc::clone(&item))),
+            ),
+            MEventType::DEL => drop(placements.rows.remove(&id)),
         }
-        for (_, (partition, items, follows)) in by_partition {
-            if follows {
-                self.send(entity_type, &partition, items, write.clone())?;
-            } else {
-                partition.write(items, write.change, write.origin, write.mode)?;
-            }
-        }
+        let partition = Arc::clone(&target);
+        let ticket = target.sequence(move || {
+            let _operation = partition.ctx.restore_operation(write.provenance);
+            partition.apply(vec![item], write.change, write.origin, write.mode);
+        });
+        queued.push((target, ticket));
         Ok(())
     }
 
@@ -989,7 +1162,11 @@ impl Partitions {
             pending.remove(index);
             if pending.is_empty() {
                 match write.change {
-                    MEventType::SET => drop(placements.rows.insert(id, Placement::In(key))),
+                    MEventType::SET => drop(
+                        placements
+                            .rows
+                            .insert(id, Placement::In(key, Arc::clone(&item))),
+                    ),
                     MEventType::DEL => drop(placements.rows.remove(&id)),
                 }
             } else {
@@ -997,19 +1174,22 @@ impl Partitions {
             }
             landing.push(item);
         }
-        if !landing.is_empty() {
-            // Applied under the rows' locks: a move waits for the rows to be
-            // in the store before it reads them there.
+        if landing.is_empty() {
+            return;
+        }
+        let partition = Arc::clone(via);
+        let ticket = via.sequence(move || {
             if write.place {
                 for row in landing {
-                    via.place(entity_type, row);
+                    partition.place(entity_type, row);
                 }
             } else {
-                let _operation = via.ctx.restore_operation(write.provenance);
-                via.apply(landing, write.change, write.origin, write.mode);
+                let _operation = partition.ctx.restore_operation(write.provenance);
+                partition.apply(landing, write.change, write.origin, write.mode);
             }
-        }
+        });
         drop(rows);
+        via.settle(ticket);
     }
 
     /// Re-resolve every placed row of `entity_type` and move the rows whose
@@ -1030,32 +1210,17 @@ impl Partitions {
             .iter()
             .map(|row| row.key().clone())
             .collect();
+        let mut queued = Vec::new();
         for id in ids {
             let _row = placements.lock([&id]);
             let Some(current) = placements.rows.get(&id).map(|row| row.value().clone()) else {
                 continue;
             };
-            let (row, from) = match &current {
-                Placement::Held(row) => (Some(Arc::clone(row)), None),
-                Placement::Sent(key, pending) => {
-                    let Some(row) = Placement::sent_row(pending) else {
-                        // Its delete is in transit; there is nothing to move.
-                        continue;
-                    };
-                    (Some(Arc::clone(row)), holder(key))
-                }
-                Placement::In(key) => {
-                    let from = holder(key);
-                    let row = from
-                        .as_ref()
-                        .and_then(|from| from.store(entity_type).get_value(&id));
-                    (row, from)
-                }
-            };
-            let Some(row) = row else {
-                placements.rows.remove(&id);
+            let Some(row) = current.row().cloned() else {
+                // Its delete is in transit; there is nothing to move.
                 continue;
             };
+            let from = current.key().and_then(holder);
             let target =
                 (placements.resolve)(&self.root, row.as_ref()).and_then(|key| self.get(&key));
             if let (Some(from), Some(target)) = (&from, &target)
@@ -1064,7 +1229,7 @@ impl Partitions {
                 continue;
             }
             if let Some(from) = &from {
-                from.take_behind(entity_type, &id);
+                queued.push((Arc::clone(from), from.take_in_order(entity_type, &id)));
             }
             // Root's wave cannot write a partition's store; the row follows
             // it there like a write.
@@ -1103,13 +1268,17 @@ impl Partitions {
                 (Some(target), _) => {
                     placements
                         .rows
-                        .insert(id, Placement::In(target.key.clone()));
-                    target.place(entity_type, row);
+                        .insert(id, Placement::In(target.key.clone(), Arc::clone(&row)));
+                    let ticket = target.place_in_order(entity_type, row);
+                    queued.push((target, ticket));
                 }
                 (None, _) => {
                     placements.rows.insert(id, Placement::Held(row));
                 }
             }
+        }
+        for (partition, ticket) in queued {
+            partition.settle(ticket);
         }
     }
 
