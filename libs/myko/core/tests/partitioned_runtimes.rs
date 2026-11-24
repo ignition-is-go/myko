@@ -1553,8 +1553,8 @@ fn a_routed_write_from_a_shared_wave_lands_where_its_row_is_placed_on_arrival() 
         },
     );
     drop(results.lock().drain(..));
-    // Runtime a is parked, so the copy sent to b arrives before the re-sent
-    // one reaches a.
+    // Runtime a is parked below before the shared write that sends both
+    // copies, so the copy sent to b arrives before the re-sent one reaches a.
     let client_a = Client::connect(&fixture.a);
     let (in_b, _in_b) = sample_log(&fixture.b);
     settle(&fixture.a);
