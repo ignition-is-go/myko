@@ -65,8 +65,7 @@ type WeakAnyItemMap = hyphae::WeakCellMap<Arc<str>, AnyItemArc>;
 type BucketDiff = MapDiff<Arc<str>, AnyItemArc>;
 type BucketDiffs = Vec<BucketDiff>;
 /// A bucket and the domain it lives in.
-type HomedBucket = (hyphae::scheduler::Domain, AnyItemMap);
-type BucketAction = (HomedBucket, BucketDiff);
+type BucketAction = (AnyItemMap, BucketDiff);
 
 #[derive(Default)]
 struct BelongsToMutationState {
@@ -190,13 +189,9 @@ pub fn query_runtime_metrics_by_id(limit: usize) -> Vec<QueryRuntimePerIdMetrics
 /// ever seen, which never shrinks even after every relation is unassigned.
 struct BelongsToSourceIndex {
     store: Arc<crate::store::EntityStore>,
-    /// Per key, one bucket for each domain that reads it.
-    buckets: DashMap<CompoundKey, Vec<(hyphae::scheduler::Domain, WeakAnyItemMap)>>,
+    buckets: DashMap<CompoundKey, WeakAnyItemMap>,
     mutation_gate: Mutex<BelongsToMutationState>,
     driver: Arc<AnyItemMap>,
-    /// The domain of the store, where every bucket is born: the index writes
-    /// its buckets from the store's propagation.
-    domain: hyphae::scheduler::Domain,
     idle: IdleProbe,
 }
 
@@ -208,7 +203,6 @@ impl BelongsToSourceIndex {
             buckets: DashMap::new(),
             mutation_gate: Mutex::new(BelongsToMutationState::default()),
             driver: driver.clone(),
-            domain: hyphae::scheduler::Domain::current(),
             idle: idle_probe(),
         });
 
@@ -228,61 +222,30 @@ impl BelongsToSourceIndex {
     /// `self.buckets` never accumulates more than what's currently live. See
     /// [`sweep_dead_buckets`](Self::sweep_dead_buckets) for the backstop
     /// covering keys that go dead but are never looked up again.
-    fn route_to_live_buckets(&self, key: &CompoundKey) -> Vec<HomedBucket> {
-        let Some(mut entry) = self.buckets.get_mut(key) else {
-            return Vec::new();
-        };
-        let mut live = Vec::new();
-        entry.retain(|(domain, weak)| {
-            weak.upgrade().is_some_and(|map| {
-                live.push((domain.clone(), map));
-                true
-            })
-        });
-        let empty = entry.is_empty();
-        drop(entry);
-        if empty {
-            self.buckets.remove_if(key, |_, homes| homes.is_empty());
+    fn route_to_live_bucket(&self, key: &CompoundKey) -> Option<AnyItemMap> {
+        let live = self.buckets.get(key)?.upgrade();
+        if live.is_none() {
+            self.buckets
+                .remove_if(key, |_, weak| weak.upgrade().is_none());
         }
         live
     }
 
-    /// The bucket of `key` in the calling thread's ambient domain.
-    ///
-    /// A reader in the index's own domain shares one bucket per key. A child
-    /// domain reading a root index gets a bucket of its own, born in the
-    /// child and backfilled there, which the index feeds through the
-    /// child's hand-off queue in root order. Nothing the index writes from
-    /// root's propagation is therefore a child cell, and a child never
-    /// writes a root cell to build its bucket.
+    /// The bucket of `key`, shared by every reader of this index. The index
+    /// is its registry's own, born in that registry's domain, so its readers
+    /// and the store's propagation that writes its buckets share one domain.
     fn bucket_for(self: &Arc<Self>, key: CompoundKey) -> AnyItemMap {
-        let ambient = hyphae::scheduler::Domain::current();
-        let home = if self.domain.is_root() {
-            ambient
-        } else {
-            self.domain.clone()
-        };
         let mutation = self
             .mutation_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let mut homes = self.buckets.entry(key).or_default();
-        homes.retain(|(_, weak)| weak.upgrade().is_some());
-        if let Some(map) = homes
-            .iter()
-            .find(|(domain, _)| *domain == home)
-            .and_then(|(_, weak)| weak.upgrade())
-        {
+        if let Some(map) = self.buckets.get(&key).and_then(|weak| weak.upgrade()) {
             return map;
         }
-        let map = home.enter(|| {
-            let map = AnyItemMap::new();
-            self.retain_for_bucket(&map);
-            map
-        });
-        Self::backfill(&map, mutation.members.get(homes.key()));
-        homes.push((home, map.downgrade()));
-        drop(homes);
+        let map = AnyItemMap::new();
+        self.retain_for_bucket(&map);
+        Self::backfill(&map, mutation.members.get(&key));
+        self.buckets.insert(key, map.downgrade());
         drop(mutation);
         map
     }
@@ -318,10 +281,7 @@ impl BelongsToSourceIndex {
     /// time). Called from `MykoServerContext::sweep_dead_cache_entries` via
     /// [`sweep_all_belongs_to_source_indexes`].
     fn sweep_dead_buckets(&self) {
-        self.buckets.retain(|_, homes| {
-            homes.retain(|(_, weak)| weak.upgrade().is_some());
-            !homes.is_empty()
-        });
+        self.buckets.retain(|_, weak| weak.upgrade().is_some());
     }
 
     fn apply_diff(&self, diff: &BucketDiff, extract_fk: KeyExtractor) {
@@ -358,12 +318,8 @@ impl BelongsToSourceIndex {
                     return;
                 }
             };
-            for ((home, bucket), diff) in actions {
-                if home == self.domain {
-                    bucket.apply_diff_owned(diff);
-                } else {
-                    home.hand_off(move || bucket.apply_diff_owned(diff));
-                }
+            for (bucket, diff) in actions {
+                bucket.apply_diff_owned(diff);
             }
         }
     }
@@ -458,14 +414,10 @@ impl BelongsToSourceIndex {
     }
 
     fn route_action(&self, foreign_key: &CompoundKey, diff: BucketDiff) -> Vec<BucketAction> {
-        let mut buckets = self.route_to_live_buckets(foreign_key);
-        let last = buckets.pop();
-        let mut actions: Vec<BucketAction> = buckets
+        self.route_to_live_bucket(foreign_key)
+            .map(|bucket| (bucket, diff))
             .into_iter()
-            .map(|bucket| (bucket, diff.clone()))
-            .collect();
-        actions.extend(last.map(|bucket| (bucket, diff)));
-        actions
+            .collect()
     }
 
     fn group_change(

@@ -219,7 +219,7 @@ impl StoreRegistry {
             return index;
         }
         let owner = self.owner(entity_type);
-        let index = self.born_here(|| build(owner));
+        let index = build(owner);
         let erased: Arc<dyn std::any::Any + Send + Sync> = index.clone();
         // A racing build loses to the first one stored.
         Arc::clone(self.indexes.entry(key).or_insert(erased).value())
