@@ -997,7 +997,7 @@ enum PendingFlushPhase {
 }
 
 impl PendingFlushPhase {
-    fn request(&mut self) {
+    const fn request(&mut self) {
         *self = match self {
             Self::Idle | Self::Requested => Self::Requested,
             Self::Draining | Self::DrainingWithRequest => Self::DrainingWithRequest,
@@ -1410,10 +1410,10 @@ impl MykoClient {
             let intended_guard = transport
                 .intended_connection_state()
                 .subscribe(move |signal| {
-                    if signal.value_ref().is_some() {
-                        if let Some(inner) = weak_for_intended.upgrade() {
-                            update_connection_readiness(&inner);
-                        }
+                    if signal.value_ref().is_some()
+                        && let Some(inner) = weak_for_intended.upgrade()
+                    {
+                        update_connection_readiness(&inner);
                     }
                 });
 
@@ -4164,15 +4164,13 @@ fn drain_requested_flushes(inner: &MykoClientInner) {
             .readiness
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match readiness.flush {
-            PendingFlushPhase::DrainingWithRequest => readiness.flush = PendingFlushPhase::Draining,
-            PendingFlushPhase::Draining => {
-                readiness.flush = PendingFlushPhase::Idle;
-                return;
-            }
-            PendingFlushPhase::Idle | PendingFlushPhase::Requested => {
-                unreachable!("flush owner changed")
-            }
+        if readiness.flush == PendingFlushPhase::DrainingWithRequest {
+            readiness.flush = PendingFlushPhase::Draining;
+            drop(readiness);
+        } else {
+            readiness.flush = PendingFlushPhase::Idle;
+            drop(readiness);
+            return;
         }
     }
 }
@@ -4268,7 +4266,11 @@ mod send_admission_tests {
             on_send: Mutex::new(None),
         });
         let client = MykoClient::with_transport(transport.clone());
-        *client.inner.pending_sends.lock().unwrap() = vec![WsFrame::Binary(vec![1])];
+        *client
+            .inner
+            .pending_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![WsFrame::Binary(vec![1])];
         transport
             .status
             .set(ConnectionStatus::Connected("fixture".into()));
@@ -4276,7 +4278,12 @@ mod send_admission_tests {
             .intended
             .set(ConnectionStatus::Connected("fixture".into()));
         assert!(
-            client.inner.pending_sends.lock().unwrap().is_empty(),
+            client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
             "pending must flush once both states are ready"
         );
     }
@@ -4496,45 +4503,50 @@ mod send_admission_tests {
     }
 
     #[test]
-    fn readiness_flush_can_reenter_close_and_readdress() {
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "assertions verify bounded reentrancy; Result propagates process setup errors"
+    )]
+    fn readiness_flush_can_reenter_close_and_readdress() -> Result<(), Box<dyn std::error::Error>> {
         const CHILD: &str = "MYKO_REENTRANT_READINESS_CHILD";
         if std::env::var_os(CHILD).is_none() {
-            let mut child = std::process::Command::new(
-                std::env::current_exe().expect("test executable"),
-            )
-            .args([
-                "--exact",
-                "client::send_admission_tests::readiness_flush_can_reenter_close_and_readdress",
-                "--nocapture",
-            ])
-            .env(CHILD, "1")
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .expect("spawn bounded reentrancy test");
+            let mut child = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "client::send_admission_tests::readiness_flush_can_reenter_close_and_readdress",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
             let timed_out = loop {
-                if child.try_wait().expect("child status").is_some() {
+                if child.try_wait()?.is_some() {
                     break false;
                 }
                 if std::time::Instant::now() >= deadline {
-                    child.kill().expect("kill blocked child");
+                    child.kill()?;
                     break true;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
             };
-            let output = child.wait_with_output().expect("reap child");
+            let output = child.wait_with_output()?;
             assert!(
                 !timed_out && output.status.success(),
                 "reentrancy timed_out={timed_out}: {}\n{}",
                 String::from_utf8_lossy(&output.stdout),
                 String::from_utf8_lossy(&output.stderr)
             );
-            return;
+            return Ok(());
         }
-        for next in [
-            ConnectionStatus::Idle,
-            ConnectionStatus::Connected("next".into()),
+        for changes in [
+            vec![ConnectionStatus::Idle],
+            vec![ConnectionStatus::Connected("next".into())],
+            vec![
+                ConnectionStatus::Idle,
+                ConnectionStatus::Connected("fixture".into()),
+            ],
         ] {
             let intended = Cell::new(ConnectionStatus::Idle);
             let next_intended = intended.clone();
@@ -4543,7 +4555,11 @@ mod send_admission_tests {
                 intended: intended.clone(),
                 reject: AtomicBool::new(false),
                 attempted: Mutex::new(Vec::new()),
-                on_send: Mutex::new(Some(Box::new(move || next_intended.set(next.clone())))),
+                on_send: Mutex::new(Some(Box::new(move || {
+                    for next in changes {
+                        next_intended.set(next);
+                    }
+                }))),
             });
             let transport_dyn: Arc<dyn SocketTransport> = transport.clone();
             let client = MykoClient::with_transport_and_options(
@@ -4565,9 +4581,14 @@ mod send_admission_tests {
                 .pending_sends
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            assert!(matches!(pending.as_slice(), [WsFrame::Binary(last)] if last == &[3]));
+            if connection_matches_intent(&client.inner) {
+                assert!(pending.is_empty());
+            } else {
+                assert!(matches!(pending.as_slice(), [WsFrame::Binary(last)] if last == &[3]));
+            }
             drop(pending);
         }
+        Ok(())
     }
 
     #[test]
