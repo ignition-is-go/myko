@@ -67,10 +67,18 @@ async fn serve(
                 body.extend_from_slice(chunk.get(..n).ok_or("chunk")?);
             }
             request.body = String::from_utf8(body)?;
+            let status = if serde_json::from_str::<serde_json::Value>(&reply)?
+                .get("error")
+                .is_some()
+            {
+                "400 Bad Request"
+            } else {
+                "200 OK"
+            };
             stream
                 .write_all(
                     format!(
-                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
                          Connection: close\r\n\r\n{reply}",
                         reply.len()
                     )
@@ -327,5 +335,98 @@ async fn reconfigured_clones_do_not_share_tokens() -> Result {
             .body
             .contains("client_secret=fixture-secret")
     );
+    Ok(())
+}
+
+#[derive(Default)]
+struct DeviceStore(std::sync::Mutex<Option<String>>);
+
+impl DeviceTokenStore for DeviceStore {
+    fn load(&self) -> std::result::Result<Option<String>, AuthError> {
+        self.0
+            .lock()
+            .map(|token| token.clone())
+            .map_err(|_| AuthError::Unavailable)
+    }
+
+    fn save(&self, token: Option<&str>) -> std::result::Result<(), AuthError> {
+        *self.0.lock().map_err(|_| AuthError::Unavailable)? = token.map(str::to_owned);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn device_login_shows_code_and_refreshes_after_restart() -> Result {
+    let (origin, server) = serve(|origin| {
+        vec![
+            serde_json::json!({
+                "device_code": "private-device-code",
+                "user_code": "LINK-123",
+                "verification_uri": format!("{origin}activate"),
+                "expires_in": 60,
+                "interval": 1,
+            })
+            .to_string(),
+            serde_json::json!({"error": "authorization_pending"}).to_string(),
+            serde_json::json!({
+                "access_token": "first", "refresh_token": "refresh-1",
+                "token_type": "Bearer", "expires_in": 3600,
+            })
+            .to_string(),
+            serde_json::json!({
+                "access_token": "second", "refresh_token": "refresh-2",
+                "token_type": "Bearer", "expires_in": 3600,
+            })
+            .to_string(),
+        ]
+    })
+    .await?;
+    let settings = || DeviceCodeConfig {
+        client_id: "rship-link".into(),
+        device_authorization_url: format!("{origin}device"),
+        token_url: format!("{origin}token"),
+        target: TargetResource::Audience("rship-api".into()),
+        scopes: vec!["offline_access".into()],
+    };
+    let store = Arc::new(DeviceStore::default());
+    let provider = DeviceCode::new(settings(), Some(store.clone()))?;
+    assert!(matches!(
+        provider.credentials().await,
+        Err(AuthError::Unauthenticated)
+    ));
+    let mut prompt = None;
+    provider.sign_in(|value| prompt = Some(value)).await?;
+    let prompt = prompt.ok_or("missing device prompt")?;
+    assert_eq!(prompt.user_code, "LINK-123");
+    assert_eq!(prompt.verification_uri, format!("{origin}activate"));
+    assert_eq!(
+        provider.credentials().await?.bearer.as_deref(),
+        Some("first")
+    );
+    assert_eq!(
+        provider.clone().credentials().await?.bearer.as_deref(),
+        Some("first")
+    );
+    let restarted = DeviceCode::new(settings(), Some(store.clone()))?;
+    assert_eq!(
+        restarted.credentials().await?.bearer.as_deref(),
+        Some("second")
+    );
+    assert_eq!(store.load()?.as_deref(), Some("refresh-2"));
+    restarted.sign_out().await?;
+    assert_eq!(store.load()?, None);
+
+    let requests = server.await??;
+    let [start, pending, approved, refreshed] = requests.as_slice() else {
+        return Err("unexpected OAuth request count".into());
+    };
+    assert!(start.body.contains("audience=rship-api"));
+    assert!(start.body.contains("scope=offline_access"));
+    for request in [pending, approved] {
+        assert!(request.body.contains("device_code=private-device-code"));
+        assert!(request.body.contains("client_id=rship-link"));
+        assert!(!request.body.contains("client_secret"));
+    }
+    assert!(refreshed.body.contains("refresh_token=refresh-1"));
     Ok(())
 }
