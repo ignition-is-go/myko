@@ -2241,6 +2241,76 @@ impl MykoServerContext {
         })
     }
 
+    /// Start loading a snapshot of a persisted log: the latest event of each
+    /// item, as a backend reads it. Every row lands where this server keeps
+    /// it; see [`LogLoad`](super::LogLoad).
+    #[must_use]
+    pub fn load_log(&self) -> super::LogLoad {
+        super::LogLoad::new(self)
+    }
+
+    /// Apply one event another host wrote, as a backend tails the log. An
+    /// event this host wrote is skipped: it already holds it.
+    pub fn apply_logged(&self, event: &MEvent) {
+        if event.source_id.as_deref() == Some(self.host_id.to_string().as_str()) {
+            return;
+        }
+        if self.partitions().is_some() {
+            if let Err(error) = self.replay([event.clone()]) {
+                tracing::error!(entity_type = %event.item_type, %error, "a logged event was refused");
+            }
+            return;
+        }
+        let registry = &self.registry;
+        match event.change_type {
+            MEventType::SET => {
+                if let Some(item) = self.parse_logged(event) {
+                    registry.with_mutation(|| {
+                        registry
+                            .get_or_create(item.entity_type())
+                            .insert(item.id(), item);
+                    });
+                } else {
+                    tracing::error!(entity_type = %event.item_type, "a logged event does not parse");
+                }
+            }
+            MEventType::DEL => {
+                if let Some(id) = event.item.get("id").and_then(|id| id.as_str()) {
+                    registry.with_mutation(|| {
+                        registry.get_or_create(&event.item_type).remove(&id.into());
+                    });
+                } else {
+                    tracing::error!(entity_type = %event.item_type, "a logged delete names no id");
+                }
+            }
+        }
+    }
+
+    /// The item a logged event holds, or `None` when its type is unknown
+    /// here or it does not parse into the type's current shape.
+    pub(crate) fn parse_logged(&self, event: &MEvent) -> Option<Arc<dyn AnyItem>> {
+        let parse = self.handler_registry.item_parser(&event.item_type)?;
+        parse(event.item.clone()).ok()
+    }
+
+    /// Whether a loaded row of `entity_type` goes through the partition
+    /// schema rather than straight into root's store.
+    pub(crate) fn places(&self, entity_type: &str) -> bool {
+        self.partitions()
+            .is_some_and(|partitions| partitions.places(entity_type))
+    }
+
+    pub(crate) fn place_logged(&self, rows: Vec<Arc<dyn AnyItem>>) -> Result<(), PersistError> {
+        self.partitions()
+            .map_or(Ok(()), |partitions| partitions.load(rows))
+    }
+
+    pub(crate) fn held_rows(&self) -> std::collections::BTreeMap<Arc<str>, usize> {
+        self.partitions()
+            .map(|partitions| partitions.held_rows())
+            .unwrap_or_default()
+    }
+
     /// Apply a persisted event log at startup, oldest event first.
     ///
     /// Nothing is validated, recorded or cascaded again: the log holds every

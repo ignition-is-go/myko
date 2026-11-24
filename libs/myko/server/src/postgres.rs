@@ -5,7 +5,6 @@
 //! - Consumer replays table rows (catch-up), then follows new inserts via LISTEN/NOTIFY.
 
 use std::{
-    collections::HashMap,
     fmt::Write as _,
     sync::{
         Arc,
@@ -20,7 +19,6 @@ use confique::Config as _;
 use myko::{
     event::{MEvent, MEventType},
     hyphae::{Cell, CellImmutable, CellMutable, Mutable},
-    item::AnyItem,
     server::{
         CommittedHistoryEvent, EventRecord, HandlerRegistry, HistoryEntityKey, HistoryEvent,
         HistoryPage, MykoServerContext, PersistError, PersistHealth, Persister,
@@ -54,87 +52,7 @@ const PG_KEEPALIVE_RETRIES: u32 = 3;
 /// until the catch-up timeout (the lv-8c2f "boot convoy").
 const PG_TCP_USER_TIMEOUT_SECS: u64 = 30;
 const PG_PRODUCER_MAX_BATCH: usize = 256;
-const PG_SNAPSHOT_STORE_BATCH: usize = 512;
 const PG_FETCH_BATCH: i64 = 1000;
-
-type SnapshotEntries = HashMap<Arc<str>, Vec<(Arc<str>, Arc<dyn AnyItem>)>>;
-
-/// Where rows read back from the log go.
-#[derive(Clone)]
-pub(crate) enum Landing {
-    /// Straight into the stores. A server without partitions has one store
-    /// per type, so a row's place is its type's store.
-    Stores(Arc<StoreRegistry>),
-    /// Through the context's replay, which applies shared rows first and
-    /// places each partitioned row in its partition.
-    Context(MykoServerContext),
-}
-
-impl Landing {
-    fn loading(&self) -> Loading {
-        match self {
-            Self::Stores(registry) => Loading::Stores(Arc::clone(registry), SnapshotEntries::new()),
-            Self::Context(ctx) => Loading::Context(ctx.clone(), Vec::new()),
-        }
-    }
-
-    /// Apply one event another host wrote, as the consumer tails the log.
-    pub(crate) fn apply_remote(
-        &self,
-        event: &MEvent,
-        host_id: &str,
-        handler_registry: &Arc<HandlerRegistry>,
-    ) {
-        match self {
-            Self::Stores(registry) => {
-                apply_remote_event(event, host_id, handler_registry, registry);
-            }
-            Self::Context(ctx) => {
-                if event.source_id.as_deref().is_some_and(|id| id == host_id) {
-                    return;
-                }
-                if let Err(error) = ctx.replay([event.clone()]) {
-                    error!("Failed to place {} from the log: {error}", event.item_type);
-                }
-            }
-        }
-    }
-}
-
-/// A snapshot being loaded: rows are gathered, then land at once.
-enum Loading {
-    Stores(Arc<StoreRegistry>, SnapshotEntries),
-    /// Replay orders the rows, shared first, so every row is gathered.
-    Context(MykoServerContext, Vec<MEvent>),
-}
-
-impl Loading {
-    fn push(&mut self, event: &MEvent, host_id: &str, handler_registry: &HandlerRegistry) {
-        match self {
-            Self::Stores(registry, pending) => {
-                queue_snapshot_event(event, host_id, handler_registry, registry, pending);
-            }
-            Self::Context(_, events) => {
-                if snapshot_item(event, host_id, handler_registry).is_some() {
-                    events.push(event.clone());
-                }
-            }
-        }
-    }
-
-    fn finish(self) -> Result<(), String> {
-        match self {
-            Self::Stores(registry, pending) => {
-                flush_snapshot_entries(&registry, pending);
-                Ok(())
-            }
-            Self::Context(ctx, events) => ctx
-                .replay(events)
-                .map(drop)
-                .map_err(|error| format!("Failed to place the snapshot: {error}")),
-        }
-    }
-}
 
 /// `PostgreSQL` configuration.
 #[derive(Debug, Clone)]
@@ -1093,9 +1011,8 @@ impl PostgresConsumer {
     /// Returns an error when configured identifiers are invalid.
     pub fn start(
         config: &PostgresConfig,
-        host_id: Uuid,
         handler_registry: Arc<HandlerRegistry>,
-        landing: Landing,
+        ctx: MykoServerContext,
         history_replay: Arc<PostgresHistoryReplayProvider>,
     ) -> Result<Self, String> {
         validate_ident(&config.table)?;
@@ -1104,17 +1021,11 @@ impl PostgresConsumer {
         let catch_up_status = Arc::new(CatchUpStatus::new());
         let status = catch_up_status.clone();
         let cfg = config.clone();
-        let host_id_string = host_id.to_string();
 
         let handle = std::thread::spawn(move || {
-            if let Err(err) = run_consumer_loop(
-                &cfg,
-                &host_id_string,
-                &handler_registry,
-                &landing,
-                &status,
-                &history_replay,
-            ) {
+            if let Err(err) =
+                run_consumer_loop(&cfg, &handler_registry, &ctx, &status, &history_replay)
+            {
                 let reason = format!("Postgres consumer failed: {err}");
                 error!("{reason}");
                 status.fail(reason);
@@ -1150,9 +1061,8 @@ impl PostgresConsumer {
 fn load_consumer_snapshot(
     reader: &mut Client,
     config: &PostgresConfig,
-    host_id: &str,
     handler_registry: &Arc<HandlerRegistry>,
-    landing: &Landing,
+    ctx: &MykoServerContext,
 ) -> Result<(i64, usize), String> {
     info!(
         "PostgresConsumer started (table={}, channel={})",
@@ -1192,7 +1102,7 @@ fn load_consumer_snapshot(
         .query_raw(&snapshot_sql(&config.table, source), params)
         .map_err(pg_error("query(snapshot latest events)"))?;
     let mut count = 0_usize;
-    let mut loading = landing.loading();
+    let mut loading = ctx.load_log();
     while let Some(row) = rows
         .next()
         .map_err(pg_error("stream(snapshot latest events)"))?
@@ -1200,16 +1110,17 @@ fn load_consumer_snapshot(
         let id: i64 = row.get(0);
         let event_json: String = row.get(1);
         match MEvent::from_str_trim(&event_json) {
-            Ok(event) => {
-                loading.push(&event, host_id, handler_registry);
-            }
+            Ok(event) => loading.push(&event),
             Err(error) => error!("Invalid postgres snapshot row id={id}: {error}"),
         }
         count = count.saturating_add(1);
     }
     drop(rows);
     snapshot.commit().map_err(pg_error("commit(snapshot)"))?;
-    loading.finish()?;
+    let summary = loading
+        .finish()
+        .map_err(|error| format!("Failed to load the snapshot: {error}"))?;
+    info!("Postgres snapshot: {summary}");
     Ok((high_water, count))
 }
 
@@ -1285,85 +1196,10 @@ fn snapshot_sql(table: &str, source: SnapshotSource) -> String {
     }
 }
 
-/// Loads the SET events of a snapshot into the stores, as the startup load
-/// does. Returns the number of events read.
-pub(crate) fn hydrate_stores(
-    events: impl IntoIterator<Item = MEvent>,
-    host_id: &str,
-    handler_registry: &HandlerRegistry,
-    landing: &Landing,
-) -> Result<usize, String> {
-    let mut loading = landing.loading();
-    let mut count = 0_usize;
-    for event in events {
-        if event.change_type == MEventType::SET {
-            loading.push(&event, host_id, handler_registry);
-            count = count.saturating_add(1);
-        }
-    }
-    loading.finish()?;
-    Ok(count)
-}
-
-fn flush_snapshot_entries(registry: &StoreRegistry, pending: SnapshotEntries) {
-    for (entity_type, entries) in pending {
-        registry.get_or_create(&entity_type).insert_many(entries);
-    }
-}
-
-fn queue_snapshot_event(
-    event: &MEvent,
-    host_id: &str,
-    handler_registry: &HandlerRegistry,
-    registry: &StoreRegistry,
-    pending: &mut SnapshotEntries,
-) {
-    let Some(item) = snapshot_item(event, host_id, handler_registry) else {
-        return;
-    };
-    let entity_type: Arc<str> = item.entity_type().into();
-    let entries = pending.entry(entity_type.clone()).or_default();
-    entries.push((item.id(), item));
-    if entries.len() >= PG_SNAPSHOT_STORE_BATCH {
-        registry
-            .get_or_create(&entity_type)
-            .insert_many(std::mem::take(entries));
-    }
-}
-
-/// The item a snapshot row loads, or `None` for a row this host wrote or
-/// cannot parse.
-fn snapshot_item(
-    event: &MEvent,
-    host_id: &str,
-    handler_registry: &HandlerRegistry,
-) -> Option<Arc<dyn AnyItem>> {
-    if event.source_id.as_deref().is_some_and(|id| id == host_id) {
-        return None;
-    }
-    let Some(parse) = handler_registry.item_parser(&event.item_type) else {
-        warn!("No parser for entity type: {}", event.item_type);
-        return None;
-    };
-    match parse(event.item.clone()) {
-        Ok(item) => Some(item),
-        Err(error) => {
-            let message = error.to_string();
-            let short = message
-                .find(", expected one of")
-                .and_then(|position| message.get(..position).map(str::to_string))
-                .unwrap_or(message);
-            error!("Failed to parse {}: {short}", event.item_type);
-            None
-        }
-    }
-}
-
 fn run_consumer_loop(
     config: &PostgresConfig,
-    host_id: &str,
     handler_registry: &Arc<HandlerRegistry>,
-    landing: &Landing,
+    ctx: &MykoServerContext,
     status: &Arc<CatchUpStatus>,
     history_replay: &PostgresHistoryReplayProvider,
 ) -> Result<(), String> {
@@ -1371,7 +1207,7 @@ fn run_consumer_loop(
     let mut listener = connect_listener_client(config)?;
     check_server_settings(&mut reader);
     let (high_water, snapshot_count) =
-        load_consumer_snapshot(&mut reader, config, host_id, handler_registry, landing)?;
+        load_consumer_snapshot(&mut reader, config, handler_registry, ctx)?;
     let table = qi(&config.table);
     let high_water_sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
     let fetch_sql = format!(
@@ -1427,7 +1263,7 @@ fn run_consumer_loop(
 
                 match MEvent::from_str_trim(&event_json) {
                     Ok(event) => {
-                        landing.apply_remote(&event, host_id, handler_registry);
+                        ctx.apply_logged(&event);
                         history_replay
                             .observe_committed(HistoryEntityKey::new(item_type, item_id), id);
                     }
@@ -1511,60 +1347,6 @@ fn connect_listener_client(config: &PostgresConfig) -> Result<Client, String> {
                 );
                 std::thread::sleep(Duration::from_millis(backoff_ms));
                 backoff_ms = backoff_ms.saturating_mul(2).min(5_000);
-            }
-        }
-    }
-}
-
-fn apply_remote_event(
-    event: &MEvent,
-    host_id: &str,
-    handler_registry: &Arc<HandlerRegistry>,
-    registry: &Arc<StoreRegistry>,
-) {
-    registry.with_mutation(|| {
-        apply_remote_event_coordinated(event, host_id, handler_registry, registry);
-    });
-}
-
-fn apply_remote_event_coordinated(
-    event: &MEvent,
-    host_id: &str,
-    handler_registry: &Arc<HandlerRegistry>,
-    registry: &Arc<StoreRegistry>,
-) {
-    let is_my_event = event.source_id.as_deref().is_some_and(|id| id == host_id);
-    if is_my_event {
-        return;
-    }
-
-    match event.change_type {
-        MEventType::SET => {
-            if let Some(parse) = handler_registry.item_parser(&event.item_type) {
-                match parse(event.item.clone()) {
-                    Ok(item) => {
-                        let store = registry.get_or_create(item.entity_type());
-                        store.insert(item.id(), item);
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        let short = msg
-                            .find(", expected one of")
-                            .and_then(|pos| msg.get(..pos).map(str::to_string))
-                            .unwrap_or(msg);
-                        error!("Failed to parse {}: {short}", event.item_type);
-                    }
-                }
-            } else {
-                warn!("No parser for entity type: {}", event.item_type);
-            }
-        }
-        MEventType::DEL => {
-            if let Some(id) = event.item.get("id").and_then(|v| v.as_str()) {
-                let store = registry.get_or_create(&event.item_type);
-                store.remove(&id.into());
-            } else {
-                error!("DEL event missing id field: {:?}", event.item);
             }
         }
     }
@@ -1689,54 +1471,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_batches_preserve_all_entities_and_flush_the_tail() {
-        use myko::{
-            common::with_id::WithId,
-            entities::{client::Client, server::ServerId},
-            item::AnyItem,
-        };
-
-        let registry = StoreRegistry::new();
-        let handlers = HandlerRegistry::new();
-        let mut pending = SnapshotEntries::new();
-        let mut expected = Vec::new();
-        let mut entity_type = String::new();
-        for index in 0..PG_SNAPSHOT_STORE_BATCH.saturating_add(3) {
-            let client = Client {
-                id: format!("snapshot-{index}").into(),
-                server_id: ServerId::from(Arc::<str>::from("snapshot-server")),
-                address: None,
-                windback: None,
-            };
-            expected.push(client.id());
-            entity_type = client.entity_type().to_string();
-            let event = MEvent::from_item(&client, MEventType::SET, "snapshot-test");
-            queue_snapshot_event(&event, "local-host", &handlers, &registry, &mut pending);
-            let mut echoed_event = event;
-            echoed_event.source_id = Some("local-host".into());
-            queue_snapshot_event(
-                &echoed_event,
-                "local-host",
-                &handlers,
-                &registry,
-                &mut pending,
-            );
-        }
-        let store = registry.get_or_create(&entity_type);
-        assert_eq!(store.items_snapshot().len(), PG_SNAPSHOT_STORE_BATCH);
-        assert_eq!(pending.values().map(Vec::len).sum::<usize>(), 3);
-        flush_snapshot_entries(&registry, pending);
-        let mut actual: Vec<_> = store
-            .items_snapshot()
-            .iter()
-            .map(|item| item.id())
-            .collect();
-        expected.sort();
-        actual.sort();
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
     fn committed_rows_flow_through_the_history_notification_cell() {
         let provider = PostgresHistoryReplayProvider::new(PostgresConfig {
             url: "postgres://test".to_string(),
@@ -1793,8 +1527,9 @@ mod tests {
 
 #[cfg(test)]
 mod provenance_tests {
-    use super::*;
     use myko::server::OperationProvenance;
+
+    use super::*;
 
     #[test]
     #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]

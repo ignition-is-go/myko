@@ -821,7 +821,7 @@ fn a_hydrated_snapshot_places_each_partitioned_row_in_its_partition() {
         logged(&PtRuntime { id: "b".into() }),
         logged(&reading("b", 2)),
     ]);
-    assert_eq!(loaded, Ok(4));
+    assert_eq!(loaded.map(|summary| summary.loaded), Ok(4));
     let ctx = server.ctx();
     assert_eq!(reading_in(&ctx, "a"), Some(1));
     assert_eq!(reading_in(&ctx, "b"), Some(2));
@@ -841,12 +841,10 @@ fn a_tailed_event_lands_in_its_partition() {
     let ctx = server.ctx();
     ctx.set(&PtRuntime { id: "a".into() })
         .unwrap_or_else(|error| panic!("open a: {error}"));
-    let landing = crate::postgres::Landing::Context(ctx.clone());
-    let handlers = server.handler_registry();
     let host = server.host_id.to_string();
-    landing.apply_remote(&logged(&reading("a", 5)), &host, &handlers);
+    ctx.apply_logged(&logged(&reading("a", 5)));
     assert_eq!(reading_in(&ctx, "a"), Some(5));
-    landing.apply_remote(&logged_by(&reading("a", 6), &host), &host, &handlers);
+    ctx.apply_logged(&logged_by(&reading("a", 6), &host));
     assert_eq!(
         reading_in(&ctx, "a"),
         Some(5),

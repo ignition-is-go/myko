@@ -39,7 +39,7 @@ fn a_snapshot_lands_in_the_stores_without_the_mutation_pipeline() {
         MEvent::from_item(&client("gone", "server-A"), MEventType::DEL, "tx-3"),
     ]);
 
-    assert_eq!(loaded, Ok(3));
+    assert_eq!(loaded.map(|summary| summary.loaded), Ok(3));
     let store = server.ctx().registry.get_or_create("Client");
     let mut ids: Vec<String> = store
         .snapshot()

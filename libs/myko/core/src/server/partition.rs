@@ -1111,6 +1111,10 @@ pub(crate) struct Partitions {
     /// The root context. It names these partitions weakly.
     root: MykoServerContext,
     open: DashMap<PartitionKey, Arc<Partition>, ahash::RandomState>,
+    /// Keyed rows a loaded log holds for a partition that is not open, by
+    /// the key they name, or under `None` when they name none. A partition
+    /// takes its rows when it opens.
+    held: Mutex<BTreeMap<Option<PartitionKey>, Vec<Item>>>,
     /// Every partition still alive, closing ones included, for a one-shot
     /// read on root made from inside one of their waves.
     alive: Mutex<Vec<Weak<Partition>>>,
@@ -1218,6 +1222,7 @@ impl Partitions {
             schema,
             root: root.as_partition_member(partitions.clone()),
             open: DashMap::with_hasher(ahash::RandomState::new()),
+            held: Mutex::new(BTreeMap::new()),
             alive: Mutex::new(Vec::new()),
             placements,
             topology: Mutex::new(()),
@@ -1424,6 +1429,67 @@ impl Partitions {
             .map(|partition| partition.ctx.clone())
     }
 
+    /// Whether loading a row of `entity_type` from a log goes through the
+    /// schema: it opens partitions or lives in one.
+    pub(crate) fn places(&self, entity_type: &str) -> bool {
+        self.schema.lifecycle == Some(entity_type) || self.is_partitioned(entity_type)
+    }
+
+    /// Land rows a loaded log holds that the schema places, once every other
+    /// shared row is in root's stores: the rows that open partitions first,
+    /// then each partitioned row in the partition that takes it. A keyed row
+    /// whose partition is not open is held until it opens; a routed row
+    /// nothing takes is held by its placement.
+    pub(crate) fn load(&self, rows: Vec<Item>) -> Result<(), PersistError> {
+        let (opening, partitioned): (Vec<_>, Vec<_>) = rows
+            .into_iter()
+            .partition(|row| self.schema.lifecycle == Some(row.entity_type()));
+        let land = |row: Item| {
+            self.submit(
+                &self.root,
+                vec![row],
+                MEventType::SET,
+                Origin::Replay,
+                EdgeApplyMode::Authoritative,
+            )
+        };
+        for row in opening {
+            land(row)?;
+        }
+        for row in partitioned {
+            if let Some(Route::Keyed(key_of)) = self.schema.routes.get(row.entity_type()) {
+                let key = key_of(row.as_ref());
+                if key.as_ref().is_none_or(|key| !self.open.contains_key(key)) {
+                    self.held.lock().entry(key).or_default().push(row);
+                    continue;
+                }
+            }
+            land(row)?;
+        }
+        Ok(())
+    }
+
+    /// Rows held outside every partition, by type.
+    pub(crate) fn held_rows(&self) -> BTreeMap<Arc<str>, usize> {
+        let mut held: BTreeMap<Arc<str>, usize> = BTreeMap::new();
+        for row in self.held.lock().values().flatten() {
+            let count = held.entry(Arc::from(row.entity_type())).or_default();
+            *count = count.saturating_add(1);
+        }
+        for (entity_type, placements) in &self.placements {
+            let count = placements
+                .rows
+                .iter()
+                .filter(|entry| matches!(entry.value(), Placement::Held(_)))
+                .count();
+            if count > 0 {
+                let total = held.entry(Arc::from(*entity_type)).or_default();
+                *total = total.saturating_add(count);
+            }
+        }
+        held
+    }
+
     pub(crate) fn get(&self, key: &PartitionKey) -> Option<Arc<Partition>> {
         self.open.get(key).map(|partition| Arc::clone(&partition))
     }
@@ -1479,6 +1545,18 @@ impl Partitions {
             alive.push(Arc::downgrade(&partition));
         }
         self.open.insert(key, Arc::clone(&partition));
+        let held = self.held.lock().remove(&Some(partition.key.clone()));
+        for row in held.into_iter().flatten() {
+            if let Err(error) = self.submit(
+                &self.root,
+                vec![row],
+                MEventType::SET,
+                Origin::Replay,
+                EdgeApplyMode::Authoritative,
+            ) {
+                tracing::error!(partition = %partition.key, %error, "a held row was refused");
+            }
+        }
         for (id, starter) in self.services.lock().iter() {
             self.start_service(&partition, *id, Arc::clone(starter));
         }

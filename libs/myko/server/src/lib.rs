@@ -406,21 +406,18 @@ impl MykoServer {
         server
     }
 
-    /// Start tailing Postgres into this server, once it is configured: with
-    /// partitions, every row read back lands through the partitioned
-    /// context, so the context is built first.
+    /// Start tailing Postgres into this server, once it is configured. Every
+    /// row read back lands through the server's context.
     fn start_postgres_consumer(&mut self) {
         let (Some(postgres_config), Some(history_replay)) =
             (self.config.postgres.clone(), self.consumer_history.take())
         else {
             return;
         };
-        let landing = self.landing();
         match PostgresConsumer::start(
             &postgres_config,
-            self.host_id,
             self.handler_registry.clone(),
-            landing,
+            self.ctx(),
             history_replay,
         ) {
             Ok(consumer) => self.postgres_consumer = Some(consumer),
@@ -771,35 +768,26 @@ impl MykoServer {
     /// Use it to bring a server to a known state before it serves, for
     /// example from a fixture in a test.
     ///
-    /// With partitions, every shared row is loaded first, then each
-    /// partitioned row is placed in its partition.
+    /// Every row lands where the server keeps it, as
+    /// [`MykoServerContext::load_log`] places it: a row no partition takes
+    /// yet is held, and a row that does not parse is counted and left out.
     ///
     /// # Errors
     ///
-    /// Returns an error when a row cannot be placed, such as a partitioned
-    /// row that names no partition.
+    /// Returns an error when a row is refused where it lands.
     pub fn hydrate_snapshot(
         &self,
         events: impl IntoIterator<Item = MEvent>,
-    ) -> Result<usize, String> {
-        let loaded = postgres::hydrate_stores(
-            events,
-            &self.host_id.to_string(),
-            &self.handler_registry,
-            &self.landing(),
-        )?;
+    ) -> Result<myko::server::LoadSummary, String> {
+        let mut loading = self.ctx().load_log();
+        for event in events {
+            loading.push(&event);
+        }
+        let summary = loading.finish().map_err(|error| error.to_string())?;
+        tracing::info!("hydrated snapshot: {summary}");
         self.search_index.build_from_registry(&self.registry);
         self.establish_relations();
-        Ok(loaded)
-    }
-
-    /// Where rows read back from a log land in this server.
-    fn landing(&self) -> postgres::Landing {
-        if self.partitioned {
-            postgres::Landing::Context(self.ctx())
-        } else {
-            postgres::Landing::Stores(self.registry.clone())
-        }
+        Ok(summary)
     }
 
     /// Establish relationship invariants.
@@ -1091,8 +1079,9 @@ fn saga_event_matches(entity_type: &str, change: MEventType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use myko::entities::demo::{DemoStatus, DemoStatusId, GetDemoStatuses};
+
+    use super::*;
 
     #[test]
     fn no_default_persister_and_no_sagas_do_not_retain_same_id_updates()

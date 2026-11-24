@@ -41,6 +41,8 @@ pub mod entity_set_stats;
 mod handler_registry;
 pub mod history_feed;
 pub mod history_replay;
+mod log_load;
+pub use log_load::{LoadSummary, LogLoad};
 pub mod partition;
 pub mod persister;
 mod provenance;
