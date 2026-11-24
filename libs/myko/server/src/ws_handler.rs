@@ -1593,9 +1593,13 @@ impl WsHandler {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a query subscription's routing, build and fallback read in one place"
+    )]
     fn handle_query_request<W: WsWriter>(
         session: &mut ClientSession<W>,
-        ctx: Arc<MykoServerContext>,
+        ctx: &MykoServerContext,
         message_context: &MessageContext<'_>,
         wrapped: WrappedQuery,
     ) {
@@ -1625,6 +1629,17 @@ impl WsHandler {
             RequestContext::from_client(tx_id.clone(), session.client_id.clone(), ctx.host_id)
                 .with_auth(message_context.auth.clone()),
         );
+        let Some(ctx) = Self::open_subscription(
+            ctx,
+            message_context,
+            (&request, &wrapped.query),
+            Some(&wrapped.query_item_type),
+            |error| {
+                MykoMessage::QueryError(myko::wire::QueryError::new(&*tx_id, &*query_id, error))
+            },
+        ) else {
+            return;
+        };
         if let Some(query_data) = ctx.handler_registry.query(&query_id) {
             match (query_data.parse)(wrapped.query.clone()) {
                 Ok(query) => {
@@ -1641,13 +1656,15 @@ impl WsHandler {
                             if let (Some(window_factory), Some(initial_window)) =
                                 (window_factory, window.clone())
                             {
-                                match window_factory(
-                                    query.clone(),
-                                    registry.clone(),
-                                    request.clone(),
-                                    ctx.clone(),
-                                    initial_window,
-                                ) {
+                                match ctx.in_domain(|| {
+                                    window_factory(
+                                        query.clone(),
+                                        registry.clone(),
+                                        request.clone(),
+                                        ctx.clone(),
+                                        initial_window,
+                                    )
+                                }) {
                                     Ok(Some(source)) => {
                                         return Some(Ok(SubscriptionReady::WindowedQuery {
                                             tx_id,
@@ -1666,7 +1683,11 @@ impl WsHandler {
                                     }
                                 }
                             }
-                            match factory(query, registry, request, Some(ctx)) {
+                            let built = ctx
+                                .checked(|| factory(query, registry, request, Some(ctx.clone())))
+                                .map_err(|error| error.to_string())
+                                .and_then(|built| built);
+                            match built {
                                 Ok(cellmap) => Some(Ok(SubscriptionReady::Query {
                                     tx_id,
                                     query_id,
@@ -1679,7 +1700,11 @@ impl WsHandler {
                                         query_id,
                                         error
                                     );
-                                    None
+                                    Some(Err(MykoMessage::QueryError(myko::wire::QueryError::new(
+                                        tx_id.to_string(),
+                                        query_id.to_string(),
+                                        error,
+                                    ))))
                                 }
                             }
                         },
@@ -1694,7 +1719,7 @@ impl WsHandler {
             }
         } else {
             let store = (*ctx.registry.get_or_create(&wrapped.query_item_type)).clone();
-            let cellmap = hyphae::MapQuery::materialize(store.select(|_| true));
+            let cellmap = ctx.in_domain(|| hyphae::MapQuery::materialize(store.select(|_| true)));
             message_context.drop_logger.subscription_ready(&tx_id);
             message_context.subscription_builds.cancel(&tx_id);
             session.subscribe_query(tx_id, query_id, cellmap, wrapped.window);
@@ -1745,6 +1770,15 @@ impl WsHandler {
             drop(ctx);
             return;
         };
+        let Some(ctx) = Self::open_subscription(
+            &ctx,
+            message_context,
+            (&request, &wrapped.view),
+            Some(&view_data.view_item_type),
+            |error| MykoMessage::ViewError(ViewError::new(&*tx_id, &*view_id, error)),
+        ) else {
+            return;
+        };
         match (view_data.parse)(wrapped.view.clone()) {
             Ok(view) => {
                 let cell_factory = view_data.cell_factory;
@@ -1761,18 +1795,22 @@ impl WsHandler {
                     "view-subscription",
                     tx_id.clone(),
                     sender,
-                    move || match factory(view, registry, request, ctx) {
+                    move || match ctx
+                        .checked(|| factory(view, registry, request, ctx.clone()))
+                        .map_err(|error| error.to_string())
+                        .and_then(|built| built)
+                    {
                         Ok(cellmap) => Some(Ok(SubscriptionReady::View {
                             tx_id,
                             view_id,
                             cellmap,
                             window,
                         })),
-                        Err(error) => Some(Err(ViewError::new(
+                        Err(error) => Some(Err(MykoMessage::ViewError(ViewError::new(
                             tx_id.to_string(),
                             view_id.to_string(),
                             error,
-                        ))),
+                        )))),
                     },
                 );
             }
@@ -1782,6 +1820,31 @@ impl WsHandler {
                 &view_id,
                 format!("Failed to parse view {view_id}: {error}"),
             ),
+        }
+    }
+
+    /// The context a subscription opens in, or `None` after sending the
+    /// client `refuse` of why it cannot open.
+    fn open_subscription(
+        ctx: &MykoServerContext,
+        message_context: &MessageContext<'_>,
+        (request, payload): (&RequestContext, &serde_json::Value),
+        reads: Option<&str>,
+        refuse: impl FnOnce(String) -> MykoMessage,
+    ) -> Option<Arc<MykoServerContext>> {
+        match ctx.subscription_context(request, payload, reads) {
+            Ok(opened) => Some(Arc::new(opened)),
+            Err(error) => {
+                if let Err(error) = message_context
+                    .priority_tx
+                    .try_send(refuse(error.to_string()))
+                {
+                    message_context
+                        .drop_logger
+                        .on_drop("SubscriptionError", &error);
+                }
+                None
+            }
         }
     }
 
@@ -1814,7 +1877,7 @@ impl WsHandler {
         crate::ws_timing::record_inbound_message(&msg, &session.client_id);
         match msg {
             MykoMessage::Query(wrapped) => {
-                Self::handle_query_request(session, ctx, message_context, wrapped);
+                Self::handle_query_request(session, &ctx, message_context, wrapped);
             }
             MykoMessage::View(wrapped) => {
                 Self::handle_view_request(session, ctx, message_context, wrapped);
@@ -1896,8 +1959,8 @@ impl WsHandler {
         let ready = match built.result {
             Some(Ok(ready)) => Some(ready),
             Some(Err(error)) => {
-                if let Err(error) = priority.try_send(MykoMessage::ViewError(error)) {
-                    logger.on_drop("ViewError", &error);
+                if let Err(error) = priority.try_send(error) {
+                    logger.on_drop("SubscriptionError", &error);
                 }
                 None
             }
@@ -2000,13 +2063,30 @@ impl WsHandler {
                             )
                             .with_auth(message_context.auth.clone()),
                         );
+                        let Some(ctx) = Self::open_subscription(
+                            &ctx,
+                            message_context,
+                            (&request, &wrapped.report),
+                            None,
+                            |error| {
+                                MykoMessage::ReportError(myko::wire::ReportError::new(
+                                    &*tx, &report_id, error,
+                                ))
+                            },
+                        ) else {
+                            return;
+                        };
                         let factory = data.cell_factory;
                         let sender = message_context.subscribe_tx.clone();
                         message_context.subscription_builds.spawn(
                             "report-subscription",
                             tx.clone(),
                             sender,
-                            move || match factory(report, request, ctx) {
+                            move || match ctx
+                                .checked(|| factory(report, request, ctx.clone()))
+                                .map_err(|error| error.to_string())
+                                .and_then(|built| built)
+                            {
                                 Ok(cell) => Some(Ok(SubscriptionReady::Report {
                                     tx_id: tx,
                                     report_id: report_id.into(),
@@ -2018,7 +2098,9 @@ impl WsHandler {
                                         report_id,
                                         error
                                     );
-                                    None
+                                    Some(Err(MykoMessage::ReportError(
+                                        myko::wire::ReportError::new(&*tx, &report_id, error),
+                                    )))
                                 }
                             },
                         );
@@ -2449,6 +2531,8 @@ impl WsWriter for ChannelWriter {
 
 #[cfg(test)]
 mod delivery_timing_tests;
+#[cfg(test)]
+mod partition_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2624,7 +2708,7 @@ mod tests {
             query.query_id = "unregistered-fallback-query".into();
             assert!(context.handler_registry.query(&query.query_id).is_none());
             with_subscription_context(&builds, |messages| {
-                WsHandler::handle_query_request(&mut session, context.clone(), messages, query);
+                WsHandler::handle_query_request(&mut session, &context, messages, query);
             });
         }
         assert!(session.has_subscription(&tx));
@@ -2752,11 +2836,11 @@ mod tests {
         let stale = SubscriptionBuilt {
             tx: tx.clone(),
             owner: old,
-            result: Some(Err(ViewError::new(
+            result: Some(Err(MykoMessage::ViewError(ViewError::new(
                 tx.to_string(),
                 "test-view",
                 "old failure",
-            ))),
+            )))),
         };
         assert!(
             complete_test_subscription(&mut session, &builds, stale, &priority, &logger).is_none()
@@ -2858,11 +2942,11 @@ mod tests {
         let failed = SubscriptionBuilt {
             tx: tx.clone(),
             owner,
-            result: Some(Err(ViewError::new(
+            result: Some(Err(MykoMessage::ViewError(ViewError::new(
                 tx.to_string(),
                 "test-view",
                 "current failure",
-            ))),
+            )))),
         };
         assert!(
             complete_test_subscription(&mut session, &builds, failed, &priority, &logger).is_some()

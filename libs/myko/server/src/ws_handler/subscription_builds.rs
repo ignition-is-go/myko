@@ -6,7 +6,9 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{SubscriptionReady, ViewError, WS_SUBSCRIPTION_BLOCKING};
+use myko::wire::MykoMessage;
+
+use super::{SubscriptionReady, WS_SUBSCRIPTION_BLOCKING};
 
 pub(super) struct SubscriptionBuild {
     cancel: CancellationToken,
@@ -15,7 +17,7 @@ pub(super) struct SubscriptionBuild {
 pub(super) struct SubscriptionBuilt {
     pub tx: Arc<str>,
     pub owner: Arc<SubscriptionBuild>,
-    pub result: Option<Result<SubscriptionReady, ViewError>>,
+    pub result: Option<Result<SubscriptionReady, MykoMessage>>,
 }
 
 struct BuildCompletion {
@@ -85,7 +87,7 @@ impl SubscriptionBuilds {
         job_kind: &'static str,
         tx: Arc<str>,
         sender: mpsc::UnboundedSender<SubscriptionBuilt>,
-        job: impl FnOnce() -> Option<Result<SubscriptionReady, ViewError>> + Send + 'static,
+        job: impl FnOnce() -> Option<Result<SubscriptionReady, MykoMessage>> + Send + 'static,
     ) {
         let owner = self.begin(tx.clone());
         let cancel = owner.cancel.clone();

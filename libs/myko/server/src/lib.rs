@@ -117,6 +117,7 @@ pub struct MykoServerBuilder {
     /// instructions on the `/myko/mcp` endpoint.
     server_info: Option<mcp::dispatch::ServerInfo>,
     history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>>,
+    partitions: Option<myko::server::PartitionSchema>,
 }
 
 type AfterInitCallback =
@@ -282,6 +283,15 @@ impl MykoServerBuilder {
         self
     }
 
+    /// Partition the server's live state as `schema` declares. A client
+    /// subscription over a partitioned type opens in the partition the
+    /// schema's subscription hook names, and is delivered from there.
+    #[must_use]
+    pub fn with_partitions(mut self, schema: myko::server::PartitionSchema) -> Self {
+        self.partitions = Some(schema);
+        self
+    }
+
     /// Build the server.
     #[must_use]
     pub fn build(self) -> MykoServer {
@@ -309,6 +319,7 @@ impl MykoServerBuilder {
         if let Some(provider) = self.history_replay {
             server.history_replay = Some(provider);
         }
+        server.partitions = std::sync::Mutex::new(self.partitions);
         server
     }
 }
@@ -370,6 +381,8 @@ pub struct MykoServer {
     /// same tick. Every `MykoServerContext` field is an `Arc`/`Cell`/`Uuid`, so a
     /// clone is a handful of refcount bumps that share the underlying state.
     ctx_cache: std::sync::OnceLock<MykoServerContext>,
+    /// Taken by the first `ctx()`, which partitions the memoized context.
+    partitions: std::sync::Mutex<Option<myko::server::PartitionSchema>>,
 }
 
 impl MykoServer {
@@ -475,6 +488,7 @@ impl MykoServer {
             saga_tasks: std::sync::Mutex::new(Vec::new()),
             server_ownership_guard: std::sync::Mutex::new(None),
             ctx_cache: std::sync::OnceLock::new(),
+            partitions: std::sync::Mutex::new(None),
         }
     }
 
@@ -529,7 +543,7 @@ impl MykoServer {
         self.ctx_cache
             .get_or_init(|| {
                 let history_replay = self.history_replay.clone();
-                MykoServerContext::new(
+                let ctx = MykoServerContext::new(
                     self.host_id,
                     self.registry.clone(),
                     self.handler_registry.clone(),
@@ -544,7 +558,16 @@ impl MykoServer {
                         history_replay,
                     },
                 )
-                .with_event_sink_filter(saga_event_matches)
+                .with_event_sink_filter(saga_event_matches);
+                let schema = self
+                    .partitions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                match schema {
+                    Some(schema) => ctx.with_partitions(schema),
+                    None => ctx,
+                }
             })
             .clone()
     }
