@@ -1543,6 +1543,16 @@ fn a_routed_write_from_a_shared_wave_lands_where_its_row_is_placed_on_arrival() 
         },
     );
     drop(results.lock().drain(..));
+    // Runtime a is parked, so the copy sent to b arrives before the re-sent
+    // one reaches a.
+    let client_a = Client::connect(&fixture.a);
+    settle(&fixture.a);
+    let gate = arm(&fixture.a.domain(), Stage::Wave);
+    let writer = {
+        let root = fixture.root.clone();
+        thread::spawn(move || root.set(&reading("a", "busy", 1)))
+    };
+    assert!(gate.wait_entered(), "runtime a never parked");
     fixture
         .root
         .set(&PrSetting {
@@ -1550,8 +1560,17 @@ fn a_routed_write_from_a_shared_wave_lands_where_its_row_is_placed_on_arrival() 
             gain: 2,
         })
         .expect("shared write");
-    settle(&fixture.a);
     settle(&fixture.b);
+    assert_eq!(
+        samples_in(&fixture.b, "emitter-5"),
+        None,
+        "the write that reached b after its row moved was not applied there"
+    );
+    assert!(gate.is_parked(), "runtime a was busy throughout");
+    drop(gate);
+    assert!(writer.join().expect("writer").is_ok());
+    settle(&fixture.a);
+    drop(client_a);
 
     assert_eq!(
         *results.lock(),
