@@ -4159,6 +4159,28 @@ mod send_admission_tests {
     }
 
     #[test]
+    fn pending_flush_resumes_when_intent_catches_up_to_actual_connection() {
+        let transport = Arc::new(RejectingTransport {
+            status: Cell::new(ConnectionStatus::Disconnected),
+            intended: Cell::new(ConnectionStatus::Idle),
+            reject: AtomicBool::new(false),
+            attempted: Mutex::new(Vec::new()),
+        });
+        let client = MykoClient::with_transport(transport.clone());
+        *client.inner.pending_sends.lock().unwrap() = vec![WsFrame::Binary(vec![1])];
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
+        transport
+            .intended
+            .set(ConnectionStatus::Connected("fixture".into()));
+        assert!(
+            client.inner.pending_sends.lock().unwrap().is_empty(),
+            "pending must flush once both states are ready"
+        );
+    }
+
+    #[test]
     fn reconnect_retains_rejected_and_remaining_frames_in_order() {
         let transport = Arc::new(RejectingTransport {
             status: Cell::new(ConnectionStatus::Disconnected),
