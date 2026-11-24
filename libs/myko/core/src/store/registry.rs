@@ -28,6 +28,11 @@ use super::EntityStore;
 /// ```
 pub struct StoreRegistry {
     pub(crate) transactions: super::transactions::TransactionCoordinator,
+    /// Set on the registry of one partition. `None` on a root registry.
+    partition: Option<PartitionStores>,
+    /// Set on a root registry once its server declares partitions: whether an
+    /// entity type is partitioned, and so has no store here.
+    partitioned: std::sync::OnceLock<IsPartitioned>,
     // AHash on Arc<str> keys: ~1.6× faster than DashMap's default SipHash on
     // the lookup-by-entity-type hot path. Bench: dashmap_default 183 µs vs
     // dashmap_ahash 115 µs / 10k lookups.
@@ -37,15 +42,63 @@ pub struct StoreRegistry {
     retained: parking_lot::Mutex<Vec<Arc<dyn std::any::Any + Send + Sync>>>,
 }
 
+/// What makes a registry the registry of one partition: the stores of
+/// partitioned entity types live here, in the partition's scheduling domain,
+/// and every other type resolves to the root registry's store.
+struct PartitionStores {
+    root: Arc<StoreRegistry>,
+    domain: hyphae::scheduler::Domain,
+    is_partitioned: IsPartitioned,
+}
+
+pub type IsPartitioned = Arc<dyn Fn(&str) -> bool + Send + Sync>;
+
 impl StoreRegistry {
     /// Create a new empty registry.
     #[must_use]
     pub fn new() -> Self {
         Self {
             transactions: super::transactions::TransactionCoordinator::default(),
+            partition: None,
+            partitioned: std::sync::OnceLock::new(),
             stores: DashMap::with_hasher(ahash::RandomState::new()),
             retained: parking_lot::Mutex::new(Vec::new()),
         }
+    }
+
+    /// The registry of one partition of `root`.
+    ///
+    /// A store of an entity type for which `is_partitioned` holds is created
+    /// here, inside `domain`. Every other type resolves to `root`'s store, so
+    /// a graph built over this registry reads shared data from the root
+    /// domain and partition data from its own.
+    pub(crate) fn for_partition(
+        root: Arc<Self>,
+        domain: hyphae::scheduler::Domain,
+        is_partitioned: IsPartitioned,
+    ) -> Self {
+        Self {
+            partition: Some(PartitionStores {
+                root,
+                domain,
+                is_partitioned,
+            }),
+            ..Self::new()
+        }
+    }
+
+    /// Tell this root registry which entity types are partitioned.
+    pub(crate) fn declare_partitioned(&self, is_partitioned: IsPartitioned) {
+        drop(self.partitioned.set(is_partitioned));
+    }
+
+    /// The root registry when `entity_type` is shared data read from a
+    /// partition's registry.
+    fn shared(&self, entity_type: &str) -> Option<&Arc<Self>> {
+        self.partition
+            .as_ref()
+            .filter(|partition| !(partition.is_partitioned)(entity_type))
+            .map(|partition| &partition.root)
     }
 
     /// Keep a derived index alive for the lifetime of this registry.
@@ -64,20 +117,46 @@ impl StoreRegistry {
     /// Creates a new store if one doesn't exist for this type.
     #[must_use]
     pub fn get_or_create(&self, entity_type: &str) -> Arc<EntityStore> {
+        if let Some(root) = self.shared(entity_type) {
+            return root.get_or_create(entity_type);
+        }
         if let Some(store) = self.stores.get(entity_type) {
             return store.clone();
         }
+        if self
+            .partitioned
+            .get()
+            .is_some_and(|is_partitioned| is_partitioned(entity_type))
+        {
+            // NOTE(ts): the signature cannot refuse. The store returned is
+            // one no partition writes, so the reader sees no rows.
+            tracing::error!(
+                entity_type,
+                "a partitioned entity type was read from the root context; it has rows only in \
+                 its partitions' contexts"
+            );
+        }
         let key: Arc<str> = entity_type.into();
+        let create = || Arc::new(EntityStore::new().with_name(format!("store:{key}")));
 
         self.stores
             .entry(key.clone())
-            .or_insert_with(|| Arc::new(EntityStore::new().with_name(format!("store:{key}"))))
+            .or_insert_with(|| {
+                // A store lives in the domain it is born in, whichever thread
+                // asks for it first.
+                self.partition
+                    .as_ref()
+                    .map_or_else(create, |partition| partition.domain.enter(create))
+            })
             .clone()
     }
 
     /// Get an entity store if it exists.
     #[must_use]
     pub fn get(&self, entity_type: &str) -> Option<Arc<EntityStore>> {
+        if let Some(root) = self.shared(entity_type) {
+            return root.get(entity_type);
+        }
         self.stores.get(entity_type).map(|r| r.clone())
     }
 

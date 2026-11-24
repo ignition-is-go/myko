@@ -41,6 +41,7 @@ pub mod entity_set_stats;
 mod handler_registry;
 pub mod history_feed;
 pub mod history_replay;
+pub mod partition;
 pub mod persister;
 mod provenance;
 pub use provenance::{EventRecord, OperationProvenance};
@@ -60,6 +61,7 @@ pub use history_replay::{
     CommittedHistoryEvent, EntityHistory, EntityHistoryAliasRegistration, HistoryEntityKey,
     HistoryEvent, HistoryPage, HistoryReplayProvider, history_storage_types,
 };
+pub use partition::{PartitionKey, PartitionSchema};
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,
 };

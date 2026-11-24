@@ -21,13 +21,14 @@ use std::{
 use dashmap::DashMap;
 use hyphae::{
     Cell, CellImmutable, CellMap, CellMutable, Gettable, MapDiff, Materialize, Mutable, Watchable,
-    WeakCellMap,
+    WeakCellMap, scheduler::Domain,
 };
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use super::{
     HandlerRegistry, RelationshipManager,
+    partition::{PartitionKey, PartitionSchema, Partitions},
     persister::{PersistError, PersistHealth, PersisterRouter},
 };
 use crate::{
@@ -402,6 +403,28 @@ pub struct MykoServerContext {
     graph_index: Option<Arc<GraphIndex>>,
     causal_limits: Arc<RwLock<CausalLimits>>,
     causal_counters: Arc<CausalCounters>,
+    /// Identity under which operation provenance is recorded. A partition's
+    /// context shares its root context's, so a command's provenance follows
+    /// its writes into the partition.
+    operation_identity: Arc<CausalCounters>,
+    /// The server's partitions, when the application declared any.
+    partitions: Option<PartitionsHandle>,
+    /// Set on the context of one partition.
+    home: Option<Arc<PartitionHome>>,
+}
+
+/// How a context names the server's partitions. The root context the
+/// application holds owns them. The contexts the partitions hold name them
+/// weakly, so dropping the application's context releases every partition.
+#[derive(Clone)]
+enum PartitionsHandle {
+    Owner(Arc<Partitions>),
+    Member(std::sync::Weak<Partitions>),
+}
+
+struct PartitionHome {
+    key: PartitionKey,
+    domain: Domain,
 }
 
 type EventSinkFilter = dyn Fn(&str, MEventType) -> bool + Send + Sync;
@@ -438,6 +461,7 @@ impl MykoServerContext {
         if history_replay.is_some() {
             registry.transactions.enable_history();
         }
+        let causal_counters = Arc::new(CausalCounters::default());
         Self {
             host_id,
             host_id_str: Arc::from(host_id.to_string()),
@@ -458,7 +482,129 @@ impl MykoServerContext {
             history_replay,
             graph_index,
             causal_limits: Arc::new(RwLock::new(CausalLimits::default())),
-            causal_counters: Arc::new(CausalCounters::default()),
+            operation_identity: causal_counters.clone(),
+            causal_counters,
+            partitions: None,
+            home: None,
+        }
+    }
+
+    /// Partition this server's runtime as `schema` declares.
+    ///
+    /// Call it on the root context before sharing it. Without it, every
+    /// entity type is shared and the server runs in one scheduling domain.
+    #[must_use]
+    pub fn with_partitions(mut self, schema: PartitionSchema) -> Self {
+        let partitions = Partitions::new(schema, &self);
+        self.partitions = Some(PartitionsHandle::Owner(partitions));
+        self
+    }
+
+    /// This context, naming `partitions` without owning them.
+    pub(crate) fn as_partition_member(&self, partitions: std::sync::Weak<Partitions>) -> Self {
+        let mut member = self.clone();
+        member.partitions = Some(PartitionsHandle::Member(partitions));
+        member
+    }
+
+    /// The context of one partition of this root context: its own stores for
+    /// partitioned types, its own caches and compute gates, its own domain.
+    pub(crate) fn for_partition(
+        &self,
+        registry: Arc<StoreRegistry>,
+        key: PartitionKey,
+        domain: Domain,
+    ) -> Self {
+        let mut partition = self.clone();
+        partition.registry = registry;
+        partition.query_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.view_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.report_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.compute_gates = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.ingest_buffers = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.causal_counters = Arc::new(CausalCounters::default());
+        // NOTE(ts): graph edges between partitioned entities are not
+        // projected yet; the root graph index covers shared types only.
+        partition.graph_index = None;
+        partition.home = Some(Arc::new(PartitionHome { key, domain }));
+        partition
+    }
+
+    fn partitions(&self) -> Option<Arc<Partitions>> {
+        match self.partitions.as_ref()? {
+            PartitionsHandle::Owner(partitions) => Some(partitions.clone()),
+            PartitionsHandle::Member(partitions) => partitions.upgrade(),
+        }
+    }
+
+    /// Open the partition `key` and return its context. Returns the existing
+    /// one if it is already open, and `None` when this server declared no
+    /// partitions.
+    #[must_use]
+    pub fn open_partition(&self, key: PartitionKey) -> Option<Self> {
+        Some(self.partitions()?.open(key).ctx().clone())
+    }
+
+    /// Close the partition `key`: it takes no further writes, its domain
+    /// stops, and its graphs are released off the calling thread. Rows of a
+    /// routed type it held stay placed and wait for a partition to take them.
+    pub fn close_partition(&self, key: &PartitionKey) {
+        if let Some(partitions) = self.partitions() {
+            partitions.close(key);
+        }
+    }
+
+    /// The context of the open partition `key`.
+    #[must_use]
+    pub fn partition(&self, key: &PartitionKey) -> Option<Self> {
+        Some(self.partitions()?.get(key)?.ctx().clone())
+    }
+
+    /// Keys of the open partitions.
+    #[must_use]
+    pub fn partition_keys(&self) -> Vec<PartitionKey> {
+        self.partitions()
+            .map_or_else(Vec::new, |partitions| partitions.keys())
+    }
+
+    /// The partition this context belongs to. `None` for the root context.
+    #[must_use]
+    pub fn partition_key(&self) -> Option<&PartitionKey> {
+        self.home.as_ref().map(|home| &home.key)
+    }
+
+    /// The partition that holds the row `id` of a routed entity type, read
+    /// from the root-side placement index. No domain is involved.
+    #[must_use]
+    pub fn partition_of(&self, entity_type: &str, id: &Arc<str>) -> Option<PartitionKey> {
+        self.partitions()?.placement(entity_type, id)
+    }
+
+    /// The rows of a partitioned entity type in every open partition, read
+    /// now. This is the only way to read a partitioned type across
+    /// partitions: the result is a plain value and follows nothing.
+    #[must_use]
+    pub fn partitioned_snapshot(&self, entity_type: &str) -> Vec<(PartitionKey, Vec<AnyItemArc>)> {
+        self.partitions()
+            .map_or_else(Vec::new, |partitions| partitions.snapshot(entity_type))
+    }
+
+    /// The scheduling domain this context builds and writes in.
+    #[must_use]
+    pub fn domain(&self) -> Domain {
+        self.home
+            .as_ref()
+            .map_or_else(Domain::root, |home| home.domain.clone())
+    }
+
+    /// Run `build` with this context's domain as the calling thread's
+    /// ambient domain. Everything that derives a cell from a query, view or
+    /// report of this context must be built inside it.
+    pub fn in_domain<R>(&self, build: impl FnOnce() -> R) -> R {
+        match (&self.home, &self.partitions) {
+            (Some(home), _) => home.domain.enter(build),
+            (None, Some(_)) => Domain::root().enter(build),
+            (None, None) => build(),
         }
     }
 
@@ -890,8 +1036,34 @@ impl MykoServerContext {
         id: &str,
         origin: Origin,
     ) -> Result<(), PersistError> {
+        self.reject_unrouted(std::iter::once(entity_type))?;
         self.registry
             .with_mutation(|| self.del_by_id_coordinated(entity_type, id, origin))
+    }
+
+    /// Writes that bypass routing apply to this context's own stores. On the
+    /// root context a partitioned type has none, so such a write is refused
+    /// instead of landing in a store no partition reads.
+    fn reject_unrouted<'a>(
+        &self,
+        mut entity_types: impl Iterator<Item = &'a str>,
+    ) -> Result<(), PersistError> {
+        if self.home.is_some() {
+            return Ok(());
+        }
+        let Some(partitions) = self.partitions() else {
+            return Ok(());
+        };
+        entity_types
+            .find(|entity_type| partitions.is_partitioned(entity_type))
+            .map_or(Ok(()), |entity_type| {
+                Err(PersistError {
+                    entity_type: Arc::from(entity_type),
+                    message: "this write of a partitioned type is only available on the \
+                              context of its partition"
+                        .into(),
+                })
+            })
     }
 
     fn del_by_id_coordinated(
@@ -1616,6 +1788,21 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
+        match self.partitions() {
+            Some(partitions) => partitions.submit(self, items, change, origin, mode),
+            None => self.submit_local(items, change, origin, mode),
+        }
+    }
+
+    /// Apply a write to this context's own stores. With partitions, the
+    /// caller has routed `items` here.
+    pub(crate) fn submit_local(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
         self.registry.transactions.coordinate(
             super::proposed_state::requires_authority(items.iter()),
             || self.submit_mutation_mode_coordinated(items, change, origin, mode),
@@ -1773,6 +1960,12 @@ impl MykoServerContext {
         origin: Origin,
         expected_graph_generation: Option<u64>,
     ) -> Result<bool, PersistError> {
+        self.reject_unrouted(
+            upserts
+                .iter()
+                .chain(&deletes)
+                .map(|item| item.entity_type()),
+        )?;
         self.registry.transactions.coordinate(
             super::proposed_state::requires_authority(upserts.iter().chain(&deletes)),
             || {
@@ -2508,6 +2701,12 @@ impl MykoServerContext {
             }
         }
 
+        if self.home.is_none()
+            && let Some(partitions) = self.partitions()
+        {
+            partitions.shared_write_applied(items, change);
+        }
+
         Ok(())
     }
 
@@ -2614,7 +2813,7 @@ impl MykoServerContext {
     }
 
     pub(crate) fn operation_owner(&self) -> *const () {
-        Arc::as_ptr(&self.causal_counters).cast()
+        Arc::as_ptr(&self.operation_identity).cast()
     }
 
     fn persist_record(
@@ -2726,8 +2925,10 @@ impl MykoServerContext {
         let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
         let untyped = self.query_map_untyped(query, request);
-        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
-            typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
+        self.in_domain(|| {
+            Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+                typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
+            })
         })
     }
 
@@ -2750,8 +2951,11 @@ impl MykoServerContext {
         F: LiveFilterQuery,
         F::Item: WithTypedId,
     {
-        let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
-        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        self.in_domain(|| {
+            let untyped =
+                crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
+            typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        })
     }
 
     /// Build a live-filter query in the originating request context.
@@ -2764,9 +2968,11 @@ impl MykoServerContext {
         F: LiveFilterQuery,
         F::Item: WithTypedId,
     {
-        let untyped =
-            crate::query::query_live_in_context(self.registry.clone(), request, filter_cell);
-        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        self.in_domain(|| {
+            let untyped =
+                crate::query::query_live_in_context(self.registry.clone(), request, filter_cell);
+            typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        })
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -2784,8 +2990,10 @@ impl MykoServerContext {
     {
         let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         let untyped = self.query_map_untyped(query, request);
-        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
-            typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
+        self.in_domain(|| {
+            Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+                typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
+            })
         })
     }
 
@@ -2914,7 +3122,7 @@ impl MykoServerContext {
             return cell;
         }
 
-        let computed = compute();
+        let computed = self.in_domain(compute);
         cache.insert(key.to_string(), MapCacheEntry::new(&computed));
         // The gate's only job was deduping concurrent first-computation; once
         // the cache entry above is visible, any racing caller's re-check will
@@ -2975,8 +3183,10 @@ impl MykoServerContext {
         );
         let untyped = self.view_map_untyped(view, request);
         if let Some(entry) = self.view_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "MykoServerContext::view")
+            && let Some(typed) = self.in_domain(|| {
+                entry.value().get_or_create_typed(|source| {
+                    typed_map_arc_from_any_item(source, "MykoServerContext::view")
+                })
             })
         {
             return typed;
@@ -3135,7 +3345,7 @@ impl MykoServerContext {
         // The trait returns `impl Pipeline<...>`; materialize once here so the
         // cache and downstream consumers get a concrete `Cell`. This is the only
         // materialization per report, regardless of how deep the inner chain is.
-        let built = report.compute(nested_ctx).materialize();
+        let built = self.in_domain(|| report.compute(nested_ctx).materialize());
         drop(report);
         // Named by report id (bounded cardinality — one name per report
         // *type*, not per invocation) so hyphae's `hyphae.fanout` span
