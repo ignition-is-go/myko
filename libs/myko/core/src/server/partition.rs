@@ -425,6 +425,7 @@ impl PartitionSchema {
                         )
                     }),
             })
+            .chain(self.refused_edges())
             .collect();
         if refused.is_empty() {
             Ok(())
@@ -435,6 +436,51 @@ impl PartitionSchema {
                 refused.join("\n")
             ))
         }
+    }
+}
+
+impl PartitionSchema {
+    /// Graph edges whose endpoint deletes would carry data backwards.
+    ///
+    /// - A shared edge type cannot name a partitioned endpoint type: root
+    ///   never sees the endpoint, and the endpoint's delete would write
+    ///   shared data.
+    /// - A partitioned edge type cannot restrict the delete of a shared
+    ///   endpoint: root would have to read every partition's edges. Its
+    ///   cascade runs in each partition, behind root's wave.
+    fn refused_edges(&self) -> Vec<String> {
+        use crate::graph::{EdgeRegistration, EndpointDeletePolicy, requirement_names};
+        let mut refused = Vec::new();
+        for registration in inventory::iter::<EdgeRegistration> {
+            let edge_type = registration.edge_type;
+            let partitioned = self.is_partitioned(edge_type);
+            for (endpoint, policy) in [
+                (&registration.endpoints[0], registration.a_delete),
+                (&registration.endpoints[1], registration.b_delete),
+            ] {
+                let names = requirement_names(&(endpoint.requirement)());
+                if partitioned {
+                    let may_be_shared = names.as_ref().is_none_or(|names| {
+                        names.iter().any(|name| !self.is_partitioned(name))
+                    });
+                    if policy == EndpointDeletePolicy::RestrictEndpointDelete && may_be_shared {
+                        refused.push(format!(
+                            "partitioned edge {edge_type} restricts deleting a shared endpoint: \
+                             root cannot see a partition's edges"
+                        ));
+                    }
+                } else if let Some(name) = names
+                    .iter()
+                    .flatten()
+                    .find(|name| self.is_partitioned(name))
+                {
+                    refused.push(format!(
+                        "shared edge {edge_type} names partitioned endpoint {name}"
+                    ));
+                }
+            }
+        }
+        refused
     }
 }
 
@@ -625,11 +671,15 @@ impl Partition {
         ));
         let search = Arc::new(crate::search::SearchIndex::for_partition(
             Arc::clone(partitions.root.search_index()),
-            is_partitioned,
+            Arc::clone(&is_partitioned),
         ));
-        let ctx = partitions
-            .root
-            .for_partition(registry, search, key.clone(), domain.clone());
+        let ctx = partitions.root.for_partition(
+            registry,
+            search,
+            key.clone(),
+            domain.clone(),
+            is_partitioned.as_ref(),
+        );
         let waiting: Arc<Mutex<VecDeque<Job>>> = Arc::default();
         let (courier, relay) = Domain::root().enter(|| {
             let courier = Cell::new(0_u64);

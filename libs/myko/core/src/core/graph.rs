@@ -2100,6 +2100,43 @@ impl GraphWatchRouter {
     }
 }
 
+/// The entity types an endpoint requirement names, or `None` when it accepts
+/// every registered item type.
+pub(crate) fn requirement_names(requirement: &EndpointRequirement) -> Option<Vec<&'static str>> {
+    match requirement {
+        EndpointRequirement::Concrete(entity_type) => Some(vec![*entity_type]),
+        EndpointRequirement::OneOf(entity_types) => Some(entity_types.to_vec()),
+        EndpointRequirement::Category(category) => Some(
+            inventory::iter::<ItemCategoryRegistration>
+                .into_iter()
+                .filter(|membership| membership.entity_category_id == *category)
+                .map(|membership| membership.item_type)
+                .collect(),
+        ),
+        EndpointRequirement::AnyRegisteredItem => None,
+    }
+}
+
+/// Whether deleting an `entity_type` row deletes edges of a registered edge
+/// type for which `to` holds.
+pub(crate) fn cascades_into(entity_type: &str, to: &dyn Fn(&str) -> bool) -> bool {
+    inventory::iter::<EdgeRegistration>
+        .into_iter()
+        .filter(|registration| to(registration.edge_type))
+        .any(|registration| {
+            [
+                (&registration.endpoints[0], registration.a_delete),
+                (&registration.endpoints[1], registration.b_delete),
+            ]
+            .into_iter()
+            .any(|(endpoint, policy)| {
+                policy == EndpointDeletePolicy::CascadeEdge
+                    && requirement_names(&(endpoint.requirement)())
+                        .is_none_or(|names| names.contains(&entity_type))
+            })
+        })
+}
+
 /// Coherent in-memory projection over all registered edge item stores.
 ///
 /// The runtime is only constructed when graph registrations exist, preserving
@@ -2119,8 +2156,17 @@ pub struct GraphIndex {
 impl GraphIndex {
     #[must_use]
     pub fn from_inventory(registry: Arc<crate::store::StoreRegistry>) -> Option<Self> {
+        Self::from_inventory_where(registry, &|_| true)
+    }
+
+    /// The projection of the registered edge types for which `keep` holds.
+    pub(crate) fn from_inventory_where(
+        registry: Arc<crate::store::StoreRegistry>,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<Self> {
         let registrations = inventory::iter::<EdgeRegistration>
             .into_iter()
+            .filter(|registration| keep(registration.edge_type))
             .map(|registration| (registration.edge_type, registration))
             .collect::<HashMap<_, _>>();
         let has_categories = inventory::iter::<EntityCategoryRegistration>

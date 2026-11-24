@@ -529,8 +529,27 @@ impl MykoServerContext {
     #[must_use]
     pub fn with_partitions(mut self, schema: PartitionSchema) -> Self {
         let partitions = Partitions::new(schema, &self);
+        // Root projects the shared edge types; each partition its own.
+        self.graph_index = Self::project_graph(&self.registry, &|edge_type| {
+            !partitions.is_partitioned(edge_type)
+        });
         self.partitions = Some(PartitionsHandle::Owner(partitions));
         self
+    }
+
+    /// The graph projection over `registry` of the edge types for which
+    /// `keep` holds, built in the registry's domain.
+    fn project_graph(
+        registry: &Arc<StoreRegistry>,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<Arc<GraphIndex>> {
+        let graph = registry
+            .born_here(|| GraphIndex::from_inventory_where(registry.clone(), keep))
+            .map(Arc::new)?;
+        if let Err(error) = graph.rebuild() {
+            tracing::error!(%error, "graph projection rebuild failed");
+        }
+        Some(graph)
     }
 
     /// This context, naming `partitions` without owning them.
@@ -548,9 +567,10 @@ impl MykoServerContext {
         search_index: Arc<SearchIndex>,
         key: PartitionKey,
         domain: Domain,
+        is_partitioned: &dyn Fn(&str) -> bool,
     ) -> Self {
         let mut partition = self.clone();
-        partition.registry = registry;
+        partition.registry = Arc::clone(&registry);
         partition.search_index = search_index;
         partition.query_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.view_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
@@ -559,9 +579,7 @@ impl MykoServerContext {
         partition.refused_builds = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.ingest_buffers = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.causal_counters = Arc::new(CausalCounters::default());
-        // NOTE(ts): graph edges between partitioned entities are not
-        // projected yet; the root graph index covers shared types only.
-        partition.graph_index = None;
+        partition.graph_index = Self::project_graph(&registry, is_partitioned);
         partition.home = Some(Arc::new(PartitionHome { key, domain }));
         partition
     }
@@ -635,6 +653,23 @@ impl MykoServerContext {
     /// this context's stores without a write.
     pub(crate) fn track_relations(&self, items: &[Arc<dyn AnyItem>], change: MEventType) {
         self.relationship_manager.track(items, change, self);
+        let Some(graph) = &self.graph_index else {
+            return;
+        };
+        let _authority = graph.lock_authority();
+        for item in items {
+            if graph.registration(item.entity_type()).is_none() {
+                continue;
+            }
+            let item = Some(item.as_ref());
+            let (old, new) = match change {
+                MEventType::SET => (None, item),
+                MEventType::DEL => (item, None),
+            };
+            if let Err(error) = graph.apply(old, new) {
+                tracing::error!(%error, "a placed edge did not project");
+            }
+        }
     }
 
     /// Run, in this partition, the relationships a shared write applied in
@@ -646,8 +681,32 @@ impl MykoServerContext {
     ) -> Result<(), PersistError> {
         match change {
             MEventType::SET => self.relationship_manager.forward_set_batch(items, self),
-            MEventType::DEL => self.relationship_manager.forward_del_batch(items, self),
+            MEventType::DEL => {
+                self.relationship_manager.forward_del_batch(items, self)?;
+                self.cascade_edges_of(items)
+            }
         }
+    }
+
+    /// Delete this partition's edges whose policy cascades from deleting
+    /// the shared endpoints `items`.
+    fn cascade_edges_of(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+        let Some(graph) = &self.graph_index else {
+            return Ok(());
+        };
+        let mut cascades = Vec::new();
+        for item in items {
+            cascades.extend(
+                graph
+                    .endpoint_delete_plan(&crate::graph::EntityRef::new(
+                        item.entity_type(),
+                        item.id(),
+                    ))
+                    .map_err(|error| Self::graph_error(item.as_ref(), error))?
+                    .cascade_edges,
+            );
+        }
+        self.submit_mutation(cascades, MEventType::DEL, Origin::Cascade)
     }
 
     /// Whether a write of `entity_type` runs a relationship that writes a
@@ -660,6 +719,7 @@ impl MykoServerContext {
     ) -> bool {
         self.relationship_manager
             .derives_into(entity_type, change, to)
+            || (change == MEventType::DEL && crate::graph::cascades_into(entity_type, to))
     }
 
     /// Whether `ensure_for` creates a type for which `to` holds.
