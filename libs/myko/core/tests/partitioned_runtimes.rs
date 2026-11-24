@@ -1430,15 +1430,15 @@ fn a_partitions_write_of_shared_data_from_outside_a_wave_is_roots_write() {
     assert_eq!(levels_in(&fixture.b, "mixed"), None);
 }
 
-/// Park root inside a wave on another thread. Root's deliveries made while
-/// it is parked run once the returned gate drops and the writer is joined.
-fn park_root(
-    root: &MykoServerContext,
-) -> (
+type ParkedRoot = (
     Armed,
     thread::JoinHandle<Result<(), myko::server::PersistError>>,
     Cell<Arc<i64>, hyphae::CellImmutable>,
-) {
+);
+
+/// Park root inside a wave on another thread. Root's deliveries made while
+/// it is parked run once the returned gate drops and the writer is joined.
+fn park_root(root: &MykoServerContext) -> ParkedRoot {
     let observed = root.report(PrGain {}, request(root));
     let gate = arm(&Domain::root(), Stage::Wave);
     let writer = {

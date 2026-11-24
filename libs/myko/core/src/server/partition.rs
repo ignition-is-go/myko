@@ -814,7 +814,7 @@ impl Partitions {
                 provenance: from.current_provenance(),
                 place: false,
             };
-            self.submit_resolved(entity_type, items, write, follows_shared)?;
+            self.submit_resolved(entity_type, items, &write, follows_shared)?;
         }
         Ok(())
     }
@@ -844,7 +844,7 @@ impl Partitions {
         &self,
         entity_type: &'static str,
         items: Vec<Item>,
-        write: Write,
+        write: &Write,
         follows_shared: bool,
     ) -> Result<(), PersistError> {
         let Some(placements) = self.placements.get(entity_type) else {
@@ -881,7 +881,7 @@ impl Partitions {
                 // into it.
                 match write.change {
                     MEventType::SET => {
-                        drop(placements.rows.insert(id.clone(), Placement::Held(item)))
+                        drop(placements.rows.insert(id.clone(), Placement::Held(item)));
                     }
                     MEventType::DEL => drop(placements.rows.remove(&id)),
                 }
