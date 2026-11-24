@@ -293,3 +293,35 @@ fn a_partition_wave_takes_a_one_shot_routed_read_of_shared_data() {
         "a read taken inside the partition's wave sees the shared row"
     );
 }
+
+#[test]
+fn a_partition_wave_opens_a_routed_read_of_shared_data_no_one_read_before() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    put(&fixture.root, "waiting", "fresh");
+    let opened: Arc<Mutex<Vec<Reader>>> = Arc::new(Mutex::new(Vec::new()));
+    let reader = fixture.a.clone();
+    let sink = Arc::clone(&opened);
+    let trigger = fixture
+        .a
+        .query_map(on_shelf("x"), fixture.a.new_server_transaction());
+    let _guard = trigger.subscribe_diffs(move |_| {
+        let mut opened = sink.lock();
+        if opened.is_empty() && Domain::propagating().is_some() {
+            opened.push(Reader::open(&reader, "fresh"));
+        }
+    });
+    put(&fixture.root, "trigger", "x");
+    fixture.a.domain().flush();
+    let in_root = Reader::open(&fixture.root, "fresh");
+    put(&fixture.root, "later", "fresh");
+    let in_wave = opened.lock().pop().expect("the wave opened a read");
+    assert!(
+        in_wave.shows(2),
+        "a read opened inside the wave follows root"
+    );
+    assert!(
+        in_root.shows(2),
+        "root's own read of the same rows is unaffected"
+    );
+}
