@@ -4189,6 +4189,37 @@ mod send_admission_tests {
     }
 
     #[test]
+    fn connected_sender_retries_retained_frames_before_new_data() {
+        let transport = Arc::new(RejectingTransport {
+            status: Cell::new(ConnectionStatus::Disconnected),
+            reject: AtomicBool::new(true),
+            attempted: Mutex::new(Vec::new()),
+        });
+        let client = MykoClient::with_transport(transport.clone());
+        *client.inner.pending_sends.lock().unwrap() =
+            [1, 2, 3].map(|value| WsFrame::Binary(vec![value])).to_vec();
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
+        transport.reject.store(false, Ordering::SeqCst);
+
+        client.send_or_queue(WsFrame::Binary(vec![4]));
+
+        let attempted: Vec<_> = transport
+            .attempted
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|frame| match frame {
+                WsFrame::Binary(data) => Some(data.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(attempted, [vec![1], vec![2], vec![2], vec![3], vec![4]]);
+        assert!(client.inner.pending_sends.lock().unwrap().is_empty());
+    }
+
+    #[test]
     fn connected_sender_queues_behind_retained_pending_frames() {
         let pending = Mutex::new(vec![WsFrame::Binary(vec![1])]);
         assert!(matches!(
