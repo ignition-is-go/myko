@@ -654,13 +654,10 @@ impl MykoServer {
             let mut command_stream = saga.build_boxed(events, saga_ctx);
 
             let host_id = self.host_id;
-            let registry = self.registry.clone();
-            let handler_registry = self.handler_registry.clone();
-            let relationship_manager = self.relationship_manager.clone();
-            let persisters = self.persisters.clone();
-            let search_index = self.search_index.clone();
-            let peer_clients = self.peer_clients.clone();
-            let saga_event_tx = self.saga_event_tx.clone();
+            // The server's own context: on a partitioned server a saga's
+            // writes are routed like any other, and its reads see what root
+            // sees.
+            let server_ctx = Arc::new(self.ctx());
 
             let handle = tokio::spawn(async move {
                 while let Some(command) = command_stream.next().await {
@@ -668,26 +665,8 @@ impl MykoServer {
                     tracing::debug!("Saga {} executing command {}", saga_name, command_name);
                     let req = Self::saga_request_context(command.as_ref(), host_id, &saga_name);
 
-                    let cmd_ctx = CommandContext::new(
-                        Arc::from(command_name),
-                        req,
-                        Arc::new(
-                            MykoServerContext::new(
-                                host_id,
-                                registry.clone(),
-                                handler_registry.clone(),
-                                relationship_manager.clone(),
-                                persisters.clone(),
-                                search_index.clone(),
-                                myko::server::MykoServerRuntime {
-                                    peer_clients: peer_clients.clone(),
-                                    event_sink: Some(saga_event_tx.clone()),
-                                    history_replay: None,
-                                },
-                            )
-                            .with_event_sink_filter(saga_event_matches),
-                        ),
-                    );
+                    let cmd_ctx =
+                        CommandContext::new(Arc::from(command_name), req, server_ctx.clone());
 
                     if let Err(err) = command.execute_boxed(cmd_ctx) {
                         tracing::error!(
