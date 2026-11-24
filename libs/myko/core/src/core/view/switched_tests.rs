@@ -115,6 +115,38 @@ impl Subscriber {
     }
 }
 
+/// A selection change opens the new map off the propagating thread; wait for
+/// the subscriber to reach `done`. The deadline only bounds a failure.
+fn eventually(mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !done() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "subscriber never settled"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+impl Subscriber {
+    fn next_diffs(&self) -> Vec<String> {
+        eventually(|| !self.log.lock().expect("log").diffs.is_empty());
+        self.take_diffs()
+    }
+
+    fn settle_on(&self, expected: &Rows) {
+        eventually(|| {
+            let rows = self.rows();
+            rows.len() == expected.len()
+                && rows.iter().all(|(id, row)| {
+                    expected
+                        .get(id)
+                        .is_some_and(|other| row.equals(other.as_ref()))
+                })
+        });
+    }
+}
+
 fn rows_of(map: &ErasedViewMap) -> Rows {
     map.snapshot().into_iter().collect()
 }
@@ -219,7 +251,7 @@ fn closing_empties_the_subscriber_and_reopening_restores_the_current_source() {
         "writes while closed are not delivered"
     );
     f.selector.set(Some('a'));
-    assert_eq!(sub.take_diffs(), ["initial 2"]);
+    assert_eq!(sub.next_diffs(), ["initial 2"]);
     assert_same(&sub.rows(), &source_rows(&f.a));
     assert_same(&rows_of(&f.map), &source_rows(&f.a));
     put(&f.a, "a4", 0);
@@ -236,7 +268,7 @@ fn switching_sources_replaces_the_rows_and_stops_reading_the_old_source() {
     let sub = Subscriber::new(&f.map);
     sub.take_diffs();
     f.selector.set(Some('b'));
-    assert_eq!(sub.take_diffs(), ["initial 2"]);
+    assert_eq!(sub.next_diffs(), ["initial 2"]);
     assert_same(&sub.rows(), &source_rows(&f.b));
     put(&f.a, "a2", 0);
     put(&f.b, "b3", 0);
@@ -277,7 +309,7 @@ fn a_gate_change_and_a_source_write_in_one_batch_settle_exactly() {
             Some(_) => source_rows(&f.b),
             None => Rows::new(),
         };
-        assert_same(&sub.rows(), &expected);
+        sub.settle_on(&expected);
         assert_same(&rows_of(&f.map), &expected);
         assert_eq!(sub.log.lock().expect("log").violation, None);
     }
@@ -361,6 +393,7 @@ fn concurrent_gate_flips_against_source_writes_settle_exactly() {
             Some(_) => source_rows(&f.b),
             None => Rows::new(),
         };
+        sub.settle_on(&expected);
         let log = sub.log.lock().expect("log");
         assert_eq!(log.violation, None, "round {round}");
         assert!(log.initials >= 1);
@@ -369,4 +402,41 @@ fn concurrent_gate_flips_against_source_writes_settle_exactly() {
         assert_same(&rows_of(&f.map), &expected);
         drop(check);
     }
+}
+
+/// Opening a newly selected map can build a whole graph. The selector's
+/// propagation is shared by the whole process, so it must not wait for that.
+#[test]
+fn a_selection_change_does_not_wait_for_the_new_map_to_open() {
+    let _serial = serial();
+    let a: Source = CellMap::new();
+    let b: Source = CellMap::new();
+    put(&b, "b1", 0);
+    let selector = Cell::new(Some('a'));
+    let (release, opening) = std::sync::mpsc::channel::<()>();
+    let opening = Arc::new(Mutex::new(opening));
+    let (open_a, open_b) = (a.clone().lock(), b.clone().lock());
+    let map = ErasedViewMap::switched(selector.clone().lock(), move |key| match key {
+        'a' => open_a.clone().into(),
+        _ => {
+            opening.lock().expect("opening").recv().expect("released");
+            open_b.clone().into()
+        }
+    });
+    let sub = Subscriber::new(&map);
+    assert_eq!(sub.take_diffs(), ["initial 0"]);
+    let (switched, settled) = std::sync::mpsc::channel();
+    let switcher = selector.clone();
+    std::thread::spawn(move || {
+        crate::hyphae::batch(|| switcher.set(Some('b')));
+        switched.send(()).expect("switched");
+    });
+    settled
+        .recv_timeout(std::time::Duration::from_secs(30))
+        .expect("the selector's propagation waited for the new map to open");
+    put(&a, "a1", 0);
+    assert!(sub.take_diffs().is_empty(), "the old map is no longer read");
+    release.send(()).expect("release");
+    assert_eq!(sub.next_diffs(), ["initial 1"]);
+    assert_same(&sub.rows(), &source_rows(&b));
 }
