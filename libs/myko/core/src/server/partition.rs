@@ -72,6 +72,20 @@
 //! [`MykoServerContext::subscription_context`] opens a client subscription
 //! in the partition the application's hook names.
 //!
+//! # Relationships
+//!
+//! A relationship runs where the rows it writes live. A shared write
+//! derives its relationships in root for shared rows, and once in each open
+//! partition, behind root's wave, for that partition's rows. A relation
+//! between two partitioned types runs inside the partition of the write
+//! that triggers it. A relation whose derived writes would flow from a
+//! partition into shared data or across partitions is refused when the
+//! schema is built.
+//!
+//! What an admitted write derives is part of it: it is applied in its own
+//! partition without validation, even once that partition stopped
+//! admitting writes, and recorded when it is applied.
+//!
 //! # Re-routing
 //!
 //! Each routed type keeps the placement of every row it has seen. A write to
