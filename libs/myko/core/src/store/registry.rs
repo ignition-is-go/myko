@@ -58,24 +58,32 @@ pub type IsPartitioned = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
 thread_local! {
     /// The first partitioned entity type a root registry was asked for on
-    /// this thread since the innermost `watch_root_reads` began.
-    static ROOT_READ: std::cell::RefCell<Option<Arc<str>>> = const { std::cell::RefCell::new(None) };
+    /// this thread since the innermost `watch_root_reads` began, and how many
+    /// watches are open on this thread.
+    static ROOT_READ: std::cell::RefCell<(usize, Option<Arc<str>>)> =
+        const { std::cell::RefCell::new((0, None)) };
 }
 
+/// Record that a root registry was asked for the partitioned `entity_type`.
+///
+/// # Panics
+/// Outside every `watch_root_reads`: the read would see no rows, as the
+/// type's rows live only in its partitions, and no caller is left to refuse
+/// it to. A watched read is refused to the watch's caller instead.
 pub fn record_root_read(entity_type: &str) {
-    let first = ROOT_READ.with(|read| {
+    let watched = ROOT_READ.with(|read| {
         let mut read = read.borrow_mut();
-        let first = read.is_none();
-        if first {
-            *read = Some(Arc::from(entity_type));
+        if read.0 > 0 && read.1.is_none() {
+            read.1 = Some(Arc::from(entity_type));
         }
-        first
+        read.0 > 0
     });
-    if first {
-        tracing::error!(
-            entity_type,
-            "a partitioned entity type was read from the root context; it has rows only in its \
-             partitions' contexts"
+    #[allow(clippy::panic, reason = "a root read of partition data is a program error")]
+    if !watched {
+        panic!(
+            "partitioned entity type {entity_type} was read from the root context, where it has \
+             no rows: read it on its partition's context, or build the read inside \
+             MykoServerContext::checked to be refused with an error"
         );
     }
 }
@@ -83,14 +91,28 @@ pub fn record_root_read(entity_type: &str) {
 /// Run `construct` and return the first partitioned entity type it asked a root
 /// registry for, on this thread. Nested watches report to their caller too.
 pub fn watch_root_reads<R>(construct: impl FnOnce() -> R) -> (R, Option<Arc<str>>) {
-    let outer = ROOT_READ.with(|read| read.borrow_mut().take());
-    let built = construct();
-    let inner = ROOT_READ.with(|read| {
+    let outer = ROOT_READ.with(|read| {
         let mut read = read.borrow_mut();
-        let inner = read.take();
-        *read = outer.or_else(|| inner.clone());
-        inner
+        read.0 += 1;
+        read.1.take()
     });
+    struct Close(Option<Arc<str>>);
+    impl Drop for Close {
+        fn drop(&mut self) {
+            ROOT_READ.with(|read| {
+                let mut read = read.borrow_mut();
+                read.0 -= 1;
+                read.1 = self.0.take().or_else(|| read.1.take());
+            });
+        }
+    }
+    let mut close = Close(outer);
+    let built = construct();
+    let inner = ROOT_READ.with(|read| read.borrow().1.clone());
+    // The outer watch keeps its own first read, else learns this one.
+    close.0 = close.0.take().or_else(|| inner.clone());
+    ROOT_READ.with(|read| read.borrow_mut().1 = None);
+    drop(close);
     (built, inner)
 }
 

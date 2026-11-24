@@ -290,3 +290,19 @@ fn a_saga_reads_a_partitioned_events_row_in_its_partition() {
         "an event of a closed partition is refused, not read from root"
     );
 }
+
+#[test]
+fn reading_a_partitioned_type_from_root_outside_checked_panics() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let refused = fixture
+        .root
+        .checked(|| drop(fixture.root.registry.get_or_create(PgCard::ENTITY_NAME_STATIC)));
+    assert!(refused.is_err(), "inside checked the read is refused with an error");
+    let panicked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        drop(fixture.root.registry.get_or_create(PgCard::ENTITY_NAME_STATIC));
+    }))
+    .expect_err("outside checked the read panics");
+    let message = panicked.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(message.contains("PgCard was read from the root context"), "{message}");
+}
