@@ -1936,19 +1936,13 @@ impl MykoClient {
     /// Send a frame, or queue it if disconnected.
     fn send_or_queue(&self, frame: WsFrame) {
         match admit_send(&self.inner.pending_sends, frame, || {
-            matches!(
-                self.inner.socket.actual_connection_state().get(),
-                ConnectionStatus::Connected(_)
-            )
+            connection_matches_intent(&self.inner)
         }) {
             Ok(frame) => {
                 let _ = self.inner.socket.send(frame);
             }
             Err(len) => {
-                if matches!(
-                    self.inner.socket.actual_connection_state().get(),
-                    ConnectionStatus::Connected(_)
-                ) {
+                if connection_matches_intent(&self.inner) {
                     flush_pending_sends(&self.inner);
                 } else if len == 1 || len.is_multiple_of(10_000) {
                     warn!(
@@ -4085,6 +4079,13 @@ mod address_tests {
     }
 }
 
+fn connection_matches_intent(inner: &MykoClientInner) -> bool {
+    matches!(
+        (inner.socket.intended_connection_state().get(), inner.socket.actual_connection_state().get()),
+        (ConnectionStatus::Connected(intended), ConnectionStatus::Connected(actual)) if intended == actual
+    )
+}
+
 fn flush_pending_sends(inner: &MykoClientInner) {
     let mut pending = inner
         .pending_sends
@@ -4092,7 +4093,7 @@ fn flush_pending_sends(inner: &MykoClientInner) {
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let mut queued = std::mem::take(&mut *pending).into_iter();
     while let Some(frame) = queued.next() {
-        if inner.socket.send(frame.clone()).is_err() {
+        if !connection_matches_intent(inner) || inner.socket.send(frame.clone()).is_err() {
             pending.push(frame);
             pending.extend(queued);
             drop(pending);
@@ -4256,7 +4257,7 @@ mod send_admission_tests {
         let attempted: Vec<_> = transport
             .attempted
             .lock()
-            .unwrap()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .iter()
             .filter_map(|frame| match frame {
                 WsFrame::Binary(data) => Some(data.clone()),
