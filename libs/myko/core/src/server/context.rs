@@ -732,18 +732,22 @@ impl MykoServerContext {
         if self.home.is_some() {
             return Ok(self.clone());
         }
-        match partitions.subscription_partition(request, payload) {
-            Some(key) => partitions
-                .get(&key)
-                .map(|partition| partition.ctx().clone())
-                .ok_or(PartitionError::NotOpen(key)),
-            None => match reads.filter(|entity_type| partitions.is_partitioned(entity_type)) {
-                Some(entity_type) => Err(PartitionError::RootRead {
-                    entity_type: Arc::from(entity_type),
-                }),
-                None => Ok(self.clone()),
-            },
-        }
+        let Some(key) = partitions.subscription_partition(request, payload) else {
+            return reads
+                .filter(|entity_type| partitions.is_partitioned(entity_type))
+                .map_or_else(
+                    || Ok(self.clone()),
+                    |entity_type| {
+                        Err(PartitionError::RootRead {
+                            entity_type: Arc::from(entity_type),
+                        })
+                    },
+                );
+        };
+        partitions
+            .get(&key)
+            .map(|partition| partition.ctx().clone())
+            .ok_or(PartitionError::NotOpen(key))
     }
 
     /// The context a client's command runs in: the partition the schema's
@@ -813,10 +817,10 @@ impl MykoServerContext {
         let Some(partitions) = self.partitions() else {
             return;
         };
-        let settling = match self.partition_key() {
-            Some(key) => partitions.get(key).into_iter().collect(),
-            None => partitions.all(),
-        };
+        let settling = self.partition_key().map_or_else(
+            || partitions.all(),
+            |key| partitions.get(key).into_iter().collect(),
+        );
         for partition in settling {
             partition.settle_all();
         }

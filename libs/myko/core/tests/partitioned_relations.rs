@@ -742,7 +742,7 @@ fn settling_waits_for_every_admitted_write_in_every_partition() {
     let root = fixture.root.clone();
     let settling = std::thread::spawn(move || {
         root.settle();
-        drop(settled_tx.send(()));
+        assert!(settled_tx.send(()).is_ok());
     });
     assert!(parked.0.parked(), "a is parked");
     assert!(

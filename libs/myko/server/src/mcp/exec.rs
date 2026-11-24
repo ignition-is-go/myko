@@ -120,7 +120,7 @@ impl Executor {
     pub async fn execute_query(&self, query_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Self::Client(client) => client_execute_query(client.clone(), query_id, args).await,
-            Self::InProcess(ctx) => in_process_execute_query(ctx.clone(), query_id, args, None),
+            Self::InProcess(ctx) => in_process_execute_query(ctx, query_id, args, None),
             Self::External { ctx, session } => {
                 session
                     .authorize(AuthorizationRequest::Execute {
@@ -129,8 +129,7 @@ impl Executor {
                         arguments: &args,
                     })
                     .map_err(|error| operation_auth_error(error, "query", query_id))?;
-                let result =
-                    in_process_execute_query(ctx.clone(), query_id, args.clone(), Some(session));
+                let result = in_process_execute_query(ctx, query_id, args.clone(), Some(session));
                 session
                     .authorize(AuthorizationRequest::Execute {
                         kind: OperationKind::Query,
@@ -183,7 +182,7 @@ impl Executor {
     pub async fn execute_view(&self, view_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Self::Client(client) => client_execute_view(client.clone(), view_id, args).await,
-            Self::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args, None),
+            Self::InProcess(ctx) => in_process_execute_view(ctx, view_id, args, None),
             Self::External { ctx, session } => {
                 session
                     .authorize(AuthorizationRequest::Execute {
@@ -192,8 +191,7 @@ impl Executor {
                         arguments: &args,
                     })
                     .map_err(|error| operation_auth_error(error, "view", view_id))?;
-                let result =
-                    in_process_execute_view(ctx.clone(), view_id, args.clone(), Some(session));
+                let result = in_process_execute_view(ctx, view_id, args.clone(), Some(session));
                 session
                     .authorize(AuthorizationRequest::Execute {
                         kind: OperationKind::View,
@@ -213,7 +211,7 @@ impl Executor {
     pub async fn execute_command(&self, command_id: &str, args: Value) -> Result<Value, String> {
         match self {
             Self::Client(client) => client_execute_command(client.clone(), command_id, args).await,
-            Self::InProcess(ctx) => in_process_execute_command(ctx.clone(), command_id, args, None),
+            Self::InProcess(ctx) => in_process_execute_command(ctx, command_id, args, None),
             Self::External { ctx, session } => {
                 session
                     .authorize(AuthorizationRequest::Execute {
@@ -222,8 +220,7 @@ impl Executor {
                         arguments: &args,
                     })
                     .map_err(|error| operation_auth_error(error, "command", command_id))?;
-                let result =
-                    in_process_execute_command(ctx.clone(), command_id, args, Some(session));
+                let result = in_process_execute_command(ctx, command_id, args, Some(session));
                 session
                     .check()
                     .map_err(|error| operation_auth_error(error, "command", command_id))?;
@@ -511,7 +508,7 @@ async fn client_execute_command(
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn in_process_execute_query(
-    ctx: Arc<MykoServerContext>,
+    ctx: &MykoServerContext,
     query_id: &str,
     arguments: Value,
     session: Option<&AuthSession>,
@@ -575,7 +572,7 @@ fn in_process_execute_query(
 }
 
 fn in_process_execute_view(
-    ctx: Arc<MykoServerContext>,
+    ctx: &MykoServerContext,
     view_id: &str,
     arguments: Value,
     session: Option<&AuthSession>,
@@ -692,7 +689,7 @@ async fn in_process_execute_report(
 }
 
 fn in_process_execute_command(
-    ctx: Arc<MykoServerContext>,
+    ctx: &MykoServerContext,
     command_id: &str,
     arguments: Value,
     session: Option<&AuthSession>,

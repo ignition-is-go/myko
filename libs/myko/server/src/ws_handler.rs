@@ -741,7 +741,7 @@ impl WsHandler {
         true
     }
 
-    fn message_context(state: &ReadLoopState) -> MessageContext<'_> {
+    const fn message_context(state: &ReadLoopState) -> MessageContext<'_> {
         MessageContext {
             auth: &state.auth,
             priority_tx: &state.priority_tx,
@@ -757,6 +757,28 @@ impl WsHandler {
             subscription_builds: &state.subscription_builds,
             view_delivery_tx: &state.view_delivery_tx,
             placements: &state.placements,
+        }
+    }
+
+    fn drop_denied<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        state: &ReadLoopState,
+        tx: &Arc<str>,
+    ) {
+        state.placements.forget(tx);
+        state.subscription_builds.cancel(tx);
+        session.cancel(tx);
+        let _ = state
+            .view_delivery_tx
+            .send(ViewDeliveryControl::Cancel(tx.clone()));
+        if let Ok(mut map) = state.query_ids_by_tx.lock() {
+            map.remove(tx);
+        }
+        if let Ok(mut map) = state.view_ids_by_tx.lock() {
+            map.remove(tx);
+        }
+        if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
+            map.remove(tx);
         }
     }
 
@@ -985,15 +1007,7 @@ impl WsHandler {
                         moved,
                     );
                 }
-                Some(tx) = denied_rx.recv() => {
-                    state.placements.forget(&tx);
-                    state.subscription_builds.cancel(&tx);
-                    session.cancel(&tx);
-                    let _ = state.view_delivery_tx.send(ViewDeliveryControl::Cancel(tx.clone()));
-                    if let Ok(mut map) = state.query_ids_by_tx.lock() { map.remove(&tx); }
-                    if let Ok(mut map) = state.view_ids_by_tx.lock() { map.remove(&tx); }
-                    if let Ok(mut map) = state.subscribe_started_by_tx.lock() { map.remove(&tx); }
-                }
+                Some(tx) = denied_rx.recv() => Self::drop_denied(session, &state, &tx),
                 _ = diagnostics_interval.tick() => {
                     if let Some(diagnostics) = &state.drop_logger.diagnostics { diagnostics.flush(false); }
                 }
@@ -1078,7 +1092,7 @@ impl WsHandler {
             let result = WS_COMMAND_BLOCKING
                 .run("command", move || {
                     Self::execute_command_job(
-                        command_ctx,
+                        &command_ctx,
                         &command_deferred_tx,
                         &command_priority_tx,
                         command_drop_logger.as_ref(),
@@ -2347,8 +2361,18 @@ impl WsHandler {
         );
     }
 
+    fn send_command_result(
+        deferred_tx: &mpsc::Sender<DeferredOutbound>,
+        drop_logger: &DropLogger,
+        result: MykoMessage,
+    ) {
+        if let Err(error) = deferred_tx.try_send(DeferredOutbound::CommandResult(result)) {
+            drop_logger.on_drop("CommandResult", &error);
+        }
+    }
+
     fn execute_command_job(
-        ctx: Arc<MykoServerContext>,
+        ctx: &MykoServerContext,
         deferred_tx: &mpsc::Sender<DeferredOutbound>,
         priority_tx: &mpsc::Sender<MykoMessage>,
         drop_logger: &DropLogger,
@@ -2374,16 +2398,15 @@ impl WsHandler {
                 let ctx = match ctx.command_context(&req, &job.command) {
                     Ok(placed) => Arc::new(placed),
                     Err(refused) => {
-                        let error = MykoMessage::CommandError(CommandError::new(
-                            job.tx_id.to_string(),
-                            command_id.clone(),
-                            refused.to_string(),
-                        ));
-                        if let Err(err) =
-                            deferred_tx.try_send(DeferredOutbound::CommandResult(error))
-                        {
-                            drop_logger.on_drop("CommandError", &err);
-                        }
+                        Self::send_command_result(
+                            deferred_tx,
+                            drop_logger,
+                            MykoMessage::CommandError(CommandError::new(
+                                job.tx_id.to_string(),
+                                command_id,
+                                refused.to_string(),
+                            )),
+                        );
                         return;
                     }
                 };
@@ -2401,31 +2424,18 @@ impl WsHandler {
                 {
                     return;
                 }
-                match executor.execute_from_value(job.command.clone(), cmd_ctx) {
-                    Ok(result) => {
-                        let response = CommandResponse {
-                            response: result,
-                            tx: job.tx_id.to_string(),
-                        };
-                        if let Err(e) = deferred_tx.try_send(DeferredOutbound::CommandResult(
-                            MykoMessage::CommandResponse(response),
-                        )) {
-                            drop_logger.on_drop("CommandResponse", &e);
-                        }
-                    }
-                    Err(e) => {
-                        let error = MykoMessage::CommandError(CommandError::new(
-                            job.tx_id.to_string(),
-                            command_id.clone(),
-                            e.message,
-                        ));
-                        if let Err(err) =
-                            deferred_tx.try_send(DeferredOutbound::CommandResult(error))
-                        {
-                            drop_logger.on_drop("CommandError", &err);
-                        }
-                    }
-                }
+                let result = match executor.execute_from_value(job.command.clone(), cmd_ctx) {
+                    Ok(response) => MykoMessage::CommandResponse(CommandResponse {
+                        response,
+                        tx: job.tx_id.to_string(),
+                    }),
+                    Err(error) => MykoMessage::CommandError(CommandError::new(
+                        job.tx_id.to_string(),
+                        command_id.clone(),
+                        error.message,
+                    )),
+                };
+                Self::send_command_result(deferred_tx, drop_logger, result);
                 let execute_ms = execute_started.elapsed().as_millis();
                 let total_ms = job.received_at.elapsed().as_millis();
                 tracing::trace!(

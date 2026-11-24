@@ -1513,8 +1513,9 @@ fn reconcile_scan_live_query<F: LiveFilterQuery>(
     }
 }
 
-/// Sweep dead (no-longer-subscribed) buckets of every belongs-to source
-/// index `registry` holds. `route_to_live_bucket` reaps dead entries lazily
+/// Sweep dead buckets of every belongs-to source index `registry` holds.
+///
+/// `route_to_live_bucket` reaps dead entries lazily
 /// on next access, but a foreign id that goes dead and is never looked up
 /// again would otherwise linger; called from
 /// `MykoServerContext::sweep_dead_cache_entries`.

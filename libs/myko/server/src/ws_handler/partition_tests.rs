@@ -289,7 +289,7 @@ fn run_command(
         object.insert("tx".into(), "command".into());
     }
     WsHandler::execute_command_job(
-        Arc::clone(ctx),
+        ctx,
         &deferred_tx,
         &mpsc::channel(4).0,
         &DropLogger::new("client".into(), watch::channel(false).0),
