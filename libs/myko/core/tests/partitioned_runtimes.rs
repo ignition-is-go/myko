@@ -18,7 +18,8 @@ use std::{
 pub use myko::*;
 use myko::{
     hyphae::{
-        Cell, Definite, Gettable, JoinExt, MapExt, Materialize, SwitchMapExt, scheduler::Domain,
+        Cell, Definite, Gettable, JoinExt, MapExt, Materialize, Mutable, SwitchMapExt, Watchable,
+        scheduler::Domain,
     },
     prelude::{AnyItem, Eventable, Querying, Reporting, WithId},
     report::{AnyOutput, ReportContext, ReportHandler},
@@ -1314,15 +1315,47 @@ fn a_shared_wave_writes_into_a_partition_behind_it() {
         [true],
         "the write from the shared wave was taken"
     );
-    let level = fixture
-        .b
-        .registry
+    assert_eq!(
+        levels_in(&fixture.b, "from-shared"),
+        Some(3),
+        "partition b took the row"
+    );
+
+    // A root graph that is not itself a write reacts and writes into b.
+    let signal = fixture.root.in_domain(|| Cell::new(0_i64));
+    let written: Arc<Mutex<Vec<bool>>> = Arc::default();
+    let _reaction = {
+        let root = fixture.root.clone();
+        let written = Arc::clone(&written);
+        fixture.root.in_domain(|| {
+            signal.subscribe(move |level| {
+                if let hyphae::Signal::Value(level) = level
+                    && **level > 0
+                {
+                    written
+                        .lock()
+                        .push(root.set(&reading("b", "from-graph", **level)).is_ok());
+                }
+            })
+        })
+    };
+    signal.set(4);
+    settle(&fixture.b);
+    assert_eq!(
+        *written.lock(),
+        [true],
+        "the write from a root graph was taken"
+    );
+    assert_eq!(levels_in(&fixture.b, "from-graph"), Some(4));
+}
+
+fn levels_in(ctx: &MykoServerContext, id: &str) -> Option<i64> {
+    ctx.registry
         .get_or_create(PrReading::ENTITY_NAME_STATIC)
-        .get_value(&Arc::from("from-shared"))
+        .get_value(&Arc::from(id))
         .and_then(|row| {
             AnyItem::as_any(row.as_ref())
                 .downcast_ref::<PrReading>()
                 .map(|row| row.level)
-        });
-    assert_eq!(level, Some(3), "partition b took the row");
+        })
 }
