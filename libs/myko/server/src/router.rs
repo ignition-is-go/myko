@@ -267,11 +267,9 @@ pub(crate) async fn route_connection_with_paths_and_auth(
     access: GatewayAccess,
     provider: Option<Arc<MykoAuthProvider>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let head = match tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        read_request_head(&mut stream),
-    )
-    .await
+    let head = match crate::time_limits::HTTP_HEAD_TIMEOUT
+        .run(read_request_head(&mut stream))
+        .await
     {
         Ok(result) => match result {
             Ok(Some(h)) => h,
@@ -361,8 +359,8 @@ pub(crate) async fn route_connection_with_paths_and_auth(
     let auth = if path == websocket_path || path == mcp_path {
         if let Some(provider) = provider {
             let result = match credentials_from_head(&head) {
-                Ok(credentials) => {
-                    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+                Ok(credentials) => crate::time_limits::HTTP_AUTH_TIMEOUT
+                    .run(async {
                         if path == mcp_path
                             && let Some(server) = provider.oauth_server()
                         {
@@ -378,8 +376,7 @@ pub(crate) async fn route_connection_with_paths_and_auth(
                         }
                     })
                     .await
-                    .unwrap_or(Err(AuthError::Unavailable))
-                }
+                    .unwrap_or(Err(AuthError::Unavailable)),
                 Err(error) => Err(error),
             };
             match result {
@@ -594,15 +591,16 @@ pub async fn shutdown_cleanly(mut stream: TcpStream) {
 
     let _ = stream.shutdown().await;
     let mut buf = [0u8; 1024];
-    let _ = tokio::time::timeout(std::time::Duration::from_millis(250), async {
-        loop {
-            match stream.read(&mut buf).await {
-                Ok(0) | Err(_) => return,
-                Ok(_) => {}
+    let _ = crate::time_limits::HTTP_SHUTDOWN_DRAIN_TIMEOUT
+        .run(async {
+            loop {
+                match stream.read(&mut buf).await {
+                    Ok(0) | Err(_) => return,
+                    Ok(_) => {}
+                }
             }
-        }
-    })
-    .await;
+        })
+        .await;
 }
 
 pub(crate) fn credentials_from_head(head: &HttpRequestHead) -> Result<Credentials, AuthError> {

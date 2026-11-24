@@ -275,8 +275,29 @@ and domain discovery.
 The Postgres persister supplies durable events, startup hydration and catch-up.
 `PostgresConfig::try_from_env()` loads `MYKO_POSTGRES_URL`, optional
 `MYKO_POSTGRES_TABLE` (default `myko_events`) and `MYKO_POSTGRES_CHANNEL` (default
-`myko_events_notify`). `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` bounds startup wait
-(default 300 seconds; 0 disables the limit).
+`myko_events_notify`).
+
+Every time limit the server enforces can be changed at deploy time without rebuilding.
+Unset keeps the default, `0` disables the limit (wait forever / never expire), and any
+value that is not a non-negative integer fails startup with the variable named.
+
+| Variable | Default | Bounds |
+| --- | --- | --- |
+| `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` | 300 | startup wait for the Postgres consumer to catch up |
+| `MYKO_POSTGRES_FLUSH_TIMEOUT_SECS` | 10 | wait for queued events to be durably written |
+| `MYKO_POSTGRES_CONNECT_TIMEOUT_SECS` | 10 | opening a Postgres connection |
+| `MYKO_POSTGRES_TCP_USER_TIMEOUT_SECS` | 30 | unacknowledged writes before a dead peer is dropped |
+| `MYKO_HTTP_HEAD_TIMEOUT_SECS` | 10 | reading an incoming HTTP request head |
+| `MYKO_HTTP_AUTH_TIMEOUT_SECS` | 10 | authenticating a WebSocket or MCP request |
+| `MYKO_HTTP_SHUTDOWN_DRAIN_TIMEOUT_MS` | 250 | draining a socket before close |
+| `MYKO_OAUTH_BODY_TIMEOUT_SECS` | 10 | reading an OAuth endpoint request body |
+| `MYKO_WS_OUTBOUND_COMMAND_TTL_SECS` | 10 | age before an unanswered outbound command is dropped |
+| `MYKO_MCP_EXECUTE_TIMEOUT_SECS` | 30 | one MCP Code Mode script call, including async hops |
+| `MYKO_MCP_SCRIPT_DEADLINE_SECS` | 10 | synchronous JavaScript compute inside one script |
+| `MYKO_MCP_QUERY_TIMEOUT_SECS` | 5 | an MCP query response |
+| `MYKO_MCP_REPORT_TIMEOUT_SECS` | 5 | an MCP report value |
+| `MYKO_MCP_COMMAND_TIMEOUT_SECS` | 10 | an MCP command response |
+| `MYKO_MCP_CONNECT_TIMEOUT_SECS` | 5 | the MCP client connecting to a Myko server |
 
 Many servers can share one events table, so a server never changes shared schema as
 a side effect of booting. The schema is a numbered, forward-only list of migrations

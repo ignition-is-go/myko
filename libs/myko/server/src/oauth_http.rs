@@ -161,9 +161,9 @@ pub async fn handle(
                 None
             })
     } else if head.method == "POST" {
-        let bytes =
-            tokio::time::timeout(std::time::Duration::from_secs(10), body(&mut stream, &head))
-                .await;
+        let bytes = crate::time_limits::OAUTH_BODY_TIMEOUT
+            .run(body(&mut stream, &head))
+            .await;
         match bytes {
             Ok(Ok(bytes)) if path == server.endpoint_path("register") => {
                 if head
