@@ -81,6 +81,9 @@ pub enum Origin {
     /// applied later where its rows live. It cascades like `Local`, and is
     /// neither validated nor persisted again.
     Admitted,
+    /// An event read back from the persisted log at startup. Its effects are
+    /// in the log too, so it neither cascades nor produces.
+    Replay,
 }
 
 impl Origin {
@@ -100,7 +103,7 @@ impl Origin {
     const fn should_cascade(self, _change: MEventType) -> bool {
         match self {
             Self::Local | Self::Cascade | Self::Admitted => true,
-            Self::RelationshipFixup | Self::Transient => false,
+            Self::RelationshipFixup | Self::Transient | Self::Replay => false,
         }
     }
 
@@ -113,7 +116,7 @@ impl Origin {
     /// Whether a rewrite or validation still has to run when the mutation is
     /// applied.
     const fn should_prepare(self) -> bool {
-        !matches!(self, Self::Admitted)
+        !matches!(self, Self::Admitted | Self::Replay)
     }
 
     /// Whether this origin's mutations should be produced to persisters/sink.
@@ -121,7 +124,10 @@ impl Origin {
     /// Both origins produce; per-type durability is the persister router's job
     /// (`BlackholePersister`), not a per-event flag.
     const fn should_produce(self) -> bool {
-        !matches!(self, Self::RelationshipFixup | Self::Transient)
+        !matches!(
+            self,
+            Self::RelationshipFixup | Self::Transient | Self::Replay
+        )
     }
 }
 
@@ -1902,6 +1908,54 @@ impl MykoServerContext {
             entity_type: Arc::from("mutation"),
             message,
         })
+    }
+
+    /// Apply a persisted event log at startup, oldest event first.
+    ///
+    /// Nothing is validated, recorded or cascaded again: the log holds every
+    /// effect. With partitions, every shared event is applied first, then
+    /// every partitioned event in log order, each in the partition that holds
+    /// its row once shared data is applied. A partition the application opens
+    /// itself, rather than through its lifecycle type, must be open first.
+    ///
+    /// Returns the number of events applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an event names a type this server cannot parse.
+    pub fn replay(&self, events: impl IntoIterator<Item = MEvent>) -> Result<usize, PersistError> {
+        let events = events
+            .into_iter()
+            .map(|event| {
+                let parse = self
+                    .handler_registry
+                    .item_parser(&event.item_type)
+                    .ok_or_else(|| PersistError {
+                        entity_type: event.item_type.clone(),
+                        message: "no parser for this entity type".into(),
+                    })?;
+                let item = parse(event.item).map_err(|error| PersistError {
+                    entity_type: event.item_type.clone(),
+                    message: error.to_string(),
+                })?;
+                Ok((item, event.change_type))
+            })
+            .collect::<Result<Vec<_>, PersistError>>()?;
+        let count = events.len();
+        match self.partitions() {
+            Some(partitions) => partitions.replay(events)?,
+            None => {
+                for (item, change) in events {
+                    self.submit_local(
+                        vec![item],
+                        change,
+                        Origin::Replay,
+                        EdgeApplyMode::Authoritative,
+                    )?;
+                }
+            }
+        }
+        Ok(count)
     }
 
     fn submit_mutation_mode(

@@ -2009,3 +2009,131 @@ fn a_write_racing_a_close_is_either_refused_or_logged_and_applied() {
         );
     }
 }
+
+// (g) replay -----------------------------------------------------------------
+
+/// Every row of `entity_type` in `ctx`'s own store, as `(id, value)`.
+fn rows(ctx: &MykoServerContext, entity_type: &str) -> Vec<(String, serde_json::Value)> {
+    let mut rows: Vec<_> = ctx
+        .registry
+        .get_or_create(entity_type)
+        .snapshot()
+        .into_iter()
+        .map(|(id, row)| (id.to_string(), myko::prelude::ToValue::to_value(&row)))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows
+}
+
+type State = (
+    Vec<(String, Vec<(String, serde_json::Value)>)>,
+    Vec<(
+        String,
+        Vec<(String, serde_json::Value)>,
+        Vec<(String, serde_json::Value)>,
+    )>,
+    Vec<(String, Option<PartitionKey>)>,
+);
+
+/// Shared rows, each open partition's rows, and where each routed row is.
+fn state(root: &MykoServerContext, routed: &[&str]) -> State {
+    let shared = [
+        PrSetting::ENTITY_NAME_STATIC,
+        PrRuntime::ENTITY_NAME_STATIC,
+        PrAssignment::ENTITY_NAME_STATIC,
+    ]
+    .into_iter()
+    .map(|entity_type| (entity_type.to_owned(), rows(root, entity_type)))
+    .collect();
+    let mut keys = root.partition_keys();
+    keys.sort();
+    let partitions = keys
+        .into_iter()
+        .map(|key| {
+            let ctx = root.partition(&key).expect("open");
+            settle(&ctx);
+            (
+                key.to_string(),
+                rows(&ctx, PrReading::ENTITY_NAME_STATIC),
+                rows(&ctx, PrSample::ENTITY_NAME_STATIC),
+            )
+        })
+        .collect();
+    let placements = routed
+        .iter()
+        .map(|id| {
+            (
+                (*id).to_owned(),
+                root.partition_of(PrSample::ENTITY_NAME_STATIC, &Arc::from(*id)),
+            )
+        })
+        .collect();
+    (shared, partitions, placements)
+}
+
+#[test]
+fn replaying_the_log_rebuilds_what_live_execution_built() {
+    let _serial = SERIAL.lock();
+    let log = Log::default();
+    let live = log.fixture();
+    let root = &live.root;
+    assign(root, "moved", "a");
+    root.set(&sample("moved", 1)).expect("routed write");
+    root.set(&reading("a", "kept", 1)).expect("keyed write");
+    root.set(&sample("held", 2)).expect("held write");
+    root.set(&PrSetting {
+        id: "gain".into(),
+        gain: 2,
+    })
+    .expect("shared write");
+    assign(root, "moved", "b");
+    root.set(&sample("moved", 3)).expect("routed write in b");
+    root.set(&reading("b", "gone", 4)).expect("keyed write");
+    root.del(&reading("b", "gone", 4)).expect("keyed delete");
+    // A partition that first appears late in the log.
+    root.set(&runtime_row("late")).expect("open late");
+    assign(root, "late-row", "late");
+    root.set(&sample("late-row", 5))
+        .expect("routed write in late");
+    root.set(&reading("late", "late-reading", 6))
+        .expect("keyed write in late");
+    // A partition that closes and opens again: its keyed rows went with it,
+    // its routed rows were held and came back.
+    root.set(&runtime_row("again")).expect("open again");
+    assign(root, "returns", "again");
+    root.set(&sample("returns", 7))
+        .expect("routed write in again");
+    root.set(&reading("again", "lost", 8))
+        .expect("keyed write in again");
+    root.del(&runtime_row("again")).expect("close again");
+    root.set(&runtime_row("again")).expect("reopen again");
+    root.set(&reading("a", "kept", 9)).expect("keyed write");
+    let routed = ["moved", "held", "late-row", "returns"];
+    let expected = state(root, &routed);
+    assert_eq!(
+        expected.2,
+        [
+            ("moved".to_owned(), Some(PartitionKey::new("b"))),
+            ("held".to_owned(), None),
+            ("late-row".to_owned(), Some(PartitionKey::new("late"))),
+            ("returns".to_owned(), Some(PartitionKey::new("again"))),
+        ]
+    );
+
+    let events = log.0.lock().clone();
+    let replayed_log = Log::default();
+    let mut persisters = PersisterRouter::default();
+    persisters.set_default(Some(Arc::new(replayed_log.clone())));
+    let replayed = root_context_logging(persisters).with_partitions(schema());
+    let count = replayed.replay(events.clone()).expect("replay");
+    assert_eq!(count, events.len(), "every event was read");
+    assert_eq!(
+        state(&replayed, &routed),
+        expected,
+        "replay ends where live execution ended"
+    );
+    assert!(
+        replayed_log.0.lock().is_empty(),
+        "replay records nothing again"
+    );
+}

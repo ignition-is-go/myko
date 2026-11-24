@@ -1262,6 +1262,53 @@ impl Partitions {
         }
     }
 
+    /// Apply a persisted event log, oldest first, as startup does: every
+    /// shared event first, then every partitioned event in log order, each in
+    /// the partition that holds its row once shared data is applied.
+    ///
+    /// A keyed event is dropped when its partition is not open at the end of
+    /// the log or closes after it, as the partition's store was when it
+    /// closed. A routed row survives a close, as it does live.
+    pub(crate) fn replay(&self, events: Vec<(Item, MEventType)>) -> Result<(), PersistError> {
+        let last_close: HashMap<PartitionKey, usize> = events
+            .iter()
+            .enumerate()
+            .filter(|(_, (item, change))| {
+                *change == MEventType::DEL && self.schema.lifecycle == Some(item.entity_type())
+            })
+            .map(|(index, (item, _))| (PartitionKey(item.id()), index))
+            .collect();
+        let (shared, partitioned): (Vec<_>, Vec<_>) = events
+            .into_iter()
+            .enumerate()
+            .partition(|(_, (item, _))| !self.is_partitioned(item.entity_type()));
+        let replay = |item: Item, change| {
+            self.submit(
+                &self.root,
+                vec![item],
+                change,
+                Origin::Replay,
+                EdgeApplyMode::Authoritative,
+            )
+        };
+        for (_, (item, change)) in shared {
+            replay(item, change)?;
+        }
+        for (index, (item, change)) in partitioned {
+            if let Some(Route::Keyed(key_of)) = self.schema.routes.get(item.entity_type()) {
+                let live = key_of(item.as_ref()).is_some_and(|key| {
+                    self.open.contains_key(&key)
+                        && last_close.get(&key).is_none_or(|closed| *closed < index)
+                });
+                if !live {
+                    continue;
+                }
+            }
+            replay(item, change)?;
+        }
+        Ok(())
+    }
+
     /// Called by the root context once a shared write is applied.
     pub(crate) fn shared_write_applied(self: &Arc<Self>, items: &[Item], change: MEventType) {
         let Some(entity_type) = items.first().map(|item| item.entity_type()) else {
