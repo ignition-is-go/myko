@@ -936,19 +936,25 @@ impl MykoServerContext {
             .count()
     }
 
-    /// Remove dead weak-ref entries from all caches, including belongs-to
-    /// source index buckets (process-global, not per-`MykoServerContext`, but
-    /// swept from here for hosting apps that already call this
-    /// periodically). Bucket entries are also reaped lazily on next access
-    /// regardless — this is a backstop for foreign ids that go dead and are
-    /// never looked up again.
+    /// Remove dead weak-ref entries from all caches, including the buckets
+    /// of the belongs-to source indexes this context's registry holds. On
+    /// the root context it sweeps every open partition too. Bucket entries
+    /// are also reaped lazily on next access regardless — this is a backstop
+    /// for foreign ids that go dead and are never looked up again.
     pub fn sweep_dead_cache_entries(&self) {
         self.query_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.view_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.report_cache.retain(|_, entry| entry.is_alive());
-        crate::query::sweep_all_belongs_to_source_indexes();
+        crate::query::sweep_belongs_to_source_indexes(&self.registry);
+        if self.home.is_none() {
+            for key in self.partition_keys() {
+                if let Some(partition) = self.partition(&key) {
+                    partition.sweep_dead_cache_entries();
+                }
+            }
+        }
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
@@ -3529,7 +3535,6 @@ impl MykoServerContext {
     {
         let query_item_type = Q::query_item_type_static();
         let store = self.registry.get_or_create(&query_item_type);
-        let host_id = request.host_id;
 
         let query_context = Arc::new(QueryContext { req: request });
         let query = Arc::new(query);
@@ -3557,13 +3562,8 @@ impl MykoServerContext {
                 ids.iter().filter_map(|id| store.get_value(id)).collect()
             }
             (None, Some(crate::query::QueryRoute::BelongsTo(route))) => {
-                crate::query::belongs_to_route_snapshot(
-                    &self.registry,
-                    host_id,
-                    &query_item_type,
-                    &route,
-                )
-                .unwrap_or_else(|| all_rows(&store))
+                crate::query::belongs_to_route_snapshot(&self.registry, &query_item_type, &route)
+                    .unwrap_or_else(|| all_rows(&store))
             }
             (None, None) => all_rows(&store),
         };

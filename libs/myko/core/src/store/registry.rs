@@ -37,9 +37,10 @@ pub struct StoreRegistry {
     // the lookup-by-entity-type hot path. Bench: dashmap_default 183 µs vs
     // dashmap_ahash 115 µs / 10k lookups.
     stores: DashMap<Arc<str>, Arc<EntityStore>, ahash::RandomState>,
-    /// Indexes derived from these stores. They are costly to rebuild, so
-    /// they live as long as the stores do.
-    retained: parking_lot::Mutex<Vec<Arc<dyn std::any::Any + Send + Sync>>>,
+    /// Indexes derived from these stores, by what they index. They are
+    /// costly to rebuild, so they live as long as the stores do, and they
+    /// index this registry's stores only.
+    indexes: DashMap<String, Arc<dyn std::any::Any + Send + Sync>, ahash::RandomState>,
     /// The relationship index over the stores this registry owns.
     relations: std::sync::OnceLock<Arc<dyn std::any::Any + Send + Sync>>,
 }
@@ -102,7 +103,7 @@ impl StoreRegistry {
             partition: None,
             partitioned: std::sync::OnceLock::new(),
             stores: DashMap::with_hasher(ahash::RandomState::new()),
-            retained: parking_lot::Mutex::new(Vec::new()),
+            indexes: DashMap::with_hasher(ahash::RandomState::new()),
             relations: std::sync::OnceLock::new(),
         }
     }
@@ -158,9 +159,36 @@ impl StoreRegistry {
             .ok()
     }
 
-    /// Keep a derived index alive for the lifetime of this registry.
-    pub(crate) fn retain(&self, index: Arc<dyn std::any::Any + Send + Sync>) {
-        self.retained.lock().push(index);
+    /// The index named `key` over the stores of the registry that owns
+    /// `entity_type`, built by `build` on first use. A partition's registry
+    /// keeps its own indexes over its partitioned stores and shares root's
+    /// over shared stores.
+    pub(crate) fn index<T: Send + Sync + 'static>(
+        &self,
+        entity_type: &str,
+        key: String,
+        build: impl FnOnce(&Self) -> Arc<T>,
+    ) -> Arc<T> {
+        let owner = self.owner(entity_type);
+        if let Some(index) = owner.indexes.get(&key)
+            && let Ok(index) = Arc::clone(index.value()).downcast::<T>()
+        {
+            return index;
+        }
+        let index = build(owner);
+        let erased: Arc<dyn std::any::Any + Send + Sync> = index.clone();
+        // A racing build loses to the first one stored.
+        Arc::clone(owner.indexes.entry(key).or_insert(erased).value())
+            .downcast::<T>()
+            .unwrap_or(index)
+    }
+
+    /// Every index this registry holds of type `T`.
+    pub(crate) fn indexes_of<T: Send + Sync + 'static>(&self) -> Vec<Arc<T>> {
+        self.indexes
+            .iter()
+            .filter_map(|entry| Arc::clone(entry.value()).downcast::<T>().ok())
+            .collect()
     }
 
     /// Coordinate a persistence consumer's store update with checked reversals.

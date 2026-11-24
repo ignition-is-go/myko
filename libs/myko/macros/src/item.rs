@@ -419,7 +419,6 @@ fn generate_filter_query(
                     #krate::query::QueryRoute::BelongsTo(route) => {
                         #krate::query::build_index_union_source_map(
                             ctx.query_context.registry(),
-                            ctx.query_context.query_context.req.host_id,
                             #name_str, route,
                         )
                     }

@@ -600,3 +600,87 @@ fn an_ensured_shared_type_cannot_depend_on_a_partitioned_type() {
         "{refused}"
     );
 }
+
+fn notes_in_folder(ctx: &MykoServerContext, folder: &str) -> usize {
+    let query = note::GetPrlNotesByQuery(note::PrlNoteQuery {
+        folder_id: Some(myko::query::IdFilter::Eq(PrlFolderId(folder.into()))),
+        ..Default::default()
+    });
+    let live = ctx
+        .query_map(query.clone(), ctx.new_server_transaction())
+        .snapshot()
+        .len();
+    let once = ctx
+        .query_snapshot(query, ctx.new_server_transaction())
+        .len();
+    assert_eq!(live, once, "a one-shot read agrees with the live query");
+    live
+}
+
+#[test]
+fn a_belongs_to_query_reads_its_own_partitions_rows() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    fixture.root.set(&note("a", "n-a")).expect("note in a");
+    fixture.root.set(&note("b", "n-b")).expect("note in b");
+    fixture
+        .root
+        .set(&note("b", "n-b2"))
+        .expect("second note in b");
+    settle(&fixture.a);
+    settle(&fixture.b);
+    assert_eq!(
+        [
+            notes_in_folder(&fixture.a, "f"),
+            notes_in_folder(&fixture.b, "f")
+        ],
+        [1, 2],
+        "each partition's routed query reads its own store"
+    );
+}
+
+#[test]
+fn setting_a_lifecycle_row_whose_ensure_for_creates_partition_rows_succeeds() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    fixture
+        .root
+        .set(&room("c"))
+        .expect("the partition is open before what the write derives");
+    let c = fixture
+        .root
+        .partition(&PartitionKey::new("c"))
+        .expect("room c");
+    settle(&c);
+    assert_eq!(cursors(&c), ["c"]);
+}
+
+#[test]
+fn an_ensured_partition_row_is_ensured_again_once_deleted() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let cursor = PrlCursor {
+        id: cursor::PrlCursorId(
+            fixture
+                .a
+                .registry
+                .get_or_create(PrlCursor::ENTITY_NAME_STATIC)
+                .snapshot()
+                .into_iter()
+                .next()
+                .expect("a's cursor")
+                .0,
+        ),
+        room_id: room::PrlRoomId("a".into()),
+    };
+    fixture.root.del(&cursor).expect("delete a's cursor");
+    settle(&fixture.a);
+    assert!(cursors(&fixture.a).is_empty());
+    fixture.root.set(&room("a")).expect("room again");
+    settle(&fixture.a);
+    assert_eq!(
+        cursors(&fixture.a),
+        ["a"],
+        "the first cursor's reservation was released when it landed in a"
+    );
+}

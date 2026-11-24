@@ -26,7 +26,7 @@ pub use registration::{
     build_ids_source_map, build_index_union_source_map, cartesian_product,
     filter_query_over_source, filter_typed_source, query_live, query_live_in_context,
     query_runtime_metrics, query_runtime_metrics_by_id, route_snapshot_counts,
-    sweep_all_belongs_to_source_indexes,
+    sweep_belongs_to_source_indexes,
 };
 pub use request::QueryRequest;
 pub use traits::{

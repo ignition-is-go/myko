@@ -4,7 +4,7 @@ use std::{
     any::Any,
     collections::{HashMap, HashSet, VecDeque},
     sync::{
-        Arc, Mutex, OnceLock, Weak,
+        Arc, Mutex, OnceLock,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
@@ -104,8 +104,6 @@ static QUERY_PER_ITEM_GUARDS_REMOVED: AtomicU64 = AtomicU64::new(0);
 static QUERY_FACTORIES_BY_ID: OnceLock<DashMap<Arc<str>, u64>> = OnceLock::new();
 static QUERY_GUARDS_CREATED_BY_ID: OnceLock<DashMap<Arc<str>, u64>> = OnceLock::new();
 static QUERY_GUARDS_REMOVED_BY_ID: OnceLock<DashMap<Arc<str>, u64>> = OnceLock::new();
-static BELONGS_TO_SOURCE_INDEXES: OnceLock<DashMap<String, Weak<BelongsToSourceIndex>>> =
-    OnceLock::new();
 
 fn query_factories_by_id() -> &'static DashMap<Arc<str>, u64> {
     QUERY_FACTORIES_BY_ID.get_or_init(DashMap::new)
@@ -117,10 +115,6 @@ fn query_guards_created_by_id() -> &'static DashMap<Arc<str>, u64> {
 
 fn query_guards_removed_by_id() -> &'static DashMap<Arc<str>, u64> {
     QUERY_GUARDS_REMOVED_BY_ID.get_or_init(DashMap::new)
-}
-
-fn belongs_to_source_indexes() -> &'static DashMap<String, Weak<BelongsToSourceIndex>> {
-    BELONGS_TO_SOURCE_INDEXES.get_or_init(DashMap::new)
 }
 
 fn increment_counter(map: &DashMap<Arc<str>, u64>, key: Arc<str>) {
@@ -515,7 +509,6 @@ impl BelongsToSourceIndex {
 /// shares a bucket with one that pins fewer, even when the fields overlap.
 pub fn build_belongs_to_source_map(
     registry: Arc<StoreRegistry>,
-    host_id: Uuid,
     local_type: &'static str,
     field_names: &'static [&'static str],
     extract_fk: CompoundFkExtractor,
@@ -528,7 +521,6 @@ pub fn build_belongs_to_source_map(
     );
     let index = belongs_to_source_index_for(
         &registry,
-        host_id,
         local_type,
         field_names,
         KeyExtractor::One(extract_fk),
@@ -538,36 +530,20 @@ pub fn build_belongs_to_source_map(
 }
 
 fn belongs_to_source_index_for(
-    registry: &Arc<StoreRegistry>,
-    host_id: Uuid,
+    registry: &StoreRegistry,
     local_type: &str,
     field_names: &'static [&'static str],
     extract_fk: KeyExtractor,
 ) -> Arc<BelongsToSourceIndex> {
-    let key = format!("{host_id}:{local_type}:{}", field_names.join("+"));
-    // Building the index reads every row of the store. The registry keeps
-    // it, so a routed query with no other live query on the store does not
-    // pay for that again.
-    let build = || {
-        let index = BelongsToSourceIndex::new(registry.get_or_create(local_type), extract_fk);
-        registry.retain(index.clone());
-        index
-    };
-    match belongs_to_source_indexes().entry(key) {
-        dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
-            if let Some(index) = occupied.get().upgrade() {
-                return index;
-            }
-            let index = build();
-            occupied.insert(Arc::downgrade(&index));
-            index
-        }
-        dashmap::mapref::entry::Entry::Vacant(vacant) => {
-            let index = build();
-            vacant.insert(Arc::downgrade(&index));
-            index
-        }
-    }
+    // Building the index reads every row of the store. The registry that
+    // owns the store keeps it, so a routed query with no other live query on
+    // the store does not pay for that again, and a partition never reads an
+    // index built over another partition's store.
+    registry.index(
+        local_type,
+        format!("belongs_to:{local_type}:{}", field_names.join("+")),
+        |owner| BelongsToSourceIndex::new(owner.get_or_create(local_type), extract_fk),
+    )
 }
 
 thread_local! {
@@ -604,17 +580,11 @@ fn scheduler_is_idle() -> bool {
 #[must_use]
 pub fn belongs_to_route_snapshot(
     registry: &Arc<StoreRegistry>,
-    host_id: Uuid,
     local_type: &str,
     route: &crate::query::BelongsToRoute,
 ) -> Option<Vec<AnyItemArc>> {
-    let index = belongs_to_source_index_for(
-        registry,
-        host_id,
-        local_type,
-        route.field_names,
-        route.extractor(),
-    );
+    let index =
+        belongs_to_source_index_for(registry, local_type, route.field_names, route.extractor());
     ROUTE_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
     if !scheduler_is_idle() {
         ROUTE_SNAPSHOT_FALLBACKS.fetch_add(1, Ordering::Relaxed);
@@ -857,7 +827,6 @@ fn release(
 /// bucket's store subscription alive for as long as `result` is.
 pub fn build_belongs_to_union_source_map(
     registry: Arc<StoreRegistry>,
-    host_id: Uuid,
     local_type: &'static str,
     field_names: &'static [&'static str],
     extract_fk: CompoundFkExtractor,
@@ -865,7 +834,6 @@ pub fn build_belongs_to_union_source_map(
 ) -> FilteredCellMap {
     union_source_map(
         registry,
-        host_id,
         local_type,
         field_names,
         KeyExtractor::One(extract_fk),
@@ -877,14 +845,12 @@ pub fn build_belongs_to_union_source_map(
 /// buckets for those keys. A row filed under several of them appears once.
 pub fn build_index_union_source_map(
     registry: Arc<StoreRegistry>,
-    host_id: Uuid,
     local_type: &'static str,
     route: BelongsToRoute,
 ) -> FilteredCellMap {
     let extractor = route.extractor();
     union_source_map(
         registry,
-        host_id,
         local_type,
         route.field_names,
         extractor,
@@ -894,7 +860,6 @@ pub fn build_index_union_source_map(
 
 fn union_source_map(
     registry: Arc<StoreRegistry>,
-    host_id: Uuid,
     local_type: &'static str,
     field_names: &'static [&'static str],
     extract_fk: KeyExtractor,
@@ -911,8 +876,7 @@ fn union_source_map(
         );
     }
 
-    let index =
-        belongs_to_source_index_for(&registry, host_id, local_type, field_names, extract_fk);
+    let index = belongs_to_source_index_for(&registry, local_type, field_names, extract_fk);
     let result: AnyItemMap = AnyItemMap::new();
     let holders = Arc::new(Mutex::new(UnionHolders::new()));
     for key in keys {
@@ -1240,7 +1204,6 @@ fn reconcile_live_query<F: LiveFilterQuery>(
     current_generation: u64,
     synchronization: &Arc<LiveQuerySynchronization>,
 ) {
-    let host_id = request.host_id;
     if reconcile_registered_live_source(
         registry,
         request,
@@ -1255,7 +1218,6 @@ fn reconcile_live_query<F: LiveFilterQuery>(
     if let Some(route) = new_filter.query_route() {
         reconcile_indexed_live_query(
             registry,
-            host_id,
             result,
             state,
             new_filter,
@@ -1389,7 +1351,6 @@ fn split_query_route(
 
 fn build_live_bucket_source<F: LiveFilterQuery>(
     registry: &Arc<StoreRegistry>,
-    host_id: Uuid,
     route_field_names: &'static [&'static str],
     extract_fk: Option<KeyExtractor>,
 ) -> BucketSourceFn {
@@ -1407,7 +1368,6 @@ fn build_live_bucket_source<F: LiveFilterQuery>(
         |extract_fk| {
             let index = belongs_to_source_index_for(
                 registry,
-                host_id,
                 F::entity_type(),
                 route_field_names,
                 extract_fk,
@@ -1482,7 +1442,6 @@ fn add_live_buckets<F: LiveFilterQuery>(
 
 fn reconcile_indexed_live_query<F: LiveFilterQuery>(
     registry: &Arc<StoreRegistry>,
-    host_id: Uuid,
     result: &AnyItemMap,
     state: &mut LiveQueryState<F>,
     new_filter: &F,
@@ -1502,8 +1461,7 @@ fn reconcile_indexed_live_query<F: LiveFilterQuery>(
         .iter()
         .any(|key| !state.bucket_guards.contains_key(key))
     {
-        let make_source =
-            build_live_bucket_source::<F>(registry, host_id, route_field_names, extract_fk);
+        let make_source = build_live_bucket_source::<F>(registry, route_field_names, extract_fk);
         add_live_buckets(
             result,
             state,
@@ -1555,20 +1513,15 @@ fn reconcile_scan_live_query<F: LiveFilterQuery>(
     }
 }
 
-/// Sweep dead (no-longer-subscribed) buckets across every belongs-to
-///
-/// relation's source index. `route_to_live_bucket` reaps dead entries lazily
+/// Sweep dead (no-longer-subscribed) buckets of every belongs-to source
+/// index `registry` holds. `route_to_live_bucket` reaps dead entries lazily
 /// on next access, but a foreign id that goes dead and is never looked up
 /// again would otherwise linger; called from
 /// `MykoServerContext::sweep_dead_cache_entries`.
-pub fn sweep_all_belongs_to_source_indexes() {
-    belongs_to_source_indexes().retain(|_, weak| {
-        let Some(index) = weak.upgrade() else {
-            return false;
-        };
+pub fn sweep_belongs_to_source_indexes(registry: &StoreRegistry) {
+    for index in registry.indexes_of::<BelongsToSourceIndex>() {
         index.sweep_dead_buckets();
-        true
-    });
+    }
 }
 
 /// Build a `FilteredCellMap` containing only the entries at the given ids,
@@ -2195,14 +2148,12 @@ mod belongs_to_source_index_tests {
     fn route_snapshot_reads_the_index_only_while_the_scheduler_is_idle() {
         let _serial = crate::test_util::scheduler_test_serial();
         let registry = Arc::new(crate::store::StoreRegistry::new());
-        let host_id = Uuid::new_v4();
         let store = registry.get_or_create("TestChild");
         let (id, item) = child("child-1", "parent-1");
         store.insert(id, item);
         let snapshot = || {
             belongs_to_route_snapshot(
                 &registry,
-                host_id,
                 "TestChild",
                 &crate::query::BelongsToRoute {
                     field_names: &["parent_id"],
@@ -2234,12 +2185,9 @@ mod belongs_to_source_index_tests {
     #[test]
     fn the_store_registry_keeps_an_index_no_query_is_using() {
         let registry = Arc::new(crate::store::StoreRegistry::new());
-        let host_id = Uuid::new_v4();
-        let registry_key = format!("{host_id}:TestChild:parent_id");
         let lookup = || {
             belongs_to_source_index_for(
                 &registry,
-                host_id,
                 "TestChild",
                 &["parent_id"],
                 KeyExtractor::One(extract_parent_fk),
@@ -2263,11 +2211,6 @@ mod belongs_to_source_index_tests {
         assert!(
             weak.upgrade().is_none(),
             "the index outlived the registry that owns its store"
-        );
-        sweep_all_belongs_to_source_indexes();
-        assert!(
-            !belongs_to_source_indexes().contains_key(&registry_key),
-            "sweeping must remove the dead weak registry entry"
         );
     }
 
@@ -2477,14 +2420,12 @@ mod belongs_to_source_index_tests {
         store.insert(id_b, item_b);
         store.insert(id_c, item_c);
 
-        let host_id = Uuid::new_v4();
         let keys = vec![
             smallvec::smallvec![Arc::from("node-A"), Arc::from("session-PROD")],
             smallvec::smallvec![Arc::from("node-B"), Arc::from("session-PROD")],
         ];
         let union = build_belongs_to_union_source_map(
             registry.clone(),
-            host_id,
             "TestCursor",
             &["node_id", "session_id"],
             extract_node_and_session_fk,
@@ -2531,7 +2472,6 @@ mod belongs_to_source_index_tests {
 
         let source = build_belongs_to_union_source_map(
             registry,
-            Uuid::new_v4(),
             "TestCursor",
             &["node_id", "session_id"],
             extract_node_and_session_fk,
@@ -2572,7 +2512,6 @@ mod belongs_to_source_index_tests {
             }
             let union = build_belongs_to_union_source_map(
                 registry.clone(),
-                Uuid::new_v4(),
                 "TestChild",
                 &["parent_id"],
                 extract_parent_fk,
@@ -2604,7 +2543,6 @@ mod belongs_to_source_index_tests {
 
         let union = build_belongs_to_union_source_map(
             registry,
-            Uuid::new_v4(),
             "TestCursor",
             &["node_id", "session_id"],
             extract_node_and_session_fk,
