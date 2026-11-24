@@ -9,7 +9,8 @@ authors.workspace = true
 autoexamples = false
 
 [package.metadata.flux]
-tasks = ["check", "check-wasm", "build", "test", "lint", "publish"]
+# check, lint and test run in the separate GPUI CI job (check-gpui, lint-gpui, test-gpui).
+tasks = ["check-wasm", "build", "publish"]
 
 [dependencies]
 serde.workspace = true
