@@ -1386,8 +1386,13 @@ impl MykoClient {
                             .pending_sends
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        for frame in pending.drain(..) {
-                            let _ = inner.socket.send(frame);
+                        let mut queued = std::mem::take(&mut *pending).into_iter();
+                        while let Some(frame) = queued.next() {
+                            if inner.socket.send(frame.clone()).is_err() {
+                                pending.push(frame);
+                                pending.extend(queued);
+                                break;
+                            }
                         }
                     }
                 });
@@ -4095,7 +4100,7 @@ fn admit_send(
     let mut pending = pending
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if connected() {
+    if pending.is_empty() && connected() {
         Ok(frame)
     } else {
         pending.push(frame);
@@ -4128,7 +4133,7 @@ mod send_admission_tests {
         fn send(&self, frame: WsFrame) -> Result<(), String> {
             self.attempted.lock().unwrap().push(frame.clone());
             if self.reject.load(Ordering::SeqCst)
-                && matches!(frame, WsFrame::Text(ref text) if text == "rejected")
+                && matches!(frame, WsFrame::Binary(ref data) if data == &[2])
             {
                 Err("connection retired".into())
             } else {
@@ -4145,27 +4150,54 @@ mod send_admission_tests {
             attempted: Mutex::new(Vec::new()),
         });
         let client = MykoClient::with_transport(transport.clone());
-        *client.inner.pending_sends.lock().unwrap() = ["first", "rejected", "last"]
-            .map(|text| WsFrame::Text(text.into()))
-            .to_vec();
+        *client.inner.pending_sends.lock().unwrap() =
+            [1, 2, 3].map(|value| WsFrame::Binary(vec![value])).to_vec();
 
-        transport.status.set(ConnectionStatus::Connected("fixture".into()));
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
 
-        let text_frames = |frames: &[WsFrame]| {
-            frames.iter().map(|frame| match frame {
-                WsFrame::Text(text) => text.clone(),
-                _ => panic!("unexpected frame"),
-            }).collect::<Vec<_>>()
+        let data_frames = |frames: &[WsFrame]| {
+            frames
+                .iter()
+                .filter_map(|frame| match frame {
+                    WsFrame::Binary(data) => Some(data.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
         };
-        assert_eq!(text_frames(&transport.attempted.lock().unwrap()), ["first", "rejected"]);
-        assert_eq!(text_frames(&client.inner.pending_sends.lock().unwrap()), ["rejected", "last"]);
+        assert_eq!(
+            data_frames(&transport.attempted.lock().unwrap()),
+            [vec![1], vec![2]]
+        );
+        assert_eq!(
+            data_frames(&client.inner.pending_sends.lock().unwrap()),
+            [vec![2], vec![3]]
+        );
 
         transport.reject.store(false, Ordering::SeqCst);
         transport.status.set(ConnectionStatus::Disconnected);
-        transport.status.set(ConnectionStatus::Connected("fixture".into()));
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
 
-        assert_eq!(text_frames(&transport.attempted.lock().unwrap()), ["first", "rejected", "rejected", "last"]);
+        assert_eq!(
+            data_frames(&transport.attempted.lock().unwrap()),
+            [vec![1], vec![2], vec![2], vec![3]]
+        );
         assert!(client.inner.pending_sends.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn connected_sender_queues_behind_retained_pending_frames() {
+        let pending = Mutex::new(vec![WsFrame::Binary(vec![1])]);
+        assert!(matches!(
+            admit_send(&pending, WsFrame::Binary(vec![2]), || true),
+            Err(2)
+        ));
+        let frames = pending.lock().unwrap();
+        assert!(matches!(&frames[0], WsFrame::Binary(data) if data == &[1]));
+        assert!(matches!(&frames[1], WsFrame::Binary(data) if data == &[2]));
     }
 
     #[test]

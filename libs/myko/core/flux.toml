@@ -39,3 +39,6 @@ root = ["cargo", "clippy", "-p", "myko", "--jobs", "4", "--target-dir", "target/
 
 [tasks.benchmark-startup-relationships]
 root = ["cargo", "test", "-p", "myko", "--jobs", "4", "--target-dir", "target/agent", "--lib", "benchmark_startup_ensure_membership", "--", "--ignored", "--nocapture", "--test-threads=1"]
+
+[tasks.format-client-send-admission]
+root = ["cargo", "fmt", "--all"]
