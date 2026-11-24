@@ -134,3 +134,6 @@ myko-server = { version = "6.19.0", path = "libs/myko/server" }
 # Test the Git-distributed GPUI bridge against this workspace's Myko core.
 # Downstream consumers ignore dependency-owned patches and use crates.io.
 myko = { path = "libs/myko/core" }
+# NOTE(ts): scheduling domains are not in a published hyphae yet. Remove this
+# line and raise the hyphae requirement once hyphae releases them.
+hyphae = { git = "https://github.com/ignition-is-go/hyphae.git", rev = "f5a9b4002917e072839e145854e8c72fe8dfd1e6" }
