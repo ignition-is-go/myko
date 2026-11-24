@@ -770,11 +770,12 @@ fn run_producer_loop(
                 }
             }
             Err(error) => {
-                health.record_error_no_dequeue(format_pg_error(
-                    "persist transaction history",
-                    Some(&config.url),
-                    &error,
-                ));
+                let message =
+                    format_pg_error("persist transaction history", Some(&config.url), &error);
+                // NOTE(ts): The batch stays queued and retries; without this log a schema problem
+                // only surfaces as a flush timeout far from its cause.
+                error!("{message}");
+                health.record_error_no_dequeue(message);
                 client = None;
                 std::thread::sleep(Duration::from_secs(1));
             }
@@ -1372,7 +1373,6 @@ fn connect_consumer_client(role: &str, config: &PostgresConfig) -> Result<Client
             Ok(mut client) => {
                 match ensure_schema(&mut client, config) {
                     Ok(()) => {}
-                    Err(err @ SchemaError::Outdated { .. }) => return Err(err.to_string()),
                     Err(err) => warn!(
                         "{}",
                         err.describe(&format!("ensure_schema({role})"), &config.url)
