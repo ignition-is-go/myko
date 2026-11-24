@@ -1382,18 +1382,7 @@ impl MykoClient {
 
                     // Flush pending sends on connect
                     if let ConnectionStatus::Connected(_) = conn_status {
-                        let mut pending = inner
-                            .pending_sends
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        let mut queued = std::mem::take(&mut *pending).into_iter();
-                        while let Some(frame) = queued.next() {
-                            if inner.socket.send(frame.clone()).is_err() {
-                                pending.push(frame);
-                                pending.extend(queued);
-                                break;
-                            }
-                        }
+                        flush_pending_sends(&inner);
                     }
                 });
 
@@ -1955,13 +1944,19 @@ impl MykoClient {
             Ok(frame) => {
                 let _ = self.inner.socket.send(frame);
             }
-            Err(len) if len == 1 || len.is_multiple_of(10_000) => {
-                warn!(
-                    "MykoClient queued frame while disconnected; pending_sends={}",
-                    len
-                );
+            Err(len) => {
+                if matches!(
+                    self.inner.socket.actual_connection_state().get(),
+                    ConnectionStatus::Connected(_)
+                ) {
+                    flush_pending_sends(&self.inner);
+                } else if len == 1 || len.is_multiple_of(10_000) {
+                    warn!(
+                        "MykoClient queued frame while disconnected; pending_sends={}",
+                        len
+                    );
+                }
             }
-            Err(_) => {}
         }
     }
 
@@ -4090,6 +4085,22 @@ mod address_tests {
     }
 }
 
+fn flush_pending_sends(inner: &MykoClientInner) {
+    let mut pending = inner
+        .pending_sends
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut queued = std::mem::take(&mut *pending).into_iter();
+    while let Some(frame) = queued.next() {
+        if inner.socket.send(frame.clone()).is_err() {
+            pending.push(frame);
+            pending.extend(queued);
+            drop(pending);
+            return;
+        }
+    }
+}
+
 // The status check and enqueue share the reconnect drain's mutex. Otherwise a
 // sender can observe Disconnected before the drain, then enqueue after it.
 fn admit_send(
@@ -4131,7 +4142,10 @@ mod send_admission_tests {
             flume::unbounded().1
         }
         fn send(&self, frame: WsFrame) -> Result<(), String> {
-            self.attempted.lock().unwrap().push(frame.clone());
+            self.attempted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(frame.clone());
             if self.reject.load(Ordering::SeqCst)
                 && matches!(frame, WsFrame::Binary(ref data) if data == &[2])
             {
@@ -4150,7 +4164,11 @@ mod send_admission_tests {
             attempted: Mutex::new(Vec::new()),
         });
         let client = MykoClient::with_transport(transport.clone());
-        *client.inner.pending_sends.lock().unwrap() =
+        *client
+            .inner
+            .pending_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             [1, 2, 3].map(|value| WsFrame::Binary(vec![value])).to_vec();
 
         transport
@@ -4162,16 +4180,27 @@ mod send_admission_tests {
                 .iter()
                 .filter_map(|frame| match frame {
                     WsFrame::Binary(data) => Some(data.clone()),
-                    _ => None,
+                    WsFrame::Text(_) => None,
                 })
                 .collect::<Vec<_>>()
         };
         assert_eq!(
-            data_frames(&transport.attempted.lock().unwrap()),
+            data_frames(
+                &transport
+                    .attempted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            ),
             [vec![1], vec![2]]
         );
         assert_eq!(
-            data_frames(&client.inner.pending_sends.lock().unwrap()),
+            data_frames(
+                &client
+                    .inner
+                    .pending_sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            ),
             [vec![2], vec![3]]
         );
 
@@ -4182,10 +4211,22 @@ mod send_admission_tests {
             .set(ConnectionStatus::Connected("fixture".into()));
 
         assert_eq!(
-            data_frames(&transport.attempted.lock().unwrap()),
+            data_frames(
+                &transport
+                    .attempted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            ),
             [vec![1], vec![2], vec![2], vec![3]]
         );
-        assert!(client.inner.pending_sends.lock().unwrap().is_empty());
+        assert!(
+            client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -4196,7 +4237,11 @@ mod send_admission_tests {
             attempted: Mutex::new(Vec::new()),
         });
         let client = MykoClient::with_transport(transport.clone());
-        *client.inner.pending_sends.lock().unwrap() =
+        *client
+            .inner
+            .pending_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
             [1, 2, 3].map(|value| WsFrame::Binary(vec![value])).to_vec();
         transport
             .status
@@ -4212,11 +4257,18 @@ mod send_admission_tests {
             .iter()
             .filter_map(|frame| match frame {
                 WsFrame::Binary(data) => Some(data.clone()),
-                _ => None,
+                WsFrame::Text(_) => None,
             })
             .collect();
         assert_eq!(attempted, [vec![1], vec![2], vec![2], vec![3], vec![4]]);
-        assert!(client.inner.pending_sends.lock().unwrap().is_empty());
+        assert!(
+            client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
     }
 
     #[test]
@@ -4226,9 +4278,13 @@ mod send_admission_tests {
             admit_send(&pending, WsFrame::Binary(vec![2]), || true),
             Err(2)
         ));
-        let frames = pending.lock().unwrap();
-        assert!(matches!(&frames[0], WsFrame::Binary(data) if data == &[1]));
-        assert!(matches!(&frames[1], WsFrame::Binary(data) if data == &[2]));
+        let frames = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            matches!(frames.as_slice(), [WsFrame::Binary(first), WsFrame::Binary(second)] if first == &[1] && second == &[2])
+        );
+        drop(frames);
     }
 
     #[test]
