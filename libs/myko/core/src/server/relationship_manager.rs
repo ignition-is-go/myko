@@ -93,6 +93,7 @@ use crate::{
         ArrayExtractor, ArrayRemover, EnsureForDependency, EntityFactory, FkExtractor, Relation,
         iter_relations,
     },
+    wire::MEventType,
 };
 
 type EnsureForReservation = (&'static str, Vec<Arc<str>>);
@@ -121,6 +122,102 @@ struct EnsureForLookup {
     local_type: &'static str,
     dependencies: Vec<EnsureForDependency>,
     make_entity: EntityFactory,
+}
+
+/// Reverse `belongs_to` indexes over one registry's stores, per lookup.
+#[derive(Default)]
+pub(crate) struct BelongsToIndex {
+    /// `lookup_id` -> `parent_id` -> `child_ids`
+    children_by_parent: DashMap<u64, DashMap<Arc<str>, BTreeSet<Arc<str>>>>,
+    /// `lookup_id` -> `child_id` -> `parent_id`. A lookup is here once its
+    /// index is built.
+    parent_by_child: DashMap<u64, DashMap<Arc<str>, Arc<str>>>,
+}
+
+impl BelongsToIndex {
+    fn loaded(&self, lookup: &BelongsToLookup) -> bool {
+        self.parent_by_child.contains_key(&lookup.id)
+    }
+
+    /// Build the index of `lookup` from `store` unless it is built. Rows
+    /// that reached the store without a cascade (hydration, replay, a moved
+    /// row) are in it either way.
+    fn load(&self, store: &crate::store::EntityStore, lookup: &BelongsToLookup) {
+        if self.loaded(lookup) {
+            return;
+        }
+        let child_index = DashMap::<Arc<str>, Arc<str>>::new();
+        let parent_index = DashMap::<Arc<str>, BTreeSet<Arc<str>>>::new();
+        for (_, item) in store.snapshot() {
+            let Some(parent_id) = (lookup.extract_fk)(item.as_any()) else {
+                continue;
+            };
+            let child_id = item.id();
+            child_index.insert(child_id.clone(), parent_id.clone());
+            parent_index.entry(parent_id).or_default().insert(child_id);
+        }
+        drop(self.children_by_parent.insert(lookup.id, parent_index));
+        drop(self.parent_by_child.insert(lookup.id, child_index));
+    }
+
+    fn children_of(&self, lookup: &BelongsToLookup, parent_id: &str) -> BTreeSet<Arc<str>> {
+        self.children_by_parent
+            .get(&lookup.id)
+            .and_then(|parents| parents.get(parent_id).map(|children| children.clone()))
+            .unwrap_or_default()
+    }
+
+    fn insert(&self, lookup: &BelongsToLookup, item: &Arc<dyn AnyItem>) {
+        let child_id = item.id();
+        let parent_id = (lookup.extract_fk)(item.as_any());
+        // Payload-only SETs do not change relationship membership. Retain both
+        // indexes rather than removing and rebuilding the same parent link.
+        if let Some(parent_id) = &parent_id
+            && self.parent_by_child.get(&lookup.id).is_some_and(|parents| {
+                parents
+                    .get(&child_id)
+                    .is_some_and(|previous| previous.value() == parent_id)
+            })
+        {
+            return;
+        }
+        self.remove(lookup, &child_id);
+        let Some(parent_id) = parent_id else {
+            return;
+        };
+        self.parent_by_child
+            .entry(lookup.id)
+            .or_default()
+            .insert(child_id.clone(), parent_id.clone());
+        self.children_by_parent
+            .entry(lookup.id)
+            .or_default()
+            .entry(parent_id)
+            .or_default()
+            .insert(child_id);
+    }
+
+    fn remove(&self, lookup: &BelongsToLookup, child_id: &Arc<str>) {
+        let Some(parent_map) = self.parent_by_child.get(&lookup.id) else {
+            return;
+        };
+        let Some((_, parent_id)) = parent_map.remove(child_id) else {
+            return;
+        };
+        let Some(children_by_parent) = self.children_by_parent.get(&lookup.id) else {
+            return;
+        };
+        let emptied =
+            children_by_parent
+                .get_mut(parent_id.as_ref())
+                .is_some_and(|mut child_ids| {
+                    child_ids.remove(child_id);
+                    child_ids.is_empty()
+                });
+        if emptied {
+            children_by_parent.remove(parent_id.as_ref());
+        }
+    }
 }
 
 #[derive(Default)]
@@ -317,12 +414,6 @@ pub struct RelationshipManager {
     /// When a dependency entity is created, ensure derived entities exist
     ensure_for_by_dependency: HashMap<&'static str, Vec<EnsureForLookup>>,
 
-    /// Reverse `belongs_to` index: `lookup_id` -> `parent_id` -> `child_ids`
-    belongs_to_children_by_parent: DashMap<u64, DashMap<Arc<str>, BTreeSet<Arc<str>>>>,
-
-    /// Reverse `belongs_to` index: `lookup_id` -> `child_id` -> `parent_id`
-    belongs_to_parent_by_child: DashMap<u64, DashMap<Arc<str>, Arc<str>>>,
-
     /// Combination reservations make ensure-for check-and-create atomic without
     /// holding a lock across recursive cascade publication.
     ensure_for_in_flight: Mutex<HashSet<EnsureForReservation>>,
@@ -362,20 +453,18 @@ impl RelationshipManager {
             owns_many_by_local: tables.owns_many_by_local,
             owns_many_by_foreign: tables.owns_many_by_foreign,
             ensure_for_by_dependency: tables.ensure_for_by_dependency,
-            belongs_to_children_by_parent: DashMap::new(),
-            belongs_to_parent_by_child: DashMap::new(),
             ensure_for_in_flight: Mutex::new(HashSet::new()),
         }
     }
 
     /// Whether this item type can synchronously derive relationship work.
-    pub(crate) fn coordinates(&self, entity_type: &str, change: crate::wire::MEventType) -> bool {
+    pub(crate) fn coordinates(&self, entity_type: &str, change: MEventType) -> bool {
         match change {
-            crate::wire::MEventType::SET => {
+            MEventType::SET => {
                 self.belongs_to_by_local.contains_key(entity_type)
                     || self.ensure_for_by_dependency.contains_key(entity_type)
             }
-            crate::wire::MEventType::DEL => {
+            MEventType::DEL => {
                 self.belongs_to_by_foreign.contains_key(entity_type)
                     || self.belongs_to_by_local.contains_key(entity_type)
                     || self.owns_many_by_local.contains_key(entity_type)
@@ -383,6 +472,42 @@ impl RelationshipManager {
                     || self.ensure_for_by_dependency.contains_key(entity_type)
             }
         }
+    }
+
+    /// Whether a write of `entity_type` derives a write of a type for which
+    /// `to` holds.
+    pub(crate) fn derives_into(
+        &self,
+        entity_type: &str,
+        change: MEventType,
+        to: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        let ensures = self
+            .ensure_for_by_dependency
+            .get(entity_type)
+            .is_some_and(|lookups| lookups.iter().any(|lookup| to(lookup.local_type)));
+        match change {
+            MEventType::SET => ensures,
+            MEventType::DEL => {
+                ensures
+                    || self
+                        .belongs_to_by_foreign
+                        .get(entity_type)
+                        .is_some_and(|lookups| lookups.iter().any(|lookup| to(lookup.local_type)))
+                    || self
+                        .owns_many_by_local
+                        .get(entity_type)
+                        .is_some_and(|lookups| lookups.iter().any(|lookup| to(lookup.foreign_type)))
+            }
+        }
+    }
+
+    /// Whether `ensure_for` creates a type for which `to` holds.
+    pub(crate) fn ensures_into(&self, to: &dyn Fn(&str) -> bool) -> bool {
+        self.ensure_for_by_dependency
+            .values()
+            .flatten()
+            .any(|lookup| to(lookup.local_type))
     }
 
     /// Release an ensure-for reservation when its derived entity reaches the
@@ -450,18 +575,6 @@ impl RelationshipManager {
         };
         let item_type = first.entity_type();
 
-        if let Some(lookups) = self.belongs_to_by_local.get(item_type) {
-            for lookup in lookups {
-                // NOTE(ts): Hydration bypasses relationship effects. Bootstrap
-                // from the full store before a live write can create a partial
-                // index that a later parent delete mistakes for a complete one.
-                self.ensure_belongs_to_index_loaded(ctx, lookup);
-                for item in items {
-                    self.index_belongs_to_child(lookup, item);
-                }
-            }
-        }
-
         if self.ensure_for_by_dependency.contains_key(item_type) {
             self.handle_ensure_for_type(item_type, items, ctx)?;
         }
@@ -497,12 +610,6 @@ impl RelationshipManager {
         // Handle EnsureFor dependency deleted → delete derived entities
         self.handle_ensure_for_delete(&item, ctx)?;
 
-        if let Some(lookups) = self.belongs_to_by_local.get(item.entity_type()) {
-            for lookup in lookups {
-                self.remove_belongs_to_child(lookup, &item.id());
-            }
-        }
-
         drop(item);
         Ok(())
     }
@@ -531,12 +638,6 @@ impl RelationshipManager {
 
         for item in items {
             self.handle_owns_many_child_delete(item, ctx)?;
-
-            if let Some(lookups) = self.belongs_to_by_local.get(item.entity_type()) {
-                for lookup in lookups {
-                    self.remove_belongs_to_child(lookup, &item.id());
-                }
-            }
         }
 
         Ok(())
@@ -572,6 +673,15 @@ impl RelationshipManager {
         // 3. EnsureFor initialization
         self.initialize_ensure_for(ctx)?;
 
+        // Each partition establishes the relations of the rows it holds.
+        if ctx.partition_key().is_none() {
+            for key in ctx.partition_keys() {
+                if let Some(partition) = ctx.partition(&key) {
+                    self.establish_relations(&partition)?;
+                }
+            }
+        }
+
         info!("RelationshipManager: Relations established");
         Ok(())
     }
@@ -593,9 +703,12 @@ impl RelationshipManager {
 
         let parent_id = item.id();
 
-        for lookup in lookups {
+        for lookup in lookups
+            .iter()
+            .filter(|lookup| ctx.stores_here(lookup.local_type))
+        {
             // Find children whose FK matches the deleted parent ID using extractor
-            let children = self.find_children_by_fk(ctx, lookup, &parent_id);
+            let children = Self::find_children_by_fk(ctx, lookup, &parent_id);
             if children.is_empty() {
                 continue;
             }
@@ -627,10 +740,13 @@ impl RelationshipManager {
 
         let parent_ids: Vec<Arc<str>> = items.iter().map(|item| item.id()).collect();
 
-        for lookup in lookups {
+        for lookup in lookups
+            .iter()
+            .filter(|lookup| ctx.stores_here(lookup.local_type))
+        {
             let mut children_by_id: HashMap<Arc<str>, Arc<dyn AnyItem>> = HashMap::new();
             for parent_id in &parent_ids {
-                for child in self.find_children_by_fk(ctx, lookup, parent_id) {
+                for child in Self::find_children_by_fk(ctx, lookup, parent_id) {
                     children_by_id.entry(child.id()).or_insert(child);
                 }
             }
@@ -654,24 +770,19 @@ impl RelationshipManager {
 
     /// Find children whose FK matches a given parent ID
     fn find_children_by_fk(
-        &self,
         ctx: &MykoServerContext,
         lookup: &BelongsToLookup,
         parent_id: &str,
     ) -> Vec<Arc<dyn AnyItem>> {
-        self.ensure_belongs_to_index_loaded(ctx, lookup);
-        if let Some(parent_map) = self.belongs_to_children_by_parent.get(&lookup.id) {
-            let store = ctx.registry.get_or_create(lookup.local_type);
-            let Some(child_ids) = parent_map.get(parent_id) else {
-                return Vec::new();
-            };
-            return child_ids
+        let store = ctx.registry.get_or_create(lookup.local_type);
+        if let Some(index) = Self::belongs_to_index(ctx, lookup) {
+            index.load(&store, lookup);
+            return index
+                .children_of(lookup, parent_id)
                 .iter()
                 .filter_map(|child_id| store.get_value(child_id))
                 .collect();
         }
-
-        let store = ctx.registry.get_or_create(lookup.local_type);
         store
             .entries()
             .materialize()
@@ -684,89 +795,44 @@ impl RelationshipManager {
             .collect()
     }
 
-    fn index_belongs_to_child(&self, lookup: &BelongsToLookup, item: &Arc<dyn AnyItem>) {
-        let child_id = item.id();
-        let parent_id = (lookup.extract_fk)(item.as_any());
-        // Payload-only SETs do not change relationship membership. Retain both
-        // indexes rather than removing and rebuilding the same parent link.
-        if let Some(parent_id) = &parent_id
-            && self
-                .belongs_to_parent_by_child
-                .get(&lookup.id)
-                .is_some_and(|parents| {
-                    parents
-                        .get(&child_id)
-                        .is_some_and(|previous| previous.value() == parent_id)
-                })
-        {
-            return;
-        }
-        self.remove_belongs_to_child(lookup, &child_id);
-
-        let Some(parent_id) = parent_id else {
-            return;
-        };
-
-        self.belongs_to_parent_by_child
-            .entry(lookup.id)
-            .or_default()
-            .insert(child_id.clone(), parent_id.clone());
-        self.belongs_to_children_by_parent
-            .entry(lookup.id)
-            .or_default()
-            .entry(parent_id)
-            .or_default()
-            .insert(child_id);
+    /// The reverse index of `lookup`, kept by the registry that owns the
+    /// child type's store: one per partition for a partitioned child.
+    fn belongs_to_index(
+        ctx: &MykoServerContext,
+        lookup: &BelongsToLookup,
+    ) -> Option<Arc<BelongsToIndex>> {
+        ctx.registry.owner(lookup.local_type).relation_index()
     }
 
-    fn remove_belongs_to_child(&self, lookup: &BelongsToLookup, child_id: &Arc<str>) {
-        let Some(parent_map) = self.belongs_to_parent_by_child.get(&lookup.id) else {
+    /// Keep the reverse indexes current for rows that reached `ctx`'s stores,
+    /// whatever their origin. An index not built yet is built from the store
+    /// when it is first read, so it is left alone here.
+    pub(crate) fn track(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        ctx: &MykoServerContext,
+    ) {
+        let Some(first) = items.first() else {
             return;
         };
-        let Some((_, parent_id)) = parent_map.remove(child_id) else {
+        let Some(lookups) = self.belongs_to_by_local.get(first.entity_type()) else {
             return;
         };
-
-        let Some(children_by_parent) = self.belongs_to_children_by_parent.get(&lookup.id) else {
-            return;
-        };
-        let should_remove_parent =
-            children_by_parent
-                .get_mut(parent_id.as_ref())
-                .is_some_and(|mut child_ids| {
-                    child_ids.remove(child_id);
-                    child_ids.is_empty()
-                });
-
-        if should_remove_parent {
-            children_by_parent.remove(parent_id.as_ref());
-        }
-    }
-
-    fn ensure_belongs_to_index_loaded(&self, ctx: &MykoServerContext, lookup: &BelongsToLookup) {
-        if self.belongs_to_parent_by_child.contains_key(&lookup.id) {
-            return;
-        }
-
-        let child_index = DashMap::<Arc<str>, Arc<str>>::new();
-        let parent_index = DashMap::<Arc<str>, BTreeSet<Arc<str>>>::new();
-        let store = ctx.registry.get_or_create(lookup.local_type);
-
-        for (_, item) in store.snapshot() {
-            let Some(parent_id) = (lookup.extract_fk)(item.as_any()) else {
+        for lookup in lookups {
+            let Some(index) = Self::belongs_to_index(ctx, lookup) else {
                 continue;
             };
-            let child_id = item.id();
-            child_index.insert(child_id.clone(), parent_id.clone());
-            parent_index.entry(parent_id).or_default().insert(child_id);
+            if !index.loaded(lookup) {
+                continue;
+            }
+            for item in items {
+                match change {
+                    MEventType::SET => index.insert(lookup, item),
+                    MEventType::DEL => index.remove(lookup, &item.id()),
+                }
+            }
         }
-
-        let _ = self
-            .belongs_to_parent_by_child
-            .insert(lookup.id, child_index);
-        let _ = self
-            .belongs_to_children_by_parent
-            .insert(lookup.id, parent_index);
     }
 
     /// Handle `OwnsMany` parent delete: delete all owned children
@@ -780,7 +846,10 @@ impl RelationshipManager {
             return Ok(());
         };
 
-        for lookup in lookups {
+        for lookup in lookups
+            .iter()
+            .filter(|lookup| ctx.stores_here(lookup.foreign_type))
+        {
             // Extract child IDs using the typed extractor
             let Some(child_ids) = (lookup.extract_ids)(item.as_any()) else {
                 continue;
@@ -827,7 +896,10 @@ impl RelationshipManager {
             return Ok(());
         };
 
-        for lookup in lookups {
+        for lookup in lookups
+            .iter()
+            .filter(|lookup| ctx.stores_here(lookup.foreign_type))
+        {
             let mut child_ids = BTreeSet::new();
             for item in items {
                 if let Some(ids) = (lookup.extract_ids)(item.as_any()) {
@@ -875,7 +947,10 @@ impl RelationshipManager {
 
         let child_id = item.id();
 
-        for lookup in lookups {
+        for lookup in lookups
+            .iter()
+            .filter(|lookup| ctx.stores_here(lookup.local_type))
+        {
             // Find parents that contain this child ID using extract_ids
             let parents = Self::find_parents_containing(ctx, lookup, &child_id);
             let mut updates = Vec::new();
@@ -938,7 +1013,10 @@ impl RelationshipManager {
         let written_ids: HashSet<Arc<str>> = written.iter().map(|item| item.id()).collect();
         let written_set: Vec<Arc<str>> = written_ids.iter().cloned().collect();
 
-        for lookup in lookups {
+        for lookup in lookups
+            .iter()
+            .filter(|lookup| ctx.stores_here(lookup.local_type))
+        {
             let positions: Vec<usize> = lookup
                 .dependencies
                 .iter()
@@ -981,6 +1059,13 @@ impl RelationshipManager {
         combo: &[Arc<str>],
         ctx: &MykoServerContext,
     ) -> Result<bool, PersistError> {
+        // In a partition, only what lands in this partition is created
+        // here; a combination whose entity lands elsewhere is that
+        // partition's, or root's.
+        let entity = (lookup.make_entity)(combo);
+        if !ctx.holds(entity.as_ref()) {
+            return Ok(false);
+        }
         let reservation = (lookup.local_type, combo.to_vec());
         {
             let mut in_flight = self
@@ -1013,7 +1098,6 @@ impl RelationshipManager {
                 .remove(&reservation);
             Ok(false)
         } else {
-            let entity = (lookup.make_entity)(combo);
             trace!(
                 "RelationshipManager: Creating ensured {} for {:?}",
                 lookup.local_type, combo
@@ -1057,7 +1141,10 @@ impl RelationshipManager {
 
         let dep_ids: HashSet<Arc<str>> = items.iter().map(|item| item.id()).collect();
 
-        for lookup in lookups {
+        for lookup in lookups
+            .iter()
+            .filter(|lookup| ctx.stores_here(lookup.local_type))
+        {
             // A lookup can contain several fields targeting the same entity
             // type. Every matching extractor participates: deleting a dependency
             // must remove a Cartesian product when that ID appears on any axis.
@@ -1150,9 +1237,14 @@ impl RelationshipManager {
                 lookups.len()
             );
 
-            for lookup in lookups {
-                // Get all parent IDs that exist
-                let parents = Self::get_all_items(ctx, lookup.foreign_type);
+            for lookup in lookups
+                .iter()
+                .filter(|lookup| ctx.stores_here(lookup.local_type))
+            {
+                // Get all parent IDs that exist. A child names a parent in
+                // another partition only by mistake; it is left alone rather
+                // than taken for an orphan.
+                let parents = Self::get_all_parents(ctx, lookup.foreign_type);
                 let parent_ids: HashSet<Arc<str>> = parents.iter().map(|p| p.id()).collect();
 
                 trace!(
@@ -1226,7 +1318,10 @@ impl RelationshipManager {
                 lookups.len()
             );
 
-            for lookup in lookups {
+            for lookup in lookups
+                .iter()
+                .filter(|lookup| ctx.stores_here(lookup.foreign_type))
+            {
                 // Get all child IDs referenced by parents using typed extractors
                 let parents = Self::get_all_items(ctx, parent_type);
                 let mut referenced_ids: HashSet<Arc<str>> = HashSet::new();
@@ -1307,12 +1402,18 @@ impl RelationshipManager {
     }
 
     /// Initialize `EnsureFor` relationships (create missing derived entities)
-    fn initialize_ensure_for(&self, ctx: &MykoServerContext) -> Result<(), PersistError> {
+    pub(crate) fn initialize_ensure_for(
+        &self,
+        ctx: &MykoServerContext,
+    ) -> Result<(), PersistError> {
         // Track which local_types we've processed to avoid duplicates
         let mut processed: HashSet<&'static str> = HashSet::new();
 
         for lookups in self.ensure_for_by_dependency.values() {
-            for lookup in lookups {
+            for lookup in lookups
+                .iter()
+                .filter(|lookup| ctx.stores_here(lookup.local_type))
+            {
                 if processed.contains(lookup.local_type) {
                     continue;
                 }
@@ -1348,6 +1449,20 @@ impl RelationshipManager {
     // ─────────────────────────────────────────────────────────────────────────────
     // Query helpers (using MykoServerContext)
     // ─────────────────────────────────────────────────────────────────────────────
+
+    /// Every row of a parent type: in every partition for a partitioned
+    /// type, read now.
+    fn get_all_parents(ctx: &MykoServerContext, entity_type: &str) -> Vec<Arc<dyn AnyItem>> {
+        let mut parents = Self::get_all_items(ctx, entity_type);
+        if ctx.partition_key().is_some() {
+            parents.extend(
+                ctx.partitioned_snapshot(entity_type)
+                    .into_iter()
+                    .flat_map(|(_, rows)| rows),
+            );
+        }
+        parents
+    }
 
     /// Get an entity by ID
     fn get_by_id(ctx: &MykoServerContext, entity_type: &str, id: &str) -> Option<Arc<dyn AnyItem>> {
@@ -1742,7 +1857,7 @@ mod cascade_tests {
             let node = item.downcast_ref::<CascadeNode>()?;
             (!node.parent_id.0.is_empty()).then(|| node.parent_id.0.clone())
         }
-        let manager = RelationshipManager::new();
+        let manager = super::BelongsToIndex::default();
         let lookup = super::BelongsToLookup {
             id: u64::MAX,
             local_type: "CascadeNode",
@@ -1752,17 +1867,17 @@ mod cascade_tests {
         let child: Arc<str> = "index-child".into();
         let index = |node: CascadeNode| {
             let item: Arc<dyn crate::item::AnyItem> = Arc::new(node);
-            manager.index_belongs_to_child(&lookup, &item);
+            manager.insert(&lookup, &item);
         };
         let indexed_parent = || {
             manager
-                .belongs_to_parent_by_child
+                .parent_by_child
                 .get(&lookup.id)
                 .and_then(|parents| parents.get(&child).map(|entry| entry.value().clone()))
         };
         let children = |parent: &str| {
             manager
-                .belongs_to_children_by_parent
+                .children_by_parent
                 .get(&lookup.id)
                 .and_then(|parents| parents.get(parent).map(|entry| entry.value().clone()))
                 .unwrap_or_default()

@@ -303,6 +303,85 @@ impl PartitionSchema {
     fn is_partitioned(&self, entity_type: &str) -> bool {
         self.routes.contains_key(entity_type)
     }
+
+    /// Refuse every declared relationship whose derived writes would carry
+    /// data from a partition back into shared data or across partitions.
+    ///
+    /// - `belongs_to`: a shared parent may have partitioned children; the
+    ///   cascade runs in each partition. A partitioned parent's children
+    ///   must be partitioned: deleting it would delete shared rows.
+    /// - `owns_many`: parent and children are both shared or both
+    ///   partitioned. Deleting a child rewrites its parent, and deleting a
+    ///   parent deletes its children, so the relation flows both ways.
+    /// - `ensure_for`: an ensured type depending on a partitioned type is
+    ///   partitioned. It may depend on shared types too.
+    ///
+    /// A relation between two partitioned types runs inside one partition.
+    fn check_relations(&self) -> Result<(), String> {
+        let side = |entity_type: &str| {
+            if self.is_partitioned(entity_type) {
+                "partitioned"
+            } else {
+                "shared"
+            }
+        };
+        let refused: Vec<String> = crate::relationship::iter_relations()
+            .filter_map(|registration| match &registration.relation {
+                crate::relationship::Relation::BelongsTo {
+                    local_type,
+                    foreign_type,
+                    ..
+                } => (self.is_partitioned(foreign_type) && !self.is_partitioned(local_type)).then(
+                    || {
+                        format!(
+                            "{local_type} belongs to {foreign_type}: deleting a partitioned \
+                             parent would delete shared children"
+                        )
+                    },
+                ),
+                crate::relationship::Relation::OwnsMany {
+                    local_type,
+                    foreign_type,
+                    ..
+                } => (self.is_partitioned(local_type) != self.is_partitioned(foreign_type)).then(
+                    || {
+                        format!(
+                            "{local_type} ({}) owns many {foreign_type} ({}): owning parent and \
+                             children must be on one side, as each writes the other",
+                            side(local_type),
+                            side(foreign_type)
+                        )
+                    },
+                ),
+                crate::relationship::Relation::EnsureFor {
+                    local_type,
+                    dependencies,
+                    ..
+                } => dependencies
+                    .iter()
+                    .find(|dependency| {
+                        self.is_partitioned(dependency.foreign_type)
+                            && !self.is_partitioned(local_type)
+                    })
+                    .map(|dependency| {
+                        format!(
+                            "{local_type} is ensured for partitioned {}: a shared type cannot \
+                             be created from partition data",
+                            dependency.foreign_type
+                        )
+                    }),
+            })
+            .collect();
+        if refused.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "partition schema refused: data flows from shared data into partitions, never \
+                 back or across:\n{}",
+                refused.join("\n")
+            ))
+        }
+    }
 }
 
 /// Where a routed row currently is.
@@ -536,9 +615,11 @@ impl Partition {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
-        // Held until the write is applied: a close waits for it.
+        // Held until the write is applied: a close waits for it. A write made
+        // on this partition's own domain derives from one it admitted, and
+        // the close runs behind it.
         let admitting = self.admitting.read_recursive();
-        if !*admitting {
+        if !*admitting && Domain::current() != self.domain {
             drop(admitting);
             return Err(self.closed(items.first().map_or("mutation", |item| item.entity_type())));
         }
@@ -632,14 +713,37 @@ impl Partition {
     /// Apply an admitted write here, whether or not the partition still
     /// admits writes.
     fn apply(&self, items: Vec<Item>, change: MEventType, origin: Origin, mode: EdgeApplyMode) {
-        let result = self
-            .domain
-            .enter(|| self.ctx.submit_local(items, change, origin, mode));
+        let result = self.domain.enter(|| {
+            let _admitted = AdmittedApply::begin();
+            self.ctx.submit_local(items, change, origin, mode)
+        });
         if let Err(error) = result {
-            // An admitted write was validated and recorded when admitted, so
-            // only a write it derives can fail here.
-            tracing::error!(partition = %self.key, %error, "a write derived in a partition failed");
+            Self::failed(&self.key, &error);
         }
+    }
+
+    /// Run, here, the relationships a shared write applied in root derives
+    /// in this partition. Root admitted the write, so what it derives here
+    /// is applied as part of it.
+    fn derive(&self, items: &[Item], change: MEventType, opened: bool) {
+        let result = self.domain.enter(|| {
+            let _admitted = AdmittedApply::begin();
+            if opened {
+                self.ctx.ensure_relations()?;
+            }
+            self.ctx.derive_relations(items, change)
+        });
+        if let Err(error) = result {
+            Self::failed(&self.key, &error);
+        }
+    }
+
+    /// Nothing refuses what an admitted write derives: it is applied in its
+    /// own partition, unvalidated, and its relations are checked when the
+    /// schema is built. What remains is the persister failing to take an
+    /// event and the derived-mutation budget, which stops a runaway cascade.
+    fn failed(key: &PartitionKey, error: &PersistError) {
+        tracing::error!(partition = %key, %error, "a write derived from an admitted write failed");
     }
 
     /// Close the domain once every admitted write has been applied. The
@@ -663,7 +767,12 @@ impl Partition {
     /// nothing is persisted and no relationship runs.
     fn take(&self, entity_type: &str, id: &Arc<str>) -> Option<Item> {
         let store = self.store(entity_type);
-        self.domain.batch(|| store.remove(id))
+        let row = self.domain.batch(|| store.remove(id));
+        if let Some(row) = &row {
+            self.ctx
+                .track_relations(std::slice::from_ref(row), MEventType::DEL);
+        }
+        row
     }
 
     /// Remove a row that moved away, behind the writes queued before.
@@ -682,7 +791,10 @@ impl Partition {
     /// Insert a row that was moved here.
     fn place(&self, entity_type: &str, row: Item) {
         let store = self.store(entity_type);
-        self.domain.batch(|| drop(store.insert(row.id(), row)));
+        self.domain
+            .batch(|| drop(store.insert(row.id(), Arc::clone(&row))));
+        self.ctx
+            .track_relations(std::slice::from_ref(&row), MEventType::SET);
     }
 }
 
@@ -692,6 +804,33 @@ thread_local! {
 }
 
 struct SharedWrite;
+
+thread_local! {
+    /// Depth of the admitted writes the thread is applying.
+    static ADMITTED_APPLIES: ThreadCell<usize> = const { ThreadCell::new(0) };
+}
+
+/// Marks the calling thread as applying a write a partition admitted.
+struct AdmittedApply;
+
+impl AdmittedApply {
+    fn begin() -> Self {
+        ADMITTED_APPLIES.with(|depth| depth.set(depth.get().saturating_add(1)));
+        Self
+    }
+}
+
+impl Drop for AdmittedApply {
+    fn drop(&mut self) {
+        ADMITTED_APPLIES.with(|depth| depth.set(depth.get().saturating_sub(1)));
+    }
+}
+
+/// Whether the calling thread is applying a write a partition admitted, so
+/// that a write a relationship derives from it is part of it.
+pub(crate) fn applying_admitted() -> bool {
+    ADMITTED_APPLIES.with(|depth| depth.get() > 0)
+}
 
 impl SharedWrite {
     fn begin() -> Self {
@@ -751,6 +890,13 @@ impl Partitions {
                 Route::Keyed(_) => None,
             })
             .collect();
+        if let Err(refused) = schema.check_relations() {
+            #[allow(
+                clippy::panic,
+                reason = "a schema whose data flows backwards is a program error"
+            )]
+            std::panic::panic_any(refused);
+        }
         let schema = Arc::new(schema);
         let declared = Arc::clone(&schema);
         root.registry
@@ -792,6 +938,14 @@ impl Partitions {
 
     pub(crate) fn keys(&self) -> Vec<PartitionKey> {
         self.open.iter().map(|entry| entry.key().clone()).collect()
+    }
+
+    /// The partition `item` belongs in by its route, now.
+    pub(crate) fn home_of(&self, item: &dyn AnyItem) -> Option<PartitionKey> {
+        match self.schema.routes.get(item.entity_type())? {
+            Route::Keyed(key_of) => key_of(item),
+            Route::Resolved { resolve, .. } => resolve(&self.root, item),
+        }
     }
 
     /// The partition a routed row is in, if it is in one.
@@ -873,6 +1027,7 @@ impl Partitions {
         let mut shared = Vec::new();
         let mut keyed: BTreeMap<PartitionKey, (Arc<Partition>, Vec<Item>)> = BTreeMap::new();
         let mut resolved: BTreeMap<&'static str, Vec<Item>> = BTreeMap::new();
+        let mut closing = Vec::new();
         for item in items {
             match self.schema.routes.get(item.entity_type()) {
                 None => shared.push(item),
@@ -881,11 +1036,16 @@ impl Partitions {
                         .ok_or_else(|| Self::no_partition(item.entity_type(), None))?;
                     if let Some((_, items)) = keyed.get_mut(&key) {
                         items.push(item);
-                    } else {
-                        let partition = self
-                            .get(&key)
-                            .ok_or_else(|| Self::no_partition(item.entity_type(), Some(&key)))?;
+                    } else if let Some(partition) = self.get(&key) {
                         keyed.insert(key, (partition, vec![item]));
+                    } else if from.partition_key() == Some(&key)
+                        && Domain::current() == from.domain()
+                    {
+                        // Derived on a closing partition's own domain from a
+                        // write it admitted: its close runs behind this.
+                        closing.push(item);
+                    } else {
+                        return Err(Self::no_partition(item.entity_type(), Some(&key)));
                     }
                 }
                 Some(Route::Resolved { .. }) => {
@@ -921,6 +1081,9 @@ impl Partitions {
         if !shared.is_empty() {
             let _shared = SharedWrite::begin();
             self.root.submit_local(shared, change, origin, mode)?;
+        }
+        if !closing.is_empty() {
+            from.submit_local(closing, change, origin, mode)?;
         }
         for (_, (partition, items)) in keyed {
             if follows_shared && Domain::current() != partition.domain {
@@ -1309,19 +1472,71 @@ impl Partitions {
         Ok(())
     }
 
+    /// Queue, in every open partition, the relationships `items` derive
+    /// there.
+    fn derive_in_partitions(
+        &self,
+        items: &[Item],
+        change: MEventType,
+        opened: &BTreeSet<PartitionKey>,
+    ) {
+        let partitions: Vec<Arc<Partition>> = self
+            .open
+            .iter()
+            .map(|entry| Arc::clone(entry.value()))
+            .collect();
+        for partition in partitions {
+            // Held while the job is queued: a close finds it queued.
+            let admitting = partition.admitting.read_recursive();
+            if !*admitting {
+                continue;
+            }
+            let opened = opened.contains(&partition.key);
+            let items = items.to_vec();
+            let target = Arc::clone(&partition);
+            partition.follow(Box::new(move || target.derive(&items, change, opened)));
+            drop(admitting);
+        }
+    }
+
     /// Called by the root context once a shared write is applied.
-    pub(crate) fn shared_write_applied(self: &Arc<Self>, items: &[Item], change: MEventType) {
+    ///
+    /// `derive` is whether the write runs relationships. A shared write
+    /// derives in every open partition once, there, behind root's wave: a
+    /// partition opened by this write establishes its `ensure_for` rows
+    /// first.
+    pub(crate) fn shared_write_applied(
+        self: &Arc<Self>,
+        items: &[Item],
+        change: MEventType,
+        derive: bool,
+    ) {
         let Some(entity_type) = items.first().map(|item| item.entity_type()) else {
             return;
         };
+        let mut opened = BTreeSet::new();
         if self.schema.lifecycle == Some(entity_type) {
             for item in items {
                 let key = PartitionKey(item.id());
                 match change {
-                    MEventType::SET => drop(self.open(key)),
+                    MEventType::SET => {
+                        if self.get(&key).is_none() {
+                            opened.insert(key.clone());
+                        }
+                        drop(self.open(key));
+                    }
                     MEventType::DEL => self.close(&key),
                 }
             }
+        }
+        let partitioned = |entity_type: &str| self.is_partitioned(entity_type);
+        if !self.root.ensures_into(&partitioned) {
+            opened.clear();
+        }
+        if derive
+            && (!opened.is_empty() || self.root.derives_into(entity_type, change, &partitioned))
+        {
+            self.derive_in_partitions(items, change, &opened);
         }
         for (routed, route) in &self.schema.routes {
             if let Route::Resolved { inputs, .. } = route

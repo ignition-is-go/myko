@@ -119,6 +119,13 @@ impl Origin {
         !matches!(self, Self::Admitted | Self::Replay)
     }
 
+    /// Whether this origin's mutations are derived from another mutation by
+    /// a relationship. Derived from an admitted write, they are part of what
+    /// was admitted, so nothing refuses them when they are applied.
+    const fn is_derived(self) -> bool {
+        matches!(self, Self::Cascade | Self::RelationshipFixup)
+    }
+
     /// Whether this origin's mutations should be produced to persisters/sink.
     ///
     /// Both origins produce; per-type durability is the persister router's job
@@ -598,6 +605,67 @@ impl MykoServerContext {
     #[must_use]
     pub fn partition_key(&self) -> Option<&PartitionKey> {
         self.home.as_ref().map(|home| &home.key)
+    }
+
+    /// Keep relationship indexes current for rows placed in or taken from
+    /// this context's stores without a write.
+    pub(crate) fn track_relations(&self, items: &[Arc<dyn AnyItem>], change: MEventType) {
+        self.relationship_manager.track(items, change, self);
+    }
+
+    /// Run, in this partition, the relationships a shared write applied in
+    /// root derives here.
+    pub(crate) fn derive_relations(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+    ) -> Result<(), PersistError> {
+        match change {
+            MEventType::SET => self.relationship_manager.forward_set_batch(items, self),
+            MEventType::DEL => self.relationship_manager.forward_del_batch(items, self),
+        }
+    }
+
+    /// Whether a write of `entity_type` runs a relationship that writes a
+    /// type for which `to` holds.
+    pub(crate) fn derives_into(
+        &self,
+        entity_type: &str,
+        change: MEventType,
+        to: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        self.relationship_manager
+            .derives_into(entity_type, change, to)
+    }
+
+    /// Whether `ensure_for` creates a type for which `to` holds.
+    pub(crate) fn ensures_into(&self, to: &dyn Fn(&str) -> bool) -> bool {
+        self.relationship_manager.ensures_into(to)
+    }
+
+    /// Create what `ensure_for` requires in this partition, as startup does.
+    pub(crate) fn ensure_relations(&self) -> Result<(), PersistError> {
+        self.relationship_manager.initialize_ensure_for(self)
+    }
+
+    /// Whether this context holds the rows of `entity_type`: a partition's
+    /// context holds the partitioned types, the root context every other.
+    pub(crate) fn stores_here(&self, entity_type: &str) -> bool {
+        self.partitions()
+            .is_none_or(|partitions| partitions.is_partitioned(entity_type) == self.home.is_some())
+    }
+
+    /// Whether `item` belongs in this context's stores: a shared item in
+    /// root, a partitioned item in the partition its route names.
+    pub(crate) fn holds(&self, item: &dyn AnyItem) -> bool {
+        let Some(partitions) = self.partitions() else {
+            return true;
+        };
+        if !partitions.is_partitioned(item.entity_type()) {
+            return self.home.is_none();
+        }
+        self.partition_key()
+            .is_some_and(|key| partitions.home_of(item).as_ref() == Some(key))
     }
 
     /// The partition that holds the row `id` of a routed entity type, read
@@ -1226,7 +1294,7 @@ impl MykoServerContext {
             && self.home.is_none()
             && let Some(partitions) = self.partitions()
         {
-            partitions.shared_write_applied(&[item], MEventType::DEL);
+            partitions.shared_write_applied(&[item], MEventType::DEL, false);
         }
 
         tracing::trace!("Published DEL {}:{}", entity_type, id);
@@ -2039,6 +2107,7 @@ impl MykoServerContext {
         mode: EdgeApplyMode,
     ) -> Result<bool, PersistError> {
         if origin.should_prepare()
+            && !(origin.is_derived() && super::partition::applying_admitted())
             && matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import)
         {
             let (upserts, deletes) = if change == MEventType::SET {
@@ -2897,7 +2966,9 @@ impl MykoServerContext {
             }
         }
 
-        // Relationships: run cascades unless this origin must not descend.
+        // Relationships: keep the reverse indexes current whatever the
+        // origin, and run cascades unless this origin must not descend.
+        self.relationship_manager.track(items, change, self);
         if origin.should_cascade(change) {
             match change {
                 MEventType::SET => {
@@ -2935,7 +3006,7 @@ impl MykoServerContext {
         if self.home.is_none()
             && let Some(partitions) = self.partitions()
         {
-            partitions.shared_write_applied(items, change);
+            partitions.shared_write_applied(items, change, origin.should_cascade(change));
         }
 
         Ok(())

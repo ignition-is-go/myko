@@ -40,6 +40,8 @@ pub struct StoreRegistry {
     /// Indexes derived from these stores. They are costly to rebuild, so
     /// they live as long as the stores do.
     retained: parking_lot::Mutex<Vec<Arc<dyn std::any::Any + Send + Sync>>>,
+    /// The relationship index over the stores this registry owns.
+    relations: std::sync::OnceLock<Arc<dyn std::any::Any + Send + Sync>>,
 }
 
 /// What makes a registry the registry of one partition: the stores of
@@ -101,6 +103,7 @@ impl StoreRegistry {
             partitioned: std::sync::OnceLock::new(),
             stores: DashMap::with_hasher(ahash::RandomState::new()),
             retained: parking_lot::Mutex::new(Vec::new()),
+            relations: std::sync::OnceLock::new(),
         }
     }
 
@@ -137,6 +140,22 @@ impl StoreRegistry {
             .as_ref()
             .filter(|partition| !(partition.is_partitioned)(entity_type))
             .map(|partition| &partition.root)
+    }
+
+    /// The registry that owns the store of `entity_type`: root's for shared
+    /// data read from a partition's registry, this one otherwise.
+    pub(crate) fn owner(&self, entity_type: &str) -> &Self {
+        self.shared(entity_type).map_or(self, |root| root.as_ref())
+    }
+
+    /// The relationship index over this registry's own stores, created on
+    /// first use. It lives and dies with the stores it indexes.
+    pub(crate) fn relation_index<T: Default + Send + Sync + 'static>(&self) -> Option<Arc<T>> {
+        self.relations
+            .get_or_init(|| Arc::new(T::default()))
+            .clone()
+            .downcast::<T>()
+            .ok()
     }
 
     /// Keep a derived index alive for the lifetime of this registry.
