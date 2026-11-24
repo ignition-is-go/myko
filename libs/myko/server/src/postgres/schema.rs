@@ -20,14 +20,13 @@ use super::{PostgresConfig, connect_pg_client, format_pg_error, qi, validate_ide
 
 /// Highest migration this binary knows about.
 pub const SCHEMA_VERSION: i32 = 10;
-/// Lowest recorded version this binary can run against.
+/// Migrations every connection applies on its own: cheap, idempotent DDL.
 ///
-/// A higher recorded version is fine: a newer server already migrated the shared table. Only the
-/// baseline is required; migrations 2..=10 are performance work that can take hours on a large
-/// log, so servers start while a runner is still applying them. Until migration 6 (the latest-table backfill) is recorded,
-/// startup snapshots fall back to scanning the events table.
+/// Migrations above this are performance work that can take hours on a large log, so they run
+/// only when asked and servers start while a runner is still applying them. Until migration 6
+/// (the latest-table backfill) is recorded, startup snapshots fall back to scanning the events
+/// table.
 pub const REQUIRED_SCHEMA_VERSION: i32 = 1;
-const LEGACY_BASELINE_VERSION: i32 = 1;
 const MIGRATE_ENV: &str = "MYKO_POSTGRES_MIGRATE";
 const LATEST_TABLE_BACKFILLED: i32 = 6;
 const BACKFILL_BATCH_ITEMS: i32 = 10_000;
@@ -38,7 +37,6 @@ const APPLIED_BY: &str = concat!("myko-server ", env!("CARGO_PKG_VERSION"));
 #[derive(Debug)]
 pub enum SchemaError {
     Postgres(::postgres::Error),
-    Outdated { found: i32, required: i32 },
     Config(String),
 }
 
@@ -46,12 +44,6 @@ impl fmt::Display for SchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Postgres(error) => write!(f, "{error}"),
-            Self::Outdated { found, required } => write!(
-                f,
-                "events schema is at migration version {found} but this server requires at least \
-                 {required}; run the migrations (MYKO_POSTGRES_MIGRATE=true, or \
-                 myko_server::postgres::migrate) before starting it"
-            ),
             Self::Config(message) => f.write_str(message),
         }
     }
@@ -69,7 +61,7 @@ impl SchemaError {
     pub(crate) fn describe(&self, role: &str, url: &str) -> String {
         match self {
             Self::Postgres(error) => format_pg_error(role, Some(url), error),
-            Self::Outdated { .. } | Self::Config(_) => format!("{role}: {self}"),
+            Self::Config(_) => format!("{role}: {self}"),
         }
     }
 }
@@ -294,7 +286,8 @@ pub fn migrate(config: &PostgresConfig) -> Result<Vec<i32>, String> {
     validate_ident(&config.table)?;
     validate_ident(&config.channel)?;
     let mut client = connect_pg_client(config, "migrate")?;
-    run_migrations(&mut client, config).map_err(|error| error.describe("migrate", &config.url))
+    run_migrations(&mut client, config, SCHEMA_VERSION)
+        .map_err(|error| error.describe("migrate", &config.url))
 }
 
 fn migrate_on_connect_from_env() -> Result<bool, SchemaError> {
@@ -311,33 +304,30 @@ fn parse_migrate_flag(value: Option<&str>) -> Result<bool, SchemaError> {
     }
 }
 
-/// Prepare a connection for use: migrate when asked, bootstrap an empty
-/// database, otherwise verify the recorded version.
+/// Prepare a connection for use: run every migration when asked or when the database is
+/// empty, otherwise make sure the baseline is in place.
 pub(super) fn ensure_schema(
     client: &mut Client,
     config: &PostgresConfig,
 ) -> Result<(), SchemaError> {
     if migrate_on_connect_from_env()? || !relation_exists(client, &config.table)? {
-        run_migrations(client, config)?;
+        run_migrations(client, config, SCHEMA_VERSION)?;
         return Ok(());
     }
-    // NOTE(ts): A table created before migrations existed already has the baseline
-    // schema, so it verifies as version 1 and its servers keep starting unchanged.
-    let found = if relation_exists(client, &format!("{}_schema_migrations", config.table))? {
-        recorded_version(client, &config.table)?
-    } else {
-        LEGACY_BASELINE_VERSION
-    };
-    if found < REQUIRED_SCHEMA_VERSION {
-        return Err(SchemaError::Outdated {
-            found,
-            required: REQUIRED_SCHEMA_VERSION,
-        });
+    // NOTE(ts): Servers before migrations existed ran the baseline DDL on every start, and the
+    // side tables it creates arrived in later releases: a 6.17 table has no `{table}_transactions`,
+    // and the producer cannot persist without it. The baseline is cheap and idempotent, so apply it.
+    if recorded_version(client, &config.table)? < REQUIRED_SCHEMA_VERSION {
+        run_migrations(client, config, REQUIRED_SCHEMA_VERSION)?;
     }
     Ok(())
 }
 
-fn run_migrations(client: &mut Client, config: &PostgresConfig) -> Result<Vec<i32>, SchemaError> {
+fn run_migrations(
+    client: &mut Client,
+    config: &PostgresConfig,
+    through: i32,
+) -> Result<Vec<i32>, SchemaError> {
     let lock_key = format!("myko_schema:{}", config.table);
     let acquired: bool = client
         .query_one("SELECT pg_try_advisory_lock(hashtext($1))", &[&lock_key])?
@@ -349,14 +339,18 @@ fn run_migrations(client: &mut Client, config: &PostgresConfig) -> Result<Vec<i3
         );
         client.execute("SELECT pg_advisory_lock(hashtext($1))", &[&lock_key])?;
     }
-    let result = apply_pending(client, config);
+    let result = apply_pending(client, config, through);
     let unlocked = client.execute("SELECT pg_advisory_unlock(hashtext($1))", &[&lock_key]);
     let applied = result?;
     unlocked?;
     Ok(applied)
 }
 
-fn apply_pending(client: &mut Client, config: &PostgresConfig) -> Result<Vec<i32>, SchemaError> {
+fn apply_pending(
+    client: &mut Client,
+    config: &PostgresConfig,
+    through: i32,
+) -> Result<Vec<i32>, SchemaError> {
     let names = Names::new(config);
     client.batch_execute(&format!(
         "CREATE TABLE IF NOT EXISTS {} (
@@ -371,7 +365,7 @@ fn apply_pending(client: &mut Client, config: &PostgresConfig) -> Result<Vec<i32
     let mut applied = Vec::new();
     for migration in migrations(&names)
         .into_iter()
-        .filter(|m| m.version > current)
+        .filter(|m| m.version > current && m.version <= through)
     {
         let started = Instant::now();
         info!(
@@ -950,26 +944,30 @@ mod db_tests {
 
     #[test]
     #[ignore = "requires MYKO_HISTORY_TEST_URL pointing to a dedicated temporary database"]
-    fn a_table_created_before_migrations_verifies_as_the_baseline() {
+    fn a_table_from_before_migrations_gets_the_baseline_on_connect() {
         let mut f = Fixture::new();
         let names = f.names();
+        // NOTE(ts): A 6.17 server left only the events table behind.
         f.client
-            .batch_execute(&format!("DROP TABLE {}", names.migrations))
+            .batch_execute(&format!(
+                "DROP TABLE {}; DROP TABLE {}",
+                names.migrations, names.completions
+            ))
             .unwrap();
-        ensure_schema(&mut f.client, &f.config).expect("legacy schema verifies");
+        ensure_schema(&mut f.client, &f.config).expect("legacy table starts");
         assert!(
-            !relation_exists(
-                &mut f.client,
-                &format!("{}_schema_migrations", f.config.table)
-            )
-            .unwrap()
+            relation_exists(&mut f.client, &format!("{}_transactions", f.config.table)).unwrap()
+        );
+        assert_eq!(
+            recorded_version(&mut f.client, &f.config.table).unwrap(),
+            REQUIRED_SCHEMA_VERSION
         );
         assert!(!latest_table_ready(&mut f.client, &f.config.table).unwrap());
     }
 
     #[test]
     #[ignore = "requires MYKO_HISTORY_TEST_URL pointing to a dedicated temporary database"]
-    fn verify_only_startup_rejects_an_outdated_schema_and_migrate_repairs_it() {
+    fn verify_only_startup_leaves_slow_migrations_to_an_explicit_migrate() {
         let mut f = Fixture::new();
         let names = f.names();
         assert_eq!(
@@ -985,14 +983,15 @@ mod db_tests {
                 qi(&tx_idx)
             ))
             .unwrap();
-        let error = ensure_schema(&mut f.client, &f.config).expect_err("outdated");
-        assert!(
-            matches!(error, SchemaError::Outdated { found: 0, .. }),
-            "{error}"
+        ensure_schema(&mut f.client, &f.config).expect("starts on the baseline");
+        assert_eq!(
+            recorded_version(&mut f.client, &f.config.table).unwrap(),
+            REQUIRED_SCHEMA_VERSION
         );
+        assert_eq!(index_validity(&mut f.client, &tx_idx).unwrap(), Some(false));
 
         let applied = migrate(&f.config).expect("migrate");
-        assert_eq!(applied, (1..=SCHEMA_VERSION).collect::<Vec<_>>());
+        assert_eq!(applied, (2..=SCHEMA_VERSION).collect::<Vec<_>>());
         assert_eq!(index_validity(&mut f.client, &tx_idx).unwrap(), Some(true));
         assert!(
             index_validity(&mut f.client, &names.index("created_at_idx"))
