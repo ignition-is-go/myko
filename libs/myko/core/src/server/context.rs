@@ -521,11 +521,13 @@ impl MykoServerContext {
     /// entity type is shared and the server runs in one scheduling domain.
     #[must_use]
     pub fn with_partitions(mut self, schema: PartitionSchema) -> Self {
-        let partitions = Partitions::new(schema, &self);
-        // Root projects the shared edge types; each partition its own.
+        // Root projects the shared edge types; each partition its own. The
+        // projection is in place before the partitions take their copy of
+        // this context, so root's writes and reads share one graph.
         self.graph_index = Self::project_graph(&self.registry, &|edge_type| {
-            !partitions.is_partitioned(edge_type)
+            !schema.is_partitioned(edge_type)
         });
+        let partitions = Partitions::new(schema, &self);
         self.partitions = Some(PartitionsHandle::Owner(partitions));
         self
     }

@@ -451,7 +451,7 @@ impl PartitionSchema {
         self
     }
 
-    fn is_partitioned(&self, entity_type: &str) -> bool {
+    pub(crate) fn is_partitioned(&self, entity_type: &str) -> bool {
         self.routes.contains_key(entity_type)
     }
 

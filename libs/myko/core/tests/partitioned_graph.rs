@@ -78,6 +78,42 @@ pub mod labelling {
     }
 }
 
+pub mod stuck_on {
+    use std::sync::Arc;
+
+    use myko::{
+        graph::{ConcreteEndpoint, EndpointSpec},
+        prelude::*,
+    };
+
+    use super::{
+        label::{PgLabel, PgLabelId},
+        stuck::PgStuck,
+    };
+
+    /// The stickings of a label, read through the graph.
+    #[myko_query(PgStuck)]
+    pub struct GetPgStucksOnLabel {
+        pub label_id: PgLabelId,
+    }
+
+    impl QueryHandler for GetPgStucksOnLabel {
+        fn test_entity(ctx: QueryTestContext<Self>) -> bool {
+            ctx.item.label_id == ctx.query.label_id
+        }
+
+        fn build_view(
+            ctx: myko::query::QueryBuildArgs<Self>,
+        ) -> Option<impl MapQuery<Key = Arc<str>, Value = Arc<dyn myko::item::AnyItem>>> {
+            let endpoint =
+                <ConcreteEndpoint<PgLabel> as EndpointSpec>::erase(&ctx.query.label_id).ok()?;
+            ctx.query_context
+                .graph_watch_many_at::<PgStuck>(myko::graph::EndPosition::A, &[endpoint])
+                .ok()
+        }
+    }
+}
+
 pub mod sticker {
     use std::sync::Arc;
 
@@ -325,5 +361,43 @@ fn reading_a_partitioned_type_from_root_outside_checked_panics() {
     assert!(
         message.contains("PgCard was read from the root context"),
         "{message}"
+    );
+}
+
+#[test]
+fn root_reads_the_shared_edges_root_writes() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    fixture
+        .root
+        .set_edge_apply_mode::<stuck::PgStuck>(myko::graph::EdgeApplyMode::Observe)
+        .expect("observe");
+    fixture
+        .root
+        .set(&sticker::PgSticker {
+            id: "s".into(),
+            board: "a".into(),
+        })
+        .expect("sticker");
+    fixture
+        .root
+        .set(&stuck::PgStuck {
+            id: "stuck".into(),
+            board: "a".into(),
+            label_id: label::PgLabelId("l".into()),
+            sticker_id: sticker::PgStickerId("s".into()),
+        })
+        .expect("stuck");
+    fixture.root.settle();
+    let rows = fixture.root.query_map(
+        stuck_on::GetPgStucksOnLabel {
+            label_id: label::PgLabelId("l".into()),
+        },
+        fixture.root.new_server_transaction(),
+    );
+    assert_eq!(
+        rows.snapshot().len(),
+        1,
+        "root's graph read holds the shared edge root wrote"
     );
 }
