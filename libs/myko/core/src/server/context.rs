@@ -752,6 +752,38 @@ impl MykoServerContext {
             .is_some_and(|key| partitions.home_of(item).as_ref() == Some(key))
     }
 
+    /// The context whose stores hold `event`'s row: root's for a shared type,
+    /// its partition's for a partitioned one.
+    ///
+    /// # Errors
+    /// [`PartitionError::NotOpen`] when that partition is not open, and
+    /// [`PartitionError::RootRead`] when the row names no partition, so
+    /// only root, which holds no such rows, could be read.
+    pub(crate) fn event_context(&self, event: &crate::wire::MEvent) -> Result<Self, PartitionError> {
+        let Some(partitions) = self.partitions() else {
+            return Ok(self.clone());
+        };
+        let root = partitions.root();
+        let entity_type = event.item_type.as_ref();
+        if !partitions.is_partitioned(entity_type) {
+            return Ok(root.clone());
+        }
+        let unplaced = || PartitionError::RootRead {
+            entity_type: Arc::clone(&event.item_type),
+        };
+        let item = self
+            .parse_item(entity_type, event.item.clone())
+            .ok_or_else(unplaced)?;
+        let key = partitions
+            .placement(entity_type, &item.id())
+            .or_else(|| partitions.home_of(item.as_ref()))
+            .ok_or_else(unplaced)?;
+        partitions
+            .get(&key)
+            .map(|partition| partition.ctx().clone())
+            .ok_or(PartitionError::NotOpen(key))
+    }
+
     /// The partition that holds the row `id` of a routed entity type, read
     /// from the root-side placement index. No domain is involved.
     #[must_use]

@@ -260,3 +260,33 @@ fn a_partitioned_edge_restricting_a_shared_endpoint_is_refused() {
         "{refused}"
     );
 }
+
+#[test]
+fn a_saga_reads_a_partitioned_events_row_in_its_partition() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let saga = myko::saga::SagaContext::new(uuid::Uuid::new_v4(), fixture.root.registry.clone())
+        .with_server(fixture.root.clone());
+    let card = PgCard {
+        id: "card-b".into(),
+        board: "b".into(),
+    };
+    let event = myko::wire::MEvent::from_item(&card, myko::wire::MEventType::SET, "test");
+    let held = saga.for_event(&event).expect("b is open");
+    assert!(
+        myko::prelude::RegistryScoped::registry(&held)
+            .get(PgCard::ENTITY_NAME_STATIC)
+            .and_then(|store| store.get_value(&Arc::from("card-b")))
+            .is_some(),
+        "the saga reads the card where b holds it"
+    );
+
+    fixture.root.del(&PgBoard { id: "b".into() }).expect("close b");
+    assert!(
+        matches!(
+            saga.for_event(&event),
+            Err(myko::server::PartitionError::NotOpen(key)) if key.as_str() == "b"
+        ),
+        "an event of a closed partition is refused, not read from root"
+    );
+}

@@ -37,6 +37,10 @@ pub struct SagaContext {
 
     /// Store registry for accessing entities
     pub(crate) registry: Arc<StoreRegistry>,
+
+    /// The server, when it may be partitioned: an event's rows live in the
+    /// registry of the partition that holds them.
+    server: Option<crate::server::MykoServerContext>,
 }
 
 impl SagaContext {
@@ -50,7 +54,40 @@ impl SagaContext {
     /// Create a new `SagaContext`
     #[must_use]
     pub const fn new(host_id: Uuid, registry: Arc<StoreRegistry>) -> Self {
-        Self { host_id, registry }
+        Self {
+            host_id,
+            registry,
+            server: None,
+        }
+    }
+
+    /// This context on `server`, so [`for_event`](Self::for_event) reads a
+    /// partitioned event's rows where they live.
+    #[must_use]
+    pub fn with_server(mut self, server: crate::server::MykoServerContext) -> Self {
+        self.registry = Arc::clone(&server.registry);
+        self.server = Some(server);
+        self
+    }
+
+    /// The context whose registry holds `event`'s row: its partition's for a
+    /// partitioned type, this one otherwise.
+    ///
+    /// # Errors
+    /// When the event's partition is not open, so no registry holds the row.
+    pub fn for_event(
+        &self,
+        event: &crate::wire::MEvent,
+    ) -> Result<Self, crate::server::PartitionError> {
+        let Some(server) = &self.server else {
+            return Ok(self.clone());
+        };
+        let held = server.event_context(event)?;
+        Ok(Self {
+            host_id: self.host_id,
+            registry: Arc::clone(&held.registry),
+            server: Some(held),
+        })
     }
 
     /// Get the host ID for this server.
