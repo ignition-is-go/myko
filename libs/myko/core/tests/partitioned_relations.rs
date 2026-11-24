@@ -887,18 +887,38 @@ fn a_panic_in_a_partitions_propagation_fails_it_and_refuses_later_writes() {
         failure.message.contains("a partition's wave broke"),
         "{failure}"
     );
-    assert!(fixture.a.domain().is_closed(), "the failed partition's domain stops");
+    assert!(
+        fixture.a.domain().is_closed(),
+        "the failed partition's domain stops"
+    );
     let refused = fixture
         .root
         .set(&note("a", "after"))
         .expect_err("a failed partition admits no write");
     assert!(refused.message.contains("partition a failed"), "{refused}");
     assert!(
-        fixture.root.partition_failure(&PartitionKey::new("b")).is_none(),
+        fixture
+            .root
+            .partition_failure(&PartitionKey::new("b"))
+            .is_none(),
         "another partition is untouched"
     );
     fixture
         .root
         .set(&note("b", "n-b"))
         .expect("b still admits writes");
+}
+
+#[test]
+fn a_partitions_store_lives_in_its_partition_whoever_asks_first() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let store = fixture
+        .a
+        .registry
+        .get_or_create(memo::PrlMemo::ENTITY_NAME_STATIC);
+    assert!(
+        store.as_ref().domain() == fixture.a.domain(),
+        "a partition's store first asked for from outside its domain lives in the partition"
+    );
 }

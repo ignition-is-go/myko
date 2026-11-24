@@ -467,13 +467,51 @@ fn a_partition_wave_takes_one_shot_reads_through_the_root_context() {
     let (routed, notes, item) = open_in_wave(&fixture, move |_| {
         let request = root.new_server_transaction();
         (
-            root.query_snapshot(on_shelf("x"), Arc::clone(&request)).len(),
+            root.query_snapshot(on_shelf("x"), Arc::clone(&request))
+                .len(),
             root.query_snapshot(note::GetAllPsrNotes {}, request).len(),
             root.entity_snapshot::<PsrItem>(&PsrItemId("shelved".into()))
                 .is_some(),
         )
     });
-    assert_eq!(routed, 1, "a routed one-shot read on root sees the shared row");
-    assert_eq!(notes, 1, "a one-shot read of a whole shared type on root sees it");
+    assert_eq!(
+        routed, 1,
+        "a routed one-shot read on root sees the shared row"
+    );
+    assert_eq!(
+        notes, 1,
+        "a one-shot read of a whole shared type on root sees it"
+    );
     assert!(item, "a one-shot read by id on root sees the shared row");
+}
+
+#[test]
+fn roots_wave_takes_a_routed_one_shot_read_through_a_partition() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    put(&fixture.root, "shelved", "x");
+    let request = fixture.a.new_server_transaction();
+    assert_eq!(
+        fixture.a.query_snapshot(on_shelf("x"), request).len(),
+        1,
+        "the partition's index is built and follows root"
+    );
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let reader = fixture.a.clone();
+    let log = Arc::clone(&seen);
+    let trigger = fixture
+        .root
+        .query_map(on_shelf("trigger"), fixture.root.new_server_transaction());
+    let _guard = trigger.subscribe_diffs(move |_| {
+        if Domain::propagating().is_some_and(|domain| domain.is_root()) {
+            let rows = reader.query_snapshot(on_shelf("x"), reader.new_server_transaction());
+            log.lock().push(rows.len());
+        }
+    });
+    put(&fixture.root, "trigger", "trigger");
+    assert_eq!(
+        seen.lock().first().copied(),
+        Some(1),
+        "a read through a partition from root's wave sees the shared row"
+    );
 }

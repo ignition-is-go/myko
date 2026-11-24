@@ -401,3 +401,45 @@ fn root_reads_the_shared_edges_root_writes() {
         "root's graph read holds the shared edge root wrote"
     );
 }
+
+#[test]
+fn root_reads_the_shared_edges_a_replayed_log_holds() {
+    use myko::wire::{MEvent, MEventType};
+    let _serial = SERIAL.lock();
+    let root = root(schema());
+    let events = [
+        MEvent::from_item(&PgBoard { id: "a".into() }, MEventType::SET, "log"),
+        MEvent::from_item(&PgLabel { id: "l".into() }, MEventType::SET, "log"),
+        MEvent::from_item(
+            &PgSticker {
+                id: "s".into(),
+                board: "a".into(),
+            },
+            MEventType::SET,
+            "log",
+        ),
+        MEvent::from_item(
+            &PgStuck {
+                id: "stuck".into(),
+                board: "a".into(),
+                label_id: PgLabelId("l".into()),
+                sticker_id: sticker::PgStickerId("s".into()),
+            },
+            MEventType::SET,
+            "log",
+        ),
+    ];
+    root.replay(events).expect("replay");
+    root.settle();
+    let rows = root.query_map(
+        stuck_on::GetPgStucksOnLabel {
+            label_id: PgLabelId("l".into()),
+        },
+        root.new_server_transaction(),
+    );
+    assert_eq!(
+        rows.snapshot().len(),
+        1,
+        "root's graph read holds the shared edge the log replayed"
+    );
+}
