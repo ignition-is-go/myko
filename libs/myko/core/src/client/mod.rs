@@ -988,6 +988,28 @@ impl Default for MykoClientOptions {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingFlushPhase {
+    Idle,
+    Requested,
+    Draining,
+    DrainingWithRequest,
+}
+
+impl PendingFlushPhase {
+    fn request(&mut self) {
+        *self = match self {
+            Self::Idle | Self::Requested => Self::Requested,
+            Self::Draining | Self::DrainingWithRequest => Self::DrainingWithRequest,
+        };
+    }
+}
+
+struct ConnectionReadiness {
+    ready: bool,
+    flush: PendingFlushPhase,
+}
+
 struct MykoClientInner {
     socket: Arc<dyn SocketTransport>,
     protocol: Arc<AtomicU8>,
@@ -1022,6 +1044,7 @@ struct MykoClientInner {
 
     // Frames queued while disconnected
     pending_sends: Mutex<Vec<WsFrame>>,
+    readiness: Mutex<ConnectionReadiness>,
 
     // Report-response dispatch: the WS read thread hands incoming
     // `report-response` payloads off to a dedicated worker so the hot
@@ -1041,6 +1064,7 @@ struct MykoClientInner {
     _read_guard: CallbackGuard,
     _report_dispatch_guard: CallbackGuard,
     _status_guard: SubscriptionGuard,
+    _intended_guard: SubscriptionGuard,
 }
 
 impl Default for MykoClient {
@@ -1380,9 +1404,16 @@ impl MykoClient {
                         inner.ping_ms.set(None);
                     }
 
-                    // Flush pending sends on connect
-                    if let ConnectionStatus::Connected(_) = conn_status {
-                        flush_pending_sends(&inner);
+                    update_connection_readiness(&inner);
+                });
+            let weak_for_intended = weak.clone();
+            let intended_guard = transport
+                .intended_connection_state()
+                .subscribe(move |signal| {
+                    if signal.value_ref().is_some() {
+                        if let Some(inner) = weak_for_intended.upgrade() {
+                            update_connection_readiness(&inner);
+                        }
                     }
                 });
 
@@ -1410,14 +1441,20 @@ impl MykoClient {
                 map_watch_cache: DashMap::new(),
                 map_watch_cache_gate: Mutex::new(()),
                 pending_sends,
+                readiness: Mutex::new(ConnectionReadiness {
+                    ready: false,
+                    flush: PendingFlushPhase::Idle,
+                }),
                 report_dispatch_tx,
                 _read_guard: read_guard,
                 _report_dispatch_guard: report_dispatch_guard,
                 _status_guard: status_guard,
+                _intended_guard: intended_guard,
             }
         });
 
         let client = Self { inner };
+        update_connection_readiness(&client.inner);
 
         if options.app_ping {
             Self::spawn_ping_loop(Arc::downgrade(&client.inner));
@@ -4086,7 +4123,61 @@ fn connection_matches_intent(inner: &MykoClientInner) -> bool {
     )
 }
 
+fn update_connection_readiness(inner: &MykoClientInner) {
+    let mut readiness = inner
+        .readiness
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ready = connection_matches_intent(inner);
+    if ready && !readiness.ready {
+        readiness.flush.request();
+    }
+    readiness.ready = ready;
+    drop(readiness);
+    drain_requested_flushes(inner);
+}
+
 fn flush_pending_sends(inner: &MykoClientInner) {
+    inner
+        .readiness
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .flush
+        .request();
+    drain_requested_flushes(inner);
+}
+
+fn drain_requested_flushes(inner: &MykoClientInner) {
+    {
+        let mut readiness = inner
+            .readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if readiness.flush != PendingFlushPhase::Requested {
+            return;
+        }
+        readiness.flush = PendingFlushPhase::Draining;
+    }
+    loop {
+        flush_pending_sends_once(inner);
+        let mut readiness = inner
+            .readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match readiness.flush {
+            PendingFlushPhase::DrainingWithRequest => readiness.flush = PendingFlushPhase::Draining,
+            PendingFlushPhase::Draining => {
+                readiness.flush = PendingFlushPhase::Idle;
+                return;
+            }
+            PendingFlushPhase::Idle | PendingFlushPhase::Requested => {
+                unreachable!("flush owner changed")
+            }
+        }
+    }
+}
+
+fn flush_pending_sends_once(inner: &MykoClientInner) {
     let mut pending = inner
         .pending_sends
         .lock()
