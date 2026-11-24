@@ -700,9 +700,15 @@ impl Partition {
     fn catch_up(&self) {
         let sent = self.sent.load(Ordering::Acquire);
         if self.applied.load(Ordering::Acquire) < sent && Domain::current() != self.domain {
-            self.domain.flush();
-            self.applied.fetch_max(sent, Ordering::AcqRel);
+            self.settle_all();
         }
+    }
+
+    /// Wait until every write admitted here before the call is applied.
+    pub(crate) fn settle_all(&self) {
+        let sent = self.sent.load(Ordering::Acquire);
+        self.domain.flush();
+        self.applied.fetch_max(sent, Ordering::AcqRel);
     }
 
     /// Queue a job in admission order. Call it with the rows' stripes held,
@@ -1081,6 +1087,14 @@ impl Partitions {
         }
     }
 
+    /// Every open partition, now.
+    pub(crate) fn all(&self) -> Vec<Arc<Partition>> {
+        self.open
+            .iter()
+            .map(|entry| Arc::clone(entry.value()))
+            .collect()
+    }
+
     pub(crate) fn get(&self, key: &PartitionKey) -> Option<Arc<Partition>> {
         self.open.get(key).map(|partition| Arc::clone(&partition))
     }
@@ -1110,12 +1124,7 @@ impl Partitions {
 
     /// The rows of a partitioned type in every open partition, read now.
     pub(crate) fn snapshot(&self, entity_type: &str) -> Vec<(PartitionKey, Vec<Item>)> {
-        let partitions: Vec<Arc<Partition>> = self
-            .open
-            .iter()
-            .map(|entry| Arc::clone(entry.value()))
-            .collect();
-        partitions
+        self.all()
             .into_iter()
             .map(|partition| {
                 let rows = partition
@@ -1629,12 +1638,7 @@ impl Partitions {
         change: MEventType,
         opened: &BTreeSet<PartitionKey>,
     ) {
-        let partitions: Vec<Arc<Partition>> = self
-            .open
-            .iter()
-            .map(|entry| Arc::clone(entry.value()))
-            .collect();
-        for partition in partitions {
+        for partition in self.all() {
             // Held while the job is queued: a close finds it queued.
             let admitting = partition.admitting.read_recursive();
             if !*admitting {

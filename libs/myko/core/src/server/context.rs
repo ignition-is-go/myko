@@ -798,6 +798,30 @@ impl MykoServerContext {
             .watch_subscription(request, payload, opened_in, Box::new(moved))
     }
 
+    /// Block until every write admitted before the call has been applied
+    /// and delivered: in every open partition from the root context, in this
+    /// partition from a partition's context. Rows a root write hands to a
+    /// partition arrive asynchronously; this is the deterministic wait for
+    /// them, for tests and startup. Without partitions it returns at once.
+    ///
+    /// It is a barrier, not part of a write: never call it on a path that
+    /// serves writes or deliveries.
+    ///
+    /// # Panics
+    /// When called from inside a propagation, which would wait for itself.
+    pub fn settle(&self) {
+        let Some(partitions) = self.partitions() else {
+            return;
+        };
+        let settling = match self.partition_key() {
+            Some(key) => partitions.get(key).into_iter().collect(),
+            None => partitions.all(),
+        };
+        for partition in settling {
+            partition.settle_all();
+        }
+    }
+
     /// The scheduling domain this context builds and writes in.
     #[must_use]
     pub fn domain(&self) -> Domain {

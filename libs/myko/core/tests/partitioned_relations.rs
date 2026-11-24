@@ -727,3 +727,46 @@ fn a_search_finds_only_its_own_partitions_rows() {
     assert_eq!(found(&fixture.a), ["m-a"]);
     assert_eq!(found(&fixture.b), ["m-b"]);
 }
+
+#[test]
+fn settling_waits_for_every_admitted_write_in_every_partition() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    fixture.root.set(&note("a", "n-a")).expect("note in a");
+    fixture.root.set(&note("b", "n-b")).expect("note in b");
+    fixture.root.settle();
+    let parked = park_worker(&fixture.a);
+    // Deleting the shared parent derives in each partition, behind root.
+    fixture.root.del(&folder("f")).expect("delete folder");
+    let (settled_tx, settled) = std::sync::mpsc::channel();
+    let root = fixture.root.clone();
+    let settling = std::thread::spawn(move || {
+        root.settle();
+        drop(settled_tx.send(()));
+    });
+    assert!(parked.0.parked(), "a is parked");
+    assert!(
+        settled.try_recv().is_err(),
+        "settling returned while a's writes waited behind its parked worker"
+    );
+    drop(parked);
+    settled
+        .recv_timeout(DEADLINE)
+        .expect("settling returns once a is released");
+    assert!(settling.join().is_ok());
+    for (ctx, id) in [(&fixture.a, "n-a"), (&fixture.b, "n-b")] {
+        assert!(
+            !has(ctx, PrlNote::ENTITY_NAME_STATIC, id),
+            "the cascade's delete of {id} is applied"
+        );
+    }
+    assert_eq!(
+        fixture
+            .log
+            .of(PrlNote::ENTITY_NAME_STATIC)
+            .iter()
+            .filter(|(change, _)| *change == MEventType::DEL)
+            .count(),
+        2
+    );
+}
