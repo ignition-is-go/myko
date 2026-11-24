@@ -144,6 +144,21 @@ pub mod tag {
     }
 }
 
+pub mod memo {
+    use std::sync::Arc;
+
+    use myko::prelude::*;
+
+    /// Partitioned by its room, and searchable.
+    #[myko_item]
+    pub struct PrlMemo {
+        #[myko_partition_key]
+        pub room: Arc<str>,
+        #[searchable]
+        pub text: Arc<str>,
+    }
+}
+
 use book::PrlBook;
 use cursor::PrlCursor;
 use folder::{PrlFolder, PrlFolderId};
@@ -683,4 +698,32 @@ fn an_ensured_partition_row_is_ensured_again_once_deleted() {
         ["a"],
         "the first cursor's reservation was released when it landed in a"
     );
+}
+
+#[cfg(feature = "search")]
+#[test]
+fn a_search_finds_only_its_own_partitions_rows() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    for (room, id) in [("a", "m-a"), ("b", "m-b")] {
+        fixture
+            .root
+            .set(&memo::PrlMemo {
+                id: id.into(),
+                room: room.into(),
+                text: "harbour lights".into(),
+            })
+            .expect("memo");
+    }
+    settle(&fixture.a);
+    settle(&fixture.b);
+    let found = |ctx: &MykoServerContext| -> Vec<String> {
+        ctx.search_index()
+            .search(memo::PrlMemo::ENTITY_NAME_STATIC, "harbour", 10)
+            .iter()
+            .map(ToString::to_string)
+            .collect()
+    };
+    assert_eq!(found(&fixture.a), ["m-a"]);
+    assert_eq!(found(&fixture.b), ["m-b"]);
 }

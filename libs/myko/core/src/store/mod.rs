@@ -31,4 +31,4 @@ pub use transactions::CommandCausation;
 
 pub use entity_store::{EntityDiffCell, EntityEntriesCell, EntityStore};
 pub use registry::StoreRegistry;
-pub(crate) use registry::{record_root_read, watch_root_reads};
+pub(crate) use registry::{IsPartitioned, record_root_read, watch_root_reads};

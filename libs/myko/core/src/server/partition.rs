@@ -573,14 +573,20 @@ impl Partition {
     fn open(partitions: &Arc<Partitions>, key: PartitionKey) -> Arc<Self> {
         let domain = Domain::child();
         let schema = Arc::clone(&partitions.schema);
+        let is_partitioned: crate::store::IsPartitioned =
+            Arc::new(move |entity_type| schema.is_partitioned(entity_type));
         let registry = Arc::new(StoreRegistry::for_partition(
             Arc::clone(&partitions.root.registry),
             domain.clone(),
-            Arc::new(move |entity_type| schema.is_partitioned(entity_type)),
+            Arc::clone(&is_partitioned),
+        ));
+        let search = Arc::new(crate::search::SearchIndex::for_partition(
+            Arc::clone(partitions.root.search_index()),
+            is_partitioned,
         ));
         let ctx = partitions
             .root
-            .for_partition(registry, key.clone(), domain.clone());
+            .for_partition(registry, search, key.clone(), domain.clone());
         let waiting: Arc<Mutex<VecDeque<Job>>> = Arc::default();
         let (courier, relay) = Domain::root().enter(|| {
             let courier = Cell::new(0_u64);
@@ -785,6 +791,7 @@ impl Partition {
         if let Some(row) = &row {
             self.ctx
                 .track_relations(std::slice::from_ref(row), MEventType::DEL);
+            self.ctx.search_index().remove_entity(entity_type, id);
         }
         row
     }
@@ -812,6 +819,9 @@ impl Partition {
             }
         });
         self.ctx.track_relations(&rows, MEventType::SET);
+        for row in &rows {
+            self.ctx.search_index().index_item(row);
+        }
     }
 }
 

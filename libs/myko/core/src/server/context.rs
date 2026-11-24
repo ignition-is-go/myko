@@ -545,11 +545,13 @@ impl MykoServerContext {
     pub(crate) fn for_partition(
         &self,
         registry: Arc<StoreRegistry>,
+        search_index: Arc<SearchIndex>,
         key: PartitionKey,
         domain: Domain,
     ) -> Self {
         let mut partition = self.clone();
         partition.registry = registry;
+        partition.search_index = search_index;
         partition.query_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.view_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
         partition.report_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
