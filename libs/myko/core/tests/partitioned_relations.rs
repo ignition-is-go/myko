@@ -795,42 +795,35 @@ fn lines_of(ctx: &MykoServerContext, note: &str) -> usize {
 }
 
 #[test]
-fn a_one_shot_read_during_a_partitions_drain_sees_the_row_being_delivered() {
+fn a_one_shot_read_during_a_partitions_open_batch_sees_the_row_written_in_it() {
     let _serial = SERIAL.lock();
     let fixture = Arc::new(fixture());
     fixture.root.set(&note("a", "n1")).expect("note");
     settle(&fixture.a);
+    assert_eq!(lines_of(&fixture.a, "n1"), 0, "the index is built empty");
 
-    // Subscribed before the index, so it runs before the index applies a diff.
+    // The row is stored, but its diff waits for the batch to close, so the
+    // index has not seen it while the writer is parked.
     let gate = Arc::new(Gate::default());
-    let armed = Arc::new(AtomicBool::new(false));
-    let store = fixture.a.registry.get_or_create(PrlLine::ENTITY_NAME_STATIC);
-    let _blocker = {
-        let (gate, armed) = (Arc::clone(&gate), Arc::clone(&armed));
-        fixture.a.domain().enter(|| {
-            store.subscribe_diffs(move |_| {
-                if armed.swap(false, Ordering::SeqCst) {
-                    gate.pass();
-                }
+    let writer = {
+        let (fixture, gate) = (Arc::clone(&fixture), Arc::clone(&gate));
+        std::thread::spawn(move || {
+            fixture.a.domain().batch(|| {
+                let written = fixture.a.set(&line("a", "l1", "n1"));
+                gate.pass();
+                written
             })
         })
     };
-    assert_eq!(lines_of(&fixture.a, "n1"), 0, "the index is built empty");
-
-    armed.store(true, Ordering::SeqCst);
-    let writer = {
-        let fixture = Arc::clone(&fixture);
-        std::thread::spawn(move || fixture.root.set(&line("a", "l1", "n1")))
-    };
     let deadline = std::time::Instant::now() + DEADLINE;
     while !gate.parked() {
-        assert!(std::time::Instant::now() < deadline, "the drain never parked");
+        assert!(std::time::Instant::now() < deadline, "the writer never parked");
         std::thread::yield_now();
     }
     let seen = lines_of(&fixture.a, "n1");
     gate.open();
     writer.join().expect("writer").expect("line");
-    assert_eq!(seen, 1, "a read while a's drain runs falls back to the store");
+    assert_eq!(seen, 1, "a read while a's batch is open falls back to the store");
 }
 
 /// The domain the last registered memo source was built in.
