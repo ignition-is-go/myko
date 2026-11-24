@@ -191,6 +191,10 @@ struct BelongsToSourceIndex {
     buckets: DashMap<CompoundKey, WeakAnyItemMap>,
     mutation_gate: Mutex<BelongsToMutationState>,
     driver: Arc<AnyItemMap>,
+    /// The domain of the store, where every bucket is born: the index writes
+    /// its buckets from the store's propagation.
+    domain: hyphae::scheduler::Domain,
+    idle: IdleProbe,
 }
 
 impl BelongsToSourceIndex {
@@ -201,6 +205,8 @@ impl BelongsToSourceIndex {
             buckets: DashMap::new(),
             mutation_gate: Mutex::new(BelongsToMutationState::default()),
             driver: driver.clone(),
+            domain: hyphae::scheduler::Domain::current(),
+            idle: idle_probe(),
         });
 
         let index_for_diffs = Arc::downgrade(&index);
@@ -239,14 +245,20 @@ impl BelongsToSourceIndex {
                 if let Some(map) = occupied.get().upgrade() {
                     return map;
                 }
-                let map = Self::build_backfilled_bucket(mutation.members.get(occupied.key()));
-                self.retain_for_bucket(&map);
+                let map = self.domain.enter(|| {
+                    let map = Self::build_backfilled_bucket(mutation.members.get(occupied.key()));
+                    self.retain_for_bucket(&map);
+                    map
+                });
                 occupied.insert(map.downgrade());
                 map
             }
             dashmap::mapref::entry::Entry::Vacant(vacant) => {
-                let map = Self::build_backfilled_bucket(mutation.members.get(vacant.key()));
-                self.retain_for_bucket(&map);
+                let map = self.domain.enter(|| {
+                    let map = Self::build_backfilled_bucket(mutation.members.get(vacant.key()));
+                    self.retain_for_bucket(&map);
+                    map
+                });
                 vacant.insert(map.downgrade());
                 map
             }
@@ -550,25 +562,37 @@ thread_local! {
     static IDLE_PROBE_RAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-/// Whether hyphae has no batch open and no drain running.
+/// Whether the store's domain has no batch open and no drain running, so the
+/// index has applied every diff the store produced.
 ///
 /// A cell set runs its subscriber on the calling thread only then; otherwise
-/// the scheduler queues it. hyphae exposes no direct read of that state.
-fn scheduler_is_idle() -> bool {
-    use hyphae::{Mutable, Watchable};
-    static PROBE: std::sync::LazyLock<(
-        hyphae::Cell<u64, hyphae::CellMutable>,
-        hyphae::SubscriptionGuard,
-    )> = std::sync::LazyLock::new(|| {
-        let cell = hyphae::Cell::new(0);
-        let guard = cell.subscribe(|_| IDLE_PROBE_RAN.with(|ran| ran.set(true)));
-        (cell, guard)
-    });
+/// the scheduler queues it. hyphae exposes no direct read of that state, so
+/// the index keeps a probe cell born in the store's domain. A thread inside
+/// any propagation is never idle, and could not write the probe of another
+/// domain.
+fn domain_is_idle(probe: &IdleProbe) -> bool {
+    use hyphae::Mutable;
     static TICKET: AtomicU64 = AtomicU64::new(0);
-    let probe = &PROBE.0;
+    if hyphae::scheduler::Domain::propagating().is_some() {
+        return false;
+    }
     IDLE_PROBE_RAN.with(|ran| ran.set(false));
-    probe.set(TICKET.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
+    probe
+        .0
+        .set(TICKET.fetch_add(1, Ordering::Relaxed).wrapping_add(1));
     IDLE_PROBE_RAN.with(std::cell::Cell::get)
+}
+
+type IdleProbe = (
+    hyphae::Cell<u64, hyphae::CellMutable>,
+    hyphae::SubscriptionGuard,
+);
+
+fn idle_probe() -> IdleProbe {
+    use hyphae::Watchable;
+    let cell = hyphae::Cell::new(0);
+    let guard = cell.subscribe(|_| IDLE_PROBE_RAN.with(|ran| ran.set(true)));
+    (cell, guard)
 }
 
 /// The rows a `belongs_to` route selects, read from the index without
@@ -586,7 +610,7 @@ pub fn belongs_to_route_snapshot(
     let index =
         belongs_to_source_index_for(registry, local_type, route.field_names, route.extractor());
     ROUTE_SNAPSHOTS.fetch_add(1, Ordering::Relaxed);
-    if !scheduler_is_idle() {
+    if !domain_is_idle(&index.idle) {
         ROUTE_SNAPSHOT_FALLBACKS.fetch_add(1, Ordering::Relaxed);
         return None;
     }

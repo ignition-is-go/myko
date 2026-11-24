@@ -3610,6 +3610,14 @@ impl MykoServerContext {
         Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
+        self.in_domain(|| self.query_snapshot_here(query, request))
+    }
+
+    fn query_snapshot_here<Q>(&self, query: Q, request: Arc<RequestContext>) -> Vec<Arc<Q::Item>>
+    where
+        Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
         let query_item_type = Q::query_item_type_static();
         let store = self.registry.get_or_create(&query_item_type);
 

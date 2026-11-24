@@ -153,7 +153,7 @@ impl StoreRegistry {
     /// first use. It lives and dies with the stores it indexes.
     pub(crate) fn relation_index<T: Default + Send + Sync + 'static>(&self) -> Option<Arc<T>> {
         self.relations
-            .get_or_init(|| Arc::new(T::default()))
+            .get_or_init(|| self.born_here(|| Arc::new(T::default())))
             .clone()
             .downcast::<T>()
             .ok()
@@ -175,12 +175,23 @@ impl StoreRegistry {
         {
             return index;
         }
-        let index = build(owner);
+        let index = owner.born_here(|| build(owner));
         let erased: Arc<dyn std::any::Any + Send + Sync> = index.clone();
         // A racing build loses to the first one stored.
         Arc::clone(owner.indexes.entry(key).or_insert(erased).value())
             .downcast::<T>()
             .unwrap_or(index)
+    }
+
+    /// Run `build` with this registry's domain ambient: a partition's
+    /// domain for a partition's registry, root otherwise. Whatever this
+    /// registry keeps for later readers is built here, so it lives in the
+    /// domain of the stores it derives from, whichever context asks first.
+    pub(crate) fn born_here<R>(&self, build: impl FnOnce() -> R) -> R {
+        match &self.partition {
+            Some(partition) => partition.domain.enter(build),
+            None => hyphae::scheduler::Domain::root().enter(build),
+        }
     }
 
     /// Every index this registry holds of type `T`.
@@ -226,9 +237,7 @@ impl StoreRegistry {
             .or_insert_with(|| {
                 // A store lives in the domain it is born in, whichever thread
                 // asks for it first.
-                self.partition
-                    .as_ref()
-                    .map_or_else(create, |partition| partition.domain.enter(create))
+                self.born_here(create)
             })
             .clone()
     }
