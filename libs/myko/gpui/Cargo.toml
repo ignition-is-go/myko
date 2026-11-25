@@ -1,6 +1,6 @@
 [package]
 name = "myko-gpui"
-version = "6.17.1"
+version = "6.19.1"
 description = "Myko client bridge for GPUI, native and web"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/ignition-is-go/myko"
@@ -9,7 +9,8 @@ authors.workspace = true
 autoexamples = false
 
 [package.metadata.flux]
-tasks = ["check", "check-wasm", "build", "test", "lint", "publish"]
+# check, lint and test run in the separate GPUI CI job (check-gpui, lint-gpui, test-gpui).
+tasks = ["check-wasm", "build", "publish"]
 
 [dependencies]
 serde.workspace = true

@@ -275,8 +275,64 @@ and domain discovery.
 The Postgres persister supplies durable events, startup hydration and catch-up.
 `PostgresConfig::try_from_env()` loads `MYKO_POSTGRES_URL`, optional
 `MYKO_POSTGRES_TABLE` (default `myko_events`) and `MYKO_POSTGRES_CHANNEL` (default
-`myko_events_notify`). `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` bounds startup wait
-(default 300 seconds; 0 disables the limit).
+`myko_events_notify`).
+
+Every time limit the server enforces can be changed at deploy time without rebuilding.
+Unset keeps the default, `0` disables the limit (wait forever / never expire), and any
+value that is not a non-negative integer fails startup with the variable named.
+
+| Variable | Default | Bounds |
+| --- | --- | --- |
+| `MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS` | 300 | startup wait for the Postgres consumer to catch up |
+| `MYKO_POSTGRES_FLUSH_TIMEOUT_SECS` | 10 | wait for queued events to be durably written |
+| `MYKO_POSTGRES_CONNECT_TIMEOUT_SECS` | 10 | opening a Postgres connection |
+| `MYKO_POSTGRES_TCP_USER_TIMEOUT_SECS` | 30 | unacknowledged writes before a dead peer is dropped |
+| `MYKO_HTTP_HEAD_TIMEOUT_SECS` | 10 | reading an incoming HTTP request head |
+| `MYKO_HTTP_AUTH_TIMEOUT_SECS` | 10 | authenticating a WebSocket or MCP request |
+| `MYKO_HTTP_SHUTDOWN_DRAIN_TIMEOUT_MS` | 250 | draining a socket before close |
+| `MYKO_OAUTH_BODY_TIMEOUT_SECS` | 10 | reading an OAuth endpoint request body |
+| `MYKO_WS_OUTBOUND_COMMAND_TTL_SECS` | 10 | age before an unanswered outbound command is dropped |
+| `MYKO_MCP_EXECUTE_TIMEOUT_SECS` | 30 | one MCP Code Mode script call, including async hops |
+| `MYKO_MCP_SCRIPT_DEADLINE_SECS` | 10 | synchronous JavaScript compute inside one script |
+| `MYKO_MCP_QUERY_TIMEOUT_SECS` | 5 | an MCP query response |
+| `MYKO_MCP_REPORT_TIMEOUT_SECS` | 5 | an MCP report value |
+| `MYKO_MCP_COMMAND_TIMEOUT_SECS` | 10 | an MCP command response |
+| `MYKO_MCP_CONNECT_TIMEOUT_SECS` | 5 | the MCP client connecting to a Myko server |
+
+Many servers can share one events table, so a server never changes shared schema as
+a side effect of booting. The schema is a numbered, forward-only list of migrations
+recorded in `<table>_schema_migrations`. By default, startup only reads the recorded
+version and fails when it is older than the server requires; a newer version is
+accepted. An events table created before migrations existed counts as the baseline,
+so servers upgraded onto an existing database keep starting without a migration
+run. Servers require only the baseline migration, so they start while a runner
+is still applying the slower ones. The latest-state table and its backfill run
+before the index rebuilds, because they are what makes startup fast. The one exception is a database without the events table, which the first
+server bootstraps. To apply pending migrations, run
+`myko_server::postgres::migrate(&config)` from a deploy job, or start one server with
+`MYKO_POSTGRES_MIGRATE=true`; that server then waits for the migrations before it
+becomes ready. Concurrent runners serialize on an advisory lock. Index migrations use
+`CREATE INDEX CONCURRENTLY`, so inserts continue, but on a large table they can take
+hours. Rerunning after an interruption is safe.
+
+Startup hydrates only the entity types the server registers. It reads
+`<table>_latest`, a latest-event-per-item table that an insert trigger maintains, once
+its backfill migration is recorded; until then it walks the events table with a loose
+index scan.
+
+Postgres node settings belong to its deployment. At startup the server logs one
+warning when settings are far from these recommendations for an append-only log:
+
+| setting | recommendation |
+| --- | --- |
+| `shared_buffers` | about 25% of node RAM |
+| `effective_cache_size` | about 75% of node RAM |
+| `maintenance_work_mem` | 1 to 2 GB |
+| `max_wal_size` | 8 GB or more |
+| `random_page_cost` | 1.1 on SSD |
+| `effective_io_concurrency` | 200 on SSD |
+| `wal_compression` | `lz4` |
+| `autovacuum` | `on` |
 
 `myko-telemetry` is independently usable by applications and SDK hosts; the server
 re-exports it. Initialize once and retain the guard through shutdown. It provides

@@ -1,6 +1,15 @@
+[cache.s3]
+endpoint_env = "CARGO_FLUX_S3_ENDPOINT"
+bucket_env = "CARGO_FLUX_S3_BUCKET"
+prefix = "rust/v1/flux"
+timeout_seconds = 1800
+
 [channels]
 main = "production"
 dev = { channel = "canary", prerelease = true }
+
+[selections.transaction-clients]
+roots = ["@myko/core", "@myko/ui-svelte"]
 
 [tasks.check]
 workspace_batchable = true
@@ -25,6 +34,17 @@ bun = ["bun", "test"]
 [tasks.lint]
 cargo = ["cargo", "clippy", "--all-targets", "--features", "ci", "--", "-D", "warnings"]
 bun = ["bun", "run", "lint"]
+
+# myko-gpui pulls in the GPUI graphics stack, so it is checked in its own CI
+# job instead of the workspace-batched check, lint and test tasks.
+[tasks.check-gpui]
+root = ["cargo", "check", "-p", "myko-gpui", "--all-targets"]
+
+[tasks.lint-gpui]
+root = ["cargo", "clippy", "-p", "myko-gpui", "--all-targets", "--features", "ci", "--", "-D", "warnings"]
+
+[tasks.test-gpui]
+root = ["cargo", "test", "-p", "myko-gpui", "--features", "ci"]
 
 [tasks.format-rust]
 root = ["cargo", "fmt", "--all"]
@@ -97,6 +117,26 @@ root = ["cargo", "test", "--jobs", "4", "-p", "myko", "--lib", "operation_index"
 [tasks.lint-mcp-contract]
 root = ["cargo", "clippy", "--jobs", "4", "-p", "myko", "--all-targets", "--features", "ci", "--no-deps", "--", "-D", "warnings"]
 
+[tasks.test-operation-provenance]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--test", "operation_provenance", "--", "--test-threads=1"]
+
+[tasks.check-operation-provenance]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-server", "--lib", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-postgres-provenance]
+root = ["sh", "scripts/test-postgres-history.sh", "postgres::provenance_tests"]
+
+[tasks.lint-operation-provenance-tests]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--test", "operation_provenance", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.lint-postgres-provenance-tests]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--lib", "--tests", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-operation-libraries]
+root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "-p", "myko-server", "--lib", "--", "--test-threads=1"]
+
+[tasks.check-operation-wasm]
+root = ["cargo", "check", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko", "--lib", "--target", "wasm32-unknown-unknown"]
 [tasks.test-operation-contracts]
 root = ["cargo", "test", "-p", "myko-macros", "operation_contract"]
 
@@ -251,3 +291,9 @@ root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", 
 
 [tasks.test-delivery-websocket-auth]
 root = ["cargo", "test", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--test", "websocket_auth", "--", "--test-threads=1"]
+
+[tasks.test-transaction-undo]
+root = ["sh", "scripts/test-postgres-history.sh", "--test", "transaction_undo"]
+
+[tasks.lint-transaction-undo]
+root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--test", "transaction_undo", "--no-deps", "--", "-D", "warnings"]

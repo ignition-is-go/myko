@@ -3,3 +3,5 @@ pub mod client;
 pub mod demo;
 pub mod framework_reports;
 pub mod server;
+
+pub mod undo;

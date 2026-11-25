@@ -26,9 +26,40 @@ pub struct CommandContext {
     pub command_id: Arc<str>,
 
     server_ctx: Arc<MykoServerContext>,
+    _activity: Arc<crate::store::transactions::CommandActivity>,
+    inherited_provenance: Option<crate::server::OperationProvenance>,
+    undo_of_tx: Option<Arc<str>>,
 }
 
 impl CommandContext {
+    pub(crate) fn inherit_causation(&mut self, causation: &crate::store::CommandCausation) {
+        self.inherited_provenance.clone_from(&causation.provenance);
+    }
+
+    pub(crate) fn for_undo(mut self, transaction_id: Arc<str>) -> Self {
+        self.undo_of_tx = Some(transaction_id);
+        self
+    }
+
+    fn operation_provenance(&self) -> crate::server::OperationProvenance {
+        crate::server::OperationProvenance {
+            request_tx: self.req.tx.clone(),
+            actor_user_id: self.req.user_id().ok().cloned().or_else(|| {
+                self.inherited_provenance
+                    .as_ref()
+                    .and_then(|p| p.actor_user_id.clone())
+            }),
+            undo_of_tx: self.undo_of_tx.clone().or_else(|| {
+                self.inherited_provenance
+                    .as_ref()
+                    .and_then(|p| p.undo_of_tx.clone())
+            }),
+            unverified_client_id: self.req.client_id.as_deref().map(Arc::from),
+            command_id: self.command_id.clone(),
+            lineage: self.req.lineage.clone(),
+        }
+    }
+
     /// Resolve the authenticated application user from this request.
     /// # Errors
     /// Returns a command error if no live authenticated user is available.
@@ -44,15 +75,22 @@ impl CommandContext {
 
     /// Create a new `CommandContext`.
     #[must_use]
-    pub const fn new(
+    pub fn new(
         command_id: Arc<str>,
         req: Arc<RequestContext>,
         server_ctx: Arc<MykoServerContext>,
     ) -> Self {
+        let activity = server_ctx
+            .registry
+            .transactions
+            .begin(req.tx.clone(), req.user_id().ok().cloned());
         Self {
             req,
             command_id,
             server_ctx,
+            _activity: activity,
+            inherited_provenance: None,
+            undo_of_tx: None,
         }
     }
 
@@ -233,6 +271,7 @@ impl CommandContext {
             core::item::{AnyItem, downcast_any_item_arc},
             graph::{EdgeEnds, EdgeScope},
         };
+        let _operation = self.server_ctx.operation_scope(self.operation_provenance());
 
         let graph = self
             .server_ctx
@@ -367,6 +406,9 @@ impl crate::core::capability::ServerScoped for CommandContext {
     }
 }
 impl crate::core::capability::EventPublishing for CommandContext {
+    fn __operation_provenance(&self) -> Option<crate::server::OperationProvenance> {
+        Some(self.operation_provenance())
+    }
     fn __command_id(&self) -> &Arc<str> {
         &self.command_id
     }

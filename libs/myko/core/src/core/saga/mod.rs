@@ -42,5 +42,6 @@ pub use stream::{
     OfChangeType, OfItemType, Pairwise, SagaStreamExt, Scan, is_change_type, is_item_type,
 };
 pub use traits::{
-    AnySaga, CommandStream, EventStream, Saga, SagaCommand, SagaHandler, SagaRegistration,
+    AnySaga, CausedSagaCommand, CommandStream, EventStream, Saga, SagaCommand, SagaHandler,
+    SagaRegistration,
 };

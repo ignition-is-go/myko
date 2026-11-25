@@ -22,33 +22,30 @@ use myko::{
     hyphae::{Cell, CellImmutable, CellMutable, Mutable},
     item::AnyItem,
     server::{
-        CommittedHistoryEvent, HandlerRegistry, HistoryEntityKey, HistoryEvent, HistoryPage,
-        PersistError, PersistHealth, Persister,
+        CommittedHistoryEvent, EventRecord, HandlerRegistry, HistoryEntityKey, HistoryEvent,
+        HistoryPage, PersistError, PersistHealth, Persister,
     },
     store::StoreRegistry,
     wire::QueryWindow,
 };
 use postgres::fallible_iterator::FallibleIterator;
-use tracing::{debug, error, info, trace, warn};
+use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 mod history_feed;
+mod schema;
+mod transactions;
+mod undo_list;
 
-const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
-const PG_CATCH_UP_TIMEOUT_SECS_DEFAULT: u64 = 300;
-const PG_CATCH_UP_TIMEOUT_ENV: &str = "MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS";
+pub use schema::{REQUIRED_SCHEMA_VERSION, SCHEMA_VERSION, SchemaError, migrate};
+use schema::{check_server_settings, ensure_schema};
+
 const PG_KEEPALIVE_IDLE_SECS: u64 = 30;
 const PG_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 const PG_KEEPALIVE_RETRIES: u32 = 3;
-/// `TCP_USER_TIMEOUT`: tear down a connection whose sent data stays unacked for
-/// this long. Unlike keepalives — which only probe an *idle* socket — this
-/// fires on a peer that died mid-write, so a consumer killed mid-snapshot (OOM)
-/// has its Postgres backend reaped promptly instead of lingering in `ClientWrite`
-/// holding the events-table lock and stalling every subsequent boot's snapshot
-/// until the catch-up timeout (the lv-8c2f "boot convoy").
-const PG_TCP_USER_TIMEOUT_SECS: u64 = 30;
 const PG_PRODUCER_MAX_BATCH: usize = 256;
 const PG_SNAPSHOT_STORE_BATCH: usize = 512;
+const PG_FETCH_BATCH: i64 = 1000;
 
 type SnapshotEntries = HashMap<Arc<str>, Vec<(Arc<str>, Arc<dyn AnyItem>)>>;
 
@@ -117,22 +114,7 @@ struct PostgresEnvironment {
 }
 
 pub(crate) fn postgres_catch_up_timeout_from_env() -> Result<Option<Duration>, String> {
-    match std::env::var(PG_CATCH_UP_TIMEOUT_ENV) {
-        Ok(value) => parse_postgres_catch_up_timeout(Some(&value)),
-        Err(std::env::VarError::NotPresent) => parse_postgres_catch_up_timeout(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
-            "{PG_CATCH_UP_TIMEOUT_ENV} must be a non-negative integer number of seconds"
-        )),
-    }
-}
-
-fn parse_postgres_catch_up_timeout(value: Option<&str>) -> Result<Option<Duration>, String> {
-    let seconds = value.map_or(Ok(PG_CATCH_UP_TIMEOUT_SECS_DEFAULT), |raw| {
-        raw.parse::<u64>().map_err(|_| {
-            format!("{PG_CATCH_UP_TIMEOUT_ENV} must be a non-negative integer number of seconds")
-        })
-    })?;
-    Ok((seconds != 0).then(|| Duration::from_secs(seconds)))
+    crate::time_limits::POSTGRES_CATCH_UP_TIMEOUT.try_from_env()
 }
 
 /// Read API for durable event history (windback/replay providers).
@@ -150,6 +132,35 @@ impl PostgresHistoryStore {
         validate_ident(&config.table)?;
         validate_ident(&config.channel)?;
         Ok(Self { config })
+    }
+
+    /// Read durable envelopes without discarding provenance. Legacy rows return
+    /// None; metadata is correlation evidence, never verified user identity.
+    ///
+    /// # Errors
+    /// Returns an error when `PostgreSQL` cannot be queried or a row is invalid.
+    pub fn load_records_after_id(
+        &self,
+        after_id: i64,
+        limit: i64,
+    ) -> Result<Vec<(i64, EventRecord)>, String> {
+        let mut client = connect_pg_client(&self.config, "history(load_records_after_id)")?;
+        let sql = format!(
+            "SELECT id, event::text FROM {} WHERE id > $1 ORDER BY id ASC LIMIT $2",
+            qi(&self.config.table)
+        );
+        client
+            .query(&sql, &[&after_id, &limit])
+            .map_err(|e| format!("history query failed: {e}"))?
+            .into_iter()
+            .map(|row| {
+                let id: i64 = row.get(0);
+                let json: String = row.get(1);
+                serde_json::from_str(&json)
+                    .map(|record| (id, record))
+                    .map_err(|e| format!("invalid history record id={id}: {e}"))
+            })
+            .collect()
     }
 
     /// Read events with `id > after_id`, ascending.
@@ -241,19 +252,20 @@ impl PostgresHistoryStore {
         item_id: &str,
         window: &QueryWindow,
     ) -> Result<HistoryPage, String> {
+        let item_types = myko::server::history_storage_types(item_type);
         let mut client = connect_pg_client(&self.config, "history(entity)")?;
         let count_sql = format!(
-            "SELECT COUNT(*)::bigint FROM {} WHERE item_type = $1 AND item_id = $2",
+            "SELECT COUNT(*)::bigint FROM {} WHERE item_type = ANY($1) AND item_id = $2",
             qi(&self.config.table)
         );
         let total_count: i64 = client
-            .query_one(&count_sql, &[&item_type, &item_id])
+            .query_one(&count_sql, &[&item_types, &item_id])
             .map_err(|e| format!("history count query failed: {e}"))?
             .get(0);
         let total_count = usize::try_from(total_count)
             .map_err(|_| "history row count does not fit usize".to_string())?;
         let sql = format!(
-            "SELECT id, created_at, event::text FROM {} WHERE item_type = $1 AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
+            "SELECT id, created_at, event::text FROM {} WHERE item_type = ANY($1) AND item_id = $2 ORDER BY id DESC LIMIT $3 OFFSET $4",
             qi(&self.config.table)
         );
         let limit = i64::try_from(window.limit)
@@ -261,7 +273,7 @@ impl PostgresHistoryStore {
         let offset = i64::try_from(window.offset)
             .map_err(|_| "history page offset is too large".to_string())?;
         let rows = client
-            .query(&sql, &[&item_type, &item_id, &limit, &offset])
+            .query(&sql, &[&item_types, &item_id, &limit, &offset])
             .map_err(|e| format!("history query failed: {e}"))?;
         let events = rows
             .into_iter()
@@ -287,6 +299,7 @@ impl PostgresHistoryStore {
 
 /// `HistoryReplayProvider` backed by `PostgresHistoryStore`.
 pub struct PostgresHistoryReplayProvider {
+    undo_list: Arc<undo_list::Source>,
     config: PostgresConfig,
     committed: Cell<Option<Arc<CommittedHistoryEvent>>, CellMutable>,
 }
@@ -294,7 +307,9 @@ pub struct PostgresHistoryReplayProvider {
 impl PostgresHistoryReplayProvider {
     #[must_use]
     pub fn new(config: PostgresConfig) -> Self {
+        let undo_list = undo_list::Source::shared(&config);
         Self {
+            undo_list,
             config,
             committed: Cell::new(None),
         }
@@ -307,6 +322,67 @@ impl PostgresHistoryReplayProvider {
 }
 
 impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
+    fn undo_list_source(
+        &self,
+        user: &myko::identity::UserId,
+    ) -> Result<Cell<Arc<myko::entities::undo::UndoLogSnapshot>, CellImmutable>, String> {
+        Ok(self.undo_list.watch(user.as_ref()))
+    }
+    fn undo_boundary_exists(&self, id: &str) -> Result<bool, String> {
+        PostgresHistoryStore::new(self.config.clone())?.undo_boundary_exists(id)
+    }
+
+    fn history_identity(&self) -> Option<String> {
+        Some(format!(
+            "postgres:{}:{}",
+            self.config.url, self.config.table
+        ))
+    }
+
+    fn transaction_exists(&self, tx: &str) -> Result<bool, String> {
+        PostgresHistoryStore::new(self.config.clone())?.transaction_exists(tx)
+    }
+
+    fn transaction_history(&self, tx: &str) -> Result<myko::server::TransactionHistory, String> {
+        PostgresHistoryStore::new(self.config.clone())?.transaction_history(tx)
+    }
+
+    fn transaction_history_excluding(
+        &self,
+        tx: &str,
+        ignored: &[Arc<str>],
+    ) -> Result<myko::server::TransactionHistory, String> {
+        PostgresHistoryStore::new(self.config.clone())?.transaction_history_excluding(tx, ignored)
+    }
+
+    fn latest_user_transaction(
+        &self,
+        user: &myko::identity::UserId,
+    ) -> Result<Option<Arc<str>>, String> {
+        PostgresHistoryStore::new(self.config.clone())?.latest_user_transaction(user)
+    }
+
+    fn user_transaction_page(
+        &self,
+        user: &myko::identity::UserId,
+        before_first_id: Option<i64>,
+        limit: usize,
+    ) -> Result<Vec<myko::server::UserTransaction>, String> {
+        PostgresHistoryStore::new(self.config.clone())?.user_transaction_page(
+            user,
+            before_first_id,
+            limit,
+        )
+    }
+
+    fn entity_event_at(
+        &self,
+        key: &myko::server::HistoryEntityKey,
+        row_id: i64,
+    ) -> Result<Option<MEvent>, String> {
+        PostgresHistoryStore::new(self.config.clone())?.entity_event_at(key, row_id)
+    }
+
     fn subscribe_history(
         &self,
         filter: myko::server::HistoryFilter,
@@ -411,7 +487,17 @@ impl myko::server::HistoryReplayProvider for PostgresHistoryReplayProvider {
     }
 }
 
-type ProducerRequest = MEvent;
+enum ProducerRequest {
+    Event(
+        EventRecord,
+        Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ),
+    Barrier(flume::Sender<()>),
+    Complete {
+        tx: String,
+        user: String,
+    },
+}
 
 /// Handle to the `PostgreSQL` producer.
 #[derive(Clone)]
@@ -429,12 +515,57 @@ impl PostgresProducerHandle {
     /// # Errors
     ///
     /// Returns an error when the producer thread is unavailable.
-    pub fn produce(&self, mut event: MEvent) -> Result<(), PersistError> {
+    pub fn produce(&self, event: MEvent) -> Result<(), PersistError> {
+        self.produce_record(EventRecord {
+            event,
+            provenance: None,
+        })
+    }
+
+    fn produce_record(&self, record: EventRecord) -> Result<(), PersistError> {
+        self.produce_record_with_preview(record, None)
+    }
+    fn produce_record_with_preview(
+        &self,
+        mut record: EventRecord,
+        preview: Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ) -> Result<(), PersistError> {
+        // Caller labels are untrusted. PostgreSQL JSONB cannot encode NUL,
+        // and retrying such a sidecar would poison an otherwise valid batch.
+        if record.provenance.as_ref().is_some_and(|provenance| {
+            provenance.request_tx.contains('\0')
+                || provenance
+                    .actor_user_id
+                    .as_ref()
+                    .is_some_and(|user| user.as_ref().contains('\0'))
+                || provenance
+                    .undo_of_tx
+                    .as_ref()
+                    .is_some_and(|tx| tx.contains('\0'))
+                || provenance.command_id.contains('\0')
+                || provenance
+                    .unverified_client_id
+                    .as_ref()
+                    .is_some_and(|id| id.contains('\0'))
+                || provenance.lineage.iter().any(|entry| entry.contains('\0'))
+        }) {
+            let message = "operation provenance contains unsupported null bytes".to_string();
+            self.health.record_dropped(message.clone());
+            return Err(PersistError {
+                entity_type: record.event.item_type,
+                message,
+            });
+        }
+        let event = &mut record.event;
         if event.source_id.is_none() {
             event.source_id = Some(std::sync::Arc::from(self.host_id.to_string()));
         }
         let entity_type = event.item_type.clone();
-        if self.sender.send(event) == Ok(()) {
+        if self
+            .sender
+            .send(ProducerRequest::Event(record, preview))
+            .is_ok()
+        {
             self.health.record_enqueue();
             Ok(())
         } else {
@@ -449,6 +580,56 @@ impl PostgresProducerHandle {
 }
 
 impl Persister for PostgresProducerHandle {
+    fn wants_undo_preview(&self) -> bool {
+        true
+    }
+    fn persist_record_with_preview(
+        &self,
+        record: EventRecord,
+        preview: Option<Arc<myko::entities::undo::UndoPreviewInput>>,
+    ) -> Result<(), PersistError> {
+        self.produce_record_with_preview(record, preview)
+    }
+
+    fn history_identity(&self) -> Option<String> {
+        Some(format!(
+            "postgres:{}:{}",
+            self.config.url, self.config.table
+        ))
+    }
+
+    fn complete_transaction(&self, tx: &str, user: &myko::identity::UserId) -> Result<(), String> {
+        self.sender
+            .send(ProducerRequest::Complete {
+                tx: tx.to_owned(),
+                user: user.to_string(),
+            })
+            .map_err(|_| "Postgres producer stopped".to_owned())
+    }
+
+    fn flush(&self) -> Result<(), String> {
+        let (tx, rx) = flume::bounded(1);
+        self.sender
+            .send(ProducerRequest::Barrier(tx))
+            .map_err(|_| "Postgres producer stopped".to_owned())?;
+        crate::time_limits::POSTGRES_FLUSH_TIMEOUT
+            .recv(&rx)
+            .map_err(|_| {
+                format!(
+                    "timed out waiting for durable PostgreSQL persistence (raise {})",
+                    crate::time_limits::POSTGRES_FLUSH_TIMEOUT.env()
+                )
+            })
+    }
+
+    fn persist_record(&self, record: EventRecord) -> Result<(), PersistError> {
+        self.produce_record(record)
+    }
+
+    fn supports_provenance(&self) -> bool {
+        true
+    }
+
     fn persist(&self, event: MEvent) -> Result<(), PersistError> {
         self.produce(event)
     }
@@ -507,87 +688,78 @@ fn run_producer_loop(
     rx: &flume::Receiver<ProducerRequest>,
     health: &Arc<PersistHealth>,
 ) {
+    let undo_list = undo_list::Source::shared(config);
     let mut client: Option<Client> = None;
-    let mut retry_batch: Vec<MEvent> = Vec::new();
-
+    let mut batch = Vec::<EventRecord>::new();
+    let mut previews = Vec::new();
+    let mut pending: Option<ProducerRequest> = None;
     loop {
-        // NOTE(ts): Collect a batch — start with any retry events, then drain the channel.
-        let mut batch: Vec<MEvent> = Vec::new();
-        if retry_batch.is_empty() {
+        if batch.is_empty() && pending.is_none() {
             match rx.recv() {
-                Ok(ev) => batch.push(ev),
-                Err(_) => break, // channel closed
-            }
-        } else {
-            std::mem::swap(&mut batch, &mut retry_batch);
-        }
-        // NOTE(ts): Drain additional ready events up to the batch limit.
-        while batch.len() < PG_PRODUCER_MAX_BATCH {
-            match rx.try_recv() {
-                Ok(ev) => batch.push(ev),
+                Ok(ProducerRequest::Event(record, preview)) => {
+                    batch.push(record);
+                    previews.push(preview);
+                }
+                Ok(request) => pending = Some(request),
                 Err(_) => break,
             }
         }
-
+        while pending.is_none() && batch.len() < PG_PRODUCER_MAX_BATCH {
+            match rx.try_recv() {
+                Ok(ProducerRequest::Event(record, preview)) => {
+                    batch.push(record);
+                    previews.push(preview);
+                }
+                Ok(request) => pending = Some(request),
+                Err(_) => break,
+            }
+        }
         if client.is_none() {
             client = connect_producer_client(config);
         }
-
-        let batch_len = batch.len();
-        let pending = rx.len();
-        if pending > 1000 {
-            trace!(
-                "Postgres producer backlog: {} pending events in channel",
-                pending
-            );
-        }
-        if tracing::enabled!(tracing::Level::DEBUG) {
-            let mut counts: std::collections::BTreeMap<(&str, &str), usize> =
-                std::collections::BTreeMap::new();
-            for event in &batch {
-                let kind = match event.change_type {
-                    MEventType::SET => "SET",
-                    MEventType::DEL => "DEL",
-                };
-                let count = counts.entry((&*event.item_type, kind)).or_insert(0);
-                *count = count.saturating_add(1);
-            }
-            let summary: Vec<String> = counts
-                .iter()
-                .map(|((t, k), n)| format!("{t}:{k}={n}"))
-                .collect();
-            debug!(
-                "[pg-producer] batch_len={} pending_after={} kinds=[{}]",
-                batch_len,
-                pending,
-                summary.join(", ")
-            );
-        }
-        if let Some(c) = client.as_mut() {
-            match insert_event_batch(c, config, &batch) {
-                Ok(()) => {
-                    health.record_success_batch(u64::try_from(batch_len).unwrap_or(u64::MAX));
+        let mut sequence = undo_list
+            .gate
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let result = if let Some(client) = client.as_mut() {
+            insert_event_batch(client, config, &batch).and_then(|mut changes| {
+                for (change, preview) in changes.iter_mut().zip(&previews) { change.preview.clone_from(preview); }
+                undo_list.records(&mut sequence, changes);
+                if let Some(ProducerRequest::Complete { tx, user }) = &pending {
+                    let completions = qi(&format!("{}_transactions", config.table));
+                    let table = qi(&config.table);
+                    let completed = client.query_opt(&format!("INSERT INTO {completions} (tx, user_id, first_id, last_id)
+                        SELECT $1, $2, MIN(id), MAX(id) FROM {table} WHERE tx = $1 HAVING MAX(id) IS NOT NULL
+                        ON CONFLICT (tx) DO UPDATE SET user_id = EXCLUDED.user_id, first_id = EXCLUDED.first_id, last_id = EXCLUDED.last_id RETURNING first_id"), &[tx, user])?;
+                    if let Some(row) = completed { undo_list.complete(&mut sequence, tx, user, row.get(0)); }
                 }
-                Err(err) => {
-                    let msg =
-                        format_pg_error("insert_event_batch(producer)", Some(&config.url), &err);
-                    error!("{}", msg);
-                    health.record_error_no_dequeue(msg);
-                    client = None;
-                    retry_batch = batch;
-                    // NOTE(ts): Back off before retrying to avoid tight-looping on persistent failures.
-                    std::thread::sleep(Duration::from_secs(1));
-                }
-            }
+                Ok(())
+            })
         } else {
-            let msg = format!(
-                "Postgres producer connection failed (url: {})",
-                redact_pg_url(&config.url),
-            );
-            error!("{}", msg);
-            health.record_error_no_dequeue(msg);
-            retry_batch = batch;
+            health.record_error_no_dequeue("Postgres producer connection failed".into());
             std::thread::sleep(Duration::from_secs(1));
+            continue;
+        };
+        drop(sequence);
+        match result {
+            Ok(()) => {
+                health.record_success_batch(u64::try_from(batch.len()).unwrap_or(u64::MAX));
+                batch.clear();
+                previews.clear();
+                if let Some(ProducerRequest::Barrier(reply)) = pending.take() {
+                    let _ = reply.send(());
+                }
+            }
+            Err(error) => {
+                let message =
+                    format_pg_error("persist transaction history", Some(&config.url), &error);
+                // NOTE(ts): The batch stays queued and retries; without this log a schema problem
+                // only surfaces as a flush timeout far from its cause.
+                error!("{message}");
+                health.record_error_no_dequeue(message);
+                client = None;
+                std::thread::sleep(Duration::from_secs(1));
+            }
         }
     }
 }
@@ -597,10 +769,7 @@ fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
         Ok(mut c) => match ensure_schema(&mut c, config) {
             Ok(()) => Some(c),
             Err(err) => {
-                error!(
-                    "{}",
-                    format_pg_error("ensure_schema(producer)", Some(&config.url), &err)
-                );
+                error!("{}", err.describe("ensure_schema(producer)", &config.url));
                 None
             }
         },
@@ -611,24 +780,44 @@ fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
     }
 }
 
+fn invalidate_transaction_completions(
+    client: &mut Client,
+    config: &PostgresConfig,
+    events: &[EventRecord],
+) -> Result<(), ::postgres::Error> {
+    let completions = qi(&format!("{}_transactions", config.table));
+    let transactions: Vec<_> = events
+        .iter()
+        .map(|record| record.event.tx.to_string())
+        .collect();
+    client.execute(
+        &format!("DELETE FROM {completions} WHERE tx = ANY($1)"),
+        &[&transactions],
+    )?;
+    Ok(())
+}
+
+#[allow(clippy::too_many_lines)]
 fn insert_event_batch(
     client: &mut Client,
     config: &PostgresConfig,
-    events: &[MEvent],
-) -> Result<(), ::postgres::Error> {
+    events: &[EventRecord],
+) -> Result<Vec<myko::entities::undo::UndoListChange>, ::postgres::Error> {
     if events.is_empty() {
-        return Ok(());
+        return Ok(Vec::new());
     }
 
     let table = qi(&config.table);
+    invalidate_transaction_completions(client, config, events)?;
 
     // NOTE(ts): Single event — skip transaction overhead.
     if events.len() == 1 {
-        let Some(event) = events.first() else {
-            return Ok(());
+        let Some(record) = events.first() else {
+            return Ok(Vec::new());
         };
+        let event = &record.event;
         let sql = format!(
-            "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb)"
+            "INSERT INTO {table} (item_type, item_id, change_type, created_at, tx, source_id, event) VALUES ($1, $2, $3, ($4::text)::timestamptz, $5, ($6::text), ($7::text)::jsonb) RETURNING id"
         );
         let item_id = event
             .item
@@ -636,7 +825,7 @@ fn insert_event_batch(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let event_json = serde_json::to_string(record).unwrap_or_else(|_| "{}".to_string());
         let change_type = match event.change_type {
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
@@ -645,7 +834,7 @@ fn insert_event_batch(
         let created_at: &str = &event.created_at;
         let tx: &str = &event.tx;
         let source_id: Option<&str> = event.source_id.as_deref();
-        client.execute(
+        let row = client.query_one(
             &sql,
             &[
                 &item_type,
@@ -657,7 +846,10 @@ fn insert_event_batch(
                 &event_json,
             ],
         )?;
-        return Ok(());
+        return Ok(vec![myko::entities::undo::UndoListChange::from_record(
+            row.get(0),
+            record,
+        )]);
     }
 
     // NOTE(ts): Build a multi-row INSERT for the batch within a single transaction.
@@ -666,7 +858,8 @@ fn insert_event_batch(
     );
     let mut params: Vec<Box<dyn postgres::types::ToSql + Sync>> =
         Vec::with_capacity(events.len().saturating_mul(7));
-    for (i, event) in events.iter().enumerate() {
+    for (i, record) in events.iter().enumerate() {
+        let event = &record.event;
         if i > 0 {
             sql.push_str(", ");
         }
@@ -688,7 +881,7 @@ fn insert_event_batch(
             .and_then(|v| v.as_str())
             .unwrap_or("unknown")
             .to_string();
-        let event_json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
+        let event_json = serde_json::to_string(record).unwrap_or_else(|_| "{}".to_string());
         let change_type = match event.change_type {
             MEventType::SET => "SET",
             MEventType::DEL => "DEL",
@@ -710,11 +903,16 @@ fn insert_event_batch(
     let param_refs: Vec<&(dyn postgres::types::ToSql + Sync)> =
         params.iter().map(std::convert::AsRef::as_ref).collect();
 
+    sql.push_str(" RETURNING id");
     let mut txn = client.transaction()?;
-    txn.execute(&sql, &param_refs)?;
+    let rows = txn.query(&sql, &param_refs)?;
     txn.commit()?;
 
-    Ok(())
+    Ok(rows
+        .iter()
+        .zip(events)
+        .map(|(row, record)| myko::entities::undo::UndoListChange::from_record(row.get(0), record))
+        .collect())
 }
 
 /// Shared status for startup catch-up.
@@ -860,45 +1058,50 @@ fn load_consumer_snapshot(
     host_id: &str,
     handler_registry: &Arc<HandlerRegistry>,
     registry: &Arc<StoreRegistry>,
-) -> Result<(i64, usize, String), String> {
+) -> Result<(i64, usize), String> {
     info!(
         "PostgresConsumer started (table={}, channel={})",
         config.table, config.channel
     );
-    let table = qi(&config.table);
-    let high_water_sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
-    let high_water_row = reader
-        .query_one(&high_water_sql, &[])
-        .map_err(|error| format_pg_error("query(high_water)", Some(&config.url), &error))?;
-    let high_water: i64 = high_water_row.get(0);
-    // NOTE(ts): Keep latest-ID selection covered by the item_latest index; inspect
-    // change_type only after selecting each entity's latest event, including deletes.
-    let snapshot_sql = format!(
-        "
-        WITH latest AS (
-            SELECT DISTINCT ON (item_type, item_id) id
-            FROM {table}
-            WHERE id <= $1
-            ORDER BY item_type, item_id, id DESC
+    let pg_error = |role: &str| {
+        let url = config.url.clone();
+        let role = role.to_owned();
+        move |error: postgres::Error| format_pg_error(&role, Some(&url), &error)
+    };
+    // NOTE(ts): One snapshot for the high-water mark and the state read, so the state is
+    // exactly the log up to high_water and catch-up resumes after it without a gap.
+    let mut snapshot = reader
+        .build_transaction()
+        .isolation_level(postgres::IsolationLevel::RepeatableRead)
+        .read_only(true)
+        .start()
+        .map_err(pg_error("begin(snapshot)"))?;
+    let high_water: i64 = snapshot
+        .query_one(
+            &format!("SELECT COALESCE(MAX(id), 0) FROM {}", qi(&config.table)),
+            &[],
         )
-        SELECT e.id, e.event::text
-        FROM latest
-        JOIN {table} e ON e.id = latest.id
-        WHERE e.change_type = 'SET'
-        ORDER BY e.id ASC
-        "
-    );
-    let high_water_param: &(dyn postgres::types::ToSql + Sync) = &high_water;
-    let mut rows = reader
-        .query_raw(&snapshot_sql, [high_water_param])
-        .map_err(|error| {
-            format_pg_error("query(snapshot latest events)", Some(&config.url), &error)
-        })?;
+        .map_err(pg_error("query(high_water)"))?
+        .get(0);
+    let source = if schema::latest_table_ready(&mut snapshot, &config.table)
+        .map_err(pg_error("query(schema version)"))?
+    {
+        SnapshotSource::LatestTable
+    } else {
+        SnapshotSource::EventsSkipScan
+    };
+    info!("Postgres snapshot source: {source:?}");
+    let snapshot_types = snapshot_item_types(handler_registry);
+    let params: [&(dyn postgres::types::ToSql + Sync); 2] = [&high_water, &snapshot_types];
+    let mut rows = snapshot
+        .query_raw(&snapshot_sql(&config.table, source), params)
+        .map_err(pg_error("query(snapshot latest events)"))?;
     let mut count = 0_usize;
     let mut pending = SnapshotEntries::new();
-    while let Some(row) = rows.next().map_err(|error| {
-        format_pg_error("stream(snapshot latest events)", Some(&config.url), &error)
-    })? {
+    while let Some(row) = rows
+        .next()
+        .map_err(pg_error("stream(snapshot latest events)"))?
+    {
         let id: i64 = row.get(0);
         let event_json: String = row.get(1);
         match MEvent::from_str_trim(&event_json) {
@@ -909,11 +1112,82 @@ fn load_consumer_snapshot(
         }
         count = count.saturating_add(1);
     }
+    drop(rows);
+    snapshot.commit().map_err(pg_error("commit(snapshot)"))?;
     flush_snapshot_entries(registry, pending);
-    let fetch_sql = format!(
-        "SELECT id, item_type, item_id, event::text FROM {table} WHERE id > $1 ORDER BY id ASC LIMIT $2"
-    );
-    Ok((high_water, count, fetch_sql))
+    Ok((high_water, count))
+}
+
+/// Types whose events this server can parse; the snapshot only hydrates those.
+fn snapshot_item_types(handler_registry: &HandlerRegistry) -> Vec<String> {
+    let mut types: Vec<String> = handler_registry
+        .entity_types()
+        .map(ToString::to_string)
+        .collect();
+    types.sort();
+    types
+}
+
+/// Parseable types plus their history storage aliases, which tailing observes for history feeds.
+fn tailed_item_types(handler_registry: &HandlerRegistry) -> Vec<String> {
+    let mut types: Vec<String> = handler_registry
+        .entity_types()
+        .flat_map(|kind| myko::server::history_storage_types(kind))
+        .collect();
+    types.sort();
+    types.dedup();
+    types
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SnapshotSource {
+    /// `{table}_latest`, once its backfill migration is recorded.
+    LatestTable,
+    /// Loose index scan over `item_latest_idx`: each step jumps to the next item of the
+    /// same type, so cost scales with this server's item count rather than the log length.
+    EventsSkipScan,
+}
+
+/// Latest event at or below `$1` for every item of the types in `$2`, keeping SET rows.
+fn snapshot_sql(table: &str, source: SnapshotSource) -> String {
+    let events = qi(table);
+    match source {
+        SnapshotSource::LatestTable => format!(
+            "SELECT last_id, event::text FROM {} \
+             WHERE change_type = 'SET' AND item_type = ANY($2) AND last_id <= $1 ORDER BY last_id ASC",
+            qi(&format!("{table}_latest"))
+        ),
+        // NOTE(ts): Select each item's latest event, deletes included, before filtering on
+        // change_type; filtering first would resurrect an item from its last SET.
+        SnapshotSource::EventsSkipScan => format!(
+            "
+            WITH RECURSIVE latest AS (
+                SELECT first.item_type, first.item_id, first.id
+                FROM unnest($2::text[]) AS kinds(item_type)
+                CROSS JOIN LATERAL (
+                    SELECT m.item_type, m.item_id, m.id FROM {events} m
+                    WHERE m.item_type = kinds.item_type AND m.id <= $1
+                    ORDER BY m.item_id, m.id DESC
+                    LIMIT 1
+                ) first
+                UNION ALL
+                SELECT next.item_type, next.item_id, next.id
+                FROM latest
+                CROSS JOIN LATERAL (
+                    SELECT m.item_type, m.item_id, m.id FROM {events} m
+                    WHERE m.item_type = latest.item_type AND m.item_id > latest.item_id AND m.id <= $1
+                    ORDER BY m.item_id, m.id DESC
+                    LIMIT 1
+                ) next
+            )
+            SELECT e.id, e.event::text
+            FROM latest
+            JOIN {events} e ON e.id = latest.id
+            WHERE e.change_type = 'SET'
+            ORDER BY e.id ASC
+            "
+        ),
+    }
 }
 
 fn flush_snapshot_entries(registry: &StoreRegistry, pending: SnapshotEntries) {
@@ -968,8 +1242,16 @@ fn run_consumer_loop(
 ) -> Result<(), String> {
     let mut reader = connect_consumer_client("reader", config)?;
     let mut listener = connect_listener_client(config)?;
-    let (high_water, snapshot_count, fetch_sql) =
+    check_server_settings(&mut reader);
+    let (high_water, snapshot_count) =
         load_consumer_snapshot(&mut reader, config, host_id, handler_registry, registry)?;
+    let table = qi(&config.table);
+    let high_water_sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
+    let fetch_sql = format!(
+        "SELECT id, item_type, item_id, event::text FROM {table} \
+         WHERE id > $1 AND id <= $2 AND item_type = ANY($3) ORDER BY id ASC LIMIT $4"
+    );
+    let tailed_types = tailed_item_types(handler_registry);
     info!(
         "Postgres snapshot loaded latest state rows={} high_water={}",
         snapshot_count, high_water
@@ -979,8 +1261,25 @@ fn run_consumer_loop(
     let mut initial_done = false;
 
     loop {
-        let rows = match reader.query(&fetch_sql, &[&last_seen_id, &1000_i64]) {
-            Ok(rows) => rows,
+        // NOTE(ts): Bound each pass by the current max id so rows of foreign types advance
+        // last_seen_id too; otherwise every poll would rescan another app's tail.
+        let fetched = reader.query_one(&high_water_sql, &[]).and_then(|row| {
+            let bound: i64 = row.get(0);
+            reader
+                .query(
+                    &fetch_sql,
+                    &[&last_seen_id, &bound, &tailed_types, &PG_FETCH_BATCH],
+                )
+                .map(|rows| (bound, rows))
+        });
+        let rows = match fetched {
+            Ok((bound, rows)) => {
+                let full = i64::try_from(rows.len()).is_ok_and(|len| len >= PG_FETCH_BATCH);
+                if !full {
+                    last_seen_id = last_seen_id.max(bound);
+                }
+                rows
+            }
             Err(err) => {
                 warn!(
                     "{}",
@@ -997,7 +1296,7 @@ fn run_consumer_loop(
                 let item_type: String = row.get(1);
                 let item_id: String = row.get(2);
                 let event_json: String = row.get(3);
-                last_seen_id = id;
+                last_seen_id = last_seen_id.max(id);
 
                 match MEvent::from_str_trim(&event_json) {
                     Ok(event) => {
@@ -1053,11 +1352,12 @@ fn connect_consumer_client(role: &str, config: &PostgresConfig) -> Result<Client
     loop {
         match connect_pg_client(config, role) {
             Ok(mut client) => {
-                if let Err(err) = ensure_schema(&mut client, config) {
-                    warn!(
+                match ensure_schema(&mut client, config) {
+                    Ok(()) => {}
+                    Err(err) => warn!(
                         "{}",
-                        format_pg_error(&format!("ensure_schema({role})"), Some(&config.url), &err)
-                    );
+                        err.describe(&format!("ensure_schema({role})"), &config.url)
+                    ),
                 }
                 return Ok(client);
             }
@@ -1089,6 +1389,17 @@ fn connect_listener_client(config: &PostgresConfig) -> Result<Client, String> {
 }
 
 fn apply_remote_event(
+    event: &MEvent,
+    host_id: &str,
+    handler_registry: &Arc<HandlerRegistry>,
+    registry: &Arc<StoreRegistry>,
+) {
+    registry.with_mutation(|| {
+        apply_remote_event_coordinated(event, host_id, handler_registry, registry);
+    });
+}
+
+fn apply_remote_event_coordinated(
     event: &MEvent,
     host_id: &str,
     handler_registry: &Arc<HandlerRegistry>,
@@ -1129,49 +1440,6 @@ fn apply_remote_event(
             }
         }
     }
-}
-
-fn ensure_schema(client: &mut Client, config: &PostgresConfig) -> Result<(), ::postgres::Error> {
-    let table = qi(&config.table);
-    let idx_tx = qi(&format!("{}_tx_idx", config.table));
-    let idx_item = qi(&format!("{}_item_type_item_id_idx", config.table));
-    let idx_item_latest = qi(&format!("{}_item_latest_idx", config.table));
-    let idx_created = qi(&format!("{}_created_at_idx", config.table));
-    let trigger_fn = qi(&format!("{}_notify_insert_fn", config.table));
-    let trigger_name = qi(&format!("{}_notify_insert_trigger", config.table));
-
-    client.batch_execute(&format!(
-        "
-        CREATE TABLE IF NOT EXISTS {table} (
-            id BIGSERIAL PRIMARY KEY,
-            item_type TEXT NOT NULL,
-            item_id TEXT NOT NULL,
-            change_type TEXT NOT NULL,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            tx TEXT NOT NULL,
-            source_id TEXT,
-            event JSONB NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS {idx_tx} ON {table} (tx);
-        CREATE INDEX IF NOT EXISTS {idx_item} ON {table} (item_type, item_id);
-        CREATE INDEX IF NOT EXISTS {idx_item_latest} ON {table} (item_type, item_id, id DESC);
-        CREATE INDEX IF NOT EXISTS {idx_created} ON {table} (created_at);
-        CREATE OR REPLACE FUNCTION {trigger_fn}() RETURNS trigger AS $$
-        BEGIN
-            PERFORM pg_notify('{channel}', NEW.id::text);
-            RETURN NEW;
-        END;
-        $$ LANGUAGE plpgsql;
-        DROP TRIGGER IF EXISTS {trigger_name} ON {table};
-        CREATE TRIGGER {trigger_name}
-            AFTER INSERT ON {table}
-            FOR EACH ROW
-            EXECUTE FUNCTION {trigger_fn}();
-        ",
-        channel = config.channel
-    ))?;
-
-    Ok(())
 }
 
 fn validate_ident(name: &str) -> Result<(), String> {
@@ -1262,15 +1530,21 @@ fn connect_pg_client(config: &PostgresConfig, role: &str) -> Result<Client, Stri
     let mut client_config = parse_pg_client_config(config, role)?;
 
     // Avoid default 2h keepalive-idle so long-lived idle sockets are detected quickly.
-    client_config.connect_timeout(Duration::from_secs(PG_CONNECT_TIMEOUT_SECS));
+    if let Some(limit) = crate::time_limits::POSTGRES_CONNECT_TIMEOUT.get() {
+        client_config.connect_timeout(limit);
+    }
     client_config.keepalives(true);
     client_config.keepalives_idle(Duration::from_secs(PG_KEEPALIVE_IDLE_SECS));
     client_config.keepalives_interval(Duration::from_secs(PG_KEEPALIVE_INTERVAL_SECS));
     client_config.keepalives_retries(PG_KEEPALIVE_RETRIES);
-    // Reap a peer that died mid-write, which keepalives (idle-only) miss — see
-    // PG_TCP_USER_TIMEOUT_SECS. Applies to every role; on a live connection the
-    // data is acked normally so it never fires.
-    client_config.tcp_user_timeout(Duration::from_secs(PG_TCP_USER_TIMEOUT_SECS));
+    // NOTE(ts): `TCP_USER_TIMEOUT` reaps a peer that died mid-write, which keepalives
+    // (idle-only) miss: a consumer killed mid-snapshot (OOM) otherwise leaves its backend
+    // in `ClientWrite` holding the events-table lock, stalling every later boot's snapshot
+    // until the catch-up timeout (the lv-8c2f "boot convoy"). On a live connection the data
+    // is acked normally so it never fires.
+    if let Some(limit) = crate::time_limits::POSTGRES_TCP_USER_TIMEOUT.get() {
+        client_config.tcp_user_timeout(limit);
+    }
 
     client_config
         .connect(NoTls)
@@ -1366,31 +1640,219 @@ mod tests {
         assert!(DateTime::parse_from_rfc3339(&wire_timestamp).is_ok());
         assert_eq!(wire_timestamp, "2026-05-03T03:09:37.123456+00:00");
     }
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use super::*;
+    use myko::server::OperationProvenance;
 
     #[test]
-    fn postgres_catch_up_timeout_defaults_to_five_minutes() {
-        assert_eq!(
-            parse_postgres_catch_up_timeout(None),
-            Ok(Some(Duration::from_mins(5)))
+    #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]
+    #[allow(clippy::too_many_lines)]
+    fn command_transaction_survives_cascades_and_durable_history() -> anyhow::Result<()> {
+        use myko::{
+            command::CommandContext,
+            entities::{
+                client::Client as ConnectedClient,
+                server::{Server, ServerId},
+            },
+            prelude::EventPublishing,
+            request::RequestContext,
+            search::SearchIndex,
+            server::{
+                MykoServerContext, MykoServerRuntime, RelationshipManager,
+                persister::PersisterRouter,
+            },
+        };
+
+        let config = PostgresConfig {
+            url: std::env::var("MYKO_PROVENANCE_TEST_POSTGRES")?,
+            table: "transaction_test_events".into(),
+            channel: "transaction_test_events".into(),
+        };
+        let mut client = Client::connect(&config.url, NoTls)?;
+        ensure_schema(&mut client, &config)?;
+        client.batch_execute("TRUNCATE transaction_test_events RESTART IDENTITY")?;
+        let host_id = Uuid::new_v4();
+        let producer = PostgresProducer::new(&config, host_id).map_err(anyhow::Error::msg)?;
+        let mut router = PersisterRouter::default();
+        router.set_default(Some(Arc::new(producer.handle())));
+        let server = Arc::new(MykoServerContext::new(
+            host_id,
+            Arc::new(StoreRegistry::new()),
+            Arc::new(HandlerRegistry::new()),
+            Arc::new(RelationshipManager::new()),
+            Arc::new(router),
+            Arc::new(SearchIndex::new()),
+            MykoServerRuntime {
+                peer_clients: Arc::new(dashmap::DashMap::new()),
+                event_sink: None,
+                history_replay: None,
+            },
+        ));
+        let request = Arc::new(RequestContext::from_client(
+            "originating-command-tx".into(),
+            "connection".into(),
+            host_id,
+        ));
+        let ctx = CommandContext::new("EditTree".into(), request, server);
+        let parent = Server {
+            id: "parent".into(),
+            version: "test".into(),
+            address: "test".into(),
+            port: 0,
+            started_at: "test".into(),
+        };
+        ctx.emit_set(&parent)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+        ctx.emit_set(&ConnectedClient {
+            id: "child".into(),
+            server_id: ServerId::from(Arc::<str>::from("parent")),
+            address: None,
+            windback: None,
+        })
+        .map_err(|error| anyhow::anyhow!(error.message))?;
+        ctx.emit_del(&parent)
+            .map_err(|error| anyhow::anyhow!(error.message))?;
+
+        let history = PostgresHistoryStore::new(config).map_err(anyhow::Error::msg)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let records = loop {
+            let records = history
+                .load_records_after_id(0, 10)
+                .map_err(anyhow::Error::msg)?;
+            if records.len() == 4 {
+                break records;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "command events were not persisted"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        anyhow::ensure!(
+            records
+                .iter()
+                .all(|(_, record)| record.event.tx.as_ref() == "originating-command-tx")
         );
-    }
-
-    #[test]
-    fn postgres_catch_up_timeout_accepts_positive_seconds() {
-        assert_eq!(
-            parse_postgres_catch_up_timeout(Some("900")),
-            Ok(Some(Duration::from_mins(15)))
+        anyhow::ensure!(
+            records
+                .iter()
+                .any(|(_, record)| record.event.change_type == MEventType::DEL
+                    && record.event.item_type.as_ref() == "Client")
         );
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM transaction_test_events WHERE tx = $1",
+                &[&"originating-command-tx"],
+            )?
+            .get(0);
+        anyhow::ensure!(
+            count == 4,
+            "the indexed transaction must group every command and cascade event"
+        );
+        Ok(())
     }
 
     #[test]
-    fn postgres_catch_up_timeout_accepts_zero_as_no_limit() {
-        assert_eq!(parse_postgres_catch_up_timeout(Some("0")), Ok(None));
-    }
-
-    #[test]
-    fn postgres_catch_up_timeout_rejects_negative_and_invalid_values() {
-        assert!(parse_postgres_catch_up_timeout(Some("-1")).is_err());
-        assert!(parse_postgres_catch_up_timeout(Some("forever")).is_err());
+    #[ignore = "requires an isolated MYKO_PROVENANCE_TEST_POSTGRES database"]
+    fn durable_envelopes_survive_single_batch_and_background_producer() -> anyhow::Result<()> {
+        let url = std::env::var("MYKO_PROVENANCE_TEST_POSTGRES")?;
+        let config = PostgresConfig {
+            url: url.clone(),
+            table: "provenance_test_events".into(),
+            channel: "provenance_test_events".into(),
+        };
+        let mut client = Client::connect(&url, NoTls)?;
+        ensure_schema(&mut client, &config)?;
+        client.batch_execute("TRUNCATE provenance_test_events RESTART IDENTITY")?;
+        let make = |id: &str| -> anyhow::Result<EventRecord> {
+            Ok(EventRecord {
+                event: serde_json::from_value(serde_json::json!({
+                    "item": {"id": id}, "itemType": "TestEntity", "changeType": "SET",
+                    "createdAt": "2026-11-05T00:00:00Z", "tx": "legacy-event-tx", "sourceId": null
+                }))?,
+                provenance: Some(OperationProvenance {
+                    request_tx: "untrusted-request-label".into(),
+                    actor_user_id: None,
+                    undo_of_tx: None,
+                    unverified_client_id: Some("connection-only".into()),
+                    command_id: "EditTree".into(),
+                    lineage: vec!["client".into()],
+                }),
+            })
+        };
+        let single = make("single")?;
+        insert_event_batch(&mut client, &config, std::slice::from_ref(&single))?;
+        let batch = vec![
+            make("batch-one")?,
+            EventRecord {
+                event: make("legacy")?.event,
+                provenance: None,
+            },
+        ];
+        insert_event_batch(&mut client, &config, &batch)?;
+        let producer =
+            PostgresProducer::new(&config, Uuid::new_v4()).map_err(anyhow::Error::msg)?;
+        let handle = producer.handle();
+        anyhow::ensure!(handle.supports_provenance());
+        let mut invalid = make("invalid")?;
+        if let Some(provenance) = &mut invalid.provenance {
+            provenance.request_tx = "untrusted\0label".into();
+        }
+        anyhow::ensure!(
+            handle.persist_record(invalid).is_err(),
+            "invalid metadata must fail before enqueue, without poisoning subsequent writes"
+        );
+        handle.persist_record(make("worker")?)?;
+        let history = PostgresHistoryStore::new(config.clone()).map_err(anyhow::Error::msg)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let rows = loop {
+            let rows = history
+                .load_records_after_id(0, 10)
+                .map_err(anyhow::Error::msg)?;
+            if rows.len() == 4 {
+                break rows;
+            }
+            anyhow::ensure!(
+                std::time::Instant::now() < deadline,
+                "producer did not persist the record"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        anyhow::ensure!(rows.first().map(|(_, record)| record) == Some(&single));
+        anyhow::ensure!(rows.iter().any(|(_, record)| {
+            record
+                .event
+                .item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                == Some("legacy")
+                && record.provenance.is_none()
+        }));
+        anyhow::ensure!(rows.iter().any(|(_, record)| {
+            record
+                .event
+                .item
+                .get("id")
+                .and_then(serde_json::Value::as_str)
+                == Some("worker")
+                && record.provenance == single.provenance
+                && record.event.source_id.is_some()
+        }));
+        let old_rows = history.load_after_id(0, 10).map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            old_rows.len() == rows.len(),
+            "legacy history reader still accepts envelopes"
+        );
+        let count: i64 = client
+            .query_one(
+                "SELECT COUNT(*) FROM provenance_test_events WHERE tx = 'legacy-event-tx'",
+                &[],
+            )?
+            .get(0);
+        anyhow::ensure!(count == 4, "indexed tx column agrees with envelope");
+        Ok(())
     }
 }

@@ -83,6 +83,9 @@ use super::item::AnyItem;
 /// Type alias for a function that extracts an FK value from an entity
 pub type FkExtractor = fn(&dyn std::any::Any) -> Option<Arc<str>>;
 
+/// Extract runtime-typed, non-owning references from an entity payload.
+pub type ReferenceExtractor = fn(&dyn std::any::Any) -> Vec<crate::graph::EntityRef>;
+
 /// Type alias for a function that extracts an array of IDs from an entity
 pub type ArrayExtractor = fn(&dyn std::any::Any) -> Option<Vec<Arc<str>>>;
 
@@ -217,6 +220,29 @@ pub fn iter_relations() -> impl Iterator<Item = &'static RelationRegistration> {
     inventory::iter::<RelationRegistration>()
 }
 
+/// JSON fields that contain primary, foreign, owned, or framework identifiers.
+/// Separate registration keeps existing relationship implementations compatible.
+pub struct IdFieldRegistration {
+    pub entity_type: &'static str,
+    pub field_name_json: &'static str,
+}
+inventory::collect!(IdFieldRegistration);
+
+/// Whether a field is declared as an identifier by its entity definition.
+#[must_use]
+pub fn is_id_field(entity_type: &str, field_name: &str) -> bool {
+    static FIELDS: std::sync::OnceLock<std::collections::HashSet<(&'static str, &'static str)>> =
+        std::sync::OnceLock::new();
+    FIELDS
+        .get_or_init(|| {
+            inventory::iter::<IdFieldRegistration>
+                .into_iter()
+                .map(|field| (field.entity_type, field.field_name_json))
+                .collect()
+        })
+        .contains(&(entity_type, field_name))
+}
+
 /// Registration for entities that have a `client_id` field.
 /// When present, the server will auto-populate this field with the `client_id`
 /// of the WebSocket connection that sent the event.
@@ -347,4 +373,16 @@ mod tests {
             }
         ));
     }
+}
+
+/// Non-owning, runtime-typed references extracted from an entity payload.
+/// Targets are retained as unresolved intent when absent and are not owned or exported.
+pub struct ReferenceRegistration {
+    pub local_type: &'static str,
+    pub extract_refs: ReferenceExtractor,
+}
+inventory::collect!(ReferenceRegistration);
+
+pub fn iter_references() -> impl Iterator<Item = &'static ReferenceRegistration> {
+    inventory::iter::<ReferenceRegistration>()
 }

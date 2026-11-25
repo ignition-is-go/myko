@@ -11,6 +11,7 @@ use crate::{DeriveCtx, relationship, setter};
 
 #[derive(Default)]
 pub struct ItemArgs {
+    pub undoable: bool,
     pub ingest_buffer_ms: Option<u64>,
     pub post_deserialize: Option<ExprPath>,
 }
@@ -21,8 +22,19 @@ impl Parse for ItemArgs {
 
         while !input.is_empty() {
             let ident: syn::Ident = input.parse()?;
+            if ident == "undoable" {
+                args.undoable = if input.peek(Token![=]) {
+                    input.parse::<Token![=]>()?;
+                    input.parse::<syn::LitBool>()?.value
+                } else {
+                    true
+                };
+                if !input.is_empty() {
+                    input.parse::<Token![,]>()?;
+                }
+                continue;
+            }
             input.parse::<Token![=]>()?;
-
             if ident == "ingest_buffer_ms" {
                 let value: LitInt = input.parse()?;
                 args.ingest_buffer_ms = Some(value.base10_parse()?);
@@ -107,6 +119,7 @@ fn generate_get_all_query(
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                if let Some(source) = #krate::query::registered_entity_source(&ctx.query_context, <#name as #krate::prelude::Eventable>::ENTITY_NAME_STATIC, ctx.query.as_ref()) { return Some(source); }
                 // Registry stores are already partitioned by entity type, so returning
                 // the raw map avoids installing a no-op `select(|_| true)` runtime.
                 Some(
@@ -150,6 +163,7 @@ fn generate_get_by_ids_query(
             where
                 Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                if let Some(source) = #krate::query::registered_entity_source(&ctx.query_context, #name_str, ctx.query.as_ref()) { return Some(source); }
                 let ids: Vec<std::sync::Arc<str>> = ctx.query.ids.iter()
                     .map(|id| std::sync::Arc::<str>::from(id.clone()))
                     .collect();
@@ -370,7 +384,7 @@ fn generate_filter_query(
                 >>
             where Self: std::marker::Send + std::marker::Sync + 'static,
             {
-                let source = match ctx.query.0.query_route()? {
+                let source = if let Some(source) = #krate::query::registered_entity_source(&ctx.query_context, #name_str, ctx.query.as_ref()) { source } else { match ctx.query.0.query_route()? {
                     #krate::query::QueryRoute::Ids(ids) => {
                         let store = ctx.query_context.registry().get_or_create(#name_str);
                         #krate::query::build_ids_source_map(&store, &ids)
@@ -382,7 +396,7 @@ fn generate_filter_query(
                             #name_str, route.field_names, route.extract_fk, route.keys,
                         )
                     }
-                };
+                }};
                 Some(#krate::query::filter_query_over_source::<#query_ident>(
                     source, ctx.query.clone(), ctx.query_context.query_context.clone(),
                 ))
@@ -471,7 +485,7 @@ fn generate_get_by_id_report(
             {
                 use #krate::prelude::{Eventable, MapExt};
                 let id: std::sync::Arc<str> = self.id.clone().into();
-                let store = ctx.registry().get_or_create(#name::ENTITY_NAME_STATIC);
+                let store = ctx.entity_query_source(#name::ENTITY_NAME_STATIC, self);
                 store.get(&id).map(move |item| std::sync::Arc::new(
                     item.as_ref().and_then(|item| item.as_any().downcast_ref::<#name>())
                         .map(|typed| std::sync::Arc::new(typed.clone()))
@@ -544,6 +558,7 @@ fn generate_delete_commands(input: &DeleteGeneration<'_>) -> TokenStream {
 }
 
 struct PreparedItem {
+    undoable: bool,
     input_struct: ItemStruct,
     relationships: relationship::RelationshipInfo,
     setters: Vec<setter::SetterField>,
@@ -645,6 +660,7 @@ fn prepare_item(args: &ItemArgs, mut input_struct: ItemStruct) -> syn::Result<Pr
         }
     });
     Ok(PreparedItem {
+        undoable: args.undoable,
         input_struct,
         relationships,
         setters,
@@ -744,6 +760,7 @@ fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> Toke
 }
 
 struct ItemExpansion {
+    undoable: bool,
     name: syn::Ident,
     name_str: String,
     id_type_ident: syn::Ident,
@@ -761,6 +778,7 @@ struct ItemExpansion {
 
 fn expand_item(input: ItemExpansion) -> TokenStream {
     let ItemExpansion {
+        undoable,
         name,
         name_str,
         id_type_ident,
@@ -777,6 +795,11 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
     } = input;
     let krate = &ctx.krate;
     let id_type = generate_id_type(&name, &id_type_ident, &ctx);
+    let undo_registration = undoable.then(|| {
+        quote! {
+            #krate::submit! { #krate::item::UndoableRegistration { entity_type: #name_str } }
+        }
+    });
     let entity_description =
         crate::operation_contract::entity_description_tokens(&input_struct, krate);
     quote! {
@@ -792,6 +815,7 @@ fn expand_item(input: ItemExpansion) -> TokenStream {
         #[cfg(not(target_arch = "wasm32"))]
         #krate::submit! { #krate::auth::EntityScopeRegistration { entity_type: #name_str } }
         #ingest_registration
+        #undo_registration
 
         impl #krate::item::Eventable for #name {
             const ENTITY_NAME_STATIC: &'static str = #name_str;
@@ -893,6 +917,7 @@ pub fn myko_item_impl(args: &ItemArgs, mut input_struct: ItemStruct) -> TokenStr
 #[allow(clippy::too_many_lines)]
 fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
     let PreparedItem {
+        undoable,
         input_struct,
         relationships: rel_info,
         setters: setter_fields,
@@ -1048,6 +1073,7 @@ fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
 
     let server_owned_impls = generate_server_owned_impls(&rel_info, krate);
     expand_item(ItemExpansion {
+        undoable,
         name: name.clone(),
         name_str,
         id_type_ident,

@@ -7,10 +7,7 @@
 //! - [`Executor::InProcess`] — talks directly to a [`MykoServerContext`]; used by the
 //!   HTTP/WS MCP endpoints hosted inside the server.
 
-use std::{
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
 
 use hyphae::{Gettable, Watchable};
 use myko::{
@@ -27,11 +24,6 @@ use myko_auth::{AuthError, AuthSession, AuthorizationRequest, OperationKind};
 use serde_json::{Value, json};
 use tokio::sync::oneshot;
 use uuid::Uuid;
-
-const QUERY_TIMEOUT: Duration = Duration::from_secs(5);
-const REPORT_TIMEOUT: Duration = Duration::from_secs(5);
-const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn take_mutex<T>(value: &Mutex<Option<T>>) -> Option<T> {
     value
@@ -323,7 +315,7 @@ async fn client_execute_query(
                 }
             });
 
-            return match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
+            return match crate::time_limits::MCP_QUERY_TIMEOUT.run(result_rx).await {
                 Ok(Ok(items)) => Ok(myko::operation_index::QUERY_RESULT.wrap(
                     query_id,
                     reg.query_item_type,
@@ -387,7 +379,7 @@ async fn client_execute_view(
                 }
             });
 
-            return match tokio::time::timeout(QUERY_TIMEOUT, result_rx).await {
+            return match crate::time_limits::MCP_QUERY_TIMEOUT.run(result_rx).await {
                 Ok(Ok(items)) => Ok(myko::operation_index::VIEW_RESULT.wrap(
                     view_id,
                     reg.view_item_type,
@@ -431,7 +423,7 @@ async fn client_execute_report(
                 }
             });
 
-            return match tokio::time::timeout(REPORT_TIMEOUT, result_rx).await {
+            return match crate::time_limits::MCP_REPORT_TIMEOUT.run(result_rx).await {
                 Ok(Ok(value)) => Ok(myko::operation_index::REPORT_RESULT.wrap(
                     report_id,
                     reg.output_type,
@@ -463,7 +455,8 @@ async fn client_execute_command(
             }
         });
 
-        let connected = tokio::time::timeout(CONNECT_TIMEOUT, rx_connected)
+        let connected = crate::time_limits::MCP_CONNECT_TIMEOUT
+            .run(rx_connected)
             .await
             .unwrap_or(Ok(false))
             .unwrap_or(false);
@@ -497,7 +490,7 @@ async fn client_execute_command(
         }
     });
 
-    match tokio::time::timeout(COMMAND_TIMEOUT, resp_rx).await {
+    match crate::time_limits::MCP_COMMAND_TIMEOUT.run(resp_rx).await {
         Ok(Ok(Ok(response))) => {
             Ok(myko::operation_index::COMMAND_RESULT.wrap(command_id, "", response))
         }
@@ -654,7 +647,7 @@ async fn in_process_execute_report(
         }
     });
 
-    match tokio::time::timeout(REPORT_TIMEOUT, rx_resp).await {
+    match crate::time_limits::MCP_REPORT_TIMEOUT.run(rx_resp).await {
         Ok(Ok(value)) => Ok(myko::operation_index::REPORT_RESULT.wrap(
             report_id,
             registration.output_type,

@@ -27,6 +27,7 @@ use super::EntityStore;
 /// let all_types = registry.entity_types();
 /// ```
 pub struct StoreRegistry {
+    pub(crate) transactions: super::transactions::TransactionCoordinator,
     // AHash on Arc<str> keys: ~1.6× faster than DashMap's default SipHash on
     // the lookup-by-entity-type hot path. Bench: dashmap_default 183 µs vs
     // dashmap_ahash 115 µs / 10k lookups.
@@ -38,8 +39,15 @@ impl StoreRegistry {
     #[must_use]
     pub fn new() -> Self {
         Self {
+            transactions: super::transactions::TransactionCoordinator::default(),
             stores: DashMap::with_hasher(ahash::RandomState::new()),
         }
+    }
+
+    /// Coordinate a persistence consumer's store update with checked reversals.
+    #[doc(hidden)]
+    pub fn with_mutation<T>(&self, action: impl FnOnce() -> T) -> T {
+        self.transactions.coordinate(false, action)
     }
 
     /// Get or create an entity store for the given type.
@@ -59,6 +67,39 @@ impl StoreRegistry {
     #[must_use]
     pub fn get(&self, entity_type: &str) -> Option<Arc<EntityStore>> {
         self.stores.get(entity_type).map(|r| r.clone())
+    }
+
+    /// Fork stores touched by a proposal while sharing untouched, read-only stores.
+    #[must_use]
+    pub fn overlay(
+        &self,
+        upserts: &[Arc<dyn crate::item::AnyItem>],
+        deletes: &[Arc<dyn crate::item::AnyItem>],
+    ) -> Arc<Self> {
+        let view = Self::new();
+        for store in &self.stores {
+            view.stores
+                .insert(store.key().clone(), store.value().clone());
+        }
+        let types: std::collections::HashSet<_> = upserts
+            .iter()
+            .chain(deletes)
+            .map(|item| item.entity_type())
+            .collect();
+        for kind in types {
+            let copy = Arc::new(crate::store::EntityStore::new());
+            if let Some(original) = self.get(kind) {
+                copy.insert_many(original.snapshot());
+            }
+            for item in deletes.iter().filter(|item| item.entity_type() == kind) {
+                copy.remove(&item.id());
+            }
+            for item in upserts.iter().filter(|item| item.entity_type() == kind) {
+                copy.insert(item.id(), item.clone());
+            }
+            view.stores.insert(Arc::from(kind), copy);
+        }
+        Arc::new(view)
     }
 
     /// List all registered entity types.

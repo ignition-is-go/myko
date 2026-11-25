@@ -9,20 +9,17 @@
 //!
 //! Two independent guards bound script execution, because they cover
 //! different failure modes:
-//! - [`EXECUTE_TIMEOUT`] wraps the whole call in `tokio::time::timeout`,
+//! - `MCP_EXECUTE_TIMEOUT` wraps the whole call in `tokio::time::timeout`,
 //!   covering native async hops (query/report/command round trips) — which
 //!   already have their own per-op timeouts in `exec.rs`, so this is a
 //!   safety net.
-//! - [`SCRIPT_DEADLINE`] drives a `QuickJS` interrupt handler, which the VM
+//! - `MCP_SCRIPT_DEADLINE` drives a `QuickJS` interrupt handler, which the VM
 //!   polls periodically *during* synchronous bytecode execution. This is
 //!   the one that actually stops a pure `while (true) {}` loop: such a loop
 //!   never yields back to the tokio executor, so `tokio::time::timeout`
 //!   alone would never get a chance to fire.
 
-use std::{
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{sync::Arc, time::Instant};
 
 use myko::operation_index::OperationSchema;
 use rquickjs::{
@@ -32,11 +29,8 @@ use rquickjs::{
 use serde_json::Value;
 
 use super::{exec::Executor, filter::ClientFilters};
+use crate::time_limits::{MCP_EXECUTE_TIMEOUT, MCP_SCRIPT_DEADLINE};
 
-/// Wall-clock budget for one `execute()` call, including native async hops.
-const EXECUTE_TIMEOUT: Duration = Duration::from_secs(30);
-/// `QuickJS` interrupt-handler deadline, bounding pure synchronous JS compute.
-const SCRIPT_DEADLINE: Duration = Duration::from_secs(10);
 /// Sandbox heap ceiling. Generous enough for JSON-shaped query results,
 /// tight enough to bound a runaway allocation loop.
 const MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
@@ -74,10 +68,12 @@ pub async fn execute(
 ) -> Result<Value, String> {
     let rt = AsyncRuntime::new().map_err(|e| format!("Failed to start sandbox: {e}"))?;
     rt.set_memory_limit(MEMORY_LIMIT_BYTES).await;
-    let now = Instant::now();
-    let deadline = now.checked_add(SCRIPT_DEADLINE).unwrap_or(now);
-    rt.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)))
-        .await;
+    if let Some(limit) = MCP_SCRIPT_DEADLINE.get() {
+        let now = Instant::now();
+        let deadline = now.checked_add(limit).unwrap_or(now);
+        rt.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)))
+            .await;
+    }
 
     let ctx = AsyncContext::full(&rt)
         .await
@@ -110,7 +106,7 @@ pub async fn execute(
             .map_err(|e| e.to_string())
     });
 
-    match tokio::time::timeout(EXECUTE_TIMEOUT, run).await {
+    match MCP_EXECUTE_TIMEOUT.run(run).await {
         Ok(Ok(json_text)) => {
             super::schema::check_result_size(&json_text)?;
             serde_json::from_str(&json_text)
@@ -119,7 +115,7 @@ pub async fn execute(
         Ok(Err(message)) => Err(format!("Script error: {message}")),
         Err(_) => Err(format!(
             "Script execution timed out after {}s",
-            EXECUTE_TIMEOUT.as_secs()
+            MCP_EXECUTE_TIMEOUT.get().map_or(0, |limit| limit.as_secs())
         )),
     }
 }
@@ -399,7 +395,7 @@ mod tests {
         // Should be bounded by SCRIPT_DEADLINE, not EXECUTE_TIMEOUT (30s) —
         // give generous headroom since this environment can be slow.
         assert!(
-            start.elapsed() < Duration::from_secs(25),
+            start.elapsed() < std::time::Duration::from_secs(25),
             "interrupt handler should stop the loop well before the outer timeout"
         );
     }
