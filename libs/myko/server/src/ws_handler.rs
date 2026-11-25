@@ -1030,7 +1030,9 @@ impl WsHandler {
                 _ = outbound_ttl_interval.tick() => {
                     if let Ok(mut map) = state.outbound_commands_by_tx.lock() {
                         let before = map.len();
-                        map.retain(|_, (_, started)| started.elapsed() < Duration::from_secs(10));
+                        if let Some(ttl) = crate::time_limits::WS_OUTBOUND_COMMAND_TTL.get() {
+                            map.retain(|_, (_, started)| started.elapsed() < ttl);
+                        }
                         let removed = before.saturating_sub(map.len());
                         if removed > 0 {
                             tracing::debug!(

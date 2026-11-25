@@ -14,6 +14,7 @@ mod delivery_diagnostics;
 mod gateway_access;
 mod outbound_queue;
 mod subscription_authorization;
+mod time_limits;
 mod view_sampling;
 
 pub mod mcp;
@@ -815,6 +816,9 @@ impl MykoServer {
     /// Returns an error when the server cannot initialize or accept connections.
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         use tokio::net::TcpListener;
+
+        time_limits::validate()
+            .map_err(|reason| format!("Invalid time limit configuration:\n{reason}"))?;
 
         self.validate_endpoint_paths()?;
 

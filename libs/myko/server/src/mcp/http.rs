@@ -80,22 +80,23 @@ async fn authenticate_post(
     if credentials.bearer.is_none() && public {
         return Ok(None);
     }
-    tokio::time::timeout(Duration::from_secs(10), async {
-        if let Some(server) = provider.oauth_server() {
-            credentials
-                .bearer
-                .as_deref()
-                .ok_or(AuthError::Unauthenticated)
-                .and_then(|token| server.authenticate(token))
-        } else if provider.mcp_oauth().is_some() {
-            provider.authenticate(credentials).await
-        } else {
-            provider.admit(credentials).await
-        }
-    })
-    .await
-    .unwrap_or(Err(AuthError::Unavailable))
-    .map(Some)
+    crate::time_limits::HTTP_AUTH_TIMEOUT
+        .run(async {
+            if let Some(server) = provider.oauth_server() {
+                credentials
+                    .bearer
+                    .as_deref()
+                    .ok_or(AuthError::Unauthenticated)
+                    .and_then(|token| server.authenticate(token))
+            } else if provider.mcp_oauth().is_some() {
+                provider.authenticate(credentials).await
+            } else {
+                provider.admit(credentials).await
+            }
+        })
+        .await
+        .unwrap_or(Err(AuthError::Unavailable))
+        .map(Some)
 }
 
 const fn auth_error_status(error: AuthError) -> (u16, &'static str, &'static str) {

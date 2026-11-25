@@ -38,19 +38,9 @@ mod undo_list;
 pub use schema::{REQUIRED_SCHEMA_VERSION, SCHEMA_VERSION, SchemaError, migrate};
 use schema::{check_server_settings, ensure_schema};
 
-const PG_CONNECT_TIMEOUT_SECS: u64 = 10;
-const PG_CATCH_UP_TIMEOUT_SECS_DEFAULT: u64 = 300;
-const PG_CATCH_UP_TIMEOUT_ENV: &str = "MYKO_POSTGRES_CATCH_UP_TIMEOUT_SECS";
 const PG_KEEPALIVE_IDLE_SECS: u64 = 30;
 const PG_KEEPALIVE_INTERVAL_SECS: u64 = 10;
 const PG_KEEPALIVE_RETRIES: u32 = 3;
-/// `TCP_USER_TIMEOUT`: tear down a connection whose sent data stays unacked for
-/// this long. Unlike keepalives — which only probe an *idle* socket — this
-/// fires on a peer that died mid-write, so a consumer killed mid-snapshot (OOM)
-/// has its Postgres backend reaped promptly instead of lingering in `ClientWrite`
-/// holding the events-table lock and stalling every subsequent boot's snapshot
-/// until the catch-up timeout (the lv-8c2f "boot convoy").
-const PG_TCP_USER_TIMEOUT_SECS: u64 = 30;
 const PG_PRODUCER_MAX_BATCH: usize = 256;
 const PG_FETCH_BATCH: i64 = 1000;
 
@@ -119,22 +109,7 @@ struct PostgresEnvironment {
 }
 
 pub(crate) fn postgres_catch_up_timeout_from_env() -> Result<Option<Duration>, String> {
-    match std::env::var(PG_CATCH_UP_TIMEOUT_ENV) {
-        Ok(value) => parse_postgres_catch_up_timeout(Some(&value)),
-        Err(std::env::VarError::NotPresent) => parse_postgres_catch_up_timeout(None),
-        Err(std::env::VarError::NotUnicode(_)) => Err(format!(
-            "{PG_CATCH_UP_TIMEOUT_ENV} must be a non-negative integer number of seconds"
-        )),
-    }
-}
-
-fn parse_postgres_catch_up_timeout(value: Option<&str>) -> Result<Option<Duration>, String> {
-    let seconds = value.map_or(Ok(PG_CATCH_UP_TIMEOUT_SECS_DEFAULT), |raw| {
-        raw.parse::<u64>().map_err(|_| {
-            format!("{PG_CATCH_UP_TIMEOUT_ENV} must be a non-negative integer number of seconds")
-        })
-    })?;
-    Ok((seconds != 0).then(|| Duration::from_secs(seconds)))
+    crate::time_limits::POSTGRES_CATCH_UP_TIMEOUT.try_from_env()
 }
 
 /// Read API for durable event history (windback/replay providers).
@@ -632,8 +607,14 @@ impl Persister for PostgresProducerHandle {
         self.sender
             .send(ProducerRequest::Barrier(tx))
             .map_err(|_| "Postgres producer stopped".to_owned())?;
-        rx.recv_timeout(Duration::from_secs(10))
-            .map_err(|_| "timed out waiting for durable PostgreSQL persistence".to_owned())
+        crate::time_limits::POSTGRES_FLUSH_TIMEOUT
+            .recv(&rx)
+            .map_err(|_| {
+                format!(
+                    "timed out waiting for durable PostgreSQL persistence (raise {})",
+                    crate::time_limits::POSTGRES_FLUSH_TIMEOUT.env()
+                )
+            })
     }
 
     fn persist_record(&self, record: EventRecord) -> Result<(), PersistError> {
@@ -765,11 +746,12 @@ fn run_producer_loop(
                 }
             }
             Err(error) => {
-                health.record_error_no_dequeue(format_pg_error(
-                    "persist transaction history",
-                    Some(&config.url),
-                    &error,
-                ));
+                let message =
+                    format_pg_error("persist transaction history", Some(&config.url), &error);
+                // NOTE(ts): The batch stays queued and retries; without this log a schema problem
+                // only surfaces as a flush timeout far from its cause.
+                error!("{message}");
+                health.record_error_no_dequeue(message);
                 client = None;
                 std::thread::sleep(Duration::from_secs(1));
             }
@@ -1317,7 +1299,6 @@ fn connect_consumer_client(role: &str, config: &PostgresConfig) -> Result<Client
             Ok(mut client) => {
                 match ensure_schema(&mut client, config) {
                     Ok(()) => {}
-                    Err(err @ SchemaError::Outdated { .. }) => return Err(err.to_string()),
                     Err(err) => warn!(
                         "{}",
                         err.describe(&format!("ensure_schema({role})"), &config.url)
@@ -1440,15 +1421,21 @@ fn connect_pg_client(config: &PostgresConfig, role: &str) -> Result<Client, Stri
     let mut client_config = parse_pg_client_config(config, role)?;
 
     // Avoid default 2h keepalive-idle so long-lived idle sockets are detected quickly.
-    client_config.connect_timeout(Duration::from_secs(PG_CONNECT_TIMEOUT_SECS));
+    if let Some(limit) = crate::time_limits::POSTGRES_CONNECT_TIMEOUT.get() {
+        client_config.connect_timeout(limit);
+    }
     client_config.keepalives(true);
     client_config.keepalives_idle(Duration::from_secs(PG_KEEPALIVE_IDLE_SECS));
     client_config.keepalives_interval(Duration::from_secs(PG_KEEPALIVE_INTERVAL_SECS));
     client_config.keepalives_retries(PG_KEEPALIVE_RETRIES);
-    // Reap a peer that died mid-write, which keepalives (idle-only) miss — see
-    // PG_TCP_USER_TIMEOUT_SECS. Applies to every role; on a live connection the
-    // data is acked normally so it never fires.
-    client_config.tcp_user_timeout(Duration::from_secs(PG_TCP_USER_TIMEOUT_SECS));
+    // NOTE(ts): `TCP_USER_TIMEOUT` reaps a peer that died mid-write, which keepalives
+    // (idle-only) miss: a consumer killed mid-snapshot (OOM) otherwise leaves its backend
+    // in `ClientWrite` holding the events-table lock, stalling every later boot's snapshot
+    // until the catch-up timeout (the lv-8c2f "boot convoy"). On a live connection the data
+    // is acked normally so it never fires.
+    if let Some(limit) = crate::time_limits::POSTGRES_TCP_USER_TIMEOUT.get() {
+        client_config.tcp_user_timeout(limit);
+    }
 
     client_config
         .connect(NoTls)
@@ -1495,33 +1482,6 @@ mod tests {
 
         assert!(DateTime::parse_from_rfc3339(&wire_timestamp).is_ok());
         assert_eq!(wire_timestamp, "2026-05-03T03:09:37.123456+00:00");
-    }
-
-    #[test]
-    fn postgres_catch_up_timeout_defaults_to_five_minutes() {
-        assert_eq!(
-            parse_postgres_catch_up_timeout(None),
-            Ok(Some(Duration::from_mins(5)))
-        );
-    }
-
-    #[test]
-    fn postgres_catch_up_timeout_accepts_positive_seconds() {
-        assert_eq!(
-            parse_postgres_catch_up_timeout(Some("900")),
-            Ok(Some(Duration::from_mins(15)))
-        );
-    }
-
-    #[test]
-    fn postgres_catch_up_timeout_accepts_zero_as_no_limit() {
-        assert_eq!(parse_postgres_catch_up_timeout(Some("0")), Ok(None));
-    }
-
-    #[test]
-    fn postgres_catch_up_timeout_rejects_negative_and_invalid_values() {
-        assert!(parse_postgres_catch_up_timeout(Some("-1")).is_err());
-        assert!(parse_postgres_catch_up_timeout(Some("forever")).is_err());
     }
 }
 
