@@ -139,9 +139,7 @@ fn install_myko_bindings(
             return json_error(format!("Unknown operation: {kind}_{id}"));
         }
         super::contract::describe(&describe_index, &describe_filter, &kind, &id)
-            .map_or_else(json_error, |value| {
-                serde_json::json!({"value": value}).to_string()
-            })
+            .map_or_else(json_error, json_success)
     })?;
     ctx.globals().set("__myko_describe", describe)?;
     let call =
@@ -226,8 +224,18 @@ async fn call_operation(
                 "{message}. Use myko.describe({kind:?}, {id:?}) for the contract."
             ))
         },
-        |value| serde_json::json!({ "value": value }).to_string(),
+        json_success,
     )
+}
+
+fn json_success(value: Value) -> std::string::String {
+    #[derive(serde::Serialize)]
+    struct Success {
+        value: Value,
+    }
+
+    serde_json::to_string(&Success { value })
+        .unwrap_or_else(|error| json_error(format!("Failed to encode Myko result: {error}")))
 }
 
 fn json_error(message: impl Into<std::string::String>) -> std::string::String {
@@ -237,6 +245,42 @@ fn json_error(message: impl Into<std::string::String>) -> std::string::String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn success_envelope_preserves_all_operation_contracts() {
+        use myko::operation_index::{COMMAND_RESULT, QUERY_RESULT, REPORT_RESULT, VIEW_RESULT};
+
+        let payload = serde_json::json!({
+            "nested": [null, true, 42, {"text": "quote\" newline\n Unicodeλ"}],
+            "error": "a payload field, not a bridge error"
+        });
+        let values = [
+            QUERY_RESULT.wrap("Query", "Item", serde_json::json!([payload.clone()])),
+            VIEW_RESULT.wrap("View", "Item", serde_json::json!([payload.clone()])),
+            REPORT_RESULT.wrap("Report", "Output", payload.clone()),
+            COMMAND_RESULT.wrap("Command", "", payload),
+            Value::Null,
+            serde_json::json!({"operation":{"kind":"query", "id":"Query"}}),
+        ];
+        for value in values {
+            let expected = serde_json::json!({"value": value}).to_string();
+            assert_eq!(json_success(value), expected);
+        }
+    }
+
+    #[test]
+    fn error_envelope_remains_separate_from_success_payloads() {
+        let message = "failed \"operation\"\nUnicodeλ";
+        assert_eq!(
+            serde_json::from_str::<Value>(&json_error(message)).unwrap(),
+            serde_json::json!({"error":message})
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&json_success(serde_json::json!({"error":message})))
+                .unwrap(),
+            serde_json::json!({"value":{"error":message}})
+        );
+    }
 
     async fn execute(
         code: &str,
