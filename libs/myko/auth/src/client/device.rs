@@ -2,7 +2,8 @@ use std::{sync::Arc, time::Instant};
 
 use futures::{future::BoxFuture, lock::Mutex};
 use oauth2::{
-    AuthType, ClientId, DeviceAuthorizationUrl, RefreshToken, RequestTokenError, Scope,
+    AuthType, AuthUrl, AuthorizationCode, ClientId, CsrfToken, DeviceAuthorizationUrl,
+    PkceCodeChallenge, RedirectUrl, RefreshToken, RequestTokenError, Scope,
     StandardDeviceAuthorizationResponse, TokenResponse, TokenUrl,
     basic::{BasicClient, BasicErrorResponseType, BasicTokenResponse},
 };
@@ -139,6 +140,70 @@ impl DeviceCode {
         result
     }
 
+    /// Sign in using the system browser and a loopback callback.
+    ///
+    /// # Errors
+    /// Returns an error if the callback cannot be bound or authorization fails.
+    pub async fn sign_in_browser(
+        &self,
+        authorization_url: &str,
+        callback_port: u16,
+        open: impl FnOnce(String) -> Result<(), AuthError> + Send,
+    ) -> Result<(), AuthError> {
+        let mut session = self.session.lock().await;
+        let listener =
+            tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, callback_port))
+                .await
+                .map_err(|_| AuthError::Unavailable)?;
+        let callback_port = listener
+            .local_addr()
+            .map_err(|_| AuthError::Unavailable)?
+            .port();
+        let redirect = RedirectUrl::new(format!("http://127.0.0.1:{callback_port}/oauth/callback"))
+            .map_err(|_| AuthError::Unavailable)?;
+        let client = BasicClient::new(self.client_id.clone())
+            .set_auth_type(AuthType::RequestBody)
+            .set_auth_uri(
+                AuthUrl::new(require_secure(authorization_url)?)
+                    .map_err(|_| AuthError::Unavailable)?,
+            )
+            .set_redirect_uri(redirect)
+            .set_token_uri(self.token_url.clone());
+        let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
+        let mut request = client
+            .authorize_url(CsrfToken::new_random)
+            .set_pkce_challenge(challenge)
+            .add_scopes(self.scopes.clone());
+        match &self.target {
+            TargetResource::Default => {}
+            TargetResource::Resource(resource) => {
+                request = request.add_extra_param("resource", resource);
+            }
+            TargetResource::Audience(audience) => {
+                request = request.add_extra_param("audience", audience);
+            }
+        }
+        let (url, state) = request.url();
+        open(url.to_string())?;
+        let code = tokio::time::timeout(
+            std::time::Duration::from_mins(3),
+            callback_code(&listener, &state),
+        )
+        .await
+        .map_err(|_| AuthError::Expired)??;
+        let started = Instant::now();
+        let response = client
+            .exchange_code(code)
+            .set_pkce_verifier(verifier)
+            .request_async(&self.http)
+            .await
+            .map_err(|_| AuthError::Unavailable)?;
+        *session = Session::default();
+        let result = self.accept(&mut session, &response, started);
+        drop(session);
+        result
+    }
+
     /// Clear locally cached credentials and the saved refresh token.
     ///
     /// # Errors
@@ -212,6 +277,54 @@ impl DeviceCode {
             .as_ref()
             .map(|token| bearer(token.token.clone()))
             .ok_or(AuthError::Unavailable)
+    }
+}
+
+async fn callback_code(
+    listener: &tokio::net::TcpListener,
+    state: &CsrfToken,
+) -> Result<AuthorizationCode, AuthError> {
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
+    loop {
+        let (mut stream, _) = listener
+            .accept()
+            .await
+            .map_err(|_| AuthError::Unavailable)?;
+        let mut line = String::new();
+        let read = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            tokio::io::BufReader::new((&mut stream).take(8192)).read_line(&mut line),
+        )
+        .await;
+        let parsed = matches!(read, Ok(Ok(1..)))
+            .then(|| line.strip_prefix("GET /oauth/callback?"))
+            .flatten()
+            .and_then(|path| path.split_once(' ').map(|(query, _)| query))
+            .map(|query| {
+                url::form_urlencoded::parse(query.as_bytes())
+                    .collect::<std::collections::HashMap<_, _>>()
+            });
+        if let Some(params) = parsed
+            && params
+                .get("state")
+                .is_some_and(|value| value.as_ref() == state.secret())
+        {
+            let response = if params.contains_key("code") {
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: no-store\r\nConnection: close\r\n\r\nReturn to the application to check sign-in status."
+            } else {
+                "HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nSign-in declined."
+            };
+            let _ = stream.write_all(response.as_bytes()).await;
+            return params
+                .get("code")
+                .map(|code| AuthorizationCode::new(code.to_string()))
+                .ok_or(AuthError::Forbidden);
+        }
+        let _ = stream
+            .write_all(
+                b"HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\nInvalid sign-in callback.",
+            )
+            .await;
     }
 }
 
