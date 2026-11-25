@@ -5,9 +5,29 @@ use std::{
 
 use myko::{
     entities::server::{GetAllServers, ServerId},
+    item::AnyItem,
     relationship::iter_server_owned_registrations,
     server::{MykoServerContext, PersistError},
 };
+
+/// Every row of `entity_type`, each with the context that holds it: the root
+/// for a shared type, the row's partition for a partitioned one. Reading a
+/// partitioned type at the root would panic, as its rows live only in its
+/// partitions.
+fn rows_by_context(
+    ctx: &MykoServerContext,
+    entity_type: &str,
+) -> Vec<(MykoServerContext, Vec<Arc<dyn AnyItem>>)> {
+    if !ctx.is_partitioned(entity_type) {
+        let store = ctx.registry.get_or_create(entity_type);
+        let rows = store.snapshot().into_iter().map(|(_, item)| item).collect();
+        return vec![(ctx.clone(), rows)];
+    }
+    ctx.partitioned_snapshot(entity_type)
+        .into_iter()
+        .filter_map(|(key, rows)| Some((ctx.partition(&key)?, rows)))
+        .collect()
+}
 
 pub struct ServerOwnershipManager;
 
@@ -31,11 +51,12 @@ impl ServerOwnershipManager {
         let mut counts: HashMap<Arc<str>, usize> = HashMap::new();
 
         for reg in iter_server_owned_registrations() {
-            let store = ctx.registry.get_or_create(reg.entity_type);
-            for (_, item) in store.snapshot() {
-                if let Some(owner) = item.server_owner() {
-                    let count = counts.entry(Arc::from(owner)).or_default();
-                    *count = count.saturating_add(1);
+            for (_, rows) in rows_by_context(ctx, reg.entity_type) {
+                for item in rows {
+                    if let Some(owner) = item.server_owner() {
+                        let count = counts.entry(Arc::from(owner)).or_default();
+                        *count = count.saturating_add(1);
+                    }
                 }
             }
         }
@@ -68,27 +89,26 @@ impl ServerOwnershipManager {
         let mut reassigned = 0usize;
 
         for reg in iter_server_owned_registrations() {
-            let store = ctx.registry.get_or_create(reg.entity_type);
-            let items: Vec<_> = store.snapshot().into_iter().map(|(_, item)| item).collect();
+            for (holder, items) in rows_by_context(ctx, reg.entity_type) {
+                for item in &items {
+                    let current_owner = item.server_owner().unwrap_or("");
 
-            for item in &items {
-                let current_owner = item.server_owner().unwrap_or("");
+                    if !current_owner.is_empty() && live_set.contains(current_owner) {
+                        continue; // healthy
+                    }
 
-                if !current_owner.is_empty() && live_set.contains(current_owner) {
-                    continue; // healthy
-                }
+                    let Some(new_owner) = Self::least_loaded(&live_ids, &counts) else {
+                        continue;
+                    };
 
-                let Some(new_owner) = Self::least_loaded(&live_ids, &counts) else {
-                    continue;
-                };
-
-                if let Some(patched) = item.bake_server_owner(&new_owner.0) {
-                    // Server-ownership rebakes are Local (per the event-bus design):
-                    // re-emit the item normally rather than suppressing relationships.
-                    ctx.set_dyn(patched)?;
-                    let count = counts.entry(new_owner.0.clone()).or_default();
-                    *count = count.saturating_add(1);
-                    reassigned = reassigned.saturating_add(1);
+                    if let Some(patched) = item.bake_server_owner(&new_owner.0) {
+                        // Server-ownership rebakes are Local (per the event-bus design):
+                        // re-emit the item normally rather than suppressing relationships.
+                        holder.set_dyn(patched)?;
+                        let count = counts.entry(new_owner.0.clone()).or_default();
+                        *count = count.saturating_add(1);
+                        reassigned = reassigned.saturating_add(1);
+                    }
                 }
             }
         }

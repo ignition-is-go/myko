@@ -806,6 +806,15 @@ impl MykoServerContext {
         self.partitions()?.placement(entity_type, id)
     }
 
+    /// Whether `entity_type`'s rows live in partitions rather than at the
+    /// root. Reading such a type from the root context panics; read it with
+    /// [`Self::partitioned_snapshot`] or on a partition's context instead.
+    #[must_use]
+    pub fn is_partitioned(&self, entity_type: &str) -> bool {
+        self.partitions()
+            .is_some_and(|partitions| partitions.is_partitioned(entity_type))
+    }
+
     /// The rows of a partitioned entity type in every open partition, read
     /// now. This is the only way to read a partitioned type across
     /// partitions: the result is a plain value and follows nothing.
