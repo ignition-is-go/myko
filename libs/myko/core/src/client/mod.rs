@@ -988,6 +988,28 @@ impl Default for MykoClientOptions {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PendingFlushPhase {
+    Idle,
+    Requested,
+    Draining,
+    DrainingWithRequest,
+}
+
+impl PendingFlushPhase {
+    const fn request(&mut self) {
+        *self = match self {
+            Self::Idle | Self::Requested => Self::Requested,
+            Self::Draining | Self::DrainingWithRequest => Self::DrainingWithRequest,
+        };
+    }
+}
+
+struct ConnectionReadiness {
+    ready: bool,
+    flush: PendingFlushPhase,
+}
+
 struct MykoClientInner {
     socket: Arc<dyn SocketTransport>,
     protocol: Arc<AtomicU8>,
@@ -1022,6 +1044,7 @@ struct MykoClientInner {
 
     // Frames queued while disconnected
     pending_sends: Mutex<Vec<WsFrame>>,
+    readiness: Mutex<ConnectionReadiness>,
 
     // Report-response dispatch: the WS read thread hands incoming
     // `report-response` payloads off to a dedicated worker so the hot
@@ -1041,6 +1064,7 @@ struct MykoClientInner {
     _read_guard: CallbackGuard,
     _report_dispatch_guard: CallbackGuard,
     _status_guard: SubscriptionGuard,
+    _intended_guard: SubscriptionGuard,
 }
 
 impl Default for MykoClient {
@@ -1380,15 +1404,16 @@ impl MykoClient {
                         inner.ping_ms.set(None);
                     }
 
-                    // Flush pending sends on connect
-                    if let ConnectionStatus::Connected(_) = conn_status {
-                        let mut pending = inner
-                            .pending_sends
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        for frame in pending.drain(..) {
-                            let _ = inner.socket.send(frame);
-                        }
+                    update_connection_readiness(&inner);
+                });
+            let weak_for_intended = weak.clone();
+            let intended_guard = transport
+                .intended_connection_state()
+                .subscribe(move |signal| {
+                    if signal.value_ref().is_some()
+                        && let Some(inner) = weak_for_intended.upgrade()
+                    {
+                        update_connection_readiness(&inner);
                     }
                 });
 
@@ -1416,14 +1441,20 @@ impl MykoClient {
                 map_watch_cache: DashMap::new(),
                 map_watch_cache_gate: Mutex::new(()),
                 pending_sends,
+                readiness: Mutex::new(ConnectionReadiness {
+                    ready: false,
+                    flush: PendingFlushPhase::Idle,
+                }),
                 report_dispatch_tx,
                 _read_guard: read_guard,
                 _report_dispatch_guard: report_dispatch_guard,
                 _status_guard: status_guard,
+                _intended_guard: intended_guard,
             }
         });
 
         let client = Self { inner };
+        update_connection_readiness(&client.inner);
 
         if options.app_ping {
             Self::spawn_ping_loop(Arc::downgrade(&client.inner));
@@ -1942,21 +1973,21 @@ impl MykoClient {
     /// Send a frame, or queue it if disconnected.
     fn send_or_queue(&self, frame: WsFrame) {
         match admit_send(&self.inner.pending_sends, frame, || {
-            matches!(
-                self.inner.socket.actual_connection_state().get(),
-                ConnectionStatus::Connected(_)
-            )
+            connection_matches_intent(&self.inner)
         }) {
             Ok(frame) => {
                 let _ = self.inner.socket.send(frame);
             }
-            Err(len) if len == 1 || len.is_multiple_of(10_000) => {
-                warn!(
-                    "MykoClient queued frame while disconnected; pending_sends={}",
-                    len
-                );
+            Err(len) => {
+                if connection_matches_intent(&self.inner) {
+                    flush_pending_sends(&self.inner);
+                } else if len == 1 || len.is_multiple_of(10_000) {
+                    warn!(
+                        "MykoClient queued frame while disconnected; pending_sends={}",
+                        len
+                    );
+                }
             }
-            Err(_) => {}
         }
     }
 
@@ -4085,6 +4116,81 @@ mod address_tests {
     }
 }
 
+fn connection_matches_intent(inner: &MykoClientInner) -> bool {
+    matches!(
+        (inner.socket.intended_connection_state().get(), inner.socket.actual_connection_state().get()),
+        (ConnectionStatus::Connected(intended), ConnectionStatus::Connected(actual)) if intended == actual
+    )
+}
+
+fn update_connection_readiness(inner: &MykoClientInner) {
+    let mut readiness = inner
+        .readiness
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let ready = connection_matches_intent(inner);
+    if ready && !readiness.ready {
+        readiness.flush.request();
+    }
+    readiness.ready = ready;
+    drop(readiness);
+    drain_requested_flushes(inner);
+}
+
+fn flush_pending_sends(inner: &MykoClientInner) {
+    inner
+        .readiness
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .flush
+        .request();
+    drain_requested_flushes(inner);
+}
+
+fn drain_requested_flushes(inner: &MykoClientInner) {
+    {
+        let mut readiness = inner
+            .readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if readiness.flush != PendingFlushPhase::Requested {
+            return;
+        }
+        readiness.flush = PendingFlushPhase::Draining;
+    }
+    loop {
+        flush_pending_sends_once(inner);
+        let mut readiness = inner
+            .readiness
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if readiness.flush == PendingFlushPhase::DrainingWithRequest {
+            readiness.flush = PendingFlushPhase::Draining;
+            drop(readiness);
+        } else {
+            readiness.flush = PendingFlushPhase::Idle;
+            drop(readiness);
+            return;
+        }
+    }
+}
+
+fn flush_pending_sends_once(inner: &MykoClientInner) {
+    let mut pending = inner
+        .pending_sends
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut queued = std::mem::take(&mut *pending).into_iter();
+    while let Some(frame) = queued.next() {
+        if !connection_matches_intent(inner) || inner.socket.send(frame.clone()).is_err() {
+            pending.push(frame);
+            pending.extend(queued);
+            drop(pending);
+            return;
+        }
+    }
+}
+
 // The status check and enqueue share the reconnect drain's mutex. Otherwise a
 // sender can observe Disconnected before the drain, then enqueue after it.
 fn admit_send(
@@ -4095,7 +4201,7 @@ fn admit_send(
     let mut pending = pending
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if connected() {
+    if pending.is_empty() && connected() {
         Ok(frame)
     } else {
         pending.push(frame);
@@ -4106,6 +4212,400 @@ fn admit_send(
 #[cfg(test)]
 mod send_admission_tests {
     use super::*;
+
+    struct RejectingTransport {
+        status: Cell<ConnectionStatus, CellMutable>,
+        intended: Cell<ConnectionStatus, CellMutable>,
+        reject: AtomicBool,
+        attempted: Mutex<Vec<WsFrame>>,
+        on_send: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    }
+
+    impl SocketTransport for RejectingTransport {
+        fn set_addr(&self, _: Option<String>) {}
+        fn close(&self) {}
+        fn intended_connection_state(&self) -> Cell<ConnectionStatus, CellImmutable> {
+            self.intended.clone().lock()
+        }
+        fn actual_connection_state(&self) -> Cell<ConnectionStatus, CellImmutable> {
+            self.status.clone().lock()
+        }
+        fn read_rx(&self) -> flume::Receiver<WsFrame> {
+            flume::unbounded().1
+        }
+        fn send(&self, frame: WsFrame) -> Result<(), String> {
+            self.attempted
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(frame.clone());
+            let action = self
+                .on_send
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            if let Some(action) = action {
+                action();
+            }
+            if self.reject.load(Ordering::SeqCst)
+                && matches!(frame, WsFrame::Binary(ref data) if data == &[2])
+            {
+                Err("connection retired".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn pending_flush_resumes_when_intent_catches_up_to_actual_connection() {
+        let transport = Arc::new(RejectingTransport {
+            status: Cell::new(ConnectionStatus::Disconnected),
+            intended: Cell::new(ConnectionStatus::Idle),
+            reject: AtomicBool::new(false),
+            attempted: Mutex::new(Vec::new()),
+            on_send: Mutex::new(None),
+        });
+        let client = MykoClient::with_transport(transport.clone());
+        *client
+            .inner
+            .pending_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![WsFrame::Binary(vec![1])];
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
+        transport
+            .intended
+            .set(ConnectionStatus::Connected("fixture".into()));
+        assert!(
+            client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty(),
+            "pending must flush once both states are ready"
+        );
+    }
+
+    #[test]
+    fn reconnect_retains_rejected_and_remaining_frames_in_order() {
+        let transport = Arc::new(RejectingTransport {
+            status: Cell::new(ConnectionStatus::Disconnected),
+            intended: Cell::new(ConnectionStatus::Connected("fixture".into())),
+            reject: AtomicBool::new(true),
+            attempted: Mutex::new(Vec::new()),
+            on_send: Mutex::new(None),
+        });
+        let client = MykoClient::with_transport(transport.clone());
+        *client
+            .inner
+            .pending_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            [1, 2, 3].map(|value| WsFrame::Binary(vec![value])).to_vec();
+
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
+
+        let data_frames = |frames: &[WsFrame]| {
+            frames
+                .iter()
+                .filter_map(|frame| match frame {
+                    WsFrame::Binary(data) => Some(data.clone()),
+                    WsFrame::Text(_) => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            data_frames(
+                &transport
+                    .attempted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            ),
+            [vec![1], vec![2]]
+        );
+        assert_eq!(
+            data_frames(
+                &client
+                    .inner
+                    .pending_sends
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            ),
+            [vec![2], vec![3]]
+        );
+
+        transport.reject.store(false, Ordering::SeqCst);
+        transport.status.set(ConnectionStatus::Disconnected);
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
+
+        assert_eq!(
+            data_frames(
+                &transport
+                    .attempted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            ),
+            [vec![1], vec![2], vec![2], vec![3]]
+        );
+        assert!(
+            client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn connected_sender_retries_retained_frames_before_new_data() {
+        let transport = Arc::new(RejectingTransport {
+            status: Cell::new(ConnectionStatus::Disconnected),
+            intended: Cell::new(ConnectionStatus::Connected("fixture".into())),
+            reject: AtomicBool::new(true),
+            attempted: Mutex::new(Vec::new()),
+            on_send: Mutex::new(None),
+        });
+        let client = MykoClient::with_transport(transport.clone());
+        *client
+            .inner
+            .pending_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+            [1, 2, 3].map(|value| WsFrame::Binary(vec![value])).to_vec();
+        transport
+            .status
+            .set(ConnectionStatus::Connected("fixture".into()));
+        transport.reject.store(false, Ordering::SeqCst);
+
+        client.send_or_queue(WsFrame::Binary(vec![4]));
+
+        let attempted: Vec<_> = transport
+            .attempted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|frame| match frame {
+                WsFrame::Binary(data) => Some(data.clone()),
+                WsFrame::Text(_) => None,
+            })
+            .collect();
+        assert_eq!(attempted, [vec![1], vec![2], vec![2], vec![3], vec![4]]);
+        assert!(
+            client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn stale_connected_publication_does_not_flush_after_intent_changes() {
+        for intended in [
+            ConnectionStatus::Idle,
+            ConnectionStatus::Connected("next".into()),
+        ] {
+            let transport = Arc::new(RejectingTransport {
+                status: Cell::new(ConnectionStatus::Connected("fixture".into())),
+                intended: Cell::new(intended),
+                reject: AtomicBool::new(false),
+                attempted: Mutex::new(Vec::new()),
+                on_send: Mutex::new(None),
+            });
+            let client = MykoClient::with_transport(transport.clone());
+            *client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                vec![WsFrame::Binary(vec![1])];
+
+            client.send_or_queue(WsFrame::Binary(vec![2]));
+
+            assert!(
+                !transport
+                    .attempted
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .iter()
+                    .any(|frame| matches!(frame, WsFrame::Binary(_)))
+            );
+            let pending = client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            assert!(
+                matches!(pending.as_slice(), [WsFrame::Binary(first), WsFrame::Binary(second)] if first == &[1] && second == &[2])
+            );
+            drop(pending);
+        }
+    }
+
+    #[test]
+    fn aliased_connection_inputs_only_attempt_a_rejected_flush_once() {
+        let status = Cell::new(ConnectionStatus::Disconnected);
+        let transport = Arc::new(RejectingTransport {
+            status: status.clone(),
+            intended: status.clone(),
+            reject: AtomicBool::new(true),
+            attempted: Mutex::new(Vec::new()),
+            on_send: Mutex::new(None),
+        });
+        let client = MykoClient::with_transport(transport.clone());
+        *client
+            .inner
+            .pending_sends
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = vec![WsFrame::Binary(vec![2])];
+        status.set(ConnectionStatus::Connected("fixture".into()));
+        let attempted = transport
+            .attempted
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert_eq!(
+            attempted
+                .iter()
+                .filter(|frame| matches!(frame, WsFrame::Binary(_)))
+                .count(),
+            1
+        );
+        drop(attempted);
+    }
+
+    #[test]
+    fn readiness_guards_do_not_retain_the_client() {
+        let transport: Arc<dyn SocketTransport> = Arc::new(RejectingTransport {
+            status: Cell::new(ConnectionStatus::Disconnected),
+            intended: Cell::new(ConnectionStatus::Idle),
+            reject: AtomicBool::new(false),
+            attempted: Mutex::new(Vec::new()),
+            on_send: Mutex::new(None),
+        });
+        let client = MykoClient::with_transport_and_options(
+            &transport,
+            MykoClientOptions {
+                app_ping: false,
+                ..MykoClientOptions::default()
+            },
+        );
+        let weak = Arc::downgrade(&client.inner);
+        drop(client);
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    #[allow(
+        clippy::panic_in_result_fn,
+        reason = "assertions verify bounded reentrancy; Result propagates process setup errors"
+    )]
+    fn readiness_flush_can_reenter_close_and_readdress() -> Result<(), Box<dyn std::error::Error>> {
+        const CHILD: &str = "MYKO_REENTRANT_READINESS_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let mut child = std::process::Command::new(std::env::current_exe()?)
+                .args([
+                    "--exact",
+                    "client::send_admission_tests::readiness_flush_can_reenter_close_and_readdress",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()?;
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+            let timed_out = loop {
+                if child.try_wait()?.is_some() {
+                    break false;
+                }
+                if std::time::Instant::now() >= deadline {
+                    child.kill()?;
+                    break true;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            };
+            let output = child.wait_with_output()?;
+            assert!(
+                !timed_out && output.status.success(),
+                "reentrancy timed_out={timed_out}: {}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return Ok(());
+        }
+        for changes in [
+            vec![ConnectionStatus::Idle],
+            vec![ConnectionStatus::Connected("next".into())],
+            vec![
+                ConnectionStatus::Idle,
+                ConnectionStatus::Connected("fixture".into()),
+            ],
+        ] {
+            let intended = Cell::new(ConnectionStatus::Idle);
+            let next_intended = intended.clone();
+            let transport = Arc::new(RejectingTransport {
+                status: Cell::new(ConnectionStatus::Connected("fixture".into())),
+                intended: intended.clone(),
+                reject: AtomicBool::new(false),
+                attempted: Mutex::new(Vec::new()),
+                on_send: Mutex::new(Some(Box::new(move || {
+                    for next in changes {
+                        next_intended.set(next);
+                    }
+                }))),
+            });
+            let transport_dyn: Arc<dyn SocketTransport> = transport.clone();
+            let client = MykoClient::with_transport_and_options(
+                &transport_dyn,
+                MykoClientOptions {
+                    app_ping: false,
+                    ..MykoClientOptions::default()
+                },
+            );
+            *client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                vec![WsFrame::Binary(vec![1]), WsFrame::Binary(vec![3])];
+            intended.set(ConnectionStatus::Connected("fixture".into()));
+            let pending = client
+                .inner
+                .pending_sends
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if connection_matches_intent(&client.inner) {
+                assert!(pending.is_empty());
+            } else {
+                assert!(matches!(pending.as_slice(), [WsFrame::Binary(last)] if last == &[3]));
+            }
+            drop(pending);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn connected_sender_queues_behind_retained_pending_frames() {
+        let pending = Mutex::new(vec![WsFrame::Binary(vec![1])]);
+        assert!(matches!(
+            admit_send(&pending, WsFrame::Binary(vec![2]), || true),
+            Err(2)
+        ));
+        let frames = pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        assert!(
+            matches!(frames.as_slice(), [WsFrame::Binary(first), WsFrame::Binary(second)] if first == &[1] && second == &[2])
+        );
+        drop(frames);
+    }
 
     #[test]
     #[allow(
