@@ -46,6 +46,51 @@ pub enum Executor {
     },
 }
 
+pub(crate) enum Rows {
+    Native(Vec<Arc<dyn myko::item::AnyItem>>),
+    Client(Arc<Vec<Value>>),
+}
+
+pub(crate) struct SnapshotResult {
+    contract: &'static myko::operation_index::ResultContract,
+    id: String,
+    item_type: String,
+    pub rows: Rows,
+}
+
+impl SnapshotResult {
+    fn new(
+        contract: &'static myko::operation_index::ResultContract,
+        id: &str,
+        item_type: &str,
+        rows: Rows,
+    ) -> Self {
+        Self {
+            contract,
+            id: id.into(),
+            item_type: item_type.into(),
+            rows,
+        }
+    }
+
+    pub(crate) fn metadata(&self) -> Value {
+        self.contract
+            .wrap(&self.id, &self.item_type, Value::Array(Vec::new()))
+    }
+
+    fn into_value(self) -> Value {
+        let rows = match self.rows {
+            Rows::Native(rows) => rows
+                .into_iter()
+                .map(|item| serde_json::to_value(&*item).unwrap_or(Value::Null))
+                .collect(),
+            Rows::Client(rows) => Arc::unwrap_or_clone(rows),
+        };
+        self.contract
+            .wrap(&self.id, &self.item_type, Value::Array(rows))
+    }
+}
+
 fn operation_auth_error(error: AuthError, kind: &str, operation: &str) -> String {
     format!("{error} for {kind} {operation}")
 }
@@ -63,6 +108,33 @@ impl Executor {
             session.check().map_err(|error| error.to_string())?;
         }
         Ok(())
+    }
+
+    pub(crate) fn authorize_result(
+        &self,
+        kind: &str,
+        operation: &str,
+        arguments: &Value,
+    ) -> Result<(), String> {
+        let Self::External { session, .. } = self else {
+            return Ok(());
+        };
+        if kind == "command" {
+            return self.check();
+        }
+        let kind_value = match kind {
+            "query" => OperationKind::Query,
+            "view" => OperationKind::View,
+            "report" => OperationKind::Report,
+            _ => return self.check(),
+        };
+        session
+            .authorize(AuthorizationRequest::Execute {
+                kind: kind_value,
+                operation,
+                arguments,
+            })
+            .map_err(|error| operation_auth_error(error, kind, operation))
     }
 
     pub(crate) fn can_discover(&self, kind: &str, operation: &str) -> bool {
@@ -110,6 +182,19 @@ impl Executor {
     ///
     /// Returns an error when the query cannot be executed.
     pub async fn execute_query(&self, query_id: &str, args: Value) -> Result<Value, String> {
+        let result = self
+            .execute_query_snapshot(query_id, args.clone())
+            .await
+            .map(SnapshotResult::into_value);
+        self.authorize_result("query", query_id, &args)?;
+        result
+    }
+
+    pub(crate) async fn execute_query_snapshot(
+        &self,
+        query_id: &str,
+        args: Value,
+    ) -> Result<SnapshotResult, String> {
         match self {
             Self::Client(client) => client_execute_query(client.clone(), query_id, args).await,
             Self::InProcess(ctx) => in_process_execute_query(ctx.clone(), query_id, args, None),
@@ -173,6 +258,19 @@ impl Executor {
     ///
     /// Returns an error when the view cannot be executed.
     pub async fn execute_view(&self, view_id: &str, args: Value) -> Result<Value, String> {
+        let result = self
+            .execute_view_snapshot(view_id, args.clone())
+            .await
+            .map(SnapshotResult::into_value);
+        self.authorize_result("view", view_id, &args)?;
+        result
+    }
+
+    pub(crate) async fn execute_view_snapshot(
+        &self,
+        view_id: &str,
+        args: Value,
+    ) -> Result<SnapshotResult, String> {
         match self {
             Self::Client(client) => client_execute_view(client.clone(), view_id, args).await,
             Self::InProcess(ctx) => in_process_execute_view(ctx.clone(), view_id, args, None),
@@ -270,7 +368,7 @@ async fn client_execute_query(
     client: Arc<MykoClient>,
     query_id: &str,
     arguments: Value,
-) -> Result<Value, String> {
+) -> Result<SnapshotResult, String> {
     for reg in inventory::iter::<QueryRegistration> {
         if reg.query_id == query_id {
             let tx = Uuid::new_v4().to_string();
@@ -291,7 +389,7 @@ async fn client_execute_query(
             };
 
             let cell = client.watch_query_raw(wrapped);
-            let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();
+            let (result_tx, result_rx) = oneshot::channel::<Arc<Vec<Value>>>();
             let result_tx = Arc::new(Mutex::new(Some(result_tx)));
             let seen_initial = Arc::new(Mutex::new(false));
             let result_tx_sub = result_tx.clone();
@@ -310,16 +408,17 @@ async fn client_execute_query(
                         return;
                     }
                     if let Some(tx) = take_mutex(&result_tx_sub) {
-                        let _ = tx.send((**items).clone());
+                        let _ = tx.send(Arc::clone(items));
                     }
                 }
             });
 
             return match crate::time_limits::MCP_QUERY_TIMEOUT.run(result_rx).await {
-                Ok(Ok(items)) => Ok(myko::operation_index::QUERY_RESULT.wrap(
+                Ok(Ok(items)) => Ok(SnapshotResult::new(
+                    &myko::operation_index::QUERY_RESULT,
                     query_id,
                     reg.query_item_type,
-                    Value::Array(items),
+                    Rows::Client(items),
                 )),
                 Ok(Err(_)) => Err("Query channel closed".to_string()),
                 Err(_) => Err("Timeout waiting for query response".to_string()),
@@ -333,7 +432,7 @@ async fn client_execute_view(
     client: Arc<MykoClient>,
     view_id: &str,
     arguments: Value,
-) -> Result<Value, String> {
+) -> Result<SnapshotResult, String> {
     for reg in inventory::iter::<ViewRegistration> {
         if reg.view_id == view_id {
             let tx = Uuid::new_v4().to_string();
@@ -355,7 +454,7 @@ async fn client_execute_view(
             };
 
             let cell = client.watch_view_raw(wrapped);
-            let (result_tx, result_rx) = oneshot::channel::<Vec<Value>>();
+            let (result_tx, result_rx) = oneshot::channel::<Arc<Vec<Value>>>();
             let result_tx = Arc::new(Mutex::new(Some(result_tx)));
             let seen_initial = Arc::new(Mutex::new(false));
             let result_tx_sub = result_tx.clone();
@@ -374,16 +473,17 @@ async fn client_execute_view(
                         return;
                     }
                     if let Some(tx) = take_mutex(&result_tx_sub) {
-                        let _ = tx.send((**items).clone());
+                        let _ = tx.send(Arc::clone(items));
                     }
                 }
             });
 
             return match crate::time_limits::MCP_QUERY_TIMEOUT.run(result_rx).await {
-                Ok(Ok(items)) => Ok(myko::operation_index::VIEW_RESULT.wrap(
+                Ok(Ok(items)) => Ok(SnapshotResult::new(
+                    &myko::operation_index::VIEW_RESULT,
                     view_id,
                     reg.view_item_type,
-                    Value::Array(items),
+                    Rows::Client(items),
                 )),
                 Ok(Err(_)) => Err("View channel closed".to_string()),
                 Err(_) => Err("Timeout waiting for view response".to_string()),
@@ -508,7 +608,7 @@ fn in_process_execute_query(
     query_id: &str,
     arguments: Value,
     session: Option<&AuthSession>,
-) -> Result<Value, String> {
+) -> Result<SnapshotResult, String> {
     let registration = inventory::iter::<QueryRegistration>
         .into_iter()
         .find(|r| r.query_id == query_id)
@@ -542,17 +642,18 @@ fn in_process_execute_query(
     )
     .map_err(|e| format!("Failed to build query cell: {e}"))?;
 
-    let items: Vec<Value> = cellmap
+    let items = cellmap
         .snapshot()
         .into_iter()
-        .map(|(_, item)| serde_json::to_value(&*item).unwrap_or(Value::Null))
+        .map(|(_, item)| item)
         .collect();
     drop(ctx);
 
-    Ok(myko::operation_index::QUERY_RESULT.wrap(
+    Ok(SnapshotResult::new(
+        &myko::operation_index::QUERY_RESULT,
         query_id,
         registration.query_item_type,
-        Value::Array(items),
+        Rows::Native(items),
     ))
 }
 
@@ -561,7 +662,7 @@ fn in_process_execute_view(
     view_id: &str,
     arguments: Value,
     session: Option<&AuthSession>,
-) -> Result<Value, String> {
+) -> Result<SnapshotResult, String> {
     let registration = inventory::iter::<ViewRegistration>
         .into_iter()
         .find(|r| r.view_id == view_id)
@@ -591,17 +692,18 @@ fn in_process_execute_view(
         (view_data.cell_factory)(parsed, ctx.registry.clone(), request_context, ctx.clone())
             .map_err(|e| format!("Failed to build view cell: {e}"))?;
 
-    let items: Vec<Value> = cellmap
+    let items = cellmap
         .snapshot()
         .into_iter()
-        .map(|(_, item)| serde_json::to_value(&*item).unwrap_or(Value::Null))
+        .map(|(_, item)| item)
         .collect();
     drop(ctx);
 
-    Ok(myko::operation_index::VIEW_RESULT.wrap(
+    Ok(SnapshotResult::new(
+        &myko::operation_index::VIEW_RESULT,
         view_id,
         registration.view_item_type,
-        Value::Array(items),
+        Rows::Native(items),
     ))
 }
 
