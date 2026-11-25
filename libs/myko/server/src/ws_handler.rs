@@ -960,6 +960,7 @@ impl WsHandler {
         true
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run_read_loop<W: WsWriter>(
         mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
         session: &mut ClientSession<W>,

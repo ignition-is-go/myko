@@ -4561,7 +4561,7 @@ mod send_admission_tests {
                     }
                 }))),
             });
-            let transport_dyn: Arc<dyn SocketTransport> = transport.clone();
+            let transport_dyn: Arc<dyn SocketTransport> = transport;
             let client = MykoClient::with_transport_and_options(
                 &transport_dyn,
                 MykoClientOptions {
