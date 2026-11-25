@@ -66,8 +66,18 @@ pub async fn execute(
     filter: ClientFilters,
     index: Arc<Vec<OperationSchema>>,
 ) -> Result<Value, String> {
+    execute_with_memory_limit(code, executor, filter, index, MEMORY_LIMIT_BYTES).await
+}
+
+async fn execute_with_memory_limit(
+    code: &str,
+    executor: Arc<Executor>,
+    filter: ClientFilters,
+    index: Arc<Vec<OperationSchema>>,
+    memory_limit: usize,
+) -> Result<Value, String> {
     let rt = AsyncRuntime::new().map_err(|e| format!("Failed to start sandbox: {e}"))?;
-    rt.set_memory_limit(MEMORY_LIMIT_BYTES).await;
+    rt.set_memory_limit(memory_limit).await;
     if let Some(limit) = MCP_SCRIPT_DEADLINE.get() {
         let now = Instant::now();
         let deadline = now.checked_add(limit).unwrap_or(now);
@@ -245,6 +255,35 @@ fn json_error(message: impl Into<std::string::String>) -> std::string::String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use myko::prelude::*;
+
+    #[myko::myko_item]
+    pub struct SandboxTransferRow {
+        pub payload: String,
+    }
+
+    #[tokio::test]
+    async fn query_summary_fits_without_duplicate_encoded_payload() {
+        let server = crate::MykoServer::builder()
+            .with_default_persister(Arc::new(crate::BlackholePersister))
+            .build();
+        let source = Arc::new(server.ctx());
+        source
+            .set_transient(&SandboxTransferRow {
+                id: "bounded-transfer".into(),
+                payload: "x".repeat(640 * 1024),
+            })
+            .unwrap();
+        let result = super::execute_with_memory_limit(
+            "return (await myko.query('GetAllSandboxTransferRows', {})).count;",
+            Arc::new(Executor::InProcess(source)),
+            ClientFilters::allow_all(),
+            Arc::new(myko::operation_index::build_operation_index()),
+            1024 * 1024,
+        )
+        .await;
+        assert_eq!(result, Ok(serde_json::json!(1)));
+    }
 
     #[test]
     fn success_envelope_preserves_all_operation_contracts() {
