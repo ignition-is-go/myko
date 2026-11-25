@@ -18,6 +18,8 @@ use oauth2::{
 use openidconnect::{IssuerUrl, core::CoreProviderMetadata};
 
 use crate::{AuthError, CredentialProvider, Credentials};
+mod device;
+pub use device::{DeviceCode, DeviceCodeConfig, DevicePrompt, DeviceTokenStore};
 
 const MAX_TOKEN_BYTES: usize = 16 * 1024;
 
