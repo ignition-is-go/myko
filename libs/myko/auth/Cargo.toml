@@ -23,8 +23,17 @@ base64 = "0.22"
 ts-rs = { version = "12", optional = true, features = ["serde-compat", "no-serde-warnings"] }
 
 [features]
-ci = []
+ci = ["client"]
 codegen-ts = ["dep:ts-rs"]
+client = ["dep:oauth2", "dep:openidconnect", "dep:reqwest"]
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+oauth2 = { version = "5", optional = true, default-features = false, features = ["reqwest", "rustls-tls"] }
+openidconnect = { version = "4", optional = true, default-features = false, features = ["reqwest", "rustls-tls"] }
+reqwest = { version = "0.12", optional = true, default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { version = "1", features = ["js"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "net", "io-util"] }
