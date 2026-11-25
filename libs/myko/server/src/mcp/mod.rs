@@ -51,6 +51,7 @@ mod domain;
 pub mod exec;
 pub mod filter;
 pub mod http;
+mod json_vm;
 pub mod sandbox;
 mod schema;
 mod server;
