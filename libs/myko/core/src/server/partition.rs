@@ -99,7 +99,7 @@
 
 use std::{
     cell::Cell as ThreadCell,
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     sync::{
         Arc, Weak,
         atomic::{AtomicU64, Ordering},
@@ -128,6 +128,31 @@ type SubscriptionPartition = Arc<
         + Sync,
 >;
 type Resolve = Arc<dyn Fn(&MykoServerContext, &dyn AnyItem) -> Option<PartitionKey> + Send + Sync>;
+/// Keys naming what one row's route reads, or what one input write changes.
+type DependencyKeys = Arc<dyn Fn(&dyn AnyItem) -> Vec<Arc<str>> + Send + Sync>;
+
+/// A shared input of a route with dependencies, and the dependency keys a
+/// write of one of its rows changes.
+pub struct RouteInput {
+    entity_type: &'static str,
+    affects: DependencyKeys,
+}
+
+impl RouteInput {
+    /// The input type `I`, whose written row changes the keys `affects`
+    /// returns.
+    #[must_use]
+    pub fn of<I: Eventable>(affects: impl Fn(&I) -> Vec<Arc<str>> + Send + Sync + 'static) -> Self {
+        Self {
+            entity_type: I::ENTITY_NAME_STATIC,
+            affects: Arc::new(move |item| {
+                item.as_any()
+                    .downcast_ref::<I>()
+                    .map_or_else(Vec::new, &affects)
+            }),
+        }
+    }
+}
 
 /// Names one partition.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -263,7 +288,16 @@ enum Route {
         resolve: Resolve,
         /// Shared entity types the resolver reads.
         inputs: Vec<&'static str>,
+        /// What each row's resolution reads, and what each input write
+        /// changes. Without them a write to an input re-resolves every row.
+        dependencies: Option<Dependencies>,
     },
+}
+
+#[derive(Clone)]
+struct Dependencies {
+    reads: DependencyKeys,
+    affects: HashMap<&'static str, DependencyKeys>,
 }
 
 /// Which entity types are partitioned, and how an item finds its partition.
@@ -351,6 +385,48 @@ impl PartitionSchema {
             Route::Resolved {
                 resolve,
                 inputs: inputs.to_vec(),
+                dependencies: None,
+            },
+        );
+        self
+    }
+
+    /// [`route`](Self::route) `T`, naming what each row's resolution reads.
+    ///
+    /// `reads` returns the dependency keys a row of `T` resolves through;
+    /// each [`RouteInput`] says which keys a write of one of its rows
+    /// changes. A write to an input then re-resolves only the rows that read
+    /// a key it changes, instead of every row of `T`. A key a resolution reads
+    /// must be one some input write names whenever that write could change
+    /// the resolution.
+    #[must_use]
+    pub fn route_with_dependencies<T: Eventable>(
+        mut self,
+        inputs: Vec<RouteInput>,
+        reads: impl Fn(&T) -> Vec<Arc<str>> + Send + Sync + 'static,
+        resolve: impl Fn(&MykoServerContext, &T) -> Option<PartitionKey> + Send + Sync + 'static,
+    ) -> Self {
+        let resolve: Resolve = Arc::new(move |root, item| {
+            item.as_any()
+                .downcast_ref::<T>()
+                .and_then(|item| resolve(root, item))
+        });
+        let reads: DependencyKeys = Arc::new(move |item| {
+            item.as_any()
+                .downcast_ref::<T>()
+                .map_or_else(Vec::new, &reads)
+        });
+        let names = inputs.iter().map(|input| input.entity_type).collect();
+        let affects = inputs
+            .into_iter()
+            .map(|input| (input.entity_type, input.affects))
+            .collect();
+        self.routes.insert(
+            T::ENTITY_NAME_STATIC,
+            Route::Resolved {
+                resolve,
+                inputs: names,
+                dependencies: Some(Dependencies { reads, affects }),
             },
         );
         self
@@ -624,6 +700,10 @@ const STRIPES: u64 = 64;
 /// Placement of every row of one routed type.
 struct Placements {
     resolve: Resolve,
+    dependencies: Option<Dependencies>,
+    /// Rows by the dependency keys their resolution read. An entry may
+    /// outlive its row or what it reads; it only costs a re-resolve.
+    dependents: DashMap<Arc<str>, HashSet<Arc<str>>, ahash::RandomState>,
     /// A write of a row and a move of that row hold the row's stripe.
     stripes: Vec<Mutex<()>>,
     hasher: ahash::RandomState,
@@ -631,9 +711,11 @@ struct Placements {
 }
 
 impl Placements {
-    fn new(resolve: Resolve) -> Self {
+    fn new(resolve: Resolve, dependencies: Option<Dependencies>) -> Self {
         Self {
             resolve,
+            dependencies,
+            dependents: DashMap::with_hasher(ahash::RandomState::new()),
             stripes: (0..STRIPES).map(|_| Mutex::new(())).collect(),
             hasher: ahash::RandomState::new(),
             rows: DashMap::with_hasher(ahash::RandomState::new()),
@@ -1206,9 +1288,14 @@ impl Partitions {
             .routes
             .iter()
             .filter_map(|(entity_type, route)| match route {
-                Route::Resolved { resolve, .. } => {
-                    Some((*entity_type, Placements::new(Arc::clone(resolve))))
-                }
+                Route::Resolved {
+                    resolve,
+                    dependencies,
+                    ..
+                } => Some((
+                    *entity_type,
+                    Placements::new(Arc::clone(resolve), dependencies.clone()),
+                )),
                 Route::Keyed(_) => None,
             })
             .collect();
@@ -1841,6 +1928,17 @@ impl Partitions {
         queued: &mut Vec<(Arc<Partition>, u64)>,
     ) -> Result<(), PersistError> {
         let previous = placements.rows.get(&id).map(|row| row.value().clone());
+        if write.change == MEventType::SET
+            && let Some(dependencies) = &placements.dependencies
+        {
+            for key in (dependencies.reads)(item.as_ref()) {
+                placements
+                    .dependents
+                    .entry(key)
+                    .or_default()
+                    .insert(id.clone());
+            }
+        }
         let target = match write.change {
             MEventType::SET => {
                 (placements.resolve)(&self.root, item.as_ref()).and_then(|key| self.get(&key))
@@ -2012,6 +2110,35 @@ impl Partitions {
     /// partition changed. `closing` is a partition that was just removed from
     /// the open set and still holds its rows.
     fn reroute(&self, entity_type: &'static str, closing: Option<&Arc<Partition>>) {
+        self.reroute_rows(entity_type, closing, None);
+    }
+
+    /// The rows of `entity_type` whose resolution read one of `keys`, or
+    /// `None` when its route names no dependencies.
+    fn dependents_of(
+        &self,
+        entity_type: &'static str,
+        keys: impl Iterator<Item = Arc<str>>,
+    ) -> Option<Vec<Arc<str>>> {
+        let placements = self.placements.get(entity_type)?;
+        placements.dependencies.as_ref()?;
+        let mut rows = BTreeSet::new();
+        for key in keys {
+            if let Some(ids) = placements.dependents.get(&key) {
+                rows.extend(ids.iter().cloned());
+            }
+        }
+        Some(rows.into_iter().collect())
+    }
+
+    /// [`reroute`](Self::reroute) only the rows `only` names, or every row
+    /// when it is `None`.
+    fn reroute_rows(
+        &self,
+        entity_type: &'static str,
+        closing: Option<&Arc<Partition>>,
+        only: Option<Vec<Arc<str>>>,
+    ) {
         let Some(placements) = self.placements.get(entity_type) else {
             return;
         };
@@ -2021,11 +2148,13 @@ impl Partitions {
                 .cloned()
                 .or_else(|| self.get(key))
         };
-        let ids: Vec<Arc<str>> = placements
-            .rows
-            .iter()
-            .map(|row| row.key().clone())
-            .collect();
+        let ids: Vec<Arc<str>> = only.unwrap_or_else(|| {
+            placements
+                .rows
+                .iter()
+                .map(|row| row.key().clone())
+                .collect()
+        });
         let mut queued = Vec::new();
         for id in ids {
             let _row = placements.lock([&id]);
@@ -2203,12 +2332,26 @@ impl Partitions {
             self.derive_in_partitions(items, change, &opened);
         }
         for (routed, route) in &self.schema.routes {
-            if let Route::Resolved { inputs, .. } = route
-                && inputs.contains(&entity_type)
-            {
-                let _topology = self.topology.lock();
-                self.reroute(routed, None);
+            let Route::Resolved {
+                inputs,
+                dependencies,
+                ..
+            } = route
+            else {
+                continue;
+            };
+            if !inputs.contains(&entity_type) {
+                continue;
             }
+            let affected = dependencies.as_ref().and_then(|dependencies| {
+                let affects = dependencies.affects.get(entity_type)?;
+                self.dependents_of(routed, items.iter().flat_map(|item| affects(item.as_ref())))
+            });
+            if affected.as_ref().is_some_and(Vec::is_empty) {
+                continue;
+            }
+            let _topology = self.topology.lock();
+            self.reroute_rows(routed, None, affected);
         }
         if self
             .schema

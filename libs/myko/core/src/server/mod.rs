@@ -65,7 +65,7 @@ pub use history_replay::{
 };
 pub use partition::{
     MergedAcrossPartitions, MergedViewRegistration, PartitionError, PartitionKey,
-    PartitionKeyField, PartitionKeyRegistration, PartitionSchema, PartitionServices,
+    PartitionKeyField, PartitionKeyRegistration, PartitionSchema, PartitionServices, RouteInput,
     SubscriptionWatch,
 };
 pub use persister::{
