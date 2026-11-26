@@ -93,6 +93,31 @@ pub mod line {
     }
 }
 
+pub mod owner {
+    use std::sync::Arc;
+
+    use myko::prelude::*;
+
+    /// Shared. Names the room its badges belong to.
+    #[myko_item]
+    pub struct PrlOwner {
+        pub room: Arc<str>,
+    }
+}
+
+pub mod badge {
+    use myko::prelude::*;
+
+    use super::owner::{PrlOwner, PrlOwnerId};
+
+    /// Routed through its owner, which a delete of the owner takes away.
+    #[myko_item]
+    pub struct PrlBadge {
+        #[belongs_to(PrlOwner)]
+        pub owner_id: PrlOwnerId,
+    }
+}
+
 pub mod cursor {
     use myko::prelude::*;
 
@@ -203,6 +228,14 @@ fn schema() -> PartitionSchema {
     PartitionSchema::new()
         .lifecycle::<PrlRoom>()
         .partition_by::<PrlCursor>(|cursor| PartitionKey::new(cursor.room_id.0.clone()))
+        .route::<badge::PrlBadge>(&[owner::PrlOwner::ENTITY_NAME_STATIC], |root, badge| {
+            let owner = root
+                .registry
+                .get(owner::PrlOwner::ENTITY_NAME_STATIC)?
+                .get_value(&badge.owner_id.0)?;
+            let owner = AnyItem::as_any(owner.as_ref()).downcast_ref::<owner::PrlOwner>()?;
+            Some(PartitionKey::new(owner.room.clone()))
+        })
 }
 
 struct Fixture {
@@ -921,4 +954,51 @@ fn a_partitions_store_lives_in_its_partition_whoever_asks_first() {
         store.as_ref().domain() == fixture.a.domain(),
         "a partition's store first asked for from outside its domain lives in the partition"
     );
+}
+
+/// A routed row whose route reads its parent is deleted by the parent's
+/// cascade inside its partition, after the parent is gone and the route no
+/// longer resolves. The delete goes where the row is; it is not a write to
+/// shared data, and the partition keeps working.
+#[test]
+fn a_cascade_deletes_a_routed_row_whose_route_its_parent_took_away() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    let owner = owner::PrlOwner {
+        id: "o".into(),
+        room: "a".into(),
+    };
+    fixture.root.set(&owner).expect("owner");
+    fixture
+        .root
+        .set(&badge::PrlBadge {
+            id: "badge".into(),
+            owner_id: owner::PrlOwnerId("o".into()),
+        })
+        .expect("badge routed to a");
+    settle(&fixture.a);
+    assert!(has(
+        &fixture.a,
+        badge::PrlBadge::ENTITY_NAME_STATIC,
+        "badge"
+    ));
+
+    fixture.root.del(&owner).expect("delete owner");
+    settle(&fixture.a);
+
+    let room = PartitionKey::new("a");
+    assert!(
+        fixture.root.partition_failure(&room).is_none(),
+        "the cascade failed room a: {:?}",
+        fixture.root.partition_failure(&room)
+    );
+    assert!(!has(
+        &fixture.a,
+        badge::PrlBadge::ENTITY_NAME_STATIC,
+        "badge"
+    ));
+    fixture
+        .root
+        .set(&note("a", "after"))
+        .expect("room a still takes writes");
 }

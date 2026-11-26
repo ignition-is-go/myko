@@ -1711,7 +1711,7 @@ impl Partitions {
                 return Err(backwards(entity_type, Some(&partition.key)));
             }
             for (entity_type, items) in &resolved {
-                self.refuse_resolved_outside(entity_type, items, wave)?;
+                self.refuse_resolved_outside(entity_type, items, change, wave)?;
             }
         }
         let root_wave = propagating.as_ref().is_some_and(Domain::is_root);
@@ -1755,17 +1755,38 @@ impl Partitions {
 
     /// Refuse routed rows that a partition's wave writes into another
     /// partition, or that no open partition takes.
+    ///
+    /// A delete goes where the row is, as [`Self::admit_routed`] places it:
+    /// its route may no longer resolve. A row deleted because its parent
+    /// was, such as a client's rows when the client disconnects, has lost
+    /// what its route reads, and re-resolving it would call a delete of this
+    /// partition's own row a write to shared data and fail the partition.
     fn refuse_resolved_outside(
         &self,
         entity_type: &'static str,
         items: &[Item],
+        change: MEventType,
         wave: &Domain,
     ) -> Result<(), PersistError> {
         let Some(placements) = self.placements.get(entity_type) else {
             return Ok(());
         };
         for item in items {
-            let key = (placements.resolve)(&self.root, item.as_ref());
+            let key = match change {
+                MEventType::SET => (placements.resolve)(&self.root, item.as_ref()),
+                MEventType::DEL => {
+                    // Held or never placed: no partition holds it, so
+                    // this wave writes nothing outside itself.
+                    let Some(key) = placements
+                        .rows
+                        .get(&item.id())
+                        .and_then(|placed| placed.value().key().cloned())
+                    else {
+                        continue;
+                    };
+                    Some(key)
+                }
+            };
             let partition = key.as_ref().and_then(|key| self.get(key));
             if partition.is_none_or(|partition| partition.domain != *wave) {
                 return Err(backwards(entity_type, key.as_ref()));
