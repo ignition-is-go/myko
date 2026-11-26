@@ -4304,7 +4304,7 @@ mod tests {
             },
             request.clone(),
         );
-        let connected_clients = ctx.view(ConnectedClients {}, request);
+        let connected_clients = ctx.view(ConnectedClients {}, request.clone());
 
         assert!(!status.get().online, "replayed entity is not a live client");
         assert!(
@@ -4336,6 +4336,19 @@ mod tests {
             client_store.get_value(&client_id).is_some(),
             "the stale entity remains, proving it is not the liveness source"
         );
+
+        let bare_id: Arc<str> = format!("bare-client-{}", Uuid::new_v4()).into();
+        registry.register(bare_id.clone(), Arc::new(ClientStatusTestWriter));
+        let bare_status = ctx.report(
+            ClientStatus {
+                client_id: ClientId::from(bare_id.clone()),
+            },
+            request,
+        );
+        assert!(bare_status.get().online);
+        assert!(connected_clients.get_value(&bare_id).is_none());
+        registry.unregister(&bare_id);
+        assert!(!bare_status.get().online);
     }
 
     #[test]
