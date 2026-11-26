@@ -136,4 +136,4 @@ myko-server = { version = "6.19.2", path = "libs/myko/server" }
 myko = { path = "libs/myko/core" }
 # NOTE(ts): scheduling domains are not in a published hyphae yet. Remove this
 # line and raise the hyphae requirement once hyphae releases them.
-hyphae = { git = "https://github.com/ignition-is-go/hyphae.git", rev = "e977a479f64037e1d0d993b777009e17400b672c" }
+hyphae = { git = "https://github.com/ignition-is-go/hyphae.git", rev = "091faaef29e11fd3df9388d20577e362e0823755" }

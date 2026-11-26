@@ -885,6 +885,13 @@ impl Partition {
                     .hand_off(move || partition.sequencer.run_until(ticket));
             }
             Some(_) => self.sequencer.run_until(ticket),
+            // NOTE(ts): Writes this thread's open root batch sent here reach
+            // the domain only when that batch closes, so waiting for them
+            // here never returns. Queue the run behind them instead.
+            None if Domain::root().holds_open_batch() => {
+                let partition = Arc::clone(self);
+                self.follow(Box::new(move || partition.sequencer.run_until(ticket)));
+            }
             None => {
                 self.catch_up();
                 self.sequencer.run_until(ticket);
