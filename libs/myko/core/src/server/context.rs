@@ -1049,31 +1049,37 @@ impl MykoServerContext {
         scope: RequestCacheScope,
     ) -> String {
         let payload_hash = params.cache_key_hash();
-        if let Some(auth) = &request.auth {
-            return format!(
-                "{}:{kind}:{id}:{payload_hash:016x}:auth:{}",
-                request.host_id,
-                auth.id()
-            );
-        }
+        // NOTE(ts): Authorization is decided before a graph is built, so a
+        // `Shared` graph is the same for every caller and is shared by them.
+        // Splitting it per authenticated identity gave every executor its own
+        // copy of every view it read, which multiplied memory and build time
+        // by the number of connected clients. A graph whose output depends
+        // on its caller declares `PerClient`, which also keys by the
+        // identity, so a client that signs in again never reuses another's.
         match scope {
             RequestCacheScope::Shared => {
                 format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
             }
-            RequestCacheScope::PerClient => request.client_id.as_deref().map_or_else(
-                || {
-                    format!(
-                        "{}:{kind}:{id}:{payload_hash:016x}:request-server",
-                        request.host_id
-                    )
-                },
-                |client_id| {
-                    format!(
-                        "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}",
-                        request.host_id
-                    )
-                },
-            ),
+            RequestCacheScope::PerClient => {
+                let identity = request
+                    .auth
+                    .as_ref()
+                    .map_or_else(String::new, |auth| format!(":auth:{}", auth.id()));
+                request.client_id.as_deref().map_or_else(
+                    || {
+                        format!(
+                            "{}:{kind}:{id}:{payload_hash:016x}:request-server{identity}",
+                            request.host_id
+                        )
+                    },
+                    |client_id| {
+                        format!(
+                            "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}{identity}",
+                            request.host_id
+                        )
+                    },
+                )
+            }
         }
     }
 
