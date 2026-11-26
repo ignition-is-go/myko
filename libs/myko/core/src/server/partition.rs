@@ -135,7 +135,8 @@ type DependencyKeys = Arc<dyn Fn(&dyn AnyItem) -> Vec<Arc<str>> + Send + Sync>;
 /// write of one of its rows changes.
 pub struct RouteInput {
     entity_type: &'static str,
-    affects: DependencyKeys,
+    /// `None`: a write of this input re-resolves every row.
+    affects: Option<DependencyKeys>,
 }
 
 impl RouteInput {
@@ -145,11 +146,21 @@ impl RouteInput {
     pub fn of<I: Eventable>(affects: impl Fn(&I) -> Vec<Arc<str>> + Send + Sync + 'static) -> Self {
         Self {
             entity_type: I::ENTITY_NAME_STATIC,
-            affects: Arc::new(move |item| {
+            affects: Some(Arc::new(move |item| {
                 item.as_any()
                     .downcast_ref::<I>()
                     .map_or_else(Vec::new, &affects)
-            }),
+            })),
+        }
+    }
+
+    /// The input type `I`, a write of which re-resolves every row: for an
+    /// input that changes rarely and whose rows can't name what they read.
+    #[must_use]
+    pub const fn rescanning<I: Eventable>() -> Self {
+        Self {
+            entity_type: I::ENTITY_NAME_STATIC,
+            affects: None,
         }
     }
 }
@@ -419,7 +430,7 @@ impl PartitionSchema {
         let names = inputs.iter().map(|input| input.entity_type).collect();
         let affects = inputs
             .into_iter()
-            .map(|input| (input.entity_type, input.affects))
+            .filter_map(|input| Some((input.entity_type, input.affects?)))
             .collect();
         self.routes.insert(
             T::ENTITY_NAME_STATIC,
