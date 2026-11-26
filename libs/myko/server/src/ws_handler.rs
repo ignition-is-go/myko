@@ -2325,7 +2325,7 @@ impl WsHandler {
             MykoMessage::Event(mut event) => {
                 event.sanitize_null_bytes();
                 normalize_incoming_event(&mut event, &session.client_id, ctx.host_id);
-                if let Err(error) = ctx.apply_event(event) {
+                if let Err(error) = off_async_workers(|| ctx.apply_event(event)) {
                     tracing::error!(
                         "Failed to apply event from client {}: {error}",
                         session.client_id
@@ -2338,7 +2338,7 @@ impl WsHandler {
                     event.sanitize_null_bytes();
                     normalize_incoming_event(event, &session.client_id, ctx.host_id);
                 }
-                if let Err(error) = ctx.apply_event_batch(events) {
+                if let Err(error) = off_async_workers(|| ctx.apply_event_batch(events)) {
                     tracing::error!(
                         "Failed to apply event batch from client {}: {}",
                         session.client_id,
@@ -2754,6 +2754,21 @@ impl WsWriter for ChannelWriter {
 mod delivery_timing_tests;
 #[cfg(test)]
 mod partition_tests;
+
+/// Run `apply` where it may block without holding an async worker.
+///
+/// Applying a client's events can wait for a session partition to catch up,
+/// which takes as long as that partition's backlog. Run inline on an async
+/// worker, every client's waits pile onto the runtime until nothing is left
+/// to accept connections or answer logins. `block_in_place` hands this
+/// worker's other tasks to a replacement and keeps this client's events in
+/// order, since its read loop is waiting on this call.
+fn off_async_workers<R>(apply: impl FnOnce() -> R) -> R {
+    match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
+        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(apply),
+        _ => apply(),
+    }
+}
 
 #[cfg(test)]
 mod tests {
