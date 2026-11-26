@@ -1737,6 +1737,13 @@ impl MykoServerContext {
                 tracing::warn!("Unknown entity type or parse error for ingest: {item_type}");
                 continue;
             };
+            // NOTE(ts): A client re-sending a row unchanged writes nothing: it
+            // is not persisted and runs no relationships or re-routes. An
+            // executor repeating its instance row several times a second
+            // otherwise costs a full write each time.
+            if change == MEventType::SET && self.stores_equal(&item) {
+                continue;
+            }
             let key = (item.entity_type(), item.id());
             if keys_in_run.contains(&key) {
                 keys_in_run.clear();
@@ -1777,6 +1784,14 @@ impl MykoServerContext {
         }
 
         Ok(applied)
+    }
+
+    /// Whether this context already stores `item` exactly.
+    fn stores_equal(&self, item: &Arc<dyn AnyItem>) -> bool {
+        self.registry
+            .get(item.entity_type())
+            .and_then(|store| store.get_value(&item.id()))
+            .is_some_and(|stored| stored.equals(item.as_ref()))
     }
 
     fn ingest_buffer_for(&self, entity_type: Arc<str>) -> Arc<BufferedIngestType> {
@@ -5022,6 +5037,50 @@ mod tests {
                 .materialize()
                 .get()
                 .is_some()
+        );
+    }
+
+    #[test]
+    fn apply_event_batch_skips_a_set_equal_to_the_stored_row() {
+        fn event(value: i32) -> MEvent {
+            MEvent {
+                item: json!({ "id": "row", "value": value }),
+                change_type: MEventType::SET,
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-resend".into(),
+                source_id: Some("test".into()),
+            }
+        }
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        assert_eq!(ctx.apply_event_batch(vec![event(1)]).ok(), Some(1));
+        let row = ctx
+            .registry
+            .get_or_create("ImmediateTestItem")
+            .get(&Arc::<str>::from("row"))
+            .materialize();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = seen.clone();
+        let _guard = row.subscribe(move |signal| {
+            if let hyphae::Signal::Value(_) = signal {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let initial = seen.load(std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(
+            ctx.apply_event_batch(vec![event(1), event(1)]).ok(),
+            Some(0),
+            "a re-sent unchanged row writes nothing"
+        );
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), initial);
+
+        assert_eq!(ctx.apply_event_batch(vec![event(2)]).ok(), Some(1));
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            initial + 1,
+            "a changed row is still written"
         );
     }
 
