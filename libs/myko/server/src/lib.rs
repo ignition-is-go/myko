@@ -12,6 +12,7 @@
 mod blocking_work;
 mod delivery_diagnostics;
 mod gateway_access;
+mod inbound_events;
 mod outbound_queue;
 mod subscription_authorization;
 mod time_limits;

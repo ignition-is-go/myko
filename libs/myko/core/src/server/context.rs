@@ -52,10 +52,12 @@ use crate::{
     search::SearchIndex,
     store::{StoreRegistry, watch_root_reads},
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
-    wire::{MEvent, MEventType},
+    wire::{MEvent, MEventType, intern_entity_type},
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
+/// A wire event's change and its parsed item.
+type IngestEvent = (MEventType, AnyItemArc);
 
 /// Where a mutation came from. This is the single policy point for the apply
 /// pipeline's loop-safety: it determines whether a mutation should run
@@ -311,7 +313,7 @@ struct MapCacheEntry {
 
 #[derive(Default)]
 struct BufferedIngestState {
-    events: Vec<MEvent>,
+    events: Vec<IngestEvent>,
     flush_scheduled: bool,
 }
 
@@ -1680,19 +1682,30 @@ impl MykoServerContext {
     ///
     /// Returns an error when the requested operation cannot be completed.
     pub fn apply_event_batch(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
+        self.apply_item_event_batch(self.parse_events(events))
+    }
+
+    /// [`apply_event_batch`](Self::apply_event_batch) for events whose items
+    /// are already parsed, so a transport that decodes them straight from
+    /// its frame skips the `serde_json::Value` form.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn apply_item_event_batch(&self, events: Vec<IngestEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
             return Ok(0);
         }
 
         let mut accepted = 0usize;
         let mut immediate_events = Vec::new();
-        let mut buffered_by_type: HashMap<Arc<str>, (u64, Vec<MEvent>)> = HashMap::new();
+        let mut buffered_by_type: HashMap<&'static str, (u64, Vec<IngestEvent>)> = HashMap::new();
 
         for event in events {
-            match self.handler_registry.item_buffer_policy(&event.item_type) {
+            let entity_type = event.1.entity_type();
+            match self.handler_registry.item_buffer_policy(entity_type) {
                 IngestBufferPolicy::None => immediate_events.push(event),
                 IngestBufferPolicy::TimeWindow { window_ms } => {
-                    let entity_type: Arc<str> = event.item_type.clone();
                     buffered_by_type
                         .entry(entity_type)
                         .or_insert_with(|| (window_ms, Vec::new()))
@@ -1703,18 +1716,42 @@ impl MykoServerContext {
         }
 
         if !immediate_events.is_empty() {
-            accepted = accepted.saturating_add(self.apply_event_batch_immediate(immediate_events)?);
+            accepted = accepted.saturating_add(self.apply_items_immediate(immediate_events)?);
         }
 
         for (entity_type, (window_ms, buffered_events)) in buffered_by_type {
             accepted = accepted.saturating_add(buffered_events.len());
-            self.enqueue_buffered_events(entity_type, window_ms, buffered_events);
+            self.enqueue_buffered_events(
+                intern_entity_type(entity_type),
+                window_ms,
+                buffered_events,
+            );
         }
 
         Ok(accepted)
     }
 
+    /// Typed items of `events`, skipping (with a warning) any whose type is
+    /// unknown or whose item does not parse.
+    fn parse_events(&self, events: Vec<MEvent>) -> Vec<IngestEvent> {
+        events
+            .into_iter()
+            .filter_map(|event| {
+                let item_type = event.item_type;
+                let item = self.parse_item(&item_type, event.item);
+                if item.is_none() {
+                    tracing::warn!("Unknown entity type or parse error for ingest: {item_type}");
+                }
+                Some((event.change_type, item?))
+            })
+            .collect()
+    }
+
     fn apply_event_batch_immediate(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
+        self.apply_items_immediate(self.parse_events(events))
+    }
+
+    fn apply_items_immediate(&self, events: Vec<IngestEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
             return Ok(0);
         }
@@ -1730,14 +1767,7 @@ impl MykoServerContext {
             HashSet::with_hasher(ahash::RandomState::new());
         let mut applied = 0usize;
 
-        for event in events {
-            let change = event.change_type;
-            let item_type = event.item_type;
-            let item_value = event.item;
-            let Some(item) = self.parse_item(&item_type, item_value) else {
-                tracing::warn!("Unknown entity type or parse error for ingest: {item_type}");
-                continue;
-            };
+        for (change, item) in events {
             // NOTE(ts): A client re-sending a row unchanged writes nothing: it
             // is not persisted and runs no relationships or re-routes. An
             // executor repeating its instance row several times a second
@@ -1802,7 +1832,12 @@ impl MykoServerContext {
             .clone()
     }
 
-    fn enqueue_buffered_events(&self, entity_type: Arc<str>, window_ms: u64, events: Vec<MEvent>) {
+    fn enqueue_buffered_events(
+        &self,
+        entity_type: Arc<str>,
+        window_ms: u64,
+        events: Vec<IngestEvent>,
+    ) {
         let buffer = self.ingest_buffer_for(entity_type.clone());
         let should_schedule = {
             let Ok(mut state) = buffer.state.lock() else {
@@ -1810,7 +1845,7 @@ impl MykoServerContext {
                     "Could not acquire ingest buffer lock for entity_type={}",
                     entity_type
                 );
-                if let Err(e) = self.apply_event_batch_immediate(events) {
+                if let Err(e) = self.apply_items_immediate(events) {
                     tracing::error!("Failed to apply buffered events for {}: {}", entity_type, e);
                 }
                 return;
@@ -1869,7 +1904,7 @@ impl MykoServerContext {
             events.len()
         );
 
-        match self.apply_event_batch_immediate(events) {
+        match self.apply_items_immediate(events) {
             Ok(count) => count,
             Err(e) => {
                 tracing::error!("Failed to flush buffered events for {}: {}", entity_type, e);

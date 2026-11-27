@@ -22,10 +22,6 @@ use myko::{
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
     query::WindowedQuerySource,
-    relationship::{
-        iter_client_id_registrations, iter_fallback_to_id_registrations,
-        iter_server_owned_registrations,
-    },
     report::AnyOutput,
     request::RequestContext,
     server::{
@@ -56,6 +52,7 @@ use crate::{
     GatewayAccess,
     blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING},
     delivery_diagnostics::DeliveryDiagnostics,
+    inbound_events::{EventFrame, RawEvent, prepare_incoming_event},
     subscription_authorization::{Delivery, SubscriptionAuthorization},
     view_sampling::{ViewDelivery, ViewDeliveryControl},
 };
@@ -131,65 +128,6 @@ fn ensure_ws_benchmark_logger() {
     {
         WS_BENCHMARK_LOGGER_STARTED.store(false, Ordering::Relaxed);
         tracing::error!(%error, "failed to spawn websocket benchmark logger thread");
-    }
-}
-
-/// Strip null bytes and fill framework-owned fields of a client event.
-fn prepare_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::Uuid) {
-    event.sanitize_null_bytes();
-    normalize_incoming_event(event, client_id, host_id);
-}
-
-fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::Uuid) {
-    if event.change_type != MEventType::SET {
-        return;
-    }
-
-    // Auto-populate #[myko_client_id] fields with the connection's client_id
-    for reg in iter_client_id_registrations() {
-        if reg.entity_type == &*event.item_type {
-            if let Some(obj) = event.item.as_object_mut() {
-                obj.insert(
-                    reg.field_name_json.to_string(),
-                    serde_json::Value::String(client_id.to_string()),
-                );
-            }
-            break;
-        }
-    }
-
-    // Auto-populate #[server_owned] fields with this server's ID
-    for reg in iter_server_owned_registrations() {
-        if reg.entity_type == &*event.item_type {
-            if let Some(obj) = event.item.as_object_mut() {
-                let field = reg.field_name_json;
-                let current = obj.get(field).and_then(|v| v.as_str()).unwrap_or("");
-                if current.is_empty() {
-                    obj.insert(
-                        field.to_string(),
-                        serde_json::Value::String(host_id.to_string()),
-                    );
-                }
-            }
-            break;
-        }
-    }
-
-    // Auto-populate #[fallback_to_id] fields with the entity's own id
-    // if the field is null or missing.
-    for reg in iter_fallback_to_id_registrations() {
-        if reg.entity_type != &*event.item_type {
-            continue;
-        }
-        let Some(obj) = event.item.as_object_mut() else {
-            break;
-        };
-        let field = reg.field_name_json;
-        if matches!(obj.get(field), None | Some(serde_json::Value::Null))
-            && let Some(id) = obj.get("id").and_then(|v| v.as_str()).map(String::from)
-        {
-            obj.insert(field.to_string(), serde_json::Value::String(id));
-        }
     }
 }
 
@@ -885,20 +823,27 @@ impl WsHandler {
                     ),
                 }
             }
-            Message::Text(text) => match serde_json::from_str::<MykoMessage>(&text) {
-                Ok(message) => {
-                    if !Self::dispatch_incoming(session, state, message) {
-                        return false;
-                    }
-                    tokio::task::yield_now().await;
+            Message::Text(text) => {
+                let dispatched = match Self::decode_event_frame(state, &text) {
+                    Some(frame) => Self::dispatch_event_frame(session, state, frame),
+                    None => match serde_json::from_str::<MykoMessage>(&text) {
+                        Ok(message) => Self::dispatch_incoming(session, state, message),
+                        Err(error) => {
+                            tracing::warn!(
+                                "Failed to parse JSON message from {}: {} | raw: {}",
+                                state.client_id,
+                                error,
+                                text.get(..1000).unwrap_or(&text)
+                            );
+                            return true;
+                        }
+                    },
+                };
+                if !dispatched {
+                    return false;
                 }
-                Err(error) => tracing::warn!(
-                    "Failed to parse JSON message from {}: {} | raw: {}",
-                    state.client_id,
-                    error,
-                    text.get(..1000).unwrap_or(&text)
-                ),
-            },
+                tokio::task::yield_now().await;
+            }
             Message::Ping(_) => tracing::trace!("Ping from {}", state.client_id),
             Message::Pong(_) => tracing::trace!("Pong from {}", state.client_id),
             Message::Close(frame) => {
@@ -907,6 +852,93 @@ impl WsHandler {
             }
             Message::Frame(_) => {}
         }
+        true
+    }
+
+    /// A JSON event frame decoded without a `serde_json::Value` per item,
+    /// when nothing on this connection reads those values. An authorizer
+    /// that reads proposed items gets the decoded message instead.
+    fn decode_event_frame<'a>(state: &ReadLoopState, text: &'a str) -> Option<EventFrame<'a>> {
+        if state
+            .auth
+            .as_ref()
+            .is_some_and(AuthSession::inspects_proposed_events)
+        {
+            return None;
+        }
+        crate::inbound_events::parse_event_frame(text)
+    }
+
+    /// [`Self::dispatch_incoming`] for a frame from
+    /// [`Self::decode_event_frame`]: the same access, authorization and
+    /// mutability checks, then its items are parsed and applied.
+    fn dispatch_event_frame<W: WsWriter>(
+        session: &ClientSession<W>,
+        state: &ReadLoopState,
+        frame: EventFrame<'_>,
+    ) -> bool {
+        let reject = |reason: &dyn std::fmt::Display| {
+            tracing::warn!(client_id = %state.client_id, %reason, "Rejected WebSocket input");
+        };
+        if state.access != GatewayAccess::Full {
+            reject(&"gateway is read-only");
+            return true;
+        }
+        let change = |event: &RawEvent<'_>| {
+            if event.change_type == MEventType::SET {
+                EventChange::Set
+            } else {
+                EventChange::Delete
+            }
+        };
+        if let Some(auth) = &state.auth {
+            // An invalid session terminates the transport; a denied operation does not.
+            if auth.check().is_err() {
+                return false;
+            }
+            let authorized = frame
+                .events
+                .iter()
+                .try_for_each(|event| {
+                    auth.authorize(AuthorizationRequest::ClientEvent {
+                        entity_type: &event.item_type,
+                        change: change(event),
+                        proposed: &serde_json::Value::Null,
+                    })
+                })
+                .and_then(|()| if frame.batch { auth.check() } else { Ok(()) });
+            if let Err(error) = authorized {
+                if auth.check().is_err() {
+                    return false;
+                }
+                reject(&error);
+                return true;
+            }
+        }
+        // Entity declarations apply even to trusted gateways without an auth provider.
+        if let Err(error) = frame.events.iter().try_for_each(|event| {
+            myko_auth::client_events::authorize(&event.item_type, change(event))
+        }) {
+            reject(&error);
+            return true;
+        }
+        crate::ws_timing::record_inbound_events(
+            frame.batch,
+            frame.events.iter().map(|event| &*event.item_type),
+            &session.client_id,
+        );
+        let ctx = &state.ctx;
+        let items = frame
+            .events
+            .into_iter()
+            .filter_map(|event| {
+                let change = event.change_type;
+                Some((change, event.into_item(ctx, &session.client_id)?))
+            })
+            .collect();
+        Self::apply_client_events(&session.client_id, &Self::message_context(state), || {
+            ctx.apply_item_event_batch(items)
+        });
         true
     }
 

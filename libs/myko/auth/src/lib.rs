@@ -175,6 +175,14 @@ pub trait Authorizer: Send + Sync + 'static {
     fn session_revision(&self, _identity: Option<&AuthenticatedIdentity>) -> u64 {
         self.revision()
     }
+    /// Whether decisions on `ClientEvent` requests read `proposed`.
+    ///
+    /// A transport may decode client events straight into their typed items
+    /// and build the proposed JSON only for authorizers that read it; one
+    /// returning `false` receives `Value::Null` as `proposed`.
+    fn inspects_proposed_events(&self) -> bool {
+        true
+    }
 }
 
 #[derive(Clone)]
@@ -431,6 +439,13 @@ impl AuthSession {
         self.0.live_permissions
     }
 
+    /// Whether this session's authorizer reads the proposed item of a client
+    /// event; see [`Authorizer::inspects_proposed_events`].
+    #[must_use]
+    pub fn inspects_proposed_events(&self) -> bool {
+        self.0.authorizer.inspects_proposed_events()
+    }
+
     /// Current local authorization policy version, independent of credential validity.
     #[must_use]
     pub fn policy_revision(&self) -> u64 {
@@ -567,6 +582,9 @@ impl Authorizer for OAuthFlowAuthorizer {
     }
     fn session_revision(&self, identity: Option<&AuthenticatedIdentity>) -> u64 {
         self.0.session_revision(identity)
+    }
+    fn inspects_proposed_events(&self) -> bool {
+        self.0.inspects_proposed_events()
     }
 }
 

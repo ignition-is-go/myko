@@ -8,7 +8,10 @@ use std::sync::Arc;
 use crate::{
     command::CommandHandlerRegistration,
     graph::GraphQueryRegistration,
-    item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
+    item::{
+        IngestBufferPolicy, IngestBufferRegistration, ItemParseBytesFn, ItemParseFn,
+        ItemRegistration,
+    },
     query::{QueryCellFactory, QueryParseFn, QueryRegistration, QueryWindowCellFactory},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
     view::{
@@ -71,6 +74,8 @@ pub struct StoredReportData {
 pub struct HandlerRegistry {
     /// Item parse functions by entity type name
     item_parsers: AMap<Arc<str>, ItemParseFn>,
+    /// Item parse-from-JSON-bytes functions by entity type name
+    item_bytes_parsers: AMap<Arc<str>, ItemParseBytesFn>,
     /// Optional ingest buffering policy by entity type name
     item_buffer_policies: AMap<Arc<str>, IngestBufferPolicy>,
     /// Query data by query id
@@ -87,6 +92,7 @@ impl HandlerRegistry {
     /// Create a new handler registry by collecting all registrations from inventory.
     pub fn new() -> Self {
         let mut item_parsers = AMap::default();
+        let mut item_bytes_parsers = AMap::default();
         let mut item_buffer_policies = AMap::default();
         let mut query_data = AMap::default();
         let mut view_data = AMap::default();
@@ -101,6 +107,7 @@ impl HandlerRegistry {
         for registration in inventory::iter::<ItemRegistration> {
             tracing::trace!("Registered item parser: {}", registration.entity_type);
             item_parsers.insert(registration.entity_type.into(), registration.parse);
+            item_bytes_parsers.insert(registration.entity_type.into(), registration.parse_bytes);
         }
 
         for registration in inventory::iter::<IngestBufferRegistration> {
@@ -184,6 +191,7 @@ impl HandlerRegistry {
 
         Self {
             item_parsers,
+            item_bytes_parsers,
             item_buffer_policies,
             query_data,
             view_data,
@@ -196,6 +204,13 @@ impl HandlerRegistry {
     #[must_use]
     pub fn item_parser(&self, entity_type: &str) -> Option<ItemParseFn> {
         self.item_parsers.get(entity_type).copied()
+    }
+
+    /// Get the function that parses an item of `entity_type` from JSON bytes,
+    /// without building a `serde_json::Value` first.
+    #[must_use]
+    pub fn item_bytes_parser(&self, entity_type: &str) -> Option<ItemParseBytesFn> {
+        self.item_bytes_parsers.get(entity_type).copied()
     }
 
     /// Get the ingest buffering policy for an entity type.

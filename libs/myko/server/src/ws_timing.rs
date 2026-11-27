@@ -50,6 +50,27 @@ pub fn record_outbound(kind: &'static str) {
         .fetch_add(1, Ordering::Relaxed);
 }
 
+/// [`record_inbound_message`] for an event frame decoded straight to its
+/// items: an `Event`, or an `EventBatch` tagged as [`message_tag`] tags one.
+pub fn record_inbound_events<'a>(
+    batch: bool,
+    mut item_types: impl Iterator<Item = &'a str>,
+    client_id: &str,
+) {
+    let (kind, tag) = if batch {
+        let tag = match item_types.next() {
+            Some(first) if item_types.all(|item_type| item_type == first) => first,
+            Some(_) => "mixed-event-batch",
+            None => "empty-event-batch",
+        };
+        ("EventBatch", tag)
+    } else {
+        ("Event", item_types.next().unwrap_or_default())
+    };
+    record_inbound(kind);
+    myko_telemetry::websocket_metrics::record(client_id, "in", kind, Some(tag), None);
+}
+
 /// Record a parsed inbound message and retain only transaction-to-operation IDs.
 pub fn record_inbound_message(message: &MykoMessage, client_id: &str) {
     let request = match message {

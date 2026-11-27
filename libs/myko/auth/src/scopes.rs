@@ -78,6 +78,11 @@ pub trait ScopePolicy: Send + Sync + 'static {
     fn revision(&self) -> u64 {
         0
     }
+    /// Whether decisions on `ClientEvent` requests read `proposed`; see
+    /// [`crate::Authorizer::inspects_proposed_events`].
+    fn inspects_proposed_events(&self) -> bool {
+        true
+    }
     /// # Errors
     /// Returns a denial unless the app explicitly permits this executor response.
     fn authorize_command_result(
@@ -347,6 +352,9 @@ impl Authorizer for ScopedAuthorizer {
     }
     fn revision(&self) -> u64 {
         self.policy.revision()
+    }
+    fn inspects_proposed_events(&self) -> bool {
+        self.policy.inspects_proposed_events()
     }
 }
 

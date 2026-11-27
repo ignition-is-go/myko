@@ -21,4 +21,7 @@ impl Authorizer for AuthenticatedAccess {
             _ => crate::public_access::authorize(request),
         }
     }
+    fn inspects_proposed_events(&self) -> bool {
+        false
+    }
 }

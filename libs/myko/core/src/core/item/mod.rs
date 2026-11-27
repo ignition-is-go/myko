@@ -9,7 +9,7 @@ pub use cell_map_cast::{
 };
 pub(crate) use traits::registered_entity_types;
 pub use traits::{
-    AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseFn,
-    ItemRegistration, ItemSerializeJsonFn, UndoableRegistration, is_undoable_entity,
+    AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemParseBytesFn,
+    ItemParseFn, ItemRegistration, ItemSerializeJsonFn, UndoableRegistration, is_undoable_entity,
     lookup_item_registration,
 };
