@@ -758,6 +758,31 @@ impl MykoServer {
         Ok(())
     }
 
+    /// Bring the built-in OAuth authority's clients and grants back from
+    /// Postgres and persist its later changes there. Without Postgres or an
+    /// OAuth server, grants stay in memory.
+    async fn restore_oauth(&self) -> Result<(), String> {
+        let (Some(provider), Some(postgres)) = (&self.auth_provider, &self.config.postgres) else {
+            return Ok(());
+        };
+        let Some(oauth) = provider.oauth_server() else {
+            return Ok(());
+        };
+        let store = postgres::PostgresOAuthStore::new(postgres, oauth.issuer())?;
+        let restored = provider
+            .restore_oauth(Arc::new(store))
+            .await
+            .map_err(|error| format!("OAuth grant restore failed: {error}"))?;
+        tracing::info!(
+            clients = restored.clients,
+            restored = restored.restored,
+            dropped = restored.dropped,
+            deferred = restored.deferred,
+            "Restored OAuth grants"
+        );
+        Ok(())
+    }
+
     /// Load a snapshot the way startup loads one from Postgres.
     ///
     /// Each SET event's item goes straight into its store. The mutation
@@ -923,6 +948,11 @@ impl MykoServer {
         // before/after returning free glibc arena pages, to tell allocator
         // page retention apart from real memory retention in deployments.
         crate::telemetry::start_malloc_trim_probe();
+
+        // NOTE(ts): after `after_init`, so a host that prepares its session state
+        // there can answer `restore_identity`; before the bind, so no grant is
+        // issued ahead of the store.
+        self.restore_oauth().await?;
 
         // Bind WebSocket listener last, once all synchronous startup work
         // (including after_init) is done, so peer publication only happens

@@ -31,10 +31,12 @@ use tracing::{error, info, trace, warn};
 use uuid::Uuid;
 
 mod history_feed;
+mod oauth_store;
 mod schema;
 mod transactions;
 mod undo_list;
 
+pub use oauth_store::PostgresOAuthStore;
 pub use schema::{REQUIRED_SCHEMA_VERSION, SCHEMA_VERSION, SchemaError, migrate};
 use schema::{check_server_settings, ensure_schema};
 
