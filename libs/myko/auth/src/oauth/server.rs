@@ -1,11 +1,6 @@
 //! OAuth authorization-code/PKCE handoff to a host-rendered login experience.
 use super::{OAuthResource, endpoint, pkce_challenge};
 use crate::{AuthError, AuthSession};
-use base64::{
-    Engine as _,
-    engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
-};
-use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -19,60 +14,6 @@ const LIMIT: usize = 4096;
 const PENDING_LIFETIME: Duration = Duration::from_mins(10);
 const CODE_LIFETIME: Duration = Duration::from_mins(1);
 const ACCESS_LIFETIME: Duration = Duration::from_mins(5);
-/// Marks a client ID that carries its own signed registration.
-const DYNAMIC_PREFIX: &str = "dyn1.";
-/// Keeps authorize URLs comfortably inside the 8 KiB HTTP head limit.
-const DYNAMIC_ID_LIMIT: usize = 2048;
-const MIN_KEY_BYTES: usize = 32;
-type HmacSha256 = Hmac<Sha256>;
-
-/// Server secret that signs dynamically registered client IDs.
-///
-/// Dynamic clients are not stored: each `client_id` encodes its registration
-/// under a MAC, so any process configured with the same key accepts it, across
-/// restarts and replicas. Rotating the key invalidates every dynamic
-/// registration.
-#[derive(Clone)]
-pub struct RegistrationKey(Vec<u8>);
-impl RegistrationKey {
-    /// Parse base64 (standard or URL-safe, padding optional) encoding at least
-    /// 32 random bytes, e.g. the output of `openssl rand -base64 32`.
-    /// # Errors
-    /// Rejects malformed or short keys.
-    pub fn from_base64(value: &str) -> Result<Self, RegistrationKeyError> {
-        let value = value.trim();
-        [STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD]
-            .iter()
-            .find_map(|engine| engine.decode(value).ok())
-            .filter(|bytes| bytes.len() >= MIN_KEY_BYTES)
-            .map(Self)
-            .ok_or(RegistrationKeyError)
-    }
-}
-impl std::fmt::Debug for RegistrationKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("RegistrationKey(..)")
-    }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct RegistrationKeyError;
-impl std::fmt::Display for RegistrationKeyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("OAuth registration key must be base64 encoding at least 32 random bytes")
-    }
-}
-impl std::error::Error for RegistrationKeyError {}
-/// Registration metadata carried inside a dynamic client ID.
-#[derive(Serialize, Deserialize)]
-struct SignedRegistration {
-    #[serde(rename = "n")]
-    name: String,
-    #[serde(rename = "r")]
-    redirects: Vec<String>,
-    /// Keeps each registration's ID distinct even for identical metadata.
-    #[serde(rename = "i")]
-    nonce: String,
-}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "codegen-ts", derive(ts_rs::TS))]
@@ -149,21 +90,8 @@ impl OAuthError {
 struct Client {
     name: String,
     redirects: Vec<String>,
-}
-impl Client {
-    fn new(name: &str, redirects: Vec<String>) -> Result<Self, OAuthError> {
-        if name.trim().is_empty() || name.len() > 128 || redirects.is_empty() || redirects.len() > 8
-        {
-            return Err(OAuthError::invalid("Invalid public client metadata"));
-        }
-        for uri in &redirects {
-            redirect(uri)?;
-        }
-        Ok(Self {
-            name: name.into(),
-            redirects,
-        })
-    }
+    dynamic: bool,
+    last_used: Instant,
 }
 struct Pending {
     info: AuthorizationInfo,
@@ -198,6 +126,11 @@ struct State {
     refresh: HashMap<String, Refresh>,
 }
 impl State {
+    fn touch_client(&mut self, id: &str) {
+        if let Some(client) = self.clients.get_mut(id) {
+            client.last_used = Instant::now();
+        }
+    }
     fn cleanup(&mut self) {
         let now = Instant::now();
         let wall = SystemTime::now();
@@ -210,18 +143,15 @@ impl State {
 }
 /// One resource's OAuth authority. Login methods and UI stay host-owned.
 ///
-/// Dynamic client registrations are self-contained signed client IDs and
-/// survive restarts. Pending grants and issued credentials are process-local and
-/// bound to the live parent session: after a restart, clients receive 401 and
-/// `invalid_grant`, then repeat authorization with their existing client ID.
+/// Pending grants and issued credentials are process-local: a restart requires a
+/// new OAuth login, while underlying identity/session storage remains host-owned.
 pub struct OAuthServer {
     id: String,
     issuer: String,
     issuer_path: String,
     login: Url,
     resource: OAuthResource,
-    /// Per-issuer/resource MAC key; `Some` enables dynamic registration.
-    dynamic: Option<HmacSha256>,
+    dynamic: bool,
     state: Mutex<State>,
 }
 fn secret(prefix: &str) -> String {
@@ -278,31 +208,16 @@ impl OAuthServer {
             issuer_path,
             login,
             resource,
-            dynamic: None,
+            dynamic: false,
             state: Mutex::new(State::default()),
         })
     }
-    /// Enable public-client registration whose client IDs are signed with
-    /// `key`. Every grant still requires explicit authenticated consent in the
-    /// host's login experience.
-    /// # Errors
-    /// Fails only if the key cannot initialise a MAC.
-    pub fn with_dynamic_registration(mut self, key: &RegistrationKey) -> Result<Self, AuthError> {
-        // Domain-separate per issuer and resource so a shared secret never lets
-        // one authority's client IDs validate at another.
-        let mut derive = HmacSha256::new_from_slice(&key.0).map_err(|_| AuthError::Unavailable)?;
-        for part in [
-            "myko-oauth-dynamic-client-v1",
-            self.issuer.as_str(),
-            self.resource.resource(),
-        ] {
-            derive.update(part.as_bytes());
-            derive.update(&[0]);
-        }
-        let derived = derive.finalize().into_bytes();
-        self.dynamic =
-            Some(HmacSha256::new_from_slice(&derived).map_err(|_| AuthError::Unavailable)?);
-        Ok(self)
+    /// Enable bounded public-client registration. Every grant still requires
+    /// explicit authenticated consent in the host's login experience.
+    #[must_use]
+    pub const fn with_dynamic_registration(mut self) -> Self {
+        self.dynamic = true;
+        self
     }
     #[must_use]
     pub fn id(&self) -> &str {
@@ -329,7 +244,7 @@ impl OAuthServer {
             "token_endpoint":format!("{}/token",self.issuer),"revocation_endpoint":format!("{}/revoke",self.issuer),
             "response_types_supported":["code"],"grant_types_supported":["authorization_code","refresh_token"],
             "authorization_response_iss_parameter_supported":true,"code_challenge_methods_supported":["S256"],"token_endpoint_auth_methods_supported":["none"],"scopes_supported":["myko:access"]});
-        if self.dynamic.is_some()
+        if self.dynamic
             && let Some(object) = value.as_object_mut()
         {
             object.insert(
@@ -339,72 +254,72 @@ impl OAuthServer {
         }
         value
     }
-    /// Register one configured public client.
+    /// Register one configured public client, protected from LRU eviction.
     /// # Errors
-    /// Rejects duplicate or reserved IDs and unsafe redirect metadata.
+    /// Rejects duplicate IDs and unsafe redirect metadata.
     pub fn add_client(
         &self,
         id: &str,
         name: &str,
         redirects: Vec<String>,
     ) -> Result<(), OAuthError> {
-        if id.is_empty() || id.len() > 256 || id.starts_with(DYNAMIC_PREFIX) {
+        self.insert_client(id, name, redirects, false)
+    }
+    fn insert_client(
+        &self,
+        id: &str,
+        name: &str,
+        redirects: Vec<String>,
+        dynamic: bool,
+    ) -> Result<(), OAuthError> {
+        if id.is_empty()
+            || id.len() > 256
+            || name.trim().is_empty()
+            || name.len() > 128
+            || redirects.is_empty()
+            || redirects.len() > 8
+        {
             return Err(OAuthError::invalid("Invalid public client metadata"));
         }
-        let client = Client::new(name, redirects)?;
+        for uri in &redirects {
+            redirect(uri)?;
+        }
         let mut state = self.state.lock().map_err(|_| OAuthError::busy())?;
         if state.clients.contains_key(id) {
             return Err(OAuthError::invalid("Client ID is already registered"));
         }
-        state.clients.insert(id.into(), client);
+        if state.clients.len() >= LIMIT {
+            let oldest = state
+                .clients
+                .iter()
+                .filter(|(_, client)| client.dynamic)
+                .min_by_key(|(_, client)| client.last_used)
+                .map(|(id, _)| id.clone())
+                .ok_or_else(OAuthError::busy)?;
+            // Registration eviction must not revoke independently authorized grants.
+            state.clients.remove(&oldest);
+        }
+        state.clients.insert(
+            id.into(),
+            Client {
+                name: name.into(),
+                redirects,
+                dynamic,
+                last_used: Instant::now(),
+            },
+        );
         drop(state);
         Ok(())
     }
-    fn sign(mac: &HmacSha256, body: &str) -> String {
-        let mut mac = mac.clone();
-        mac.update(body.as_bytes());
-        URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes())
-    }
-    /// Resolve a configured client, or verify a signed dynamic registration.
-    fn client(&self, id: &str) -> Result<Client, OAuthError> {
-        let unknown = || OAuthError::invalid("Unknown client");
-        if let Some(client) = self
-            .state
-            .lock()
-            .map_err(|_| OAuthError::busy())?
-            .clients
-            .get(id)
-        {
-            return Ok(client.clone());
-        }
-        let mac = self.dynamic.as_ref().ok_or_else(unknown)?;
-        if id.len() > DYNAMIC_ID_LIMIT || !id.starts_with(DYNAMIC_PREFIX) {
-            return Err(unknown());
-        }
-        let (body, tag) = id.rsplit_once('.').ok_or_else(unknown)?;
-        let tag = URL_SAFE_NO_PAD.decode(tag).map_err(|_| unknown())?;
-        let mut mac = mac.clone();
-        mac.update(body.as_bytes());
-        // Constant-time comparison of the full 256-bit tag.
-        mac.verify_slice(&tag).map_err(|_| unknown())?;
-        let payload = body.strip_prefix(DYNAMIC_PREFIX).ok_or_else(unknown)?;
-        let registration: SignedRegistration = URL_SAFE_NO_PAD
-            .decode(payload)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .ok_or_else(unknown)?;
-        Client::new(&registration.name, registration.redirects)
-    }
     /// Register an untrusted public client; this never grants access by itself.
-    /// Nothing is stored: the returned client ID is the signed registration.
+    /// At capacity, the least recently used dynamic registration is evicted.
+    /// Existing grants survive eviction; starting a new login needs registration again.
     /// # Errors
-    /// Rejects unsupported authentication/grant types, unsafe callbacks or
-    /// metadata too large to carry in a client ID.
+    /// Rejects unsupported authentication/grant types or unsafe callbacks.
     pub fn register(&self, value: &Value) -> Result<Value, OAuthError> {
-        let mac = self
-            .dynamic
-            .as_ref()
-            .ok_or_else(|| OAuthError::invalid("Dynamic registration is disabled"))?;
+        if !self.dynamic {
+            return Err(OAuthError::invalid("Dynamic registration is disabled"));
+        }
         for (field, allowed) in [
             ("token_endpoint_auth_method", vec!["none"]),
             ("application_type", vec!["native", "web"]),
@@ -447,19 +362,8 @@ impl OAuthServer {
                     .ok_or_else(|| OAuthError::invalid("Invalid redirect URI"))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let client = Client::new(name, redirects)?;
-        let registration = SignedRegistration {
-            name: client.name,
-            redirects: client.redirects,
-            nonce: uuid::Uuid::new_v4().simple().to_string(),
-        };
-        let payload = serde_json::to_vec(&registration).map_err(|_| OAuthError::busy())?;
-        let body = format!("{DYNAMIC_PREFIX}{}", URL_SAFE_NO_PAD.encode(payload));
-        let id = format!("{body}.{}", Self::sign(mac, &body));
-        if id.len() > DYNAMIC_ID_LIMIT {
-            return Err(OAuthError::invalid("Client metadata is too large"));
-        }
-        let redirects = registration.redirects;
+        let id = secret("client_");
+        self.insert_client(&id, name, redirects.clone(), true)?;
         Ok(
             json!({"client_id":id,"client_name":name,"redirect_uris":redirects,"token_endpoint_auth_method":"none",
             "grant_types":["authorization_code","refresh_token"],"response_types":["code"]}),
@@ -510,7 +414,12 @@ impl OAuthServer {
         if client_state.as_ref().is_some_and(|s| s.len() > 2048) {
             return Err(OAuthError::invalid("State is too long"));
         }
-        let registered = self.client(client)?;
+        let mut state = self.state.lock().map_err(|_| OAuthError::busy())?;
+        state.cleanup();
+        let registered = state
+            .clients
+            .get_mut(client)
+            .ok_or_else(|| OAuthError::invalid("Unknown client"))?;
         if !registered
             .redirects
             .iter()
@@ -518,15 +427,14 @@ impl OAuthServer {
         {
             return Err(OAuthError::invalid("Redirect URI is not registered"));
         }
+        registered.last_used = Instant::now();
         let info = AuthorizationInfo {
             client_id: client.into(),
-            client_name: registered.name,
+            client_name: registered.name.clone(),
             redirect_uri: uri.into(),
             resource: self.resource.resource().into(),
             scopes,
         };
-        let mut state = self.state.lock().map_err(|_| OAuthError::busy())?;
-        state.cleanup();
         if state.pending.len() >= LIMIT {
             return Err(OAuthError::busy());
         }
@@ -668,6 +576,9 @@ impl OAuthServer {
             }
         };
         let result = Self::issue(&mut state, client, authority, &scopes, family);
+        if result.is_ok() {
+            state.touch_client(client);
+        }
         drop(state);
         result
     }
@@ -733,8 +644,13 @@ impl OAuthServer {
             .get(&digest(token))
             .ok_or(AuthError::Unauthenticated)?;
         let session = access.session.clone();
+        let client = access.client.clone();
         drop(state);
         session.check()?;
+        self.state
+            .lock()
+            .map_err(|_| AuthError::Unavailable)?
+            .touch_client(&client);
         Ok(session)
     }
     /// Revoke a known grant family without disclosing whether a token exists.
@@ -774,7 +690,7 @@ impl std::fmt::Debug for OAuthServer {
         f.debug_struct("OAuthServer")
             .field("issuer", &self.issuer)
             .field("resource", &self.resource)
-            .field("dynamic_registration", &self.dynamic.is_some())
+            .field("dynamic_registration", &self.dynamic)
             .finish_non_exhaustive()
     }
 }

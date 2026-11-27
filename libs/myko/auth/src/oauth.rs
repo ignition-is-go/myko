@@ -6,10 +6,7 @@ use sha2::{Digest, Sha256};
 use url::{Host, Url};
 
 pub mod server;
-pub use server::{
-    AuthorizationInfo, OAuthFlowOperation, OAuthFlowReply, OAuthServer, RegistrationKey,
-    RegistrationKeyError,
-};
+pub use server::{AuthorizationInfo, OAuthFlowOperation, OAuthFlowReply, OAuthServer};
 
 /// Compute an S256 challenge from an RFC 7636 verifier.
 /// # Errors
