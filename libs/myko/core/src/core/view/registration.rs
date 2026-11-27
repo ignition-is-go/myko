@@ -142,13 +142,22 @@ where
     ) -> Result<ErasedViewMap, String> {
         let _span =
             tracing::trace_span!("myko.view", view = V::view_id_static().as_ref()).entered();
-        // A plan that is already a map materializes to itself, so the
-        // subscription reads that map directly.
-        let args = view_args::<V>(&any_view, registry, request_ctx, server_ctx)?;
+        let args = view_args::<V>(&any_view, registry, request_ctx.clone(), server_ctx.clone())?;
         if let Some(subscription) = V::subscribe(&args) {
             return Ok(subscription);
         }
-        Ok(ErasedViewMap::from_typed(V::build_cell(args).materialize()))
+        // A view merged across partitions has a graph per subscriber, which
+        // the shared cache refuses to hold.
+        if crate::server::partition::is_merged(&V::view_id_static()) {
+            return Ok(ErasedViewMap::from_typed(V::build_cell(args).materialize()));
+        }
+        // Subscribers with the same parameters (and, for a `PerClient` view,
+        // the same caller) read one cached graph, so N identical
+        // subscriptions maintain one view, and the rows they are sent are the
+        // same allocations, which lets the wire layer encode each row once.
+        Ok(ErasedViewMap::from(
+            server_ctx.view_map_untyped((*args.view).clone(), request_ctx),
+        ))
     }
 }
 
