@@ -223,6 +223,12 @@ impl Authenticator for PermissionAuthenticator {
     fn validate_identity(&self, identity: &AuthenticatedIdentity) -> Result<(), AuthError> {
         self.inner.validate_identity(identity)
     }
+    fn restore_identity<'a>(
+        &'a self,
+        identity: &'a AuthenticatedIdentity,
+    ) -> Pin<Box<dyn Future<Output = Result<(), AuthError>> + Send + 'a>> {
+        self.inner.restore_identity(identity)
+    }
 }
 
 #[cfg(test)]

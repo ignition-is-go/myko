@@ -6,14 +6,6 @@ pub mod identity;
 pub mod oauth;
 pub mod public_access;
 pub mod scopes;
-use futures::future::BoxFuture;
-pub use oauth::OAuthResource;
-pub use scopes::{
-    EntityAction, EntityScope, EntityScopeRegistration, OperationScopeRegistration,
-    PermissionCatalog, ScopeDecision, ScopeInheritanceRegistration, ScopePolicy, ScopedAuthorizer,
-};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::{
     fmt,
     sync::{
@@ -22,6 +14,15 @@ use std::{
     },
     time::SystemTime,
 };
+
+use futures::future::BoxFuture;
+pub use oauth::OAuthResource;
+pub use scopes::{
+    EntityAction, EntityScope, EntityScopeRegistration, OperationScopeRegistration,
+    PermissionCatalog, ScopeDecision, ScopeInheritanceRegistration, ScopePolicy, ScopedAuthorizer,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum PrincipalKind {
@@ -141,6 +142,25 @@ pub trait Authenticator: Send + Sync + 'static {
     fn validate_identity(&self, _identity: &AuthenticatedIdentity) -> Result<(), AuthError> {
         Ok(())
     }
+
+    /// Revive the credential authority behind an identity that an earlier
+    /// process admitted, so that later [`validate_identity`](Self::validate_identity)
+    /// checks on it pass.
+    ///
+    /// Runs once per stored OAuth grant at startup and may do I/O. The default
+    /// defers to `validate_identity`, which suits authenticators whose check
+    /// needs no per-process state. An authenticator that keeps sessions in
+    /// durable storage overrides this to load the identity's session again.
+    ///
+    /// # Errors
+    /// `Unavailable` leaves the grant stored for the next start. Any other
+    /// error means the login ended, and the grant is deleted.
+    fn restore_identity<'a>(
+        &'a self,
+        identity: &'a AuthenticatedIdentity,
+    ) -> BoxFuture<'a, Result<(), AuthError>> {
+        Box::pin(async move { self.validate_identity(identity) })
+    }
 }
 
 /// Decisions read current app state locally. Implementations must enforce credential
@@ -230,6 +250,66 @@ impl MykoAuthProvider {
     #[must_use]
     pub const fn oauth_server(&self) -> Option<&Arc<oauth::OAuthServer>> {
         self.oauth_server.as_ref()
+    }
+
+    /// Restore the built-in OAuth authority's clients and grants from `store`,
+    /// then write every later change through to it. Call once at startup,
+    /// before serving. Does nothing without an OAuth server.
+    ///
+    /// A grant returns only if [`Authenticator::restore_identity`] accepts the
+    /// login that approved it, and it stays bound to that login afterwards.
+    /// # Errors
+    /// Returns an error when the store cannot be read or one is already attached.
+    pub async fn restore_oauth(
+        &self,
+        store: Arc<dyn oauth::OAuthStore>,
+    ) -> Result<oauth::OAuthRestore, oauth::OAuthStoreError> {
+        let Some(server) = &self.oauth_server else {
+            return Ok(oauth::OAuthRestore::default());
+        };
+        let records = store.load().await?;
+        let mut summary = oauth::OAuthRestore::default();
+        let mut authorities = std::collections::HashMap::new();
+        let mut dropped = Vec::new();
+        for record in &records {
+            let oauth::OAuthRecord::Grant {
+                family, identity, ..
+            } = record
+            else {
+                continue;
+            };
+            match self.restore_authority(identity).await {
+                Ok(authority) => {
+                    authorities.insert(family.clone(), authority);
+                }
+                Err(AuthError::Unavailable) => {
+                    summary.deferred = summary.deferred.saturating_add(1);
+                }
+                Err(_) => dropped.push(family.clone()),
+            }
+        }
+        summary.restored = authorities.len();
+        summary.dropped = dropped.len();
+        summary.clients = server.restore(store, records, &authorities, dropped)?;
+        Ok(summary)
+    }
+
+    async fn restore_authority(
+        &self,
+        identity: &AuthenticatedIdentity,
+    ) -> Result<AuthSession, AuthError> {
+        if SystemTime::now() >= identity.expires_at {
+            return Err(AuthError::Expired);
+        }
+        self.authenticator.restore_identity(identity).await?;
+        let session = AuthSession::from_identity(
+            identity.clone(),
+            self.session_authorizer(),
+            Some(self.authenticator.clone()),
+            self.live_permissions,
+        );
+        session.check()?;
+        Ok(session)
     }
 
     fn session_authorizer(&self) -> Arc<dyn Authorizer> {
