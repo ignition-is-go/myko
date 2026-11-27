@@ -687,24 +687,31 @@ fn run_producer_loop(
     let mut client: Option<Client> = None;
     let mut batch = Vec::<EventRecord>::new();
     let mut previews = Vec::new();
+    // Transactions whose last event is in `batch`, recorded together after it.
+    let mut completes: Vec<(String, String)> = Vec::new();
     let mut pending: Option<ProducerRequest> = None;
     loop {
-        if batch.is_empty() && pending.is_none() {
+        if batch.is_empty() && completes.is_empty() && pending.is_none() {
             match rx.recv() {
                 Ok(ProducerRequest::Event(record, preview)) => {
                     batch.push(record);
                     previews.push(preview);
                 }
+                Ok(ProducerRequest::Complete { tx, user }) => completes.push((tx, user)),
                 Ok(request) => pending = Some(request),
                 Err(_) => break,
             }
         }
+        // NOTE(ts): A completion follows its transaction's events, so a batch
+        // can carry on past it; only a barrier ends one early. Stopping at each
+        // completion made every one-event command its own round trips.
         while pending.is_none() && batch.len() < PG_PRODUCER_MAX_BATCH {
             match rx.try_recv() {
                 Ok(ProducerRequest::Event(record, preview)) => {
                     batch.push(record);
                     previews.push(preview);
                 }
+                Ok(ProducerRequest::Complete { tx, user }) => completes.push((tx, user)),
                 Ok(request) => pending = Some(request),
                 Err(_) => break,
             }
@@ -718,17 +725,15 @@ fn run_producer_loop(
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let result = if let Some(client) = client.as_mut() {
             insert_event_batch(client, config, &batch).and_then(|mut changes| {
-                for (change, preview) in changes.iter_mut().zip(&previews) { change.preview.clone_from(preview); }
-                undo_list.records(&mut sequence, changes);
-                if let Some(ProducerRequest::Complete { tx, user }) = &pending {
-                    let completions = qi(&format!("{}_transactions", config.table));
-                    let table = qi(&config.table);
-                    let completed = client.query_opt(&format!("INSERT INTO {completions} (tx, user_id, first_id, last_id)
-                        SELECT $1, $2, MIN(id), MAX(id) FROM {table} WHERE tx = $1 HAVING MAX(id) IS NOT NULL
-                        ON CONFLICT (tx) DO UPDATE SET user_id = EXCLUDED.user_id, first_id = EXCLUDED.first_id, last_id = EXCLUDED.last_id RETURNING first_id"), &[tx, user])?;
-                    if let Some(row) = completed { undo_list.complete(&mut sequence, tx, user, row.get(0)); }
+                for (change, preview) in changes.iter_mut().zip(&previews) {
+                    change.preview.clone_from(preview);
                 }
-                Ok(())
+                undo_list.records(&mut sequence, changes);
+                record_completions(client, config, &completes).map(|completed| {
+                    for (tx, user, first) in completed {
+                        undo_list.complete(&mut sequence, &tx, &user, first);
+                    }
+                })
             })
         } else {
             health.record_error_no_dequeue("Postgres producer connection failed".into());
@@ -741,6 +746,7 @@ fn run_producer_loop(
                 health.record_success_batch(u64::try_from(batch.len()).unwrap_or(u64::MAX));
                 batch.clear();
                 previews.clear();
+                completes.clear();
                 if let Some(ProducerRequest::Barrier(reply)) = pending.take() {
                     let _ = reply.send(());
                 }
@@ -757,6 +763,44 @@ fn run_producer_loop(
             }
         }
     }
+}
+
+/// Record each completed transaction's id range in one statement, in the
+/// order the completions arrived. Returns `(tx, user, first_id)` for each
+/// transaction that has events.
+fn record_completions(
+    client: &mut Client,
+    config: &PostgresConfig,
+    completes: &[(String, String)],
+) -> Result<Vec<(String, String, i64)>, ::postgres::Error> {
+    if completes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let completions = qi(&format!("{}_transactions", config.table));
+    let table = qi(&config.table);
+    let txs: Vec<&str> = completes.iter().map(|(tx, _)| tx.as_str()).collect();
+    let users: Vec<&str> = completes.iter().map(|(_, user)| user.as_str()).collect();
+    let rows = client.query(
+        &format!(
+            "WITH done AS (
+                SELECT c.tx, c.user_id, c.ord, MIN(e.id) AS first_id, MAX(e.id) AS last_id
+                FROM unnest($1::text[], $2::text[]) WITH ORDINALITY AS c(tx, user_id, ord)
+                JOIN {table} e ON e.tx = c.tx
+                GROUP BY c.tx, c.user_id, c.ord
+            ), saved AS (
+                INSERT INTO {completions} (tx, user_id, first_id, last_id)
+                SELECT DISTINCT ON (tx) tx, user_id, first_id, last_id FROM done ORDER BY tx, ord DESC
+                ON CONFLICT (tx) DO UPDATE SET user_id = EXCLUDED.user_id, first_id = EXCLUDED.first_id, last_id = EXCLUDED.last_id
+                RETURNING tx
+            )
+            SELECT done.tx, done.user_id, done.first_id FROM done ORDER BY done.ord"
+        ),
+        &[&txs, &users],
+    )?;
+    Ok(rows
+        .iter()
+        .map(|row| (row.get(0), row.get(1), row.get(2)))
+        .collect())
 }
 
 fn connect_producer_client(config: &PostgresConfig) -> Option<Client> {
