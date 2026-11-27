@@ -595,7 +595,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "autosocket"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "base64",
  "flume 0.11.1",
@@ -4821,7 +4821,7 @@ dependencies = [
 
 [[package]]
 name = "myko"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "ahash",
  "anyhow",
@@ -4869,7 +4869,7 @@ dependencies = [
 
 [[package]]
 name = "myko-auth"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "base64",
  "futures",
@@ -4885,7 +4885,7 @@ dependencies = [
 
 [[package]]
 name = "myko-auth0"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "futures",
  "jsonwebtoken",
@@ -4913,7 +4913,7 @@ dependencies = [
 
 [[package]]
 name = "myko-gpui"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "flume 0.11.1",
  "gpui-platform-gpui-unofficial",
@@ -4927,7 +4927,7 @@ dependencies = [
 
 [[package]]
 name = "myko-leptos"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "any_spawner",
  "autosocket",
@@ -4941,7 +4941,7 @@ dependencies = [
 
 [[package]]
 name = "myko-macros"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -4951,7 +4951,7 @@ dependencies = [
 
 [[package]]
 name = "myko-permissions"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "ciborium",
  "futures-util",
@@ -4971,7 +4971,7 @@ dependencies = [
 
 [[package]]
 name = "myko-permissions-leptos"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "leptos",
  "myko",
@@ -4983,7 +4983,7 @@ dependencies = [
 
 [[package]]
 name = "myko-server"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "anyhow",
  "base64",
@@ -5020,7 +5020,7 @@ dependencies = [
 
 [[package]]
 name = "myko-telemetry"
-version = "6.19.2"
+version = "6.19.4"
 dependencies = [
  "async-trait",
  "bytes",

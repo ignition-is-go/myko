@@ -23,12 +23,17 @@ use std::{sync::Arc, time::Instant};
 
 use myko::operation_index::OperationSchema;
 use rquickjs::{
-    AsyncContext, AsyncRuntime, CatchResultExt, Ctx, Function,
+    AsyncContext, AsyncRuntime, CatchResultExt, Ctx, Function, IntoJs,
     function::{Async, Opt},
 };
+use serde::Serialize;
 use serde_json::Value;
 
-use super::{exec::Executor, filter::ClientFilters};
+use super::{
+    exec::{Executor, Rows, SnapshotResult},
+    filter::ClientFilters,
+    json_vm::{ConversionError, Converter},
+};
 use crate::time_limits::{MCP_EXECUTE_TIMEOUT, MCP_SCRIPT_DEADLINE};
 
 /// Sandbox heap ceiling. Generous enough for JSON-shaped query results,
@@ -37,7 +42,7 @@ const MEMORY_LIMIT_BYTES: usize = 64 * 1024 * 1024;
 
 const MYKO_SHIM: &str = r#"
 const __mykoInvoke = async (kind, id, args) => {
-  const response = JSON.parse(await __myko_call(kind, id, JSON.stringify(args ?? {})));
+  const response = await __myko_call(kind, id, JSON.stringify(args ?? {}));
   if (response.error !== undefined) throw new Error(response.error);
   return response.value;
 };
@@ -66,11 +71,23 @@ pub async fn execute(
     filter: ClientFilters,
     index: Arc<Vec<OperationSchema>>,
 ) -> Result<Value, String> {
+    execute_with_memory_limit(code, executor, filter, index, MEMORY_LIMIT_BYTES).await
+}
+
+async fn execute_with_memory_limit(
+    code: &str,
+    executor: Arc<Executor>,
+    filter: ClientFilters,
+    index: Arc<Vec<OperationSchema>>,
+    memory_limit: usize,
+) -> Result<Value, String> {
     let rt = AsyncRuntime::new().map_err(|e| format!("Failed to start sandbox: {e}"))?;
-    rt.set_memory_limit(MEMORY_LIMIT_BYTES).await;
-    if let Some(limit) = MCP_SCRIPT_DEADLINE.get() {
-        let now = Instant::now();
-        let deadline = now.checked_add(limit).unwrap_or(now);
+    rt.set_memory_limit(memory_limit).await;
+    let now = Instant::now();
+    let deadline = MCP_SCRIPT_DEADLINE
+        .get()
+        .map(|limit| now.checked_add(limit).unwrap_or(now));
+    if let Some(deadline) = deadline {
         rt.set_interrupt_handler(Some(Box::new(move || Instant::now() >= deadline)))
             .await;
     }
@@ -94,7 +111,8 @@ pub async fn execute(
     );
 
     let run = ctx.async_with(async move |ctx| {
-        install_myko_bindings(&ctx, executor, filter, index).map_err(|e| e.to_string())?;
+        install_myko_bindings(&ctx, executor, filter, index, deadline)
+            .map_err(|e| e.to_string())?;
         ctx.eval::<(), _>(wrapped.into_bytes())
             .map_err(|e| e.to_string())?;
         let promise: rquickjs::Promise =
@@ -125,6 +143,7 @@ fn install_myko_bindings(
     executor: Arc<Executor>,
     filter: ClientFilters,
     index: Arc<Vec<OperationSchema>>,
+    deadline: Option<Instant>,
 ) -> rquickjs::Result<()> {
     let describe_filter = filter.clone();
     let describe_index = index.clone();
@@ -139,28 +158,33 @@ fn install_myko_bindings(
             return json_error(format!("Unknown operation: {kind}_{id}"));
         }
         super::contract::describe(&describe_index, &describe_filter, &kind, &id)
-            .map_or_else(json_error, |value| {
-                serde_json::json!({"value": value}).to_string()
-            })
+            .map_or_else(json_error, json_success)
     })?;
     ctx.globals().set("__myko_describe", describe)?;
-    let call =
-        Function::new(
-            ctx.clone(),
-            Async(
-                move |kind: std::string::String,
-                      id: std::string::String,
-                      args_json: Opt<std::string::String>| {
-                    let executor = executor.clone();
-                    let filter = filter.clone();
-                    let index = index.clone();
-                    async move {
-                        call_operation(&executor, &filter, &index, &kind, &id, args_json.0).await
+    let call = Function::new(
+        ctx.clone(),
+        Async(
+            move |kind: std::string::String,
+                  id: std::string::String,
+                  args_json: Opt<std::string::String>| {
+                let executor = executor.clone();
+                let filter = filter.clone();
+                let index = index.clone();
+                async move {
+                    let result =
+                        call_operation(&executor, &filter, &index, &kind, &id, args_json.0).await;
+                    BridgeResponse {
+                        result,
+                        executor,
+                        kind,
+                        id,
+                        deadline,
                     }
-                },
-            ),
-        )?
-        .with_name("__myko_call")?;
+                }
+            },
+        ),
+    )?
+    .with_name("__myko_call")?;
     ctx.globals().set("__myko_call", call)?;
     ctx.eval::<(), _>(MYKO_SHIM)?;
     Ok(())
@@ -173,25 +197,23 @@ async fn call_operation(
     kind: &str,
     id: &str,
     args_json: Option<std::string::String>,
-) -> std::string::String {
+) -> Result<PendingResult, String> {
     let name = format!("{kind}_{id}");
 
     if !filter.tool_visible(&name) {
-        return json_error(format!("Unknown operation: {name}"));
+        return Err(format!("Unknown operation: {name}"));
     }
 
     let args_text = args_json.unwrap_or_else(|| "{}".to_string());
     let args: Value = match serde_json::from_str(&args_text) {
         Ok(v) => v,
-        Err(e) => return json_error(format!("Invalid arguments for {name}: {e}")),
+        Err(e) => return Err(format!("Invalid arguments for {name}: {e}")),
     };
 
-    if let Err(message) = filter.tool_callable(&name, &args) {
-        return json_error(message);
-    }
+    filter.tool_callable(&name, &args)?;
 
     if !args.is_object() {
-        return json_error(format!(
+        return Err(format!(
             "Invalid arguments for {name}: arguments must be an object"
         ));
     }
@@ -203,31 +225,163 @@ async fn call_operation(
     {
         let schema = match super::schema::compile(&operation.input_schema()) {
             Ok(schema) => schema,
-            Err(error) => return json_error(format!("Invalid input schema for {name}: {error}")),
+            Err(error) => return Err(format!("Invalid input schema for {name}: {error}")),
         };
         if let Err(error) = super::schema::validate(&schema, &args) {
-            return json_error(format!(
+            return Err(format!(
                 "Invalid arguments for {name}: {error}. Use myko.describe({kind:?}, {id:?}) for the contract."
             ));
         }
     }
 
     let result = match kind {
-        "query" => executor.execute_query(id, args).await,
-        "view" => executor.execute_view(id, args).await,
-        "report" => executor.execute_report(id, args).await,
-        "command" => executor.execute_command(id, args).await,
+        "query" => executor
+            .execute_query_snapshot(id, args.clone())
+            .await
+            .map(OperationResult::Snapshot),
+        "view" => executor
+            .execute_view_snapshot(id, args.clone())
+            .await
+            .map(OperationResult::Snapshot),
+        "report" => executor
+            .execute_report(id, args.clone())
+            .await
+            .map(OperationResult::Json),
+        "command" => executor
+            .execute_command(id, args.clone())
+            .await
+            .map(OperationResult::Json),
         _ => Err(format!("Unknown operation kind: {kind}")),
     };
 
-    result.map_or_else(
-        |message| {
-            json_error(format!(
-                "{message}. Use myko.describe({kind:?}, {id:?}) for the contract."
-            ))
-        },
-        |value| serde_json::json!({ "value": value }).to_string(),
-    )
+    result
+        .map_err(|message| {
+            format!("{message}. Use myko.describe({kind:?}, {id:?}) for the contract.")
+        })
+        .map(|output| PendingResult {
+            output,
+            arguments: args,
+        })
+}
+
+enum OperationResult {
+    Snapshot(SnapshotResult),
+    Json(Value),
+}
+struct PendingResult {
+    output: OperationResult,
+    arguments: Value,
+}
+struct BridgeResponse {
+    result: Result<PendingResult, String>,
+    executor: Arc<Executor>,
+    kind: String,
+    id: String,
+    deadline: Option<Instant>,
+}
+
+impl<'js> IntoJs<'js> for BridgeResponse {
+    fn into_js(self, ctx: &Ctx<'js>) -> rquickjs::Result<rquickjs::Value<'js>> {
+        use rquickjs::{Array, Exception, Object, object::Property};
+        let converter = Converter::new(ctx.clone(), self.deadline);
+        converter
+            .check()
+            .map_err(|error| error.into_js_error(ctx))?;
+        let response = Object::new(ctx.clone())?;
+        let pending = match self.result {
+            Ok(pending) => pending,
+            Err(message) => {
+                response.prop(
+                    "error",
+                    Property::from(message)
+                        .writable()
+                        .enumerable()
+                        .configurable(),
+                )?;
+                return Ok(response.into_value());
+            }
+        };
+        self.executor
+            .authorize_result(&self.kind, &self.id, &pending.arguments)
+            .map_err(|message| Exception::throw_message(ctx, &message))?;
+        let result = match pending.output {
+            OperationResult::Json(value) => value
+                .serialize(converter.clone())
+                .map_err(|error| error.into_js_error(ctx))?,
+            OperationResult::Snapshot(snapshot) => {
+                let result = snapshot
+                    .metadata()
+                    .serialize(converter.clone())
+                    .map_err(|error| error.into_js_error(ctx))?;
+                let items = Array::new(ctx.clone())?;
+                match snapshot.rows {
+                    Rows::Native(rows) => {
+                        for (index, row) in rows.into_iter().enumerate() {
+                            let value = match row.serialize(converter.clone()) {
+                                Ok(value) => value,
+                                Err(ConversionError::Unsupported(_)) if !ctx.has_exception() => {
+                                    rquickjs::Value::new_null(ctx.clone())
+                                }
+                                Err(error) => {
+                                    return Err(if ctx.has_exception() {
+                                        rquickjs::Error::Exception
+                                    } else {
+                                        error.into_js_error(ctx)
+                                    });
+                                }
+                            };
+                            super::json_vm::array_item(&items, index, value)?;
+                        }
+                    }
+                    Rows::Client(rows) => {
+                        for (index, row) in rows.iter().enumerate() {
+                            let value = row
+                                .serialize(converter.clone())
+                                .map_err(|error| error.into_js_error(ctx))?;
+                            super::json_vm::array_item(&items, index, value)?;
+                        }
+                    }
+                }
+                let object = result
+                    .as_object()
+                    .ok_or_else(|| Exception::throw_message(ctx, "invalid result contract"))?;
+                let count = items.len();
+                object.prop(
+                    "items",
+                    Property::from(items).writable().enumerable().configurable(),
+                )?;
+                object.prop(
+                    "count",
+                    Property::from(count).writable().enumerable().configurable(),
+                )?;
+                result
+            }
+        };
+        converter
+            .check()
+            .map_err(|error| error.into_js_error(ctx))?;
+        self.executor
+            .authorize_result(&self.kind, &self.id, &pending.arguments)
+            .map_err(|message| Exception::throw_message(ctx, &message))?;
+        response.prop(
+            "value",
+            Property::from(result)
+                .writable()
+                .enumerable()
+                .configurable(),
+        )?;
+        Ok(response.into_value())
+    }
+}
+
+fn json_success(value: Value) -> std::string::String {
+    #[derive(serde::Serialize)]
+    struct Success {
+        value: Value,
+    }
+
+    serde_json::to_string(&Success { value })
+        .unwrap_or_else(|error| json_error(format!("Failed to encode Myko result: {error}")))
 }
 
 fn json_error(message: impl Into<std::string::String>) -> std::string::String {
@@ -235,191 +389,4 @@ fn json_error(message: impl Into<std::string::String>) -> std::string::String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn execute(
-        code: &str,
-        executor: Arc<Executor>,
-        filter: ClientFilters,
-    ) -> Result<Value, String> {
-        super::execute(
-            code,
-            executor,
-            filter,
-            Arc::new(myko::operation_index::build_operation_index()),
-        )
-        .await
-    }
-
-    fn dummy_executor() -> Arc<Executor> {
-        Arc::new(Executor::Client(Arc::new(myko::client::MykoClient::new())))
-    }
-
-    #[tokio::test]
-    async fn returns_the_scripts_return_value() {
-        let result = execute(
-            "return 1 + 2;",
-            dummy_executor(),
-            ClientFilters::allow_all(),
-        )
-        .await;
-        assert_eq!(result, Ok(serde_json::json!(3)));
-    }
-
-    #[tokio::test]
-    async fn missing_return_yields_null() {
-        let result = execute("const x = 1;", dummy_executor(), ClientFilters::allow_all()).await;
-        assert_eq!(result, Ok(serde_json::Value::Null));
-    }
-
-    #[tokio::test]
-    async fn can_chain_multiple_myko_calls_in_one_script() {
-        // No registered operations exist in this test binary, so both calls
-        // fail — but critically, the script drives *two* sequential
-        // `myko.*` invocations from a single `execute()` round trip, which
-        // is the whole point of Code Mode over one-call-per-tool-call.
-        let result = execute(
-            "const a = await myko.query('DoesNotExist', {}).catch(e => e.message);\n\
-             const b = await myko.command('AlsoMissing', {}).catch(e => e.message);\n\
-             return [a, b];",
-            dummy_executor(),
-            ClientFilters::allow_all(),
-        )
-        .await;
-        assert!(
-            result.is_ok(),
-            "script should complete, errors are caught in JS"
-        );
-        let Ok(result) = result else {
-            return;
-        };
-        assert!(result.is_array(), "array result");
-        let Some(arr) = result.as_array() else {
-            return;
-        };
-        assert_eq!(arr.len(), 2);
-        assert!(
-            arr.first()
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|message| message.contains("Query not found"))
-        );
-        assert!(
-            arr.get(1)
-                .and_then(serde_json::Value::as_str)
-                .is_some_and(|message| !message.is_empty()),
-            "second call should also report an error"
-        );
-    }
-
-    #[tokio::test]
-    async fn filter_denies_hidden_operation_before_dispatch() {
-        let filter = ClientFilters::from_strings(None, Some("query_*"), None, None);
-        let result = execute(
-            "try { await myko.query('GetAllServers', {}); return 'no-throw'; } \
-             catch (e) { return e.message; }",
-            dummy_executor(),
-            filter,
-        )
-        .await;
-        assert!(result.is_ok(), "script should complete, error caught in JS");
-        let Ok(result) = result else {
-            return;
-        };
-        assert_eq!(
-            result,
-            serde_json::json!("Unknown operation: query_GetAllServers")
-        );
-    }
-
-    #[tokio::test]
-    async fn describe_obeys_operation_visibility() {
-        let result = execute(
-            "try { return myko.describe('query', 'GetAllServers'); } catch (e) { return e.message; }",
-            dummy_executor(),
-            ClientFilters::from_strings(None, Some("query_*"), None, None),
-        ).await;
-        assert_eq!(
-            result,
-            Ok(serde_json::json!("Unknown operation: query_GetAllServers"))
-        );
-    }
-
-    #[tokio::test]
-    async fn invalid_client_arguments_fail_before_connection() {
-        let result = execute(
-            "try { await myko.command('DeleteServer', []); return 'accepted'; } catch (e) { return e.message; }",
-            dummy_executor(),
-            ClientFilters::allow_all(),
-        ).await;
-        assert!(
-            result
-                .as_ref()
-                .ok()
-                .and_then(Value::as_str)
-                .is_some_and(
-                    |error| error.contains("Invalid arguments for command_DeleteServer")
-                        && error.contains("arguments must be an object")
-                )
-        );
-    }
-
-    #[tokio::test]
-    async fn client_defers_typed_argument_validation_to_remote_server() {
-        let result = execute(
-            "try { await myko.command('DeleteServer', {}); } catch(e) { return e.message; }",
-            dummy_executor(),
-            ClientFilters::allow_all(),
-        )
-        .await;
-        assert!(
-            result
-                .as_ref()
-                .ok()
-                .and_then(Value::as_str)
-                .is_some_and(|message| message.contains("Not connected to Myko server")
-                    && !message.contains("Invalid arguments"))
-        );
-    }
-
-    #[tokio::test]
-    async fn infinite_loop_is_interrupted_by_script_deadline() {
-        let start = Instant::now();
-        let result = execute(
-            "while (true) {}",
-            dummy_executor(),
-            ClientFilters::allow_all(),
-        )
-        .await;
-        assert!(result.is_err(), "runaway loop must not succeed");
-        // Should be bounded by SCRIPT_DEADLINE, not EXECUTE_TIMEOUT (30s) —
-        // give generous headroom since this environment can be slow.
-        assert!(
-            start.elapsed() < std::time::Duration::from_secs(25),
-            "interrupt handler should stop the loop well before the outer timeout"
-        );
-    }
-
-    #[tokio::test]
-    async fn invalid_json_return_value_is_impossible_by_construction() {
-        // JSON.stringify always produces valid JSON for any JS value the
-        // sandbox can construct (functions/symbols become `undefined`
-        // inside arrays/objects, not thrown), so this exercises that a
-        // non-trivial object round-trips correctly rather than testing the
-        // (unreachable) invalid-JSON error path directly.
-        let result = execute(
-            "return { ok: true, values: [1, 'two', null] };",
-            dummy_executor(),
-            ClientFilters::allow_all(),
-        )
-        .await;
-        assert!(result.is_ok(), "object result should round-trip");
-        let Ok(result) = result else {
-            return;
-        };
-        assert_eq!(
-            result,
-            serde_json::json!({ "ok": true, "values": [1, "two", null] })
-        );
-    }
-}
+mod tests;
