@@ -386,7 +386,9 @@ mod tests {
         let mut now = start;
         for frame in 1..=60_u32 {
             delivery.push(response(u64::from(frame), &[("a", frame)], &[]), now);
-            let due = delivery.next_deadline().expect("a frame is pending");
+            let due = delivery.next_deadline();
+            assert!(due.is_some(), "frame {frame} is pending");
+            let due = due.unwrap_or(now);
             now = due + late;
             assert!(delivery.take_due(now).is_some(), "frame {frame} is due");
         }
