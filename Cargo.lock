@@ -3760,7 +3760,7 @@ dependencies = [
 [[package]]
 name = "hyphae"
 version = "3.1.12"
-source = "git+https://github.com/ignition-is-go/hyphae.git?rev=ece74421ec64c4892fbd184ffd0ca8865e1ab0bc#ece74421ec64c4892fbd184ffd0ca8865e1ab0bc"
+source = "git+https://github.com/ignition-is-go/hyphae.git?rev=e688d080e0d35493237fffd5673ef95ff32115cd#e688d080e0d35493237fffd5673ef95ff32115cd"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -11127,7 +11127,3 @@ dependencies = [
  "syn 3.0.3",
  "winnow 1.0.4",
 ]
-
-[[patch.unused]]
-name = "hyphae-gpui"
-version = "3.1.12"
