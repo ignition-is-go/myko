@@ -376,6 +376,7 @@ fn run_command(
             command_id: id.into(),
             command: payload,
             received_at: Instant::now(),
+            after: myko::server::PendingWrites::default(),
         },
     );
     match deferred_rx.try_recv() {
@@ -703,6 +704,44 @@ async fn a_client_of_one_partition_is_delivered_while_another_partition_is_parke
     drop(gate);
     assert!(writer.join().is_ok_and(|written| written.is_ok()));
     client_a.wait_level(2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_event_does_not_wait_for_a_busy_partition_and_its_next_subscription_sees_it() {
+    let _serial = SERIAL.lock().await;
+    let ctx = server();
+    ctx.set(&reading("a", 1))
+        .unwrap_or_else(|error| panic!("reading: {error}"));
+    let mut other = Client::new("other");
+    other.subscribe_levels(&ctx, "a");
+    other.register().await;
+    other.wait_level(1);
+
+    // Another writer's work keeps partition a busy: a write that follows a
+    // shared one is queued on a's worker, which parks applying it.
+    let a = ctx
+        .partition(&PartitionKey::new("a"))
+        .unwrap_or_else(|| panic!("partition a"));
+    let gate = arm(a.domain());
+    ctx.apply_event_batch(vec![logged(&seat("a")), logged(&reading("a", 2))])
+        .unwrap_or_else(|error| panic!("batch: {error}"));
+    assert!(gate.0.wait_entered(), "partition a never parked");
+
+    // This client's event returns while a is still busy, and its next
+    // message is read and started at once.
+    let mut client = Client::new("client");
+    let started = Instant::now();
+    client.send(&ctx, MykoMessage::Event(logged(&reading("a", 3))));
+    client.subscribe_levels(&ctx, "a");
+    assert!(
+        gate.0.is_parked() && started.elapsed() < DEADLINE / 2,
+        "the client's messages waited for partition a's backlog"
+    );
+
+    // Its subscription observes its own write once a catches up.
+    drop(gate);
+    client.register().await;
+    client.wait_level(3);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

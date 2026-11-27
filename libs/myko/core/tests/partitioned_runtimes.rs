@@ -26,8 +26,8 @@ use myko::{
     request::RequestContext,
     server::{
         ClientSession, HandlerRegistry, MutationValidatorRegistration, MykoServerContext,
-        MykoServerRuntime, PartitionError, PartitionKey, PartitionSchema, PersistError,
-        ProposedState, RelationshipManager, WsWriter,
+        MykoServerRuntime, PartitionError, PartitionKey, PartitionSchema, PendingWrites,
+        PersistError, ProposedState, RelationshipManager, WsWriter,
         persister::{Persister, PersisterRouter},
     },
     store::StoreRegistry,
@@ -877,6 +877,59 @@ fn a_routed_write_lands_in_its_runtime_while_root_is_busy() {
         "runtime a never saw the sample"
     );
     drop(observed);
+}
+
+#[test]
+fn a_captured_routed_write_does_not_wait_for_its_runtimes_backlog() {
+    let _serial = SERIAL.lock();
+    let fixture = fixture();
+    assign(&fixture.root, "emitter-1", "a");
+    assign(&fixture.root, "emitter-2", "a");
+    let client_a = Client::connect(&fixture.a);
+    settle(&fixture.a);
+
+    // Another writer's routed write of another row follows a shared one into runtime a,
+    // which parks applying it.
+    let gate = arm(&fixture.a.domain(), Stage::Wave);
+    let shared: Arc<dyn AnyItem> = Arc::new(PrSetting {
+        id: "gain".into(),
+        gain: 2,
+    });
+    let routed: Arc<dyn AnyItem> = Arc::new(sample("emitter-2", 1));
+    fixture
+        .root
+        .set_batch_any([shared, routed])
+        .expect("mixed write");
+    assert!(gate.wait_entered(), "runtime a never parked");
+
+    // A writer capturing its pending writes returns while a is parked.
+    let (written, pending) = PendingWrites::capture(|| fixture.root.set(&sample("emitter-1", 5)));
+    written.expect("routed write");
+    assert!(gate.is_parked(), "the writer waited for runtime a");
+    assert!(
+        !pending.is_empty(),
+        "the write was applied before a was free"
+    );
+
+    drop(gate);
+    pending.wait();
+    assert!(pending.is_empty());
+    let level = fixture
+        .a
+        .registry
+        .get_or_create(PrSample::ENTITY_NAME_STATIC)
+        .get_value(&Arc::from("emitter-1"))
+        .and_then(|row| {
+            AnyItem::as_any(row.as_ref())
+                .downcast_ref::<PrSample>()
+                .map(|sample| sample.level)
+        });
+    assert_eq!(
+        level,
+        Some(5),
+        "the write was applied, after the one ahead of it"
+    );
+    client_a.wait::<PrTotals>("total", |totals| totals.samples == 6);
 }
 
 #[test]

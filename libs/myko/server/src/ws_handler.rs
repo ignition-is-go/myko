@@ -336,6 +336,8 @@ struct CommandJob {
     command_id: String,
     command: serde_json::Value,
     received_at: Instant,
+    /// The connection's writes the command must observe.
+    after: myko::server::PendingWrites,
 }
 
 struct QueryWindowJob {
@@ -1085,6 +1087,7 @@ impl WsHandler {
         command_started_cleanup: SharedTxTimes,
     ) {
         while let Some(job) = command_rx.recv().await {
+            subscription_builds::applied(job.after.clone()).await;
             let command_ctx = command_ctx.clone();
             let command_deferred_tx = command_deferred_tx.clone();
             let command_priority_tx = command_priority_tx.clone();
@@ -2325,12 +2328,9 @@ impl WsHandler {
             MykoMessage::Event(mut event) => {
                 event.sanitize_null_bytes();
                 normalize_incoming_event(&mut event, &session.client_id, ctx.host_id);
-                if let Err(error) = off_async_workers(|| ctx.apply_event(event)) {
-                    tracing::error!(
-                        "Failed to apply event from client {}: {error}",
-                        session.client_id
-                    );
-                }
+                Self::apply_client_events(&session.client_id, message_context, || {
+                    ctx.apply_event(event)
+                });
                 drop(ctx);
             }
             MykoMessage::EventBatch(mut events) => {
@@ -2338,16 +2338,28 @@ impl WsHandler {
                     event.sanitize_null_bytes();
                     normalize_incoming_event(event, &session.client_id, ctx.host_id);
                 }
-                if let Err(error) = off_async_workers(|| ctx.apply_event_batch(events)) {
-                    tracing::error!(
-                        "Failed to apply event batch from client {}: {}",
-                        session.client_id,
-                        error
-                    );
-                }
+                Self::apply_client_events(&session.client_id, message_context, || {
+                    ctx.apply_event_batch(events)
+                });
                 drop(ctx);
             }
             _ => drop(ctx),
+        }
+    }
+
+    /// Apply a client's events without waiting for the partitions they go
+    /// to. The connection's later subscriptions and commands start once the
+    /// events are applied, so they observe them; other clients wait on
+    /// nothing of this one.
+    fn apply_client_events<R, E: std::fmt::Display>(
+        client_id: &str,
+        message_context: &MessageContext<'_>,
+        apply: impl FnOnce() -> Result<R, E>,
+    ) {
+        let (applied, writes) = off_async_workers(|| myko::server::PendingWrites::capture(apply));
+        message_context.subscription_builds.wrote(writes);
+        if let Err(error) = applied {
+            tracing::error!("Failed to apply events from client {client_id}: {error}");
         }
     }
 
@@ -2375,6 +2387,7 @@ impl WsHandler {
                     command_id: command_id.clone(),
                     command: wrapped.command,
                     received_at,
+                    after: message_context.subscription_builds.unapplied(),
                 }) {
                     tracing::error!(
                         "Failed to enqueue command {} for client {} tx={}: {}",

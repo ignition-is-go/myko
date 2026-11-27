@@ -111,7 +111,10 @@ use dashmap::DashMap;
 use hyphae::{Cell, CellMutable, Mutable, SubscriptionGuard, Watchable, scheduler::Domain};
 use parking_lot::{Condvar, Mutex, MutexGuard, RwLock};
 
-use super::{MykoServerContext, OperationProvenance, context::Origin, persister::PersistError};
+use super::{
+    MykoServerContext, OperationProvenance, context::Origin, pending_writes as pending,
+    persister::PersistError,
+};
 use crate::{
     core::item::{AnyItem, Eventable},
     graph::EdgeApplyMode,
@@ -985,11 +988,25 @@ impl Partition {
                 let partition = Arc::clone(self);
                 self.follow(Box::new(move || partition.sequencer.run_until(ticket)));
             }
+            // A writer that asked not to wait for the writes ahead of this
+            // one: run it behind them on the worker and hand the writer a
+            // token that is released once it ran.
+            None if pending::capturing() && self.behind() => {
+                let partition = Arc::clone(self);
+                self.follow(Box::new(move || partition.sequencer.run_until(ticket)));
+            }
             None => {
                 self.catch_up();
                 self.sequencer.run_until(ticket);
             }
         }
+    }
+
+    /// Whether a write made now on this thread would wait for writes sent
+    /// here before it.
+    fn behind(&self) -> bool {
+        let sent = self.sent.load(Ordering::Acquire);
+        self.applied.load(Ordering::Acquire) < sent && Domain::current() != self.domain
     }
 
     /// Apply a write after the shared write the calling thread just made, on
@@ -1033,7 +1050,17 @@ impl Partition {
     /// The caller has admitted the job: it holds `admitting` open, or the
     /// topology lock a close takes. A close therefore finds the job queued
     /// and runs its own job behind it.
+    ///
+    /// A writer capturing its [`PendingWrites`](super::PendingWrites) gets a
+    /// token for the job.
     fn follow(&self, job: Job) {
+        let job = match pending::record() {
+            Some(applied) => Box::new(move || {
+                job();
+                drop(applied);
+            }),
+            None => job,
+        };
         self.waiting.lock().push_back(job);
         let sent = self.sent.fetch_add(1, Ordering::AcqRel).wrapping_add(1);
         hyphae::batch(|| self.courier.set(sent));
@@ -1826,7 +1853,10 @@ impl Partitions {
             from.submit_local(closing, change, origin, mode)?;
         }
         for (_, (partition, items)) in keyed {
-            if follows_shared && Domain::current() != partition.domain {
+            // A writer capturing its pending writes never waits for the
+            // writes ahead of its own: it is applied behind them.
+            let behind = pending::capturing() && partition.behind();
+            if (follows_shared || behind) && Domain::current() != partition.domain {
                 partition.write_following(
                     items,
                     change,

@@ -44,6 +44,8 @@ pub mod history_replay;
 mod log_load;
 pub use log_load::{LoadSummary, LogLoad};
 pub mod partition;
+mod pending_writes;
+pub use pending_writes::PendingWrites;
 pub mod persister;
 mod provenance;
 pub use provenance::{EventRecord, OperationProvenance};
