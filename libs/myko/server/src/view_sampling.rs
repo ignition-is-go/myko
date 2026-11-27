@@ -25,7 +25,11 @@ struct Subscription {
     rate: Option<ViewSampleRate>,
     next_sequence: u64,
     last_emit: Instant,
-    pending: Option<PendingDelta>,
+    /// Changes for the frame due at `due`.
+    pending: Option<(Instant, PendingDelta)>,
+    /// Changes produced at or after `pending`'s frame instant, while that
+    /// frame was not yet sent: they belong to the frame after it.
+    late: Option<(Instant, PendingDelta)>,
 }
 
 struct PendingDelta {
@@ -93,12 +97,22 @@ impl ViewDelivery {
                         next_sequence: 0,
                         last_emit: now,
                         pending: None,
+                        late: None,
                     },
                 );
             }
             ViewDeliveryControl::SetRate { tx, rate } => {
                 if let Some(subscription) = self.subscriptions.get_mut(&tx) {
                     subscription.rate = rate;
+                    // Queued frames follow the new rate: due at its next grid
+                    // instant, or at once without a rate.
+                    let due = next_frame(now, rate);
+                    for (queued_due, _) in [&mut subscription.pending, &mut subscription.late]
+                        .into_iter()
+                        .flatten()
+                    {
+                        *queued_due = (*queued_due).min(due);
+                    }
                 }
             }
             ViewDeliveryControl::Cancel(tx) => {
@@ -107,27 +121,39 @@ impl ViewDelivery {
         }
     }
 
+    /// Queue `response`, produced at `produced`. A sampled view's frame is cut
+    /// at its grid instant: a change produced at or after the instant of the
+    /// frame still pending goes to the frame after it, so every subscription
+    /// puts one change in the same frame however late its connection wakes.
     pub(crate) fn push(
         &mut self,
         mut response: PendingQueryResponse,
-        now: Instant,
+        produced: Instant,
     ) -> Option<PendingQueryResponse> {
         let subscription = self.subscriptions.get_mut(&response.tx)?;
         if response.sequence == 0 {
             subscription.pending = None;
+            subscription.late = None;
             subscription.next_sequence = 1;
-            subscription.last_emit = now;
+            subscription.last_emit = produced;
             return Some(response);
         }
         if subscription.rate.is_none() && subscription.pending.is_none() {
             response.sequence = subscription.next_sequence;
             subscription.next_sequence = subscription.next_sequence.saturating_add(1);
-            subscription.last_emit = now;
+            subscription.last_emit = produced;
             return Some(response);
         }
+        let due = next_frame(produced, subscription.rate);
         match &mut subscription.pending {
-            Some(pending) => pending.merge(response),
-            None => subscription.pending = Some(PendingDelta::new(response)),
+            Some((pending_due, _)) if produced >= *pending_due && subscription.rate.is_some() => {
+                match &mut subscription.late {
+                    Some((_, late)) => late.merge(response),
+                    None => subscription.late = Some((due, PendingDelta::new(response))),
+                }
+            }
+            Some((_, pending)) => pending.merge(response),
+            None => subscription.pending = Some((due, PendingDelta::new(response))),
         }
         None
     }
@@ -135,19 +161,19 @@ impl ViewDelivery {
     pub(crate) fn next_deadline(&self) -> Option<Instant> {
         self.subscriptions
             .values()
-            .filter_map(|subscription| {
-                subscription.pending.as_ref()?;
-                Some(next_frame(subscription.last_emit, subscription.rate))
-            })
+            .filter_map(|subscription| subscription.pending.as_ref().map(|(due, _)| *due))
             .min()
     }
 
     pub(crate) fn take_due(&mut self, now: Instant) -> Option<PendingQueryResponse> {
         let subscription = self.subscriptions.values_mut().find(|subscription| {
-            subscription.pending.is_some()
-                && next_frame(subscription.last_emit, subscription.rate) <= now
+            subscription
+                .pending
+                .as_ref()
+                .is_some_and(|(due, _)| *due <= now)
         })?;
-        let pending = subscription.pending.take()?;
+        let (_, pending) = subscription.pending.take()?;
+        subscription.pending = subscription.late.take();
         let response = pending.finish(subscription.next_sequence);
         subscription.next_sequence = subscription.next_sequence.saturating_add(1);
         subscription.last_emit = now;
@@ -437,5 +463,47 @@ mod tests {
         // that fell behind gets no burst of catch-up frames.
         let due = a.unwrap_or(now);
         assert!(due.saturating_duration_since(now) <= Duration::from_secs_f64(1.0 / 60.0));
+    }
+
+    #[test]
+    fn a_late_connection_cuts_its_frame_at_the_grid_instant() {
+        let start = Instant::now();
+        let subscribe = |delivery: &mut ViewDelivery| {
+            delivery.control(
+                ViewDeliveryControl::Subscribe {
+                    tx: "view".into(),
+                    rate: rate(60.0),
+                },
+                start,
+            );
+            delivery.push(response(0, &[("a", 0)], &[]), start);
+        };
+        let (mut prompt, mut late) = (ViewDelivery::default(), ViewDelivery::default());
+        subscribe(&mut prompt);
+        subscribe(&mut late);
+        // One change just before a frame instant, one just after it.
+        let before = start + Duration::from_millis(1);
+        prompt.push(response(1, &[("a", 1)], &[]), before);
+        late.push(response(1, &[("a", 1)], &[]), before);
+        let instant = prompt.next_deadline();
+        assert!(instant.is_some() && instant == late.next_deadline());
+        let instant = instant.unwrap_or(start);
+        let after = instant + Duration::from_micros(200);
+        // The prompt connection sends at the instant, before the second change
+        // reaches it; the late one wakes 5 ms later with both queued.
+        let first = prompt.take_due(instant);
+        prompt.push(response(2, &[("a", 2)], &[]), after);
+        late.push(response(2, &[("a", 2)], &[]), after);
+        let late_first = late.take_due(instant + Duration::from_millis(5));
+        let values =
+            |frame: Option<PendingQueryResponse>| frame.map(|frame| frame.upsert_items.len());
+        assert_eq!(values(first), Some(1));
+        assert_eq!(
+            values(late_first),
+            Some(1),
+            "the later change waits for the next frame"
+        );
+        // Both send the second change at the following instant, together.
+        assert_eq!(prompt.next_deadline(), late.next_deadline());
     }
 }

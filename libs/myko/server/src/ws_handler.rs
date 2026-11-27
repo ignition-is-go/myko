@@ -1547,7 +1547,7 @@ impl WsHandler {
                         Some(DeferredOutbound::Query { response, is_view, queued_at }) => {
                             diagnostics.queue(deferred_rx.len().saturating_add(1), Some((&response.tx, queued_at.elapsed())));
                             if is_view {
-                                let Some(response) = delivery.push(response, Instant::now()) else { continue; };
+                                let Some(response) = delivery.push(response, queued_at) else { continue; };
                                 Self::materialize_query(response, true, &diagnostics)
                             } else {
                                 Self::materialize_query(response, false, &diagnostics)
