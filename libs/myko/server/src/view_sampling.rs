@@ -130,11 +130,7 @@ impl ViewDelivery {
             .values()
             .filter_map(|subscription| {
                 subscription.pending.as_ref()?;
-                subscription.last_emit.checked_add(
-                    subscription
-                        .rate
-                        .map_or(std::time::Duration::ZERO, ViewSampleRate::interval),
-                )
+                Some(next_frame(subscription.last_emit, subscription.rate))
             })
             .min()
     }
@@ -142,33 +138,36 @@ impl ViewDelivery {
     pub(crate) fn take_due(&mut self, now: Instant) -> Option<PendingQueryResponse> {
         let subscription = self.subscriptions.values_mut().find(|subscription| {
             subscription.pending.is_some()
-                && subscription
-                    .last_emit
-                    .checked_add(
-                        subscription
-                            .rate
-                            .map_or(std::time::Duration::ZERO, ViewSampleRate::interval),
-                    )
-                    .is_some_and(|deadline| deadline <= now)
+                && next_frame(subscription.last_emit, subscription.rate) <= now
         })?;
         let pending = subscription.pending.take()?;
         let response = pending.finish(subscription.next_sequence);
         subscription.next_sequence = subscription.next_sequence.saturating_add(1);
-        // Fixed rate: the next frame is due one interval after this frame was
-        // due, not after it went out, so wake-up latency does not stretch every
-        // interval. A subscription more than a whole interval behind (idle, or
-        // the server fell behind) restarts its schedule from now.
-        let interval = subscription
-            .rate
-            .map_or(std::time::Duration::ZERO, ViewSampleRate::interval);
-        let due = subscription.last_emit.checked_add(interval).unwrap_or(now);
-        subscription.last_emit = if now.saturating_duration_since(due) < interval {
-            due
-        } else {
-            now
-        };
+        subscription.last_emit = now;
         Some(response)
     }
+}
+
+/// The process-wide origin of the frame grid.
+static FRAME_EPOCH: std::sync::LazyLock<Instant> = std::sync::LazyLock::new(Instant::now);
+
+/// When the frame after one sent at `last_emit` is due: the next point of a
+/// grid of `rate`'s interval shared by the whole process. Every subscription at
+/// one rate sends at the same instants, whenever it subscribed, and a late send
+/// does not shift later frames. Without a rate a frame is due at once.
+fn next_frame(last_emit: Instant, rate: Option<ViewSampleRate>) -> Instant {
+    let Some(interval) = rate.map(ViewSampleRate::interval) else {
+        return last_emit;
+    };
+    let epoch = *FRAME_EPOCH;
+    let step = interval.as_nanos().max(1);
+    let since = last_emit.saturating_duration_since(epoch).as_nanos();
+    let slot = since.checked_div(step).unwrap_or(0);
+    let next = slot.saturating_add(1).saturating_mul(step);
+    let next = u64::try_from(next).unwrap_or(u64::MAX);
+    epoch
+        .checked_add(std::time::Duration::from_nanos(next))
+        .unwrap_or(last_emit)
 }
 
 #[cfg(test)]
@@ -402,16 +401,34 @@ mod tests {
     }
 
     #[test]
-    fn a_subscription_far_behind_restarts_its_schedule_from_now() {
+    fn subscriptions_at_one_rate_share_frame_instants() {
         let start = Instant::now();
-        let mut delivery = sampled(start);
-        delivery.push(response(0, &[("a", 0)], &[]), start);
-        delivery.push(response(1, &[("a", 1)], &[]), start);
-        let now = start + Duration::from_secs(1);
-        assert!(delivery.take_due(now).is_some());
-        delivery.push(response(2, &[("a", 2)], &[]), now);
-        // Not a burst of catch-up frames: the next one waits a full interval.
-        assert!(delivery.take_due(now + Duration::from_millis(30)).is_none());
-        assert!(delivery.take_due(now + Duration::from_millis(34)).is_some());
+        let subscribe = |tx: &str, at: Instant, delivery: &mut ViewDelivery| {
+            delivery.control(
+                ViewDeliveryControl::Subscribe {
+                    tx: tx.into(),
+                    rate: rate(60.0),
+                },
+                at,
+            );
+        };
+        let mut first = ViewDelivery::default();
+        let mut second = ViewDelivery::default();
+        subscribe("view", start, &mut first);
+        // The second subscribes 7 ms later, out of phase with the first.
+        let later = start + Duration::from_millis(7);
+        subscribe("view", later, &mut second);
+        first.push(response(0, &[("a", 0)], &[]), start);
+        second.push(response(0, &[("a", 0)], &[]), later);
+        let now = later + Duration::from_millis(1);
+        first.push(response(1, &[("a", 1)], &[]), now);
+        second.push(response(1, &[("a", 1)], &[]), now);
+        let (a, b) = (first.next_deadline(), second.next_deadline());
+        assert!(a.is_some() && b.is_some());
+        assert_eq!(a, b, "both send their next frame at the same instant");
+        // A frame is never more than one interval away, so a subscription
+        // that fell behind gets no burst of catch-up frames.
+        let due = a.unwrap_or(now);
+        assert!(due.saturating_duration_since(now) <= Duration::from_secs_f64(1.0 / 60.0));
     }
 }
