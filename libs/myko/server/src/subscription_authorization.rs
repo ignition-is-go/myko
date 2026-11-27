@@ -142,6 +142,12 @@ impl SubscriptionAuthorization {
             MykoMessage::ReportResponse(response) => (response.tx.as_str(), OperationKind::Report),
             _ => return Delivery::Allow,
         };
+        self.delivery_for(tx, kind, auth)
+    }
+
+    /// The delivery decision for one response of subscription `tx`, whatever
+    /// form the response was encoded in.
+    pub fn delivery_for(&self, tx: &str, kind: OperationKind, auth: &AuthSession) -> Delivery {
         let mut subscriptions = self
             .subscriptions
             .lock()

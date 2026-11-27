@@ -1311,10 +1311,23 @@ impl WsHandler {
         if auth.is_some_and(|session| session.check().is_err()) {
             return false;
         }
-        if let (Some(auth), OutboundMessage::Message(output)) = (auth, &message)
-            && auth.uses_live_permissions()
-        {
-            match subscription_auth.delivery(output, auth) {
+        let live_delivery = auth
+            .filter(|session| session.uses_live_permissions())
+            .and_then(|session| match &message {
+                OutboundMessage::Message(output) => {
+                    Some(subscription_auth.delivery(output, session))
+                }
+                // A pre-encoded report frame gets the same per-subscription
+                // check as a report response built per message.
+                OutboundMessage::ReportJson { tx, .. } => Some(subscription_auth.delivery_for(
+                    tx,
+                    myko_auth::OperationKind::Report,
+                    session,
+                )),
+                OutboundMessage::SerializedCommand { .. } => None,
+            });
+        if let Some(delivery) = live_delivery {
+            match delivery {
                 Delivery::Allow => {}
                 Delivery::Drop => return true,
                 Delivery::Error(error) => {
@@ -1540,8 +1553,7 @@ impl WsHandler {
                         Some(DeferredOutbound::Report(tx, output, queued_at)) => {
                             let encode_json = outgoing_format_writer.load(Ordering::SeqCst)
                                 == u8::from(MykoProtocol::JSON)
-                                && !diagnostics.enabled()
-                                && !auth.as_ref().is_some_and(AuthSession::uses_live_permissions);
+                                && !diagnostics.enabled();
                             Self::materialize_report(&tx, &output, queued_at, &diagnostics, encode_json)
                         }
                         Some(DeferredOutbound::Query { response, is_view, queued_at }) => {
