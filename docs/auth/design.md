@@ -424,8 +424,26 @@ let provider = MykoAuthProvider::new(authentication, authorization)
     .with_oauth_server(Arc::new(oauth));
 ```
 
-Public-client dynamic registration is an explicit opt-in via
-`with_dynamic_registration()`. Pre-registration works without it. Confidential
+Public-client dynamic registration (RFC 7591) is an explicit opt-in via
+`with_dynamic_registration(&RegistrationKey)`. Pre-registration works without it.
+Registrations are not stored: each issued `client_id` is the registration
+metadata (name, exact redirect URIs, a random nonce) signed with HMAC-SHA-256
+under a key derived from the configured secret, the issuer and the resource.
+Any process configured with the same secret accepts it, so registrations survive
+restarts and are shared by replicas. Verification compares the full tag in
+constant time; a tampered, foreign or unsigned ID is an unknown client. Rotating
+the secret invalidates every dynamic registration, and an individual
+registration cannot be revoked. Client IDs are capped at 2048 bytes.
+
+The secret is required configuration: hosts read it from their environment and
+parse it with `RegistrationKey::from_base64`, which rejects anything shorter
+than 32 decoded bytes. Generate one with `openssl rand -base64 32`, keep it out
+of source control and logs, and give every replica the same value.
+
+```rust,ignore
+let key = myko_auth::oauth::RegistrationKey::from_base64(&std::env::var("APP_OAUTH_REGISTRATION_KEY")?)?;
+let oauth = oauth.with_dynamic_registration(&key)?;
+``` Confidential
 clients and client-ID metadata documents are not implemented; metadata does not
 advertise those capabilities. Client names are untrusted presentation text.
 
@@ -452,9 +470,14 @@ expiry and current local permission checks apply to already admitted OAuth
 sessions. Revoking a grant does not log the user out of the browser. Grants do
 not introduce offline access or additional entity permissions.
 
-Pending requests, codes, clients and issued tokens are bounded, process-local
-state. Restarting the service requires clients to sign in again. Multiple
-instances need routing affinity; durable shared OAuth state is not provided.
+Pending requests, codes, configured clients and issued tokens are bounded,
+process-local state. Issued tokens stay process-local on purpose: they are
+handles to the live parent login session, so parent logout and revocation apply
+immediately. After a restart the resource answers `401` with its
+`WWW-Authenticate` challenge and the token endpoint answers `invalid_grant` to
+old refresh tokens; the client then repeats authorization with its existing
+client ID and the user consents again. Multiple instances need routing affinity
+for in-flight logins and tokens; only dynamic registrations are shared.
 Only SHA-256 digests of pending requests/codes/tokens are used as lookup keys.
 
 ### Authenticated application users in handlers

@@ -1,6 +1,6 @@
 #![allow(clippy::panic_in_result_fn)]
 use myko_auth::{
-    oauth::{OAuthServer, pkce_challenge},
+    oauth::{OAuthServer, RegistrationKey, pkce_challenge},
     *,
 };
 use serde_json::{Value, json};
@@ -34,13 +34,17 @@ fn query(url: &str, key: &str) -> TestResult<String> {
         .map(|(_, v)| v.into_owned())
         .ok_or_else(|| "query field missing".into())
 }
-fn fixture() -> TestResult<(OAuthServer, AuthSession)> {
-    let server = OAuthServer::new(
-        "http://localhost:5155/oauth",
+const KEY: &str = "q83vEjRWeJq83vEjRWeJq83vEjRWeJq83vEjRWeJq80=";
+fn authority(issuer: &str, key: &str) -> TestResult<OAuthServer> {
+    Ok(OAuthServer::new(
+        issuer,
         "http://localhost:5155/myko/mcp",
         "http://localhost:8081",
     )?
-    .with_dynamic_registration();
+    .with_dynamic_registration(&RegistrationKey::from_base64(key)?)?)
+}
+fn fixture() -> TestResult<(OAuthServer, AuthSession)> {
+    let server = authority("http://localhost:5155/oauth", KEY)?;
     server.add_client(
         "client",
         "Test client",
@@ -231,66 +235,155 @@ fn approval_requires_verified_credentials_and_does_not_expose_other_operations()
     })
 }
 
-#[test]
-fn dynamic_registration_evicts_lru_without_revoking_grants() -> TestResult {
-    let (server, parent) = fixture()?;
-    let metadata =
-        json!({"client_name":"Dynamic", "redirect_uris":["http://127.0.0.1:9000/callback"]});
-    let first = server.register(&metadata)?;
-    let first_id = field(&first, "client_id")?;
-    let second = server.register(&metadata)?;
-    let second_id = field(&second, "client_id")?;
+fn register(server: &OAuthServer) -> TestResult<String> {
+    let reply = server.register(
+        &json!({"client_name":"Dynamic", "redirect_uris":["http://127.0.0.1:9000/callback"]}),
+    )?;
+    Ok(field(&reply, "client_id")?.to_owned())
+}
+fn dynamic_authorization(client: &str) -> TestResult<HashMap<String, String>> {
     let mut args = authorization()?;
-    args.insert("client_id".into(), first_id.into());
-    let request = query(&server.begin(&args)?, "myko_oauth")?;
-    let callback = server.complete(&request, Some(parent))?;
-    let tokens = server.token(&params(&[
+    args.insert("client_id".into(), client.into());
+    Ok(args)
+}
+/// Authorize and redeem a code for `client` against `server`.
+fn sign_in(server: &OAuthServer, parent: &AuthSession, client: &str) -> TestResult<Value> {
+    let request = query(
+        &server.begin(&dynamic_authorization(client)?)?,
+        "myko_oauth",
+    )?;
+    assert_eq!(server.inspect(&request)?.client_name, "Dynamic");
+    let callback = server.complete(&request, Some(parent.clone()))?;
+    Ok(server.token(&params(&[
         ("grant_type", "authorization_code"),
-        ("client_id", first_id),
+        ("client_id", client),
         ("resource", "http://localhost:5155/myko/mcp"),
         ("redirect_uri", "http://127.0.0.1:9000/callback"),
         ("code_verifier", VERIFIER),
         ("code", &query(&callback, "code")?),
-    ]))?;
-    // One configured and 4,095 dynamic registrations fill the registry.
-    for _ in 0..4093 {
-        server.register(&metadata)?;
-    }
-    server.authenticate(field(&tokens, "access_token")?)?;
-    server.register(&metadata)?;
-    args.insert("client_id".into(), second_id.into());
-    assert!(server.begin(&args).is_err());
-    args.insert("client_id".into(), first_id.into());
-    assert!(server.begin(&args).is_ok());
-    assert!(server.begin(&authorization()?).is_ok());
-    // Force eviction of the formerly active client by admitting a full new set.
-    for _ in 0..4095 {
-        server.register(&metadata)?;
-    }
-    assert!(server.begin(&args).is_err());
-    server.authenticate(field(&tokens, "access_token")?)?;
-    server.token(&params(&[
+    ]))?)
+}
+
+#[test]
+fn dynamic_registration_survives_restart_and_tokens_require_reauthorization() -> TestResult {
+    let (before, parent) = fixture()?;
+    let client = register(&before)?;
+    let tokens = sign_in(&before, &parent, &client)?;
+    before.authenticate(field(&tokens, "access_token")?)?;
+    drop(before);
+
+    let (after, _) = fixture()?;
+    // Process-local credentials end with the process: a 401 at the resource...
+    assert_eq!(
+        after.authenticate(field(&tokens, "access_token")?).err(),
+        Some(AuthError::Unauthenticated)
+    );
+    // ...and invalid_grant on refresh, which sends the client back to authorize.
+    let refresh = after.token(&params(&[
         ("grant_type", "refresh_token"),
-        ("client_id", first_id),
+        ("client_id", &client),
         ("resource", "http://localhost:5155/myko/mcp"),
         ("refresh_token", field(&tokens, "refresh_token")?),
-    ]))?;
+    ]));
+    assert_eq!(refresh.err().map(|e| e.code), Some("invalid_grant"));
+    // The earlier registration is still valid, so re-authorization succeeds.
+    let renewed = sign_in(&after, &parent, &client)?;
+    after.authenticate(field(&renewed, "access_token")?)?;
     Ok(())
 }
 
 #[test]
-fn configured_clients_are_never_evicted() -> TestResult {
+fn dynamic_registrations_are_distinct_and_redirects_exact() -> TestResult {
     let (server, _) = fixture()?;
-    for index in 1..4096 {
-        server.add_client(
-            &format!("configured-{index}"),
-            "Configured",
-            vec!["http://127.0.0.1:9000/callback".into()],
-        )?;
+    let first = register(&server)?;
+    let second = register(&server)?;
+    assert_ne!(first, second);
+    let mut args = dynamic_authorization(&first)?;
+    args.insert(
+        "redirect_uri".into(),
+        "http://127.0.0.1:9000/callback/".into(),
+    );
+    assert!(server.begin(&args).is_err());
+    assert!(server.begin(&dynamic_authorization(&second)?).is_ok());
+    Ok(())
+}
+
+#[test]
+fn tampered_or_foreign_client_ids_are_unknown() -> TestResult {
+    let (server, _) = fixture()?;
+    let client = register(&server)?;
+    let (body, tag) = client.rsplit_once('.').ok_or("signed client ID")?;
+    let other_key = authority(
+        "http://localhost:5155/oauth",
+        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+    )?;
+    let other_issuer = authority("http://localhost:5155/other", KEY)?;
+    // Same redirect, attacker-chosen name, reusing the genuine tag.
+    let forged_payload =
+        base64_url(br#"{"n":"Trusted","r":["http://127.0.0.1:9000/callback"],"i":"x"}"#);
+    let flipped_tag = format!("{}{}", tag.get(1..).ok_or("tag")?, "A");
+    for forged in [
+        format!("dyn1.{forged_payload}.{tag}"),
+        format!("{body}.{flipped_tag}"),
+        format!("{body}."),
+        body.to_owned(),
+        register(&other_key)?,
+        register(&other_issuer)?,
+        format!("{client}x"),
+        "dyn1.".repeat(1000),
+    ] {
+        let error = server.begin(&dynamic_authorization(&forged)?).err();
+        assert_eq!(error.map(|e| e.message), Some("Unknown client"), "{forged}");
     }
+    assert!(server.begin(&dynamic_authorization(&client)?).is_ok());
+    Ok(())
+}
+
+fn base64_url(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
+#[test]
+fn registration_requires_a_configured_key() -> TestResult {
+    for key in [
+        "",
+        "c2hvcnQ=",
+        "not base64!",
+        "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHg==",
+    ] {
+        assert!(RegistrationKey::from_base64(key).is_err(), "{key}");
+    }
+    assert!(RegistrationKey::from_base64("q83vEjRWeJq83vEjRWeJq83vEjRWeJq83vEjRWeJq80").is_ok());
+    assert!(!format!("{:?}", RegistrationKey::from_base64(KEY)?).contains(KEY));
+    let without = OAuthServer::new(
+        "http://localhost:5155/oauth",
+        "http://localhost:5155/myko/mcp",
+        "http://localhost:8081",
+    )?;
+    assert!(
+        without
+            .register(&json!({"redirect_uris":["http://127.0.0.1:9000/callback"]}))
+            .is_err()
+    );
+    assert!(without.metadata().get("registration_endpoint").is_none());
+    let (server, _) = fixture()?;
+    let client = register(&server)?;
+    assert!(without.begin(&dynamic_authorization(&client)?).is_err());
+    assert!(server.metadata().get("registration_endpoint").is_some());
+    Ok(())
+}
+
+#[test]
+fn configured_clients_cannot_claim_the_dynamic_namespace() -> TestResult {
+    let (server, _) = fixture()?;
     assert!(
         server
-            .register(&json!({"redirect_uris":["http://127.0.0.1:9000/callback"]}))
+            .add_client(
+                "dyn1.configured",
+                "Configured",
+                vec!["http://127.0.0.1:9000/callback".into()],
+            )
             .is_err()
     );
     assert!(server.begin(&authorization()?).is_ok());

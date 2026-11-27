@@ -4873,6 +4873,7 @@ version = "6.19.2"
 dependencies = [
  "base64",
  "futures",
+ "hmac 0.12.1",
  "inventory",
  "serde",
  "serde_json",
