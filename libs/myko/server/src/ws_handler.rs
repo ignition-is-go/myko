@@ -134,6 +134,12 @@ fn ensure_ws_benchmark_logger() {
     }
 }
 
+/// Strip null bytes and fill framework-owned fields of a client event.
+fn prepare_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::Uuid) {
+    event.sanitize_null_bytes();
+    normalize_incoming_event(event, client_id, host_id);
+}
+
 fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::Uuid) {
     if event.change_type != MEventType::SET {
         return;
@@ -171,16 +177,18 @@ fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::
 
     // Auto-populate #[fallback_to_id] fields with the entity's own id
     // if the field is null or missing.
-    if let Some(obj) = event.item.as_object_mut()
-        && let Some(id) = obj.get("id").and_then(|v| v.as_str()).map(String::from)
-    {
-        for reg in iter_fallback_to_id_registrations() {
-            if reg.entity_type == &*event.item_type {
-                let field = reg.field_name_json;
-                if matches!(obj.get(field), None | Some(serde_json::Value::Null)) {
-                    obj.insert(field.to_string(), serde_json::Value::String(id.clone()));
-                }
-            }
+    for reg in iter_fallback_to_id_registrations() {
+        if reg.entity_type != &*event.item_type {
+            continue;
+        }
+        let Some(obj) = event.item.as_object_mut() else {
+            break;
+        };
+        let field = reg.field_name_json;
+        if matches!(obj.get(field), None | Some(serde_json::Value::Null))
+            && let Some(id) = obj.get("id").and_then(|v| v.as_str()).map(String::from)
+        {
+            obj.insert(field.to_string(), serde_json::Value::String(id));
         }
     }
 }
@@ -188,6 +196,10 @@ fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::
 /// Sequenced `Message` frames a connection may have queued before it is torn
 /// down for a clean resnapshot.
 const MESSAGE_QUEUE_CAPACITY: usize = 10_000;
+
+/// Frames a writer may buffer while a backlog drains before it flushes anyway,
+/// so a client under a steady stream still receives frames promptly.
+const MAX_UNFLUSHED_FRAMES: usize = 64;
 
 static OUTBOUND_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static OVERLOAD_DISCONNECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -487,6 +499,11 @@ struct WriterState {
 
 enum OutboundMessage {
     Message(MykoMessage),
+    /// A `ReportResponse` already encoded as its JSON text frame.
+    ReportJson {
+        tx: Arc<str>,
+        json: String,
+    },
     SerializedCommand {
         tx: Arc<str>,
         command_id: String,
@@ -589,9 +606,7 @@ impl WsHandler {
 
     fn authorize_incoming(
         auth: &AuthSession,
-        message: &mut MykoMessage,
-        client: &str,
-        host: uuid::Uuid,
+        message: &MykoMessage,
     ) -> Result<(), myko_auth::AuthError> {
         auth.check()?;
         let request = match message {
@@ -615,10 +630,10 @@ impl WsHandler {
                 operation: &w.command_id,
                 arguments: &w.command,
             },
-            MykoMessage::Event(event) => return Self::authorize_event(auth, event, client, host),
+            MykoMessage::Event(event) => return Self::authorize_event(auth, event),
             MykoMessage::EventBatch(events) => {
                 for event in events {
-                    Self::authorize_event(auth, event, client, host)?;
+                    Self::authorize_event(auth, event)?;
                 }
                 return auth.check();
             }
@@ -641,14 +656,7 @@ impl WsHandler {
         auth.authorize(request)
     }
 
-    fn authorize_event(
-        auth: &AuthSession,
-        event: &mut MEvent,
-        client: &str,
-        host: uuid::Uuid,
-    ) -> Result<(), myko_auth::AuthError> {
-        event.sanitize_null_bytes();
-        normalize_incoming_event(event, client, host);
+    fn authorize_event(auth: &AuthSession, event: &MEvent) -> Result<(), myko_auth::AuthError> {
         auth.authorize(AuthorizationRequest::ClientEvent {
             entity_type: &event.item_type,
             change: if event.change_type == MEventType::SET {
@@ -669,14 +677,25 @@ impl WsHandler {
             Self::reject_incoming(state, &message, "gateway is read-only".into());
             return true;
         }
+        // Every event is sanitized and normalized exactly once, before it is
+        // authorized, so policy sees the item that will be applied.
+        match &mut message {
+            MykoMessage::Event(event) => {
+                prepare_incoming_event(event, &session.client_id, state.ctx.host_id);
+            }
+            MykoMessage::EventBatch(events) => {
+                for event in events {
+                    prepare_incoming_event(event, &session.client_id, state.ctx.host_id);
+                }
+            }
+            _ => {}
+        }
         if let Some(auth) = &state.auth {
             // An invalid session terminates the transport; a denied operation does not.
             if auth.check().is_err() {
                 return false;
             }
-            if let Err(error) =
-                Self::authorize_incoming(auth, &mut message, &session.client_id, state.ctx.host_id)
-            {
+            if let Err(error) = Self::authorize_incoming(auth, &message) {
                 if auth.check().is_err() {
                     return false;
                 }
@@ -685,20 +704,16 @@ impl WsHandler {
             }
         }
         // Entity declarations apply even to trusted gateways without an auth provider.
-        let mutability = match &mut message {
-            MykoMessage::Event(event) => {
-                event.sanitize_null_bytes();
-                myko_auth::client_events::authorize(
-                    &event.item_type,
-                    if event.change_type == MEventType::SET {
-                        EventChange::Set
-                    } else {
-                        EventChange::Delete
-                    },
-                )
-            }
-            MykoMessage::EventBatch(events) => events.iter_mut().try_for_each(|event| {
-                event.sanitize_null_bytes();
+        let mutability = match &message {
+            MykoMessage::Event(event) => myko_auth::client_events::authorize(
+                &event.item_type,
+                if event.change_type == MEventType::SET {
+                    EventChange::Set
+                } else {
+                    EventChange::Delete
+                },
+            ),
+            MykoMessage::EventBatch(events) => events.iter().try_for_each(|event| {
                 myko_auth::client_events::authorize(
                     &event.item_type,
                     if event.change_type == MEventType::SET {
@@ -1148,6 +1163,7 @@ impl WsHandler {
     ) -> (&'static str, Option<Arc<str>>, Option<u64>) {
         match message {
             OutboundMessage::SerializedCommand { tx, .. } => ("command", Some(tx.clone()), None),
+            OutboundMessage::ReportJson { tx, .. } => ("report_response", Some(tx.clone()), None),
             OutboundMessage::Message(message) => match message {
                 MykoMessage::ViewResponse(response) => (
                     "view_response",
@@ -1210,7 +1226,8 @@ impl WsHandler {
             OutboundMessage::SerializedCommand {
                 payload: EncodedCommandMessage::Json(json),
                 ..
-            } => Some(Message::Text(json.clone().into())),
+            }
+            | OutboundMessage::ReportJson { json, .. } => Some(Message::Text(json.clone().into())),
             OutboundMessage::SerializedCommand {
                 payload: EncodedCommandMessage::Cbor(bytes),
                 ..
@@ -1289,11 +1306,14 @@ impl WsHandler {
         if auth.is_some_and(|session| session.check().is_err()) {
             return false;
         }
+        // Queue the frame in the WebSocket's write buffer; `run_writer`
+        // flushes once the backlog is drained, so a burst costs one write.
         let send_started = Instant::now();
-        let result = write.send(frame).await;
+        let result = write.feed(frame).await;
         let send_elapsed = send_started.elapsed();
         let (diagnostic_message, command_id) = match &message {
             OutboundMessage::Message(message) => (Some(message), None),
+            OutboundMessage::ReportJson { .. } => (None, None),
             OutboundMessage::SerializedCommand { command_id, .. } => {
                 (None, Some(command_id.as_str()))
             }
@@ -1319,7 +1339,17 @@ impl WsHandler {
             );
             return false;
         }
-        match &message {
+        Self::record_sent(&message, client_id, payload_bytes, diagnostics);
+        true
+    }
+
+    fn record_sent(
+        message: &OutboundMessage,
+        client_id: &str,
+        payload_bytes: usize,
+        diagnostics: &DeliveryDiagnostics,
+    ) {
+        match message {
             OutboundMessage::Message(message) => {
                 let tag = crate::ws_timing::resolved_message_tag(message, client_id);
                 crate::ws_timing::record_outbound_for_client(
@@ -1329,6 +1359,15 @@ impl WsHandler {
                     payload_bytes,
                 );
                 diagnostics.sent(message, payload_bytes);
+            }
+            OutboundMessage::ReportJson { tx, .. } => {
+                let tag = myko_telemetry::websocket_metrics::operation(client_id, "report", tx);
+                crate::ws_timing::record_outbound_for_client(
+                    "ReportResponse",
+                    client_id,
+                    tag.as_deref(),
+                    payload_bytes,
+                );
             }
             OutboundMessage::SerializedCommand { command_id, .. } => {
                 crate::ws_timing::record_outbound_for_client(
@@ -1340,22 +1379,36 @@ impl WsHandler {
                 diagnostics.serialized_command(command_id, payload_bytes);
             }
         }
-        true
     }
 
+    /// `encode_json` sends the frame pre-encoded, sharing the output's JSON
+    /// with every other subscriber of the same output. It is only taken when
+    /// nothing downstream needs the decoded message: a JSON session without
+    /// live permissions or delivery diagnostics.
     fn materialize_report(
-        tx: &str,
-        output: &dyn AnyOutput,
+        tx: &Arc<str>,
+        output: &Arc<dyn AnyOutput>,
         queued_at: Instant,
         diagnostics: &DeliveryDiagnostics,
+        encode_json: bool,
     ) -> OutboundMessage {
         diagnostics.queue(1, Some((tx, queued_at.elapsed())));
         let started = Instant::now();
-        let message =
-            OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
-                response: output.to_value(),
-                tx: tx.to_string(),
-            }));
+        let encoded = encode_json
+            .then(|| myko::wire::encode_report_response_json(tx, output).ok())
+            .flatten();
+        let message = encoded.map_or_else(
+            || {
+                OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
+                    response: output.to_value(),
+                    tx: tx.to_string(),
+                }))
+            },
+            |json| OutboundMessage::ReportJson {
+                tx: tx.clone(),
+                json,
+            },
+        );
         diagnostics.materialized(tx, started.elapsed());
         message
     }
@@ -1377,6 +1430,10 @@ impl WsHandler {
         message
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the writer's channel selection, flushing and delivery read in one place"
+    )]
     async fn run_writer(state: WriterState) {
         let WriterState {
             subscription_auth,
@@ -1398,7 +1455,31 @@ impl WsHandler {
         let mut priority_open = true;
         let mut deferred_open = true;
         let mut delivery = ViewDelivery::default();
+        let mut unflushed = 0usize;
         while normal_open || priority_open || deferred_open {
+            if unflushed > 0 {
+                let backlog = rx
+                    .len()
+                    .saturating_add(deferred_rx.len())
+                    .saturating_add(priority_rx.len());
+                let view_due = delivery
+                    .next_deadline()
+                    .is_some_and(|deadline| deadline <= Instant::now());
+                if (backlog == 0 && !view_due) || unflushed >= MAX_UNFLUSHED_FRAMES {
+                    if let Err(error) = write.flush().await {
+                        tracing::error!(
+                            "WebSocket flush failed for client {} from {} after {} frames: {}",
+                            write_client_id,
+                            write_addr,
+                            unflushed,
+                            error
+                        );
+                        drop_logger.disconnect_for_overload();
+                        break;
+                    }
+                    unflushed = 0;
+                }
+            }
             diagnostics.queue(
                 rx.len()
                     .saturating_add(deferred_rx.len())
@@ -1425,7 +1506,11 @@ impl WsHandler {
                 maybe = deferred_rx.recv(), if deferred_open => {
                     match maybe {
                         Some(DeferredOutbound::Report(tx, output, queued_at)) => {
-                            Self::materialize_report(&tx, output.as_ref(), queued_at, &diagnostics)
+                            let encode_json = outgoing_format_writer.load(Ordering::SeqCst)
+                                == u8::from(MykoProtocol::JSON)
+                                && !diagnostics.enabled()
+                                && !auth.as_ref().is_some_and(AuthSession::uses_live_permissions);
+                            Self::materialize_report(&tx, &output, queued_at, &diagnostics, encode_json)
                         }
                         Some(DeferredOutbound::Query { response, is_view, queued_at }) => {
                             diagnostics.queue(deferred_rx.len().saturating_add(1), Some((&response.tx, queued_at.elapsed())));
@@ -1470,6 +1555,11 @@ impl WsHandler {
                 drop_logger.disconnect_for_overload();
                 break;
             }
+            unflushed = unflushed.saturating_add(1);
+        }
+        // Frames already accepted are delivered before the writer exits.
+        if unflushed > 0 {
+            let _ = write.flush().await;
         }
         Self::writer_exited(
             &write_client_id,
@@ -2325,19 +2415,13 @@ impl WsHandler {
                     ),
                 }
             }
-            MykoMessage::Event(mut event) => {
-                event.sanitize_null_bytes();
-                normalize_incoming_event(&mut event, &session.client_id, ctx.host_id);
+            MykoMessage::Event(event) => {
                 Self::apply_client_events(&session.client_id, message_context, || {
                     ctx.apply_event(event)
                 });
                 drop(ctx);
             }
-            MykoMessage::EventBatch(mut events) => {
-                for event in &mut events {
-                    event.sanitize_null_bytes();
-                    normalize_incoming_event(event, &session.client_id, ctx.host_id);
-                }
+            MykoMessage::EventBatch(events) => {
                 Self::apply_client_events(&session.client_id, message_context, || {
                     ctx.apply_event_batch(events)
                 });

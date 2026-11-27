@@ -127,6 +127,12 @@ impl DeliveryDiagnostics {
         Self::with_enabled(client_id, peer, enabled)
     }
 
+    /// Whether delivery diagnostics are recorded for this connection.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.state.is_some()
+    }
+
     fn with_enabled(client_id: &str, peer: SocketAddr, enabled: bool) -> Self {
         let diagnostics = Self {
             client_id: client_id.into(),

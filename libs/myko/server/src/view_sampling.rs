@@ -34,22 +34,29 @@ struct PendingDelta {
 }
 
 impl PendingDelta {
-    fn new(response: PendingQueryResponse) -> Self {
-        let mut pending = Self {
-            latest: response.clone(),
-            changes: BTreeMap::new(),
-        };
-        pending.merge(response);
-        pending
+    fn new(mut response: PendingQueryResponse) -> Self {
+        let mut changes = BTreeMap::new();
+        Self::take_changes(&mut changes, &mut response);
+        Self {
+            latest: response,
+            changes,
+        }
+    }
+
+    fn take_changes(
+        changes: &mut BTreeMap<Arc<str>, Option<Arc<dyn AnyItem>>>,
+        response: &mut PendingQueryResponse,
+    ) {
+        for id in response.deletes.drain(..) {
+            changes.insert(id, None);
+        }
+        for item in response.upsert_items.drain(..) {
+            changes.insert(item.id(), Some(item));
+        }
     }
 
     fn merge(&mut self, mut response: PendingQueryResponse) {
-        for id in response.deletes.drain(..) {
-            self.changes.insert(id, None);
-        }
-        for item in response.upsert_items.drain(..) {
-            self.changes.insert(item.id(), Some(item));
-        }
+        Self::take_changes(&mut self.changes, &mut response);
         // An update without a window change must preserve a previously queued
         // order change in this interval.
         if response.window_order_ids.is_none() {

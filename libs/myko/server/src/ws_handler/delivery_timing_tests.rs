@@ -87,6 +87,8 @@ async fn authorization_time_is_not_serialization_or_socket_send_time()
         .await
     );
     assert!(!policy.pause_next.load(Ordering::Acquire));
+    // `send_outbound` buffers the frame; the writer loop flushes once idle.
+    write.flush().await?;
     let received = tokio::time::timeout(Duration::from_secs(5), client.next())
         .await?
         .ok_or_else(|| std::io::Error::other("missing WebSocket frame"))??;

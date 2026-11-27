@@ -1726,7 +1726,8 @@ impl MykoServerContext {
         // wherever a key repeats and the runs are applied in arrival order.
         let mut runs: Vec<[Vec<Arc<dyn AnyItem>>; 2]> = Vec::new();
         let mut run: [Vec<Arc<dyn AnyItem>>; 2] = Default::default();
-        let mut keys_in_run: HashSet<(&'static str, Arc<str>)> = HashSet::new();
+        let mut keys_in_run: HashSet<(&'static str, Arc<str>), ahash::RandomState> =
+            HashSet::with_hasher(ahash::RandomState::new());
         let mut applied = 0usize;
 
         for event in events {
@@ -1745,11 +1746,11 @@ impl MykoServerContext {
                 continue;
             }
             let key = (item.entity_type(), item.id());
-            if keys_in_run.contains(&key) {
+            if !keys_in_run.insert(key.clone()) {
                 keys_in_run.clear();
                 runs.push(std::mem::take(&mut run));
+                keys_in_run.insert(key);
             }
-            keys_in_run.insert(key);
             applied = applied.saturating_add(1);
             let [sets, dels] = &mut run;
             match change {
