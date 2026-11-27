@@ -154,7 +154,19 @@ impl ViewDelivery {
         let pending = subscription.pending.take()?;
         let response = pending.finish(subscription.next_sequence);
         subscription.next_sequence = subscription.next_sequence.saturating_add(1);
-        subscription.last_emit = now;
+        // Fixed rate: the next frame is due one interval after this frame was
+        // due, not after it went out, so wake-up latency does not stretch every
+        // interval. A subscription more than a whole interval behind (idle, or
+        // the server fell behind) restarts its schedule from now.
+        let interval = subscription
+            .rate
+            .map_or(std::time::Duration::ZERO, ViewSampleRate::interval);
+        let due = subscription.last_emit.checked_add(interval).unwrap_or(now);
+        subscription.last_emit = if now.saturating_duration_since(due) < interval {
+            due
+        } else {
+            now
+        };
         Some(response)
     }
 }
@@ -355,5 +367,49 @@ mod tests {
                 .and_then(|frame| frame.window_order_ids),
             Some(vec!["a".into(), "b".into()])
         );
+    }
+
+    #[test]
+    fn late_sends_do_not_stretch_the_sample_interval() {
+        let start = Instant::now();
+        let mut delivery = ViewDelivery::default();
+        delivery.control(
+            ViewDeliveryControl::Subscribe {
+                tx: "view".into(),
+                rate: rate(60.0),
+            },
+            start,
+        );
+        delivery.push(response(0, &[("a", 0)], &[]), start);
+        let interval = Duration::from_secs_f64(1.0 / 60.0);
+        let late = Duration::from_millis(1);
+        let mut now = start;
+        for frame in 1..=60_u32 {
+            delivery.push(response(u64::from(frame), &[("a", frame)], &[]), now);
+            let due = delivery.next_deadline().expect("a frame is pending");
+            now = due + late;
+            assert!(delivery.take_due(now).is_some(), "frame {frame} is due");
+        }
+        // Sixty frames at 60 Hz, each sent 1 ms late: the schedule stays on
+        // its grid (about 1 s), instead of drifting by 1 ms per frame.
+        let elapsed = now.duration_since(start);
+        assert!(
+            elapsed < Duration::from_millis(1_005) && elapsed >= interval * 60,
+            "60 frames took {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn a_subscription_far_behind_restarts_its_schedule_from_now() {
+        let start = Instant::now();
+        let mut delivery = sampled(start);
+        delivery.push(response(0, &[("a", 0)], &[]), start);
+        delivery.push(response(1, &[("a", 1)], &[]), start);
+        let now = start + Duration::from_secs(1);
+        assert!(delivery.take_due(now).is_some());
+        delivery.push(response(2, &[("a", 2)], &[]), now);
+        // Not a burst of catch-up frames: the next one waits a full interval.
+        assert!(delivery.take_due(now + Duration::from_millis(30)).is_none());
+        assert!(delivery.take_due(now + Duration::from_millis(34)).is_some());
     }
 }
