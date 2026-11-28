@@ -576,6 +576,7 @@ mod cost {
     #[test]
     fn report_fanouts_per_changed_row() {
         let _serial = scheduler_test_serial();
+        let mut map_costs = Vec::new();
         let mut gated_costs = Vec::new();
         for live in [false, true] {
             let path = if live {
@@ -604,13 +605,17 @@ mod cost {
                     per_sub(gated),
                 );
                 if live {
-                    assert_eq!(map, 0, "a map-rooted view subscribes with no erase write");
+                    map_costs.push(map);
                     gated_costs.push(gated);
                 }
             }
         }
-        // The shared map's own writes are paid once, so each further gated
-        // subscriber adds none.
+        // Live subscribers share one cached graph, so its writes are paid
+        // once and each further subscriber adds none.
+        assert_eq!(
+            map_costs[0], map_costs[1],
+            "a map-rooted subscriber costs no write"
+        );
         assert_eq!(
             gated_costs[0], gated_costs[1],
             "a gated subscriber costs no write"

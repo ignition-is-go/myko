@@ -788,7 +788,7 @@ impl OAuthServer {
                 family: family.clone(),
                 client: client.into(),
                 scopes: scopes.to_owned(),
-                identity: identity.clone(),
+                identity: Box::new(identity.clone()),
             });
         }
         self.put(OAuthRecord::Access {

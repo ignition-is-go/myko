@@ -43,7 +43,7 @@ pub enum OAuthRecord {
         family: String,
         client: String,
         scopes: Vec<String>,
-        identity: AuthenticatedIdentity,
+        identity: Box<AuthenticatedIdentity>,
     },
     Access {
         digest: String,
