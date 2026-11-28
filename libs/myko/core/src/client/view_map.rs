@@ -110,11 +110,9 @@ impl MykoClient {
 
         let view = ViewRequest::with_tx(supplied.view, super::next_subscription_tx());
         let tx = view.tx.clone();
-        let map: CellMap<Arc<str>, Arc<V::Item>> =
-            CellMap::new().with_name(format!("view_map:{view_id}"));
+        let map: CellMap<Arc<str>, Arc<V::Item>> = CellMap::new();
         let map_weak = map.downgrade();
-        let ready =
-            Cell::<bool, CellMutable>::new(false).with_name(format!("view_map_ready:{view_id}"));
+        let ready = Cell::<bool, CellMutable>::new(false);
         let ready_weak = ready.downgrade();
         let ready_read = ready.clone().lock();
 

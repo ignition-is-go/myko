@@ -274,10 +274,10 @@ impl StoreRegistry {
             return store.clone();
         }
         let key: Arc<str> = entity_type.into();
-        let create = || Arc::new(EntityStore::new().with_name(format!("store:{key}")));
+        let create = || Arc::new(EntityStore::new());
 
         self.stores
-            .entry(key.clone())
+            .entry(key)
             .or_insert_with(|| {
                 // A store lives in the domain it is born in, whichever thread
                 // asks for it first.

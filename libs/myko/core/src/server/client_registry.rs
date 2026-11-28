@@ -69,7 +69,7 @@ impl PartialEq for RegisteredWriter {
 impl ClientRegistry {
     fn new() -> Self {
         Self {
-            writers: CellMap::new().with_name("client_registry"),
+            writers: CellMap::new(),
         }
     }
 

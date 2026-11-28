@@ -504,7 +504,7 @@ impl MykoServerContext {
             persisters,
             search_index,
             peer_clients,
-            peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
+            peer_clients_tick: Cell::new(0),
             event_sink,
             event_sink_filter: None,
             query_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
@@ -4115,14 +4115,6 @@ impl MykoServerContext {
         let (built, refused) =
             watch_root_reads(|| self.in_domain(|| report.compute(nested_ctx).materialize()));
         drop(report);
-        // Named by report id (bounded cardinality — one name per report
-        // *type*, not per invocation) so hyphae's `hyphae.fanout` span
-        // (under the `profiling` feature) surfaces `cell.name` instead of
-        // being anonymous. `Cell<T, CellImmutable>::with_name` is available
-        // post-materialize (unlike `CellMap`, which only exposes it pre-lock
-        // — query/view result maps can't be named at this seam the same way).
-        #[cfg(feature = "profiling")]
-        let built = built.with_name(report_id.as_ref());
         self.remember_refusal(&key, refused);
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
