@@ -375,20 +375,26 @@ fn concurrent_gate_flips_against_source_writes_settle_exactly() {
         let flipper = {
             let selector = f.selector.clone();
             std::thread::spawn(move || {
+                let mut last = None;
                 for i in 0..30 {
-                    selector.set(match (i + round) % 3 {
+                    last = match (i + round) % 3 {
                         0 => None,
                         1 => Some('a'),
                         _ => Some('b'),
-                    });
+                    };
+                    selector.set(last);
                 }
+                last
             })
         };
         for handle in writers {
             handle.join().expect("writer");
         }
-        flipper.join().expect("flipper");
-        let expected = match f.selector.get() {
+        let last = flipper.join().expect("flipper");
+        // A set made while another thread drains propagation is settled by
+        // that drain, so the selector can still read an older value here.
+        eventually(|| f.selector.get() == last);
+        let expected = match last {
             Some('a') => source_rows(&f.a),
             Some(_) => source_rows(&f.b),
             None => Rows::new(),
