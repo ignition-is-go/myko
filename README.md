@@ -401,6 +401,60 @@ Client delivery diagnostics are opt-in: see the
 For view sampling behavior, see [view sampling](docs/view-sampling.md); graph
 benchmarks are recorded in the graph architecture reference linked above.
 
+## Migrating to Myko 7.0
+
+Myko 7.0 builds on Hyphae 4.0, changes two maintenance functions, and raises the
+WebSocket size limits. Partitioned servers and persisted OAuth grants are new and
+opt-in; a server that does not use them behaves as before, and the wire format is
+unchanged apart from the size limits.
+
+### Upgrade Hyphae with Myko
+
+Myko 7.0 requires Hyphae 4.0. Follow
+[Migrating to Hyphae 4.0](https://github.com/ignition-is-go/hyphae#migrating-to-hyphae-40)
+for your own Hyphae code. The changes Myko applications hit most often:
+
+- Remove `features = ["scheduler"]` from your `hyphae` dependency; the scheduler is
+  always compiled.
+- Delete `.with_name(...)` calls on cells and maps.
+- Replace `interval_precise_source` with `interval_source`.
+
+### Remove calls to deleted API
+
+| Removed or changed | What to do |
+| --- | --- |
+| `myko::query::sweep_all_belongs_to_source_indexes()` | `myko::query::sweep_belongs_to_source_indexes(&registry)`. Each registry now owns its belongs-to indexes, so the sweep takes the registry. A server already sweeps its own during cache cleanup. |
+| `myko::view::erase_typed_view_map(map)` | `myko::view::ErasedViewMap::from_typed(map)`, which reads the typed map as erased rows without building a second map. A view's own plan already erases its output. |
+| `dispatch_metrics::record_command` and the generated per-kind recorders | Pass `&'static str` ids, such as string literals, instead of borrowed strings. |
+
+### Check deployments that mix versions
+
+`WS_MAX_MESSAGE_SIZE_BYTES` and `WS_MAX_FRAME_SIZE_BYTES` rise from 64 MiB to 1 GiB.
+A peer still on Myko 6 rejects a frame larger than 64 MiB, so upgrade clients and
+servers together when they exchange large snapshots.
+
+### Check code that depends on view timing
+
+A switched view now builds its new selection off the propagating thread. When the
+selection changes, the view's output updates once that build finishes, not inside
+the wave that changed the selection. Graphs built or dropped from selector, map or
+project closures also run off the wave, so a slow build no longer holds unrelated
+writes.
+
+### Adopt the new features where you need them
+
+- **Partitions.** `MykoServer::builder().with_partitions(schema)` runs each partition
+  of a server in its own Hyphae scheduling domain. Declare partition keys on items;
+  reads and writes against the flow are refused.
+- **Persisted OAuth grants.** The built-in OAuth authority can keep grants in
+  Postgres through `PostgresOAuthStore`, an `OAuthStore`, and restore them after a
+  restart with `restore_oauth`. The store creates its table on first use; no
+  migration run is needed.
+- **Authorizers.** `Authorizer::inspects_proposed_events` has a default
+  implementation, so existing authorizers compile unchanged. One that returns
+  `false` receives `Value::Null` as the proposed item, which lets the transport
+  skip building it.
+
 ## Develop this repository
 
 Use the pinned toolchain in [`rust-toolchain.toml`](rust-toolchain.toml), Bun, and

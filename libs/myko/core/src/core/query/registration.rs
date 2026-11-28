@@ -278,8 +278,7 @@ impl BelongsToSourceIndex {
     /// dead and is never looked up again would otherwise sit in
     /// `self.buckets` forever (just a `Weak` + a small `Vec<Arc<str>>` key,
     /// far smaller than the leak this replaces, but still unbounded over
-    /// time). Called from `MykoServerContext::sweep_dead_cache_entries` via
-    /// [`sweep_all_belongs_to_source_indexes`].
+    /// time). Called through [`sweep_belongs_to_source_indexes`].
     fn sweep_dead_buckets(&self) {
         self.buckets.retain(|_, weak| weak.upgrade().is_some());
     }
