@@ -39,6 +39,54 @@ pub enum ProviderEmailError {
     Unavailable,
 }
 
+/// Verified resource token returned by one PKCE-bound code exchange. This
+/// intentionally has no serialization or deserialization implementation.
+pub struct ResourceCodeExchange {
+    identity: Value,
+    access_token: String,
+    audience: String,
+    expires_at: u64,
+    scopes: Vec<String>,
+}
+impl std::fmt::Debug for ResourceCodeExchange {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ResourceCodeExchange([REDACTED])")
+    }
+}
+impl ResourceCodeExchange {
+    #[must_use]
+    pub const fn identity(&self) -> &Value {
+        &self.identity
+    }
+    /// Server-side bearer material. Never include this in browser responses/logs.
+    #[must_use]
+    pub fn access_token(&self) -> &str {
+        &self.access_token
+    }
+    #[must_use]
+    pub fn audience(&self) -> &str {
+        &self.audience
+    }
+    #[must_use]
+    pub const fn expires_at(&self) -> u64 {
+        self.expires_at
+    }
+    #[must_use]
+    pub fn scopes(&self) -> &[String] {
+        &self.scopes
+    }
+}
+
+#[derive(Deserialize)]
+struct ResourceClaims {
+    iss: String,
+    sub: String,
+    exp: u64,
+    azp: Option<String>,
+    client_id: Option<String>,
+    scope: String,
+}
+
 pub struct LoginProvider {
     config: LoginConfig,
     http: reqwest::Client,
@@ -106,6 +154,97 @@ impl LoginProvider {
         redirect_uri: &str,
         nonce: &str,
     ) -> Result<Value, LoginError> {
+        self.exchange_code_response(code, verifier, redirect_uri, nonce)
+            .await
+            .map(|(_, identity)| identity)
+    }
+    /// Retain a resource access token only after verifying its signature, issuer,
+    /// audience, current expiry, user and issuing client against the login.
+    /// Audience comes from host policy. Consumers must authorize the returned
+    /// scopes and bind the verified user to their pending application session.
+    /// # Errors
+    /// Rejects an invalid login or access token and unavailable verification.
+    pub async fn exchange_code_for_resource(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+        nonce: &str,
+        audience: &str,
+    ) -> Result<ResourceCodeExchange, LoginError> {
+        if audience.is_empty()
+            || audience.trim() != audience
+            || audience.chars().any(char::is_control)
+        {
+            return Err(LoginError::InvalidRequest);
+        }
+        let (body, identity) = self
+            .exchange_code_response(code, verifier, redirect_uri, nonce)
+            .await?;
+        let rejected = LoginError::IdentityValidationRejected;
+        if !body
+            .get("token_type")
+            .and_then(Value::as_str)
+            .is_some_and(|v| v.eq_ignore_ascii_case("Bearer"))
+        {
+            return Err(rejected);
+        }
+        let access_token = body
+            .get("access_token")
+            .and_then(Value::as_str)
+            .ok_or(rejected)?;
+        let claims: ResourceClaims = serde_json::from_value(
+            self.verify_access_token(access_token, audience)
+                .await
+                .map_err(|_| rejected)?,
+        )
+        .map_err(|_| rejected)?;
+        let subject = identity
+            .get("sub")
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or(rejected)?;
+        if claims.sub != subject
+            || Some(claims.iss.as_str()) != identity.get("iss").and_then(Value::as_str)
+        {
+            return Err(rejected);
+        }
+        if (claims.azp.is_none() && claims.client_id.is_none())
+            || claims
+                .azp
+                .as_deref()
+                .is_some_and(|v| v != self.config.client_id)
+            || claims
+                .client_id
+                .as_deref()
+                .is_some_and(|v| v != self.config.client_id)
+        {
+            return Err(rejected);
+        }
+        let expires_at = claims.exp;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|_| LoginError::Unavailable)?
+            .as_secs();
+        if expires_at <= now {
+            return Err(rejected);
+        }
+        let scopes = claims.scope.split_whitespace().map(str::to_owned).collect();
+        Ok(ResourceCodeExchange {
+            identity,
+            access_token: access_token.to_owned(),
+            audience: audience.to_owned(),
+            expires_at,
+            scopes,
+        })
+    }
+    async fn exchange_code_response(
+        &self,
+        code: &str,
+        verifier: &str,
+        redirect_uri: &str,
+        nonce: &str,
+    ) -> Result<(Value, Value), LoginError> {
         if code.is_empty()
             || code.len() > 4096
             || !(43..=128).contains(&verifier.len())
@@ -147,9 +286,11 @@ impl LoginProvider {
             .get("id_token")
             .and_then(Value::as_str)
             .ok_or(LoginError::IdentityValidationRejected)?;
-        self.verify_id_token(token, Some(nonce))
+        let identity = self
+            .verify_id_token(token, Some(nonce))
             .await
-            .map_err(|_| LoginError::IdentityValidationRejected)
+            .map_err(|_| LoginError::IdentityValidationRejected)?;
+        Ok((body, identity))
     }
     /// Verify ID-token signature, issuer, audience, nonce and authorized party.
     /// # Errors

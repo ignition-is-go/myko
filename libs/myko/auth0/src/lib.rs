@@ -251,17 +251,36 @@ impl Auth0Authenticator {
     /// Rejects invalid credentials or unavailable signing-key authority.
     pub async fn verify_claims(&self, token: &str) -> Result<Value, AuthError> {
         if token.len() > MAX_TOKEN_BYTES {
+            tracing::warn!(reason = "token_too_large", "identity assertion rejected");
             return Err(AuthError::Unauthenticated);
         }
-        let header = decode_header(token).map_err(|_| AuthError::Unauthenticated)?;
+        let header = decode_header(token).map_err(|_| {
+            tracing::warn!(
+                reason = "invalid_token_header",
+                "identity assertion rejected"
+            );
+            AuthError::Unauthenticated
+        })?;
         if header.alg != Algorithm::RS256 {
+            tracing::warn!(
+                reason = "unsupported_signing_algorithm",
+                "identity assertion rejected"
+            );
             return Err(AuthError::Unauthenticated);
         }
-        let kid = header
-            .kid
-            .filter(|s| !s.is_empty())
-            .ok_or(AuthError::Unauthenticated)?;
-        let key = self.key(&kid).await?;
+        let kid = header.kid.filter(|s| !s.is_empty()).ok_or_else(|| {
+            tracing::warn!(
+                reason = "missing_signing_key_id",
+                "identity assertion rejected"
+            );
+            AuthError::Unauthenticated
+        })?;
+        let key = self.key(&kid).await.inspect_err(|_| {
+            tracing::warn!(
+                reason = "signing_key_unavailable_or_rejected",
+                "identity assertion rejected"
+            );
+        })?;
         let mut validation = Validation::new(Algorithm::RS256);
         validation.leeway = 0;
         validation.validate_nbf = true;
@@ -270,6 +289,17 @@ impl Auth0Authenticator {
         validation.set_audience(&[self.issuer.audience.as_str()]);
         let claims = decode::<Value>(token, &key, &validation)
             .map_err(|error| {
+                use jsonwebtoken::errors::ErrorKind;
+                let reason = match error.kind() {
+                    ErrorKind::ExpiredSignature => "token_expired",
+                    ErrorKind::ImmatureSignature => "token_not_yet_valid",
+                    ErrorKind::InvalidSignature => "invalid_signature",
+                    ErrorKind::InvalidIssuer => "issuer_mismatch",
+                    ErrorKind::InvalidAudience => "audience_mismatch",
+                    ErrorKind::MissingRequiredClaim(_) => "required_claim_missing",
+                    _ => "token_validation_failed",
+                };
+                tracing::warn!(reason, "identity assertion rejected");
                 if matches!(
                     error.kind(),
                     jsonwebtoken::errors::ErrorKind::ExpiredSignature
@@ -285,6 +315,10 @@ impl Auth0Authenticator {
             .and_then(Value::as_str)
             .is_none_or(|subject| subject.trim().is_empty())
         {
+            tracing::warn!(
+                reason = "subject_missing_or_invalid",
+                "identity assertion rejected"
+            );
             return Err(AuthError::Unauthenticated);
         }
         Ok(claims)
@@ -306,8 +340,15 @@ impl Auth0Authenticator {
                 .and_then(Value::as_array)
                 .is_some_and(|aud| aud.len() > 1)
                 && azp != Some(self.issuer.audience.as_str()))
-            || nonce.is_some_and(|nonce| claims.get("nonce").and_then(Value::as_str) != Some(nonce))
         {
+            tracing::warn!(
+                reason = "authorized_party_mismatch",
+                "identity assertion rejected"
+            );
+            return Err(AuthError::Unauthenticated);
+        }
+        if nonce.is_some_and(|nonce| claims.get("nonce").and_then(Value::as_str) != Some(nonce)) {
+            tracing::warn!(reason = "nonce_mismatch", "identity assertion rejected");
             return Err(AuthError::Unauthenticated);
         }
         Ok(claims)

@@ -14,6 +14,7 @@ tasks = ["check", "build", "test", "lint", "publish"]
 [dependencies]
 myko-auth.workspace = true
 futures.workspace = true
+tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1", features = ["sync"] }
