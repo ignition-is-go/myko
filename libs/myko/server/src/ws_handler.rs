@@ -13,7 +13,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::outbound_queue::{self, Pushed};
 use futures_util::{SinkExt, StreamExt};
 use hyphae::SelectExt;
 use myko::{
@@ -53,6 +52,7 @@ use crate::{
     blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING},
     delivery_diagnostics::DeliveryDiagnostics,
     inbound_events::{EventFrame, RawEvent, prepare_incoming_event},
+    outbound_queue::{self, Pushed},
     subscription_authorization::{Delivery, SubscriptionAuthorization},
     view_sampling::{ViewDelivery, ViewDeliveryControl},
 };
@@ -2484,7 +2484,10 @@ impl WsHandler {
         message_context: &MessageContext<'_>,
         apply: impl FnOnce() -> Result<R, E>,
     ) {
-        let (applied, writes) = off_async_workers(|| myko::server::PendingWrites::capture(apply));
+        // NOTE(ts): Captured writes never wait for a partition's backlog, so
+        // this runs on the async worker; moving it off with block_in_place
+        // cost a worker hand-off per frame.
+        let (applied, writes) = myko::server::PendingWrites::capture(apply);
         message_context.subscription_builds.wrote(writes);
         if let Err(error) = applied {
             tracing::error!("Failed to apply events from client {client_id}: {error}");
@@ -2895,21 +2898,6 @@ impl WsWriter for ChannelWriter {
 mod delivery_timing_tests;
 #[cfg(test)]
 mod partition_tests;
-
-/// Run `apply` where it may block without holding an async worker.
-///
-/// Applying a client's events can wait for a session partition to catch up,
-/// which takes as long as that partition's backlog. Run inline on an async
-/// worker, every client's waits pile onto the runtime until nothing is left
-/// to accept connections or answer logins. `block_in_place` hands this
-/// worker's other tasks to a replacement and keeps this client's events in
-/// order, since its read loop is waiting on this call.
-fn off_async_workers<R>(apply: impl FnOnce() -> R) -> R {
-    match tokio::runtime::Handle::try_current().map(|handle| handle.runtime_flavor()) {
-        Ok(tokio::runtime::RuntimeFlavor::MultiThread) => tokio::task::block_in_place(apply),
-        _ => apply(),
-    }
-}
 
 #[cfg(test)]
 mod tests {

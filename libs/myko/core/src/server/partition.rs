@@ -990,10 +990,16 @@ impl Partition {
             }
             // A writer that asked not to wait for the writes ahead of this
             // one: run it behind them on the worker and hand the writer a
-            // token that is released once it ran.
-            None if pending::capturing() && self.behind() => {
-                let partition = Arc::clone(self);
-                self.follow(Box::new(move || partition.sequencer.run_until(ticket)));
+            // token that is released once it ran. With none ahead it runs
+            // here. It never flushes the partition, so a write sent here by
+            // another thread after the check cannot make it wait.
+            None if pending::capturing() => {
+                if self.behind() {
+                    let partition = Arc::clone(self);
+                    self.follow(Box::new(move || partition.sequencer.run_until(ticket)));
+                } else {
+                    self.sequencer.run_until(ticket);
+                }
             }
             None => {
                 self.catch_up();
