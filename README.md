@@ -450,6 +450,10 @@ writes.
   Postgres through `PostgresOAuthStore`, an `OAuthStore`, and restore them after a
   restart with `restore_oauth`. The store creates its table on first use; no
   migration run is needed.
+- **Views.** `ViewHandler::subscribe` has a default that returns `None` and
+  materializes `build_cell`, so existing views compile unchanged. Override it to
+  serve live subscriptions from a switched shared map, typically
+  `ErasedViewMap::switched`, so subscribers with the same selection share one map.
 - **Authorizers.** `Authorizer::inspects_proposed_events` has a default
   implementation, so existing authorizers compile unchanged. One that returns
   `false` receives `Value::Null` as the proposed item, which lets the transport
