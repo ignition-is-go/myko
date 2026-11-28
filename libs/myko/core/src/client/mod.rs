@@ -156,7 +156,7 @@ pub enum QueryTraceErrorKind {
 
 #[derive(Clone)]
 struct QueryTraceEmitter {
-    trace: hyphae::cell::WeakCell<Option<QueryTrace>, CellMutable>,
+    trace: hyphae::WeakCell<Option<QueryTrace>, CellMutable>,
     query_id: Arc<str>,
     tx: Arc<str>,
     epoch: Arc<AtomicU64>,
@@ -794,7 +794,7 @@ trait ClientReportCacheEntryDyn: Any + Send + Sync {
 }
 
 struct ClientReportCacheEntry<T> {
-    weak: hyphae::cell::WeakCell<T, CellImmutable>,
+    weak: hyphae::WeakCell<T, CellImmutable>,
 }
 
 impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntry<T> {
@@ -825,10 +825,10 @@ trait ClientListWatchCacheEntryDyn: Any + Send + Sync {
 
 struct ClientListWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
-    items: hyphae::cell::WeakCell<Vec<T>, CellImmutable>,
-    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
-    error: hyphae::cell::WeakCell<Option<String>, CellImmutable>,
-    trace: Option<hyphae::cell::WeakCell<Option<QueryTrace>, CellImmutable>>,
+    items: hyphae::WeakCell<Vec<T>, CellImmutable>,
+    ready: hyphae::WeakCell<bool, CellImmutable>,
+    error: hyphae::WeakCell<Option<String>, CellImmutable>,
+    trace: Option<hyphae::WeakCell<Option<QueryTrace>, CellImmutable>>,
 }
 
 impl<T: CellValue> ClientListWatchCacheEntry<T> {
@@ -867,13 +867,13 @@ impl<T: CellValue> ClientListWatchCacheEntryDyn for ClientListWatchCacheEntry<T>
 
 struct ClientWindowWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
-    items: hyphae::cell::WeakCell<Vec<Arc<T>>, CellImmutable>,
-    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
-    total_count: hyphae::cell::WeakCell<Option<usize>, CellImmutable>,
-    window: hyphae::cell::WeakCell<Option<QueryWindow>, CellImmutable>,
-    state: hyphae::cell::WeakCell<WindowedQueryState<T>, CellImmutable>,
+    items: hyphae::WeakCell<Vec<Arc<T>>, CellImmutable>,
+    ready: hyphae::WeakCell<bool, CellImmutable>,
+    total_count: hyphae::WeakCell<Option<usize>, CellImmutable>,
+    window: hyphae::WeakCell<Option<QueryWindow>, CellImmutable>,
+    state: hyphae::WeakCell<WindowedQueryState<T>, CellImmutable>,
     cursor_window: Arc<std::sync::Mutex<Option<QueryCursorWindow>>>,
-    error: hyphae::cell::WeakCell<Option<String>, CellImmutable>,
+    error: hyphae::WeakCell<Option<String>, CellImmutable>,
 }
 
 impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
@@ -923,7 +923,7 @@ trait ClientMapWatchCacheEntryDyn: Any + Send + Sync {
 struct ClientMapWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
     map: WeakCellMap<Arc<str>, Arc<T>>,
-    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+    ready: hyphae::WeakCell<bool, CellImmutable>,
     sampling: Option<Arc<view_map::ViewSamplingControl>>,
 }
 

@@ -272,7 +272,7 @@ trait ReportCacheEntryDyn: Any + Send + Sync {
 }
 
 struct ReportCacheEntry<T> {
-    weak: hyphae::cell::WeakCell<T, CellImmutable>,
+    weak: hyphae::WeakCell<T, CellImmutable>,
 }
 
 impl<T> ReportCacheEntry<T>
@@ -347,8 +347,8 @@ impl MapCacheEntry {
     /// from the untyped source. Subsequent calls return the cached projection.
     fn get_or_create_typed<K, V, F>(&self, create: F) -> Option<CellMap<K, V, CellImmutable>>
     where
-        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
-        V: hyphae::traits::CellValue + 'static,
+        K: std::hash::Hash + Eq + hyphae::CellValue + 'static,
+        V: hyphae::CellValue + 'static,
         F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     {
         let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
@@ -3798,8 +3798,8 @@ impl MykoServerContext {
         project: impl Fn(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     ) -> CellMap<K, V, CellImmutable>
     where
-        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
-        V: hyphae::traits::CellValue + 'static,
+        K: std::hash::Hash + Eq + hyphae::CellValue + 'static,
+        V: hyphae::CellValue + 'static,
     {
         if let Some(entry) = cache.get(key)
             && let Some(typed) = entry.value().get_or_create_typed(&project)
@@ -5024,7 +5024,7 @@ mod tests {
         struct RestoreThreshold;
         impl Drop for RestoreThreshold {
             fn drop(&mut self) {
-                hyphae::scheduler::set_wave_threshold_for_test(256);
+                hyphae::scheduler::set_wave_threshold(256);
             }
         }
         let _serial = scheduler_test_serial();
@@ -5046,7 +5046,7 @@ mod tests {
         armed.store(true, Ordering::Relaxed);
         // Every wave now runs on hyphae's pool while this write holds the
         // window and waits for it.
-        hyphae::scheduler::set_wave_threshold_for_test(1);
+        hyphae::scheduler::set_wave_threshold(1);
         let _restore = RestoreThreshold;
 
         let (done_tx, done_rx) = std::sync::mpsc::channel();
