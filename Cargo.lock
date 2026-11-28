@@ -3760,7 +3760,7 @@ dependencies = [
 [[package]]
 name = "hyphae"
 version = "3.1.12"
-source = "git+https://github.com/ignition-is-go/hyphae.git?rev=e15bd56bd421dbadd2c234fbab8972dd39e2f87c#e15bd56bd421dbadd2c234fbab8972dd39e2f87c"
+source = "git+https://github.com/ignition-is-go/hyphae.git?rev=52a498386ea5b84fcba667f532cf7b9cd248ff79#52a498386ea5b84fcba667f532cf7b9cd248ff79"
 dependencies = [
  "anyhow",
  "arc-swap",
