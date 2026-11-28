@@ -182,13 +182,16 @@ impl SocketTransport for AutoReconnectSocket {
     }
 
     fn send(&self, frame: WsFrame) -> Result<(), String> {
-        let tx = self
-            .control
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .outgoing
-            .tx
-            .clone();
+        let tx = {
+            let control = self
+                .control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if control.addr.is_none() {
+                return Err("socket has no configured endpoint".into());
+            }
+            control.outgoing.tx.clone()
+        };
         tx.send(frame).map_err(|error| error.to_string())
     }
 
@@ -1017,6 +1020,27 @@ mod tests {
         assert!(wait_until_connected(&reconnecting, &valid_address));
         reconnecting.close();
         drop(valid_server);
+        Ok(())
+    }
+
+    #[test]
+    fn idle_send_rejects_frames_instead_of_filling_an_unconsumed_queue() {
+        let socket = AutoReconnectSocket::new();
+        for _ in 0..OUTGOING_QUEUE_CAPACITY + 1 {
+            assert!(socket.send(WsFrame::Text("cancel".into())).is_err());
+        }
+        assert!(socket.write_tx().is_empty());
+    }
+
+    #[test]
+    fn close_rejects_sends_without_a_configured_endpoint() -> std::io::Result<()> {
+        let (address, _messages, server) = websocket_receiver()?;
+        let socket = AutoReconnectSocket::new();
+        socket.set_addr(Some(address.clone()));
+        assert!(wait_until_connected(&socket, &address));
+        socket.close();
+        assert!(socket.send(WsFrame::Text("cancel".into())).is_err());
+        drop(server);
         Ok(())
     }
 
