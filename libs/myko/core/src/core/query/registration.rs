@@ -70,6 +70,11 @@ type BucketAction = (AnyItemMap, BucketDiff);
 #[derive(Default)]
 struct BelongsToMutationState {
     members: HashMap<CompoundKey, HashMap<Arc<str>, AnyItemArc>>,
+    /// Rows a bucket was seeded with ahead of `members`, by bucket key: the
+    /// row each id holds in the store (`None` for absent), which a store diff
+    /// the scheduler still queues will bring `members` to. See
+    /// [`BelongsToSourceIndex::bucket_for`].
+    ahead: HashMap<CompoundKey, HashMap<Arc<str>, Option<AnyItemArc>>>,
     pending: VecDeque<Vec<BucketAction>>,
     dispatching: bool,
 }
@@ -189,6 +194,7 @@ pub fn query_runtime_metrics_by_id(limit: usize) -> Vec<QueryRuntimePerIdMetrics
 /// ever seen, which never shrinks even after every relation is unassigned.
 struct BelongsToSourceIndex {
     store: Arc<crate::store::EntityStore>,
+    extract_fk: KeyExtractor,
     buckets: DashMap<CompoundKey, WeakAnyItemMap>,
     mutation_gate: Mutex<BelongsToMutationState>,
     driver: Arc<AnyItemMap>,
@@ -200,6 +206,7 @@ impl BelongsToSourceIndex {
         let driver = Arc::new(AnyItemMap::new());
         let index = Arc::new(Self {
             store,
+            extract_fk,
             buckets: DashMap::new(),
             mutation_gate: Mutex::new(BelongsToMutationState::default()),
             driver: driver.clone(),
@@ -234,8 +241,15 @@ impl BelongsToSourceIndex {
     /// The bucket of `key`, shared by every reader of this index. The index
     /// is its registry's own, born in that registry's domain, so its readers
     /// and the store's propagation that writes its buckets share one domain.
+    ///
+    /// `members` follows the store through diffs the scheduler may still
+    /// hold, so a write that has returned can be missing from it. A new
+    /// bucket built then is seeded from the store, so it holds every write
+    /// that has returned, and the queued diffs it already holds are skipped
+    /// when they arrive.
     fn bucket_for(self: &Arc<Self>, key: CompoundKey) -> AnyItemMap {
-        let mutation = self
+        let idle = domain_is_idle(&self.idle);
+        let mut mutation = self
             .mutation_gate
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -244,10 +258,59 @@ impl BelongsToSourceIndex {
         }
         let map = AnyItemMap::new();
         self.retain_for_bucket(&map);
-        Self::backfill(&map, mutation.members.get(&key));
+        let ahead = if idle {
+            HashMap::new()
+        } else {
+            self.rows_ahead(&key, mutation.members.get(&key))
+        };
+        if ahead.is_empty() {
+            mutation.ahead.remove(&key);
+            Self::backfill(&map, mutation.members.get(&key));
+        } else {
+            let mut rows = mutation.members.get(&key).cloned().unwrap_or_default();
+            for (id, row) in &ahead {
+                match row {
+                    Some(item) => rows.insert(id.clone(), item.clone()),
+                    None => rows.remove(id),
+                };
+            }
+            Self::backfill(&map, Some(&rows));
+            mutation.ahead.insert(key.clone(), ahead);
+        }
         self.buckets.insert(key, map.downgrade());
         drop(mutation);
         map
+    }
+
+    /// Each id whose row under `key` differs between the store and
+    /// `members`, with its row in the store (`None` for absent). The caller
+    /// holds the mutation gate, so `members` cannot move past the store
+    /// while this reads it.
+    fn rows_ahead(
+        &self,
+        key: &CompoundKey,
+        members: Option<&HashMap<Arc<str>, AnyItemArc>>,
+    ) -> HashMap<Arc<str>, Option<AnyItemArc>> {
+        let mut stored = HashMap::new();
+        self.store.for_each(|id, item| {
+            if self.extract_fk.keys(item.as_any()).contains(key) {
+                stored.insert(id.clone(), item.clone());
+            }
+        });
+        let mut ahead = HashMap::new();
+        if let Some(members) = members {
+            for (id, item) in members {
+                if !stored.get(id).is_some_and(|row| same_row(row, item)) {
+                    ahead.insert(id.clone(), stored.get(id).cloned());
+                }
+            }
+        }
+        for (id, item) in stored {
+            if !members.is_some_and(|members| members.contains_key(&id)) {
+                ahead.insert(id, Some(item));
+            }
+        }
+        ahead
     }
 
     /// Keep the routing subscription alive exactly as long as a bucket is
@@ -289,7 +352,9 @@ impl BelongsToSourceIndex {
                 .mutation_gate
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let actions = self.prepare_diff_locked(diff, extract_fk, &mut mutation.members);
+            let state = &mut *mutation;
+            let actions =
+                self.prepare_diff_locked(diff, extract_fk, &mut state.members, &mut state.ahead);
             mutation.pending.push_back(actions);
             if mutation.dispatching {
                 return;
@@ -328,10 +393,12 @@ impl BelongsToSourceIndex {
         diff: &BucketDiff,
         extract_fk: KeyExtractor,
         members: &mut HashMap<CompoundKey, HashMap<Arc<str>, AnyItemArc>>,
+        ahead: &mut HashMap<CompoundKey, HashMap<Arc<str>, Option<AnyItemArc>>>,
     ) -> Vec<BucketAction> {
         match diff {
             MapDiff::Initial { entries } => {
                 members.clear();
+                ahead.clear();
                 for (id, item) in entries {
                     for fk in extract_fk.keys(item.as_any()) {
                         members
@@ -364,19 +431,24 @@ impl BelongsToSourceIndex {
                 let mut grouped = HashMap::new();
                 for change in changes {
                     if matches!(change, MapDiff::Initial { .. } | MapDiff::Batch { .. }) {
-                        actions.extend(self.apply_grouped(std::mem::take(&mut grouped), members));
-                        actions.extend(self.prepare_diff_locked(change, extract_fk, members));
+                        actions.extend(self.apply_grouped(
+                            std::mem::take(&mut grouped),
+                            members,
+                            ahead,
+                        ));
+                        actions
+                            .extend(self.prepare_diff_locked(change, extract_fk, members, ahead));
                     } else {
                         Self::group_change(&mut grouped, change, extract_fk);
                     }
                 }
-                actions.extend(self.apply_grouped(grouped, members));
+                actions.extend(self.apply_grouped(grouped, members, ahead));
                 actions
             }
             _ => {
                 let mut grouped = HashMap::new();
                 Self::group_change(&mut grouped, diff, extract_fk);
-                self.apply_grouped(grouped, members)
+                self.apply_grouped(grouped, members, ahead)
             }
         }
     }
@@ -385,6 +457,7 @@ impl BelongsToSourceIndex {
         &self,
         grouped: HashMap<CompoundKey, BucketDiffs>,
         members: &mut HashMap<CompoundKey, HashMap<Arc<str>, AnyItemArc>>,
+        ahead: &mut HashMap<CompoundKey, HashMap<Arc<str>, Option<AnyItemArc>>>,
     ) -> Vec<BucketAction> {
         grouped
             .into_iter()
@@ -407,7 +480,55 @@ impl BelongsToSourceIndex {
                 if rows.is_empty() {
                     members.remove(&fk);
                 }
+                let changes = match ahead.get_mut(&fk) {
+                    Some(rows_ahead) => {
+                        let changes = Self::skip_held(changes, rows_ahead);
+                        if rows_ahead.is_empty() {
+                            ahead.remove(&fk);
+                        }
+                        changes
+                    }
+                    None => changes,
+                };
+                if changes.is_empty() {
+                    return Vec::new();
+                }
                 self.route_action(&fk, MapDiff::Batch { changes })
+            })
+            .collect()
+    }
+
+    /// Drop the changes to rows a bucket was seeded ahead with: every change
+    /// up to and including the one that reaches the row it holds.
+    fn skip_held(
+        changes: BucketDiffs,
+        ahead: &mut HashMap<Arc<str>, Option<AnyItemArc>>,
+    ) -> BucketDiffs {
+        changes
+            .into_iter()
+            .filter(|change| {
+                let (id, row) = match change {
+                    MapDiff::Insert { key, value }
+                    | MapDiff::Update {
+                        key,
+                        new_value: value,
+                        ..
+                    } => (key, Some(value)),
+                    MapDiff::Remove { key, .. } => (key, None),
+                    MapDiff::Initial { .. } | MapDiff::Batch { .. } => return true,
+                };
+                let Some(held) = ahead.get(id) else {
+                    return true;
+                };
+                let reached = match (held, row) {
+                    (Some(held), Some(row)) => same_row(held, row),
+                    (None, None) => true,
+                    _ => false,
+                };
+                if reached {
+                    ahead.remove(id);
+                }
+                false
             })
             .collect()
     }
@@ -538,6 +659,12 @@ fn belongs_to_source_index_for(
         format!("belongs_to:{local_type}:{}", field_names.join("+")),
         |owner| BelongsToSourceIndex::new(owner.get_or_create(local_type), extract_fk),
     )
+}
+
+/// Whether two handles are the same stored row. A store diff carries the
+/// `Arc` the store holds, so identity finds the diff that wrote a row.
+fn same_row(a: &AnyItemArc, b: &AnyItemArc) -> bool {
+    std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
 }
 
 thread_local! {
