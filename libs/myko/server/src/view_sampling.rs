@@ -257,6 +257,12 @@ mod tests {
         rate
     }
 
+    /// A frame instant of `fps`'s process-wide grid. Other tests start the
+    /// grid, so a bare `Instant::now()` falls anywhere inside a frame.
+    fn on_grid(fps: f64) -> Instant {
+        next_frame(Instant::now(), rate(fps))
+    }
+
     fn sampled(now: Instant) -> ViewDelivery {
         let mut delivery = ViewDelivery::default();
         delivery.control(
@@ -277,7 +283,7 @@ mod tests {
 
     #[test]
     fn coalesces_latest_values_and_deletes_into_one_contiguous_payload() {
-        let now = Instant::now();
+        let now = on_grid(30.0);
         let mut delivery = sampled(now);
         assert!(
             delivery
@@ -329,7 +335,7 @@ mod tests {
 
     #[test]
     fn rate_change_flushes_pending_without_replacing_subscription() {
-        let now = Instant::now();
+        let now = on_grid(60.0);
         let mut delivery = sampled(now);
         delivery.push(response(1, &[("a", 1)], &[]), now);
         delivery.control(
@@ -387,7 +393,7 @@ mod tests {
 
     #[test]
     fn retains_latest_window_order_when_later_update_only_changes_a_value() {
-        let now = Instant::now();
+        let now = on_grid(30.0);
         let mut delivery = sampled(now);
         let mut ordered = response(1, &[("a", 1)], &[]);
         ordered.window_order_ids = Some(vec!["a".into(), "b".into()]);
@@ -403,7 +409,7 @@ mod tests {
 
     #[test]
     fn late_sends_do_not_stretch_the_sample_interval() {
-        let start = Instant::now();
+        let start = on_grid(60.0);
         let mut delivery = ViewDelivery::default();
         delivery.control(
             ViewDeliveryControl::Subscribe {
@@ -467,7 +473,7 @@ mod tests {
 
     #[test]
     fn a_late_connection_cuts_its_frame_at_the_grid_instant() {
-        let start = Instant::now();
+        let start = on_grid(60.0);
         let subscribe = |delivery: &mut ViewDelivery| {
             delivery.control(
                 ViewDeliveryControl::Subscribe {
