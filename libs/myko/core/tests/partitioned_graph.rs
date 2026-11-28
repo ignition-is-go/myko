@@ -443,3 +443,48 @@ fn root_reads_the_shared_edges_a_replayed_log_holds() {
         "root's graph read holds the shared edge the log replayed"
     );
 }
+
+#[test]
+fn root_reads_the_shared_edges_a_loaded_snapshot_holds() {
+    use myko::wire::{MEvent, MEventType};
+    let _serial = SERIAL.lock();
+    let root = root(schema());
+    let mut loading = root.load_log();
+    for event in [
+        MEvent::from_item(
+            &PgStuck {
+                id: "stuck".into(),
+                board: "a".into(),
+                label_id: PgLabelId("l".into()),
+                sticker_id: sticker::PgStickerId("s".into()),
+            },
+            MEventType::SET,
+            "log",
+        ),
+        MEvent::from_item(&PgBoard { id: "a".into() }, MEventType::SET, "log"),
+        MEvent::from_item(&PgLabel { id: "l".into() }, MEventType::SET, "log"),
+        MEvent::from_item(
+            &PgSticker {
+                id: "s".into(),
+                board: "a".into(),
+            },
+            MEventType::SET,
+            "log",
+        ),
+    ] {
+        loading.push(&event);
+    }
+    loading.finish().expect("load");
+    root.settle();
+    let rows = root.query_map(
+        stuck_on::GetPgStucksOnLabel {
+            label_id: PgLabelId("l".into()),
+        },
+        root.new_server_transaction(),
+    );
+    assert_eq!(
+        rows.snapshot().len(),
+        1,
+        "root's graph read holds the shared edge the snapshot loaded"
+    );
+}

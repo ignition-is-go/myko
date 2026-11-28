@@ -128,6 +128,18 @@ impl LogLoad {
         for (entity_type, entries) in std::mem::take(&mut self.batches) {
             self.store(&entity_type, entries);
         }
+        // NOTE(ts): Shared rows land in their stores without a write, so the
+        // root graph projection, built with the context, has not seen them.
+        // Placed rows project themselves as they land.
+        if let Some(graph) = self.ctx.graph_index() {
+            let _authority = graph.lock_authority();
+            if let Err(error) = graph.rebuild() {
+                return Err(super::persister::PersistError {
+                    entity_type: Arc::from("graph"),
+                    message: format!("graph projection rebuild failed: {error}"),
+                });
+            }
+        }
         let placed = std::mem::take(&mut self.placed);
         if !placed.is_empty() {
             self.summary.loaded = self.summary.loaded.saturating_add(placed.len());
