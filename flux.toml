@@ -297,3 +297,9 @@ root = ["sh", "scripts/test-postgres-history.sh", "--test", "transaction_undo"]
 
 [tasks.lint-transaction-undo]
 root = ["cargo", "clippy", "--jobs", "4", "--target-dir", "target/agent", "-p", "myko-server", "--test", "transaction_undo", "--no-deps", "--", "-D", "warnings"]
+
+[tasks.test-auth0-resource]
+root = ["cargo", "test", "-p", "myko-auth0", "--all-features", "--target-dir", "target/agent", "--", "--test-threads=1"]
+
+[tasks.check-auth0-resource]
+root = ["cargo", "clippy", "-p", "myko-auth0", "--all-features", "--all-targets", "--target-dir", "target/agent", "--", "-D", "warnings"]

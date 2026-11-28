@@ -194,6 +194,13 @@ async fn tokens_for_an_api_can_have_multiple_audiences() -> Result {
 }
 
 #[test]
+#[cfg_attr(
+    not(feature = "client-credentials"),
+    allow(
+        clippy::unnecessary_wraps,
+        reason = "the feature-enabled branch uses fallible construction"
+    )
+)]
 fn invalid_issuer_configuration_and_debug_secrets_are_rejected() -> Result {
     for issuer in [
         "http://tenant.example/",
