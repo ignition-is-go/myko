@@ -6,7 +6,6 @@ use futures::{
     future::{AbortHandle, Abortable, Either, select},
 };
 use gloo_timers::future::TimeoutFuture;
-
 use hyphae::{Cell, CellImmutable, CellMutable, Mutable};
 use send_wrapper::SendWrapper;
 use tracing::{error, info, warn};
@@ -147,10 +146,8 @@ impl WasmSocket {
                 pending_auth: None,
             }))),
             callbacks: SendWrapper::new(WasmCallbacks {
-                intended_status: Cell::new(SocketConnectionStatus::Idle)
-                    .with_name("autosocket.wasm.intended_status"),
-                actual_status: Cell::new(SocketConnectionStatus::Idle)
-                    .with_name("autosocket.wasm.actual_status"),
+                intended_status: Cell::new(SocketConnectionStatus::Idle),
+                actual_status: Cell::new(SocketConnectionStatus::Idle),
             }),
             incoming_tx,
             incoming_rx,
@@ -578,11 +575,12 @@ fn connect_authenticated(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
+
+    use super::*;
 
     #[test]
     fn callback_dispatch_does_not_also_enqueue() {

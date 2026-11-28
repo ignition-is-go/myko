@@ -95,6 +95,35 @@ pub struct MutationRewriterRegistration {
 }
 inventory::collect!(MutationRewriterRegistration);
 
+fn touches(kinds: &[&str], upserts: &[Arc<dyn AnyItem>], deletes: &[Arc<dyn AnyItem>]) -> bool {
+    upserts
+        .iter()
+        .chain(deletes)
+        .any(|item| kinds.contains(&item.entity_type()))
+}
+
+/// Whether any registered rewriter would see this mutation. When none would,
+/// the caller skips building the overlay and its request context.
+pub fn has_rewriter(upserts: &[Arc<dyn AnyItem>], deletes: &[Arc<dyn AnyItem>]) -> bool {
+    inventory::iter::<MutationRewriterRegistration>
+        .into_iter()
+        .any(|rewriter| touches(rewriter.entity_types, upserts, deletes))
+}
+
+/// Whether [`ProposedState::validate`] would run any validator.
+pub fn has_validator(
+    upserts: &[Arc<dyn AnyItem>],
+    deletes: &[Arc<dyn AnyItem>],
+    reversal: bool,
+) -> bool {
+    inventory::iter::<MutationValidatorRegistration>
+        .into_iter()
+        .any(|validator| {
+            (reversal && validator.validate_reversal_deletes && !deletes.is_empty())
+                || touches(validator.entity_types, upserts, deletes)
+        })
+}
+
 impl ProposedState<'_> {
     pub(crate) fn rewrite(&self) -> Result<Option<MutationReplacement>, String> {
         for rewriter in inventory::iter::<MutationRewriterRegistration> {

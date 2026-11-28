@@ -452,10 +452,86 @@ expiry and current local permission checks apply to already admitted OAuth
 sessions. Revoking a grant does not log the user out of the browser. Grants do
 not introduce offline access or additional entity permissions.
 
-Pending requests, codes, clients and issued tokens are bounded, process-local
-state. Restarting the service requires clients to sign in again. Multiple
-instances need routing affinity; durable shared OAuth state is not provided.
-Only SHA-256 digests of pending requests/codes/tokens are used as lookup keys.
+Pending requests, codes, clients and issued tokens are bounded state held in
+memory. Only SHA-256 digests of pending requests/codes/tokens are used as lookup
+keys. Multiple instances need routing affinity: each instance reads its own
+memory, so a grant issued by one is unknown to another until that one restarts.
+
+#### Grants across restarts
+
+Without a store, a restart requires every client to register and sign in again.
+With an `OAuthStore` attached, dynamically registered clients and issued grants
+survive. No key or secret is configured: the store holds records, not signed
+tokens. Pending requests and one-minute codes are never stored.
+
+`myko-server` attaches a store by itself when the provider has an OAuth server
+and Postgres is configured. `MykoServer::run` restores after the `after_init`
+hook and before it accepts connections. Other hosts call
+`MykoAuthProvider::restore_oauth(store)` once at startup with their own
+`OAuthStore`.
+
+```rust,ignore
+pub trait OAuthStore: Send + Sync + 'static {
+    fn load(&self) -> BoxFuture<'_, Result<Vec<OAuthRecord>, OAuthStoreError>>;
+    fn record(&self, change: OAuthChange);
+}
+```
+
+The authority still reads from memory. It calls `load` once and then `record`
+for each change, while holding its state lock. `record` must therefore queue
+the change and return, and the store must apply changes in call order.
+
+| Record | Key | Holds |
+| --- | --- | --- |
+| `Client` | client ID | name and redirect URIs of a dynamically registered client |
+| `Grant` | grant family | client, scopes, and the `AuthenticatedIdentity` that approved |
+| `Access` | token digest | grant family and expiry |
+| `Refresh` | token digest | grant family and whether the token was used |
+
+A used refresh token stays stored until its grant ends, so replaying it after a
+restart still revokes the family. Revocation, replay, and the end of the
+approving login each delete the grant and all of its tokens.
+
+A stored grant stays bound to the login that approved it. At startup the
+provider calls `Authenticator::restore_identity` with each grant's identity:
+
+```rust,ignore
+fn restore_identity<'a>(
+    &'a self,
+    identity: &'a AuthenticatedIdentity,
+) -> BoxFuture<'a, Result<(), AuthError>>;
+```
+
+- `Ok` restores the grant. Its sessions use the same authenticator as before,
+  so `validate_identity` keeps deciding whether the login is still alive.
+- `Unavailable` leaves the grant stored but unusable until the next start.
+- Any other error deletes the grant. An expired identity is deleted without
+  asking.
+
+The default implementation returns `validate_identity(identity)`. That restores
+grants for an authenticator whose check needs no state from the earlier process.
+An authenticator that tracks sessions in memory rejects them, which keeps the
+previous sign-in-again behavior. An authenticator with durable sessions
+overrides `restore_identity` to load the session behind the identity, and
+returns an error when that session was logged out or has expired.
+
+The Postgres store keeps one table beside the events table, named
+`{events table}_oauth_records` and created when missing:
+
+| Column | Type | Meaning |
+| --- | --- | --- |
+| `issuer` | `TEXT` | the authority's issuer, so authorities can share a database |
+| `kind` | `TEXT` | `client`, `grant`, `access` or `refresh` |
+| `id` | `TEXT` | the record key from the table above |
+| `family` | `TEXT`, nullable | grant family of a grant or token |
+| `record` | `JSONB` | the serialized record |
+
+The primary key is `(issuer, kind, id)`. One writer thread applies changes in
+order and retries a failed write until it succeeds. Writes are asynchronous: a
+clean shutdown flushes the queue, but a crash can lose the last changes, in
+which case a just-issued token is forgotten or a just-revoked grant returns
+until its login ends. Anyone who can write to the table can mint grants, so it
+needs the same protection as the events table.
 
 ### Authenticated application users in handlers
 

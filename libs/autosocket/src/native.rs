@@ -223,10 +223,8 @@ impl AutoReconnectSocket {
         };
         let (desired_tx, desired_rx) = watch::channel(initial);
         let (incoming_tx, incoming_rx) = flume::unbounded();
-        let intended_status =
-            Cell::new(SocketConnectionStatus::Idle).with_name("autosocket.intended_status");
-        let actual_status =
-            Cell::new(SocketConnectionStatus::Idle).with_name("autosocket.actual_status");
+        let intended_status = Cell::new(SocketConnectionStatus::Idle);
+        let actual_status = Cell::new(SocketConnectionStatus::Idle);
         let control = Arc::new(Mutex::new(ConnectionControl {
             generation: 0,
             addr: None,

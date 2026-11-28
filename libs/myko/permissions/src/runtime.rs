@@ -633,6 +633,9 @@ impl ScopePolicy for Permissions {
                 .decision(identity, scope, request)
             })
     }
+    fn inspects_proposed_events(&self) -> bool {
+        false
+    }
     fn revision(&self) -> u64 {
         self.0
             .storage
@@ -668,6 +671,10 @@ impl Authorizer for AdministrationAuthorizer {
     fn revision(&self) -> u64 {
         // Both policies can invalidate active subscriptions or admission snapshots.
         ScopePolicy::revision(&self.permissions).wrapping_add(self.application.revision())
+    }
+    fn inspects_proposed_events(&self) -> bool {
+        // Permission administration decisions never read the proposed item.
+        self.application.inspects_proposed_events()
     }
 }
 

@@ -83,6 +83,15 @@ impl Authorizer for Policy {
             {
                 Ok(())
             }
+            AuthorizationRequest::Execute {
+                kind: myko_auth::OperationKind::Report,
+                operation,
+                ..
+            } if operation != "CountAllDemoTasks"
+                || self.0.load(Ordering::Acquire).is_multiple_of(2) =>
+            {
+                Ok(())
+            }
             AuthorizationRequest::ClientEvent {
                 entity_type: "DemoTask",
                 change: myko_auth::EventChange::Set,
@@ -531,6 +540,46 @@ async fn live_permission_edits_stop_denied_data_but_keep_socket_and_other_subscr
         );
         assert_eq!(f.authenticated.load(Ordering::Acquire), 1);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn live_permission_edits_stop_pre_encoded_report_frames() -> TestResult {
+    // JSON report responses go out as pre-encoded frames; a live permission
+    // edit must still stop them for the denied subscription.
+    let f = fixture_mode(GatewayAccess::Full, true).await?;
+    let mut socket = connect(&f).await?;
+    send(
+        &mut socket,
+        &MykoMessage::Report(myko::wire::WrappedReport {
+            report: serde_json::json!({"tx": "count"}),
+            report_id: "CountAllDemoTasks".into(),
+        }),
+        false,
+    )
+    .await?;
+    assert!(
+        matches!(next_message(&mut socket).await?, MykoMessage::ReportResponse(response) if response.tx == "count")
+    );
+    f.policy.0.store(1, Ordering::Release);
+    assert!(
+        matches!(next_message(&mut socket).await?, MykoMessage::ReportError(error) if error.tx == "count")
+    );
+    // A change that moves the count reaches no denied subscriber.
+    f.server.ctx().apply_event(event("service"))?;
+    send(
+        &mut socket,
+        &MykoMessage::Ping(PingData {
+            id: "after".into(),
+            timestamp: 0,
+        }),
+        false,
+    )
+    .await?;
+    assert!(
+        matches!(next_message(&mut socket).await?, MykoMessage::Ping(ping) if ping.id == "after"),
+        "no report frame for the denied subscription"
+    );
     Ok(())
 }
 

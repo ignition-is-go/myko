@@ -65,6 +65,18 @@ pub trait QueryHandler: QueryItemType + Sized {
         unreachable!("query handlers execute on the server")
     }
 
+    /// The index that bounds this query's result, for a one-shot read.
+    ///
+    /// `None` makes [`MykoServerContext::query_snapshot`] test every row of
+    /// the store. A route must select a superset of the rows `test_entity`
+    /// accepts, because the snapshot only tests the rows the route selects.
+    ///
+    /// [`MykoServerContext::query_snapshot`]: crate::server::MykoServerContext::query_snapshot
+    #[must_use]
+    fn snapshot_route(&self) -> Option<super::QueryRoute> {
+        None
+    }
+
     /// Optional set-wise reactive builder for complex many-to-many joins.
     ///
     /// When implemented, this is preferred by the runtime over per-item

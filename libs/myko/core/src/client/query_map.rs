@@ -729,11 +729,9 @@ impl MykoClient {
         let query = QueryRequest::with_tx(supplied.query, super::next_subscription_tx());
         let tx: Arc<str> = query.tx.clone();
 
-        let map: CellMap<Arc<str>, Arc<Q::Item>> =
-            CellMap::new().with_name(format!("query_map:{query_id}"));
+        let map: CellMap<Arc<str>, Arc<Q::Item>> = CellMap::new();
         let map_weak = map.downgrade();
-        let ready =
-            Cell::<bool, CellMutable>::new(false).with_name(format!("query_map_ready:{query_id}"));
+        let ready = Cell::<bool, CellMutable>::new(false);
         let ready_weak = ready.downgrade();
         let ready_read = ready.clone().lock();
 
@@ -918,19 +916,17 @@ impl MykoClient {
 
         let query = QueryRequest::with_tx(supplied.query, super::next_subscription_tx());
         let tx = query.tx.clone();
-        let items = Cell::new(Vec::new()).with_name(format!("query_window:{query_id}"));
+        let items = Cell::new(Vec::new());
         let items_weak = items.downgrade();
-        let ready = Cell::new(false).with_name(format!("query_window_ready:{query_id}"));
-        let total_count = Cell::new(None).with_name(format!("query_window_total_count:{query_id}"));
-        let window = Cell::new(Some(initial_window.clone()))
-            .with_name(format!("query_window_state:{query_id}"));
+        let ready = Cell::new(false);
+        let total_count = Cell::new(None);
+        let window = Cell::new(Some(initial_window.clone()));
         let page_state = Cell::new(super::WindowedQueryState::new(
             Vec::new(),
             false,
             None,
             Some(initial_window.clone()),
-        ))
-        .with_name(format!("query_window_page_state:{query_id}"));
+        ));
         let cursor_window = Arc::new(Mutex::new(None));
         let early_watch = WindowedQueryWatch {
             items: items.clone().lock(),

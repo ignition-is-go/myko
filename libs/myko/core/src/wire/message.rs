@@ -9,6 +9,7 @@ use super::{
 };
 
 pub const WS_EVENT_COMMAND: &str = "ws:m:command";
+pub const WS_EVENT_REPORT_RESPONSE: &str = "ws:m:report-response";
 
 /// Cancel subscription payload - just the transaction ID
 #[derive(Debug, Clone, Serialize, Deserialize, crate::TS)]
@@ -62,6 +63,7 @@ pub enum MykoMessage {
     ViewSampleRate(ViewSampleRateUpdate),
     #[serde(rename = "ws:m:report")]
     Report(WrappedReport),
+    // Keep this literal aligned with `WS_EVENT_REPORT_RESPONSE`.
     #[serde(rename = "ws:m:report-response")]
     ReportResponse(ReportResponse),
     #[serde(rename = "ws:m:report-cancel")]

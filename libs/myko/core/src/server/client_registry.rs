@@ -14,7 +14,7 @@ use hyphae::{MapEntriesExt, MapQuery};
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use super::WsWriter;
+use super::{CommandValueKey, WsWriter};
 use crate::{
     command::{CommandId, CommandRequest},
     wire::{MykoMessage, encode_command_message},
@@ -69,7 +69,7 @@ impl PartialEq for RegisteredWriter {
 impl ClientRegistry {
     fn new() -> Self {
         Self {
-            writers: CellMap::new().with_name("client_registry"),
+            writers: CellMap::new(),
         }
     }
 
@@ -129,7 +129,42 @@ impl ClientRegistry {
             })
     }
 
+    /// Queue an event command for a client.
+    ///
+    /// Returns `false` when the client is not connected, the command cannot
+    /// be encoded, or the client's queue is already closed; the command was
+    /// not queued and will not be delivered.
     pub fn send_command_request_to<C>(&self, client_id: &str, request: &CommandRequest<C>) -> bool
+    where
+        C: CommandId + Serialize,
+    {
+        self.send_command(client_id, None, request)
+    }
+
+    /// Send a *value* command: while it is still queued for the client, a
+    /// later value command with the same `key` replaces it in place.
+    ///
+    /// Use this only when the newest command for `key` makes every older one
+    /// redundant. Commands whose every instance must arrive (events) go
+    /// through [`Self::send_command_request_to`], which never coalesces.
+    pub fn send_value_command_request_to<C>(
+        &self,
+        client_id: &str,
+        key: CommandValueKey,
+        request: &CommandRequest<C>,
+    ) -> bool
+    where
+        C: CommandId + Serialize,
+    {
+        self.send_command(client_id, Some(key), request)
+    }
+
+    fn send_command<C>(
+        &self,
+        client_id: &str,
+        key: Option<CommandValueKey>,
+        request: &CommandRequest<C>,
+    ) -> bool
     where
         C: CommandId + Serialize,
     {
@@ -146,8 +181,13 @@ impl ClientRegistry {
 
         match encode_command_message(protocol, request) {
             Ok(payload) => {
-                writer.send_serialized_command(request.tx.clone(), command_id, payload);
-                true
+                let tx = request.tx.clone();
+                match key {
+                    Some(key) => {
+                        writer.try_send_serialized_value_command(key, tx, command_id, payload)
+                    }
+                    None => writer.try_send_serialized_command(tx, command_id, payload),
+                }
             }
             Err(err) => {
                 tracing::error!(
@@ -203,11 +243,10 @@ pub fn try_client_registry() -> Option<Arc<ClientRegistry>> {
 
 #[cfg(test)]
 mod liveness_tests {
-    use super::*;
     use hyphae::{Gettable, Signal, Watchable};
 
-    use crate::server::client_session::WsWriter;
-    use crate::wire::message::MykoMessage;
+    use super::*;
+    use crate::{server::client_session::WsWriter, wire::message::MykoMessage};
 
     struct NullWriter;
 
@@ -479,8 +518,9 @@ mod liveness_tests {
 
     #[test]
     fn typed_dispatch_allows_protocol_and_serializer_reentry_without_retry() {
-        use serde::ser::SerializeMap;
         use std::sync::atomic::{AtomicUsize, Ordering};
+
+        use serde::ser::SerializeMap;
 
         struct Writer {
             registry: Arc<ClientRegistry>,

@@ -18,6 +18,9 @@ use crate::core::item::AnyItem;
 /// at startup by walking the `SearchableRegistration` inventory.
 pub struct SearchIndex {
     registry: typed::SearchRegistry,
+    /// Set on the index of one partition: the root index, and which types
+    /// are partitioned. A shared type is indexed and searched in root.
+    shared: Option<(Arc<Self>, crate::store::IsPartitioned)>,
 }
 
 impl SearchIndex {
@@ -27,7 +30,30 @@ impl SearchIndex {
             "SearchIndex: initialized with {} typed entity indexes",
             registry.len()
         );
-        Self { registry }
+        Self {
+            registry,
+            shared: None,
+        }
+    }
+
+    /// The index of one partition: partitioned types are indexed here, every
+    /// other type in `root`.
+    pub(crate) fn for_partition(
+        root: Arc<Self>,
+        is_partitioned: crate::store::IsPartitioned,
+    ) -> Self {
+        Self {
+            registry: build_typed_registry(),
+            shared: Some((root, is_partitioned)),
+        }
+    }
+
+    /// The index that holds `entity_type`.
+    fn owner(&self, entity_type: &str) -> &Self {
+        match &self.shared {
+            Some((root, is_partitioned)) if !is_partitioned(entity_type) => root,
+            _ => self,
+        }
     }
 
     /// Index a dynamic entity item.
@@ -41,13 +67,17 @@ impl SearchIndex {
         if *DISABLED.get_or_init(|| std::env::var("MYKO_SEARCH_INDEX_DISABLED").is_ok()) {
             return;
         }
-        self.registry.insert(item.as_ref());
+        self.owner(item.entity_type())
+            .registry
+            .insert(item.as_ref());
     }
 
     /// Remove an entity from the search index. The `entity_type` parameter
     /// is required to dispatch into the right per-type index.
     pub fn remove_entity(&self, entity_type: &str, entity_id: &str) {
-        self.registry.remove(entity_type, entity_id);
+        self.owner(entity_type)
+            .registry
+            .remove(entity_type, entity_id);
     }
 
     /// No-op preserved for call-site compatibility. The typed registry's
@@ -66,6 +96,7 @@ impl SearchIndex {
         };
         let started = Instant::now();
         let hits: Vec<Arc<str>> = self
+            .owner(entity_type)
             .registry
             .search(entity_type, query, opts)
             .into_iter()

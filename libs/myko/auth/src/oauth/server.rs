@@ -1,15 +1,20 @@
 //! OAuth authorization-code/PKCE handoff to a host-rendered login experience.
-use super::{OAuthResource, endpoint, pkce_challenge};
-use crate::{AuthError, AuthSession};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant, SystemTime},
+};
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
-use std::{
-    collections::HashMap,
-    sync::Mutex,
-    time::{Duration, Instant, SystemTime},
-};
 use url::Url;
+
+use super::{
+    OAuthResource, endpoint, pkce_challenge,
+    store::{OAuthChange, OAuthRecord, OAuthRecordKind, OAuthStore, OAuthStoreError},
+};
+use crate::{AuthError, AuthSession};
 const LIMIT: usize = 4096;
 const PENDING_LIFETIME: Duration = Duration::from_mins(10);
 const CODE_LIFETIME: Duration = Duration::from_mins(1);
@@ -131,20 +136,12 @@ impl State {
             client.last_used = Instant::now();
         }
     }
-    fn cleanup(&mut self) {
-        let now = Instant::now();
-        let wall = SystemTime::now();
-        self.pending.retain(|_, p| p.expires > now);
-        self.codes.retain(|_, c| c.expires > now);
-        self.access.retain(|_, a| a.expires > wall);
-        self.refresh
-            .retain(|_, r| r.authority.identity().is_some_and(|i| i.expires_at > wall));
-    }
 }
 /// One resource's OAuth authority. Login methods and UI stay host-owned.
 ///
-/// Pending grants and issued credentials are process-local: a restart requires a
-/// new OAuth login, while underlying identity/session storage remains host-owned.
+/// State is process-local until `MykoAuthProvider::restore_oauth` attaches an
+/// [`OAuthStore`]. Registered clients and issued credentials are then written
+/// through and survive a restart. Pending requests and codes never do.
 pub struct OAuthServer {
     id: String,
     issuer: String,
@@ -153,6 +150,7 @@ pub struct OAuthServer {
     resource: OAuthResource,
     dynamic: bool,
     state: Mutex<State>,
+    store: OnceLock<Arc<dyn OAuthStore>>,
 }
 fn secret(prefix: &str) -> String {
     format!(
@@ -210,7 +208,152 @@ impl OAuthServer {
             resource,
             dynamic: false,
             state: Mutex::new(State::default()),
+            store: OnceLock::new(),
         })
+    }
+    fn put(&self, record: OAuthRecord) {
+        self.record(OAuthChange::Put(Box::new(record)));
+    }
+    fn record(&self, change: OAuthChange) {
+        if let Some(store) = self.store.get() {
+            store.record(change);
+        }
+    }
+    fn cleanup(&self, state: &mut State) {
+        let now = Instant::now();
+        let wall = SystemTime::now();
+        state.pending.retain(|_, p| p.expires > now);
+        state.codes.retain(|_, c| c.expires > now);
+        state.access.retain(|digest, a| {
+            let live = a.expires > wall;
+            if !live {
+                self.record(OAuthChange::Remove {
+                    kind: OAuthRecordKind::Access,
+                    id: digest.clone(),
+                });
+            }
+            live
+        });
+        let mut ended = HashSet::new();
+        state.refresh.retain(|_, r| {
+            let live = r.authority.identity().is_some_and(|i| i.expires_at > wall);
+            if !live {
+                ended.insert(r.family.clone());
+            }
+            live
+        });
+        for family in ended {
+            self.record(OAuthChange::RevokeGrant { family });
+        }
+    }
+    /// Attach durable storage and adopt its records. `authorities` holds the
+    /// revived login of each grant to restore; `dropped` names grants to delete.
+    /// Grants in neither stay stored but unusable until the next start.
+    pub(crate) fn restore(
+        &self,
+        store: Arc<dyn OAuthStore>,
+        records: Vec<OAuthRecord>,
+        authorities: &HashMap<String, AuthSession>,
+        dropped: Vec<String>,
+    ) -> Result<usize, OAuthStoreError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| OAuthStoreError("OAuth authority state is unavailable".into()))?;
+        self.store
+            .set(store)
+            .map_err(|_| OAuthStoreError("OAuth authority already has a store".into()))?;
+        let mut grants = HashMap::new();
+        for record in &records {
+            if let OAuthRecord::Grant {
+                family,
+                client,
+                scopes,
+                ..
+            } = record
+            {
+                grants.insert(family.clone(), (client.clone(), scopes.clone()));
+            }
+        }
+        let wall = SystemTime::now();
+        let mut clients = 0_usize;
+        for record in records {
+            let (kind, id) = (record.kind(), record.id().to_owned());
+            let adopted = match record {
+                OAuthRecord::Client {
+                    id,
+                    name,
+                    redirects,
+                } => {
+                    if state.clients.len() < LIMIT && !state.clients.contains_key(&id) {
+                        state.clients.insert(
+                            id,
+                            Client {
+                                name,
+                                redirects,
+                                dynamic: true,
+                                last_used: Instant::now(),
+                            },
+                        );
+                        clients = clients.saturating_add(1);
+                    }
+                    true
+                }
+                OAuthRecord::Grant { .. } => true,
+                OAuthRecord::Access {
+                    digest,
+                    family,
+                    expires_at,
+                } => {
+                    let grant = grants.get(&family).filter(|_| expires_at > wall);
+                    let session = authorities
+                        .get(&family)
+                        .and_then(|authority| authority.with_deadline(expires_at).ok());
+                    if let (Some((client, _)), Some(session)) = (grant, session) {
+                        state.access.insert(
+                            digest,
+                            Access {
+                                session,
+                                client: client.clone(),
+                                family,
+                                expires: expires_at,
+                            },
+                        );
+                    }
+                    grant.is_some()
+                }
+                OAuthRecord::Refresh {
+                    digest,
+                    family,
+                    used,
+                } => {
+                    let grant = grants.get(&family);
+                    if let (Some((client, scopes)), Some(authority)) =
+                        (grant, authorities.get(&family))
+                    {
+                        state.refresh.insert(
+                            digest,
+                            Refresh {
+                                authority: authority.clone(),
+                                client: client.clone(),
+                                scopes: scopes.clone(),
+                                family,
+                                used,
+                            },
+                        );
+                    }
+                    grant.is_some()
+                }
+            };
+            if !adopted {
+                self.record(OAuthChange::Remove { kind, id });
+            }
+        }
+        drop(state);
+        for family in dropped {
+            self.record(OAuthChange::RevokeGrant { family });
+        }
+        Ok(clients)
     }
     /// Enable bounded public-client registration. Every grant still requires
     /// explicit authenticated consent in the host's login experience.
@@ -222,6 +365,11 @@ impl OAuthServer {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+    /// The canonical issuer, which also names this authority's durable records.
+    #[must_use]
+    pub fn issuer(&self) -> &str {
+        &self.issuer
     }
     #[must_use]
     pub const fn resource(&self) -> &OAuthResource {
@@ -298,6 +446,17 @@ impl OAuthServer {
                 .ok_or_else(OAuthError::busy)?;
             // Registration eviction must not revoke independently authorized grants.
             state.clients.remove(&oldest);
+            self.record(OAuthChange::Remove {
+                kind: OAuthRecordKind::Client,
+                id: oldest,
+            });
+        }
+        if dynamic {
+            self.put(OAuthRecord::Client {
+                id: id.into(),
+                name: name.into(),
+                redirects: redirects.clone(),
+            });
         }
         state.clients.insert(
             id.into(),
@@ -415,7 +574,7 @@ impl OAuthServer {
             return Err(OAuthError::invalid("State is too long"));
         }
         let mut state = self.state.lock().map_err(|_| OAuthError::busy())?;
-        state.cleanup();
+        self.cleanup(&mut state);
         let registered = state
             .clients
             .get_mut(client)
@@ -460,7 +619,7 @@ impl OAuthServer {
     /// Rejects expired or consumed requests.
     pub fn inspect(&self, request: &str) -> Result<AuthorizationInfo, OAuthError> {
         let mut state = self.state.lock().map_err(|_| OAuthError::busy())?;
-        state.cleanup();
+        self.cleanup(&mut state);
         state
             .pending
             .get(&digest(request))
@@ -482,7 +641,7 @@ impl OAuthServer {
             }
         }
         let mut state = self.state.lock().map_err(|_| OAuthError::busy())?;
-        state.cleanup();
+        self.cleanup(&mut state);
         if authority.is_some() && state.codes.len() >= LIMIT {
             return Err(OAuthError::busy());
         }
@@ -523,11 +682,11 @@ impl OAuthServer {
             return Err(OAuthError::grant());
         }
         let mut state = self.state.lock().map_err(|_| OAuthError::busy())?;
-        state.cleanup();
+        self.cleanup(&mut state);
         if state.access.len() >= LIMIT || state.refresh.len() >= LIMIT {
             return Err(OAuthError::busy());
         }
-        let (authority, scopes, family) = match required(args, "grant_type")? {
+        let (authority, scopes, family, approved) = match required(args, "grant_type")? {
             "authorization_code" => {
                 let key = digest(required(args, "code")?);
                 let code = state.codes.get(&key).ok_or_else(OAuthError::grant)?;
@@ -540,7 +699,12 @@ impl OAuthServer {
                     return Err(OAuthError::grant());
                 }
                 let code = state.codes.remove(&key).ok_or_else(OAuthError::grant)?;
-                (code.authority, code.pending.info.scopes, secret("family_"))
+                (
+                    code.authority,
+                    code.pending.info.scopes,
+                    secret("family_"),
+                    true,
+                )
             }
             "refresh_token" => {
                 let key = digest(required(args, "refresh_token")?);
@@ -550,6 +714,9 @@ impl OAuthServer {
                 }
                 if refresh.used {
                     refresh.authority.revoke();
+                    self.record(OAuthChange::RevokeGrant {
+                        family: refresh.family.clone(),
+                    });
                     return Err(OAuthError::grant());
                 }
                 refresh.authority.check().map_err(|_| OAuthError::grant())?;
@@ -561,10 +728,16 @@ impl OAuthServer {
                     return Err(OAuthError::grant());
                 }
                 refresh.used = true;
+                self.put(OAuthRecord::Refresh {
+                    digest: key,
+                    family: refresh.family.clone(),
+                    used: true,
+                });
                 (
                     refresh.authority.clone(),
                     refresh.scopes.clone(),
                     refresh.family.clone(),
+                    false,
                 )
             }
             _ => {
@@ -575,7 +748,7 @@ impl OAuthServer {
                 });
             }
         };
-        let result = Self::issue(&mut state, client, authority, &scopes, family);
+        let result = self.issue(&mut state, client, authority, &scopes, family, approved);
         if result.is_ok() {
             state.touch_client(client);
         }
@@ -583,22 +756,21 @@ impl OAuthServer {
         result
     }
     fn issue(
+        &self,
         state: &mut State,
         client: &str,
         authority: AuthSession,
         scopes: &[String],
         family: String,
+        approved: bool,
     ) -> Result<Value, OAuthError> {
         authority.check().map_err(|_| OAuthError::grant())?;
-        let expires = authority
-            .identity()
-            .ok_or_else(OAuthError::grant)?
-            .expires_at
-            .min(
-                SystemTime::now()
-                    .checked_add(ACCESS_LIFETIME)
-                    .ok_or_else(OAuthError::busy)?,
-            );
+        let identity = authority.identity().ok_or_else(OAuthError::grant)?;
+        let expires = identity.expires_at.min(
+            SystemTime::now()
+                .checked_add(ACCESS_LIFETIME)
+                .ok_or_else(OAuthError::busy)?,
+        );
         let seconds = expires
             .duration_since(SystemTime::now())
             .map_err(|_| OAuthError::grant())?
@@ -611,6 +783,24 @@ impl OAuthServer {
         let session = authority
             .with_deadline(expires)
             .map_err(|_| OAuthError::grant())?;
+        if approved {
+            self.put(OAuthRecord::Grant {
+                family: family.clone(),
+                client: client.into(),
+                scopes: scopes.to_owned(),
+                identity: Box::new(identity.clone()),
+            });
+        }
+        self.put(OAuthRecord::Access {
+            digest: digest(&access),
+            family: family.clone(),
+            expires_at: expires,
+        });
+        self.put(OAuthRecord::Refresh {
+            digest: digest(&refresh),
+            family: family.clone(),
+            used: false,
+        });
         state.access.insert(
             digest(&access),
             Access {
@@ -657,10 +847,9 @@ impl OAuthServer {
     /// # Errors
     /// Rejects malformed requests or unavailable authority state.
     pub fn revoke(&self, args: &HashMap<String, String>) -> Result<(), OAuthError> {
-        let state = self.state.lock().map_err(|_| OAuthError::busy())?;
-        let token = required(args, "token")?;
-        let key = digest(token);
+        let key = digest(required(args, "token")?);
         let client = Some(required(args, "client_id")?);
+        let state = self.state.lock().map_err(|_| OAuthError::busy())?;
         let family = state
             .access
             .get(&key)
@@ -680,7 +869,9 @@ impl OAuthServer {
             for access in state.access.values().filter(|a| a.family == family) {
                 access.session.revoke();
             }
+            self.record(OAuthChange::RevokeGrant { family });
         }
+        drop(state);
         Ok(())
     }
 }

@@ -24,6 +24,27 @@ use crate::{
     },
 };
 
+/// Identifies the destination of a *value* command: a command whose latest
+/// instance fully supersedes every earlier unsent one with the same key.
+///
+/// The key is opaque to myko; the sender chooses what it names (for example
+/// one property on one executor instance). Two value commands with the same
+/// key must therefore be interchangeable except for recency.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct CommandValueKey(Arc<str>);
+
+impl CommandValueKey {
+    #[must_use]
+    pub fn new(key: impl Into<Arc<str>>) -> Self {
+        Self(key.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 /// Trait for sending WebSocket messages.
 ///
 /// Implemented by the actual WebSocket writer to allow abstraction
@@ -44,6 +65,48 @@ pub trait WsWriter: Send + Sync + 'static {
         command_id: String,
         payload: EncodedCommandMessage,
     );
+
+    /// Send a pre-serialized *value* command for `key`.
+    ///
+    /// A writer may replace an earlier command with the same key that it has
+    /// not yet handed to the transport; the replacement keeps the earlier
+    /// command's queue position. The default delivers it like any command.
+    fn send_serialized_value_command(
+        &self,
+        key: CommandValueKey,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) {
+        let _ = key;
+        self.send_serialized_command(tx, command_id, payload);
+    }
+
+    /// [`Self::send_serialized_command`], reporting whether the command was
+    /// accepted for delivery. `false` means it was not queued (for example
+    /// the connection is closing). The default accepts everything.
+    fn try_send_serialized_command(
+        &self,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) -> bool {
+        self.send_serialized_command(tx, command_id, payload);
+        true
+    }
+
+    /// [`Self::send_serialized_value_command`], reporting whether the command
+    /// was accepted for delivery, as [`Self::try_send_serialized_command`].
+    fn try_send_serialized_value_command(
+        &self,
+        key: CommandValueKey,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) -> bool {
+        self.send_serialized_value_command(key, tx, command_id, payload);
+        true
+    }
 
     /// Send a report response while allowing implementations to defer
     /// expensive serialization/conversion work off the reactive callback path.
@@ -370,6 +433,17 @@ impl<W: WsWriter> ClientSession<W> {
         cell: hyphae::CellMap<Arc<str>, Arc<dyn AnyItem>, CellImmutable>,
         window: Option<QueryWindow>,
     ) {
+        self.subscribe_erased_view(tx, view_id, crate::view::ErasedViewMap::from(cell), window);
+    }
+
+    /// Subscribe to a view read as erased rows from its typed map.
+    pub fn subscribe_erased_view(
+        &mut self,
+        tx: Arc<str>,
+        view_id: Arc<str>,
+        cell: crate::view::ErasedViewMap,
+        window: Option<QueryWindow>,
+    ) {
         let writer = self.writer.clone();
         let tx_clone = tx.clone();
         let tx_for_log = tx_clone.clone();
@@ -464,10 +538,26 @@ impl<W: WsWriter> ClientSession<W> {
         let report_id_for_log = report_id.clone();
         let report_id_for_metrics = report_id.clone();
 
+        // An output equal to the last one sent tells the client nothing, and
+        // would be serialized and sent once per subscriber. Outputs that must
+        // repeat, such as events, differ in a field that changes per emission.
+        let last_sent: std::sync::Mutex<Option<Arc<dyn AnyOutput>>> = std::sync::Mutex::new(None);
         let guard = cell.subscribe(move |signal| match &signal {
             Signal::Value(output) => {
+                let output = output.as_ref();
+                {
+                    let mut last = last_sent
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if last.as_ref().is_some_and(|last| {
+                        Arc::ptr_eq(last, output) || last.equals(output.as_ref())
+                    }) {
+                        return;
+                    }
+                    *last = Some(Arc::clone(output));
+                }
                 crate::server::dispatch_metrics::record_report_response(&report_id_for_metrics);
-                writer.send_report_response(tx_clone.clone(), Arc::clone(output.as_ref()));
+                writer.send_report_response(tx_clone.clone(), Arc::clone(output));
             }
             Signal::Complete => {}
             Signal::Error(e) => {
@@ -1276,6 +1366,32 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(response.sequence);
         }
+    }
+
+    #[test]
+    fn a_report_output_equal_to_the_last_one_sent_is_not_sent_again() {
+        let _serial = scheduler_test_serial();
+        let writer = Arc::new(MockWriter::new());
+        let output = |text: &str| -> Arc<dyn AnyOutput> { Arc::new(text.to_owned()) };
+        let source = Cell::new(output("a"));
+        let mut session = ClientSession::new("dedup-client".into(), ArcMockWriter(writer.clone()));
+        session.subscribe_report(
+            "dedup-tx".into(),
+            "dedup-report".into(),
+            source.clone().lock(),
+        );
+        assert_eq!(writer.message_count(), 1);
+
+        source.set(output("a"));
+        assert_eq!(writer.message_count(), 1, "an equal output is a repeat");
+        source.set(output("b"));
+        assert_eq!(writer.message_count(), 2);
+        source.set(output("a"));
+        assert_eq!(
+            writer.message_count(),
+            3,
+            "returning to an earlier output is a change"
+        );
     }
 
     #[test]

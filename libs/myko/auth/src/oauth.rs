@@ -1,12 +1,17 @@
 //! Host-configured OAuth protected-resource discovery for MCP HTTP clients.
-use crate::AuthError;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use url::{Host, Url};
 
+use crate::AuthError;
+
 pub mod server;
+pub mod store;
 pub use server::{AuthorizationInfo, OAuthFlowOperation, OAuthFlowReply, OAuthServer};
+pub use store::{
+    OAuthChange, OAuthRecord, OAuthRecordKind, OAuthRestore, OAuthStore, OAuthStoreError,
+};
 
 /// Compute an S256 challenge from an RFC 7636 verifier.
 /// # Errors

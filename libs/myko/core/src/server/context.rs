@@ -21,13 +21,14 @@ use std::{
 use dashmap::DashMap;
 use hyphae::{
     Cell, CellImmutable, CellMap, CellMutable, Gettable, MapDiff, Materialize, Mutable, Watchable,
-    WeakCellMap,
+    WeakCellMap, scheduler::Domain,
 };
 use serde::de::DeserializeOwned;
 use uuid::Uuid;
 
 use super::{
     HandlerRegistry, RelationshipManager,
+    partition::{PartitionError, PartitionKey, PartitionSchema, Partitions, SubscriptionWatch},
     persister::{PersistError, PersistHealth, PersisterRouter},
 };
 use crate::{
@@ -49,12 +50,14 @@ use crate::{
     report::{ReportContext, ReportHandler, ReportId},
     request::{RequestCacheScope, RequestContext},
     search::SearchIndex,
-    store::StoreRegistry,
+    store::{StoreRegistry, watch_root_reads},
     view::{FilteredViewCellMap, TypedViewCellMap, ViewFactory},
-    wire::{MEvent, MEventType},
+    wire::{MEvent, MEventType, intern_entity_type},
 };
 
 type AnyItemArc = Arc<dyn AnyItem>;
+/// A wire event's change and its parsed item.
+type IngestEvent = (MEventType, AnyItemArc);
 
 /// Where a mutation came from. This is the single policy point for the apply
 /// pipeline's loop-safety: it determines whether a mutation should run
@@ -76,6 +79,13 @@ pub enum Origin {
     /// A live-only mutation such as an in-progress editor gesture. It updates
     /// local reactive state and relationships without durable persistence.
     Transient,
+    /// A write already admitted, validated and recorded on its writer's path,
+    /// applied later where its rows live. It cascades like `Local`, and is
+    /// neither validated nor persisted again.
+    Admitted,
+    /// An event read back from the persisted log at startup. Its effects are
+    /// in the log too, so it neither cascades nor produces.
+    Replay,
 }
 
 impl Origin {
@@ -94,9 +104,21 @@ impl Origin {
     /// a cascade-deleted child cannot resurrect its already-removed parent.
     const fn should_cascade(self, _change: MEventType) -> bool {
         match self {
-            Self::Local | Self::Cascade => true,
-            Self::RelationshipFixup | Self::Transient => false,
+            Self::Local | Self::Cascade | Self::Admitted => true,
+            Self::RelationshipFixup | Self::Transient | Self::Replay => false,
         }
+    }
+
+    /// Whether this origin's mutations are written to the durable persister
+    /// when applied. An admitted write was written when it was admitted.
+    const fn should_persist(self) -> bool {
+        self.should_produce() && !matches!(self, Self::Admitted)
+    }
+
+    /// Whether a rewrite or validation still has to run when the mutation is
+    /// applied.
+    const fn should_prepare(self) -> bool {
+        !matches!(self, Self::Admitted | Self::Replay)
     }
 
     /// Whether this origin's mutations should be produced to persisters/sink.
@@ -104,7 +126,10 @@ impl Origin {
     /// Both origins produce; per-type durability is the persister router's job
     /// (`BlackholePersister`), not a per-event flag.
     const fn should_produce(self) -> bool {
-        !matches!(self, Self::RelationshipFixup | Self::Transient)
+        !matches!(
+            self,
+            Self::RelationshipFixup | Self::Transient | Self::Replay
+        )
     }
 }
 
@@ -247,7 +272,7 @@ trait ReportCacheEntryDyn: Any + Send + Sync {
 }
 
 struct ReportCacheEntry<T> {
-    weak: hyphae::cell::WeakCell<T, CellImmutable>,
+    weak: hyphae::WeakCell<T, CellImmutable>,
 }
 
 impl<T> ReportCacheEntry<T>
@@ -288,7 +313,7 @@ struct MapCacheEntry {
 
 #[derive(Default)]
 struct BufferedIngestState {
-    events: Vec<MEvent>,
+    events: Vec<IngestEvent>,
     flush_scheduled: bool,
 }
 
@@ -322,8 +347,8 @@ impl MapCacheEntry {
     /// from the untyped source. Subsequent calls return the cached projection.
     fn get_or_create_typed<K, V, F>(&self, create: F) -> Option<CellMap<K, V, CellImmutable>>
     where
-        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
-        V: hyphae::traits::CellValue + 'static,
+        K: std::hash::Hash + Eq + hyphae::CellValue + 'static,
+        V: hyphae::CellValue + 'static,
         F: FnOnce(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     {
         let type_key = std::any::TypeId::of::<WeakCellMap<K, V>>();
@@ -394,6 +419,9 @@ pub struct MykoServerContext {
     /// Per-key coordination for concurrent report/query/view computation.
     /// Prevents duplicate computation when multiple threads request the same key.
     compute_gates: Arc<DashMap<String, Arc<std::sync::Mutex<()>>, ahash::RandomState>>,
+    /// Cache keys of root builds that read a partitioned entity type, with
+    /// that type. A cache hit on one is refused as its build was.
+    refused_builds: Arc<DashMap<String, Arc<str>, ahash::RandomState>>,
     /// Optional ingest buffers keyed by entity type for opt-in burst smoothing.
     ingest_buffers: Arc<DashMap<Arc<str>, Arc<BufferedIngestType>, ahash::RandomState>>,
     /// Optional history replay provider for point-in-time snapshots.
@@ -402,6 +430,34 @@ pub struct MykoServerContext {
     graph_index: Option<Arc<GraphIndex>>,
     causal_limits: Arc<RwLock<CausalLimits>>,
     causal_counters: Arc<CausalCounters>,
+    /// Identity under which operation provenance is recorded. A partition's
+    /// context shares its root context's, so a command's provenance follows
+    /// its writes into the partition.
+    operation_identity: Arc<CausalCounters>,
+    /// The server's partitions, when the application declared any.
+    partitions: Option<PartitionsHandle>,
+    /// Set on the context of one partition.
+    home: Option<Arc<PartitionHome>>,
+}
+
+/// How a context names the server's partitions. The root context the
+/// application holds owns them. The contexts the partitions hold name them
+/// weakly, so dropping the application's context releases every partition.
+#[derive(Clone)]
+enum PartitionsHandle {
+    Owner(Arc<Partitions>),
+    Member(std::sync::Weak<Partitions>),
+}
+
+enum OneShot {
+    Here,
+    In(Box<MykoServerContext>),
+    NoRows,
+}
+
+struct PartitionHome {
+    key: PartitionKey,
+    domain: Domain,
 }
 
 type EventSinkFilter = dyn Fn(&str, MEventType) -> bool + Send + Sync;
@@ -438,6 +494,7 @@ impl MykoServerContext {
         if history_replay.is_some() {
             registry.transactions.enable_history();
         }
+        let causal_counters = Arc::new(CausalCounters::default());
         Self {
             host_id,
             host_id_str: Arc::from(host_id.to_string()),
@@ -447,18 +504,533 @@ impl MykoServerContext {
             persisters,
             search_index,
             peer_clients,
-            peer_clients_tick: Cell::new(0).with_name("peer_clients_tick"),
+            peer_clients_tick: Cell::new(0),
             event_sink,
             event_sink_filter: None,
             query_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             view_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             report_cache: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             compute_gates: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
+            refused_builds: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             ingest_buffers: Arc::new(DashMap::with_hasher(ahash::RandomState::new())),
             history_replay,
             graph_index,
             causal_limits: Arc::new(RwLock::new(CausalLimits::default())),
-            causal_counters: Arc::new(CausalCounters::default()),
+            operation_identity: causal_counters.clone(),
+            causal_counters,
+            partitions: None,
+            home: None,
+        }
+    }
+
+    /// Partition this server's runtime as `schema` declares.
+    ///
+    /// Call it on the root context before sharing it. Without it, every
+    /// entity type is shared and the server runs in one scheduling domain.
+    #[must_use]
+    pub fn with_partitions(mut self, schema: PartitionSchema) -> Self {
+        // Root projects the shared edge types; each partition its own. The
+        // projection is in place before the partitions take their copy of
+        // this context, so root's writes and reads share one graph.
+        self.graph_index = Self::project_graph(&self.registry, &|edge_type| {
+            !schema.is_partitioned(edge_type)
+        });
+        let partitions = Partitions::new(schema, &self);
+        self.partitions = Some(PartitionsHandle::Owner(partitions));
+        self
+    }
+
+    /// The graph projection over `registry` of the edge types for which
+    /// `keep` holds, built in the registry's domain.
+    fn project_graph(
+        registry: &Arc<StoreRegistry>,
+        keep: &dyn Fn(&str) -> bool,
+    ) -> Option<Arc<GraphIndex>> {
+        let graph = registry
+            .born_here(|| GraphIndex::from_inventory_where(registry.clone(), keep))
+            .map(Arc::new)?;
+        if let Err(error) = graph.rebuild() {
+            tracing::error!(%error, "graph projection rebuild failed");
+        }
+        Some(graph)
+    }
+
+    /// This context, naming `partitions` without owning them.
+    pub(crate) fn as_partition_member(&self, partitions: std::sync::Weak<Partitions>) -> Self {
+        let mut member = self.clone();
+        member.partitions = Some(PartitionsHandle::Member(partitions));
+        member
+    }
+
+    /// The context of one partition of this root context: its own stores for
+    /// partitioned types, its own caches and compute gates, its own domain.
+    pub(crate) fn for_partition(
+        &self,
+        registry: Arc<StoreRegistry>,
+        search_index: Arc<SearchIndex>,
+        key: PartitionKey,
+        domain: Domain,
+        is_partitioned: &dyn Fn(&str) -> bool,
+    ) -> Self {
+        let mut partition = self.clone();
+        partition.graph_index = Self::project_graph(&registry, is_partitioned);
+        partition.registry = registry;
+        partition.search_index = search_index;
+        partition.query_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.view_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.report_cache = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.compute_gates = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.refused_builds = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.ingest_buffers = Arc::new(DashMap::with_hasher(ahash::RandomState::new()));
+        partition.causal_counters = Arc::new(CausalCounters::default());
+        partition.home = Some(Arc::new(PartitionHome { key, domain }));
+        partition
+    }
+
+    pub(crate) fn partitions(&self) -> Option<Arc<Partitions>> {
+        match self.partitions.as_ref()? {
+            PartitionsHandle::Owner(partitions) => Some(partitions.clone()),
+            PartitionsHandle::Member(partitions) => partitions.upgrade(),
+        }
+    }
+
+    /// Open the partition `key` and return its context. Returns the existing
+    /// one if it is already open, and `None` when this server declared no
+    /// partitions.
+    #[must_use]
+    pub fn open_partition(&self, key: PartitionKey) -> Option<Self> {
+        Some(self.partitions()?.open(key).ctx().clone())
+    }
+
+    /// Close the partition `key`: it takes no further writes, its domain
+    /// stops, and its graphs are released off the calling thread. Rows of a
+    /// routed type it held stay placed and wait for a partition to take them.
+    pub fn close_partition(&self, key: &PartitionKey) {
+        if let Some(partitions) = self.partitions() {
+            partitions.close(key);
+        }
+    }
+
+    /// The context of the open partition `key`.
+    #[must_use]
+    pub fn partition(&self, key: &PartitionKey) -> Option<Self> {
+        Some(self.partitions()?.get(key)?.ctx().clone())
+    }
+
+    /// Run a service in each open partition: `start` builds it on that
+    /// partition's context, in its domain, on its worker, and what `start`
+    /// returns is held until that partition closes or the returned handle
+    /// drops. A partition opened later starts it too.
+    ///
+    /// `start` runs inside the partition's propagation, so it must not
+    /// block on another domain (no [`settle`](Self::settle)), and a write
+    /// it makes to shared data is refused like any partition write to it.
+    ///
+    /// On a context without partitions, or on one partition's context,
+    /// `start` runs once, here, on this context.
+    pub fn in_each_partition<S: Send + 'static>(
+        &self,
+        start: impl Fn(&Self) -> S + Send + Sync + 'static,
+    ) -> super::partition::PartitionServices {
+        let boxed = move |ctx: &Self| -> Box<dyn std::any::Any + Send> { Box::new(start(ctx)) };
+        match (self.home.is_some(), self.partitions()) {
+            (false, Some(partitions)) => {
+                let starter: super::partition::Starter = Arc::new(boxed);
+                partitions.run_in_each(&starter)
+            }
+            _ => super::partition::PartitionServices::once(self.in_domain(|| boxed(self))),
+        }
+    }
+
+    /// Why the open partition `key` stopped admitting writes: something an
+    /// admitted write derived there was refused after its writer was
+    /// answered. `None` while it follows every write it admitted.
+    #[must_use]
+    pub fn partition_failure(&self, key: &PartitionKey) -> Option<PersistError> {
+        self.partitions()?.get(key)?.failure()
+    }
+
+    /// Keys of the open partitions.
+    #[must_use]
+    pub fn partition_keys(&self) -> Vec<PartitionKey> {
+        self.partitions()
+            .map_or_else(Vec::new, |partitions| partitions.keys())
+    }
+
+    /// The partition this context belongs to. `None` for the root context.
+    #[must_use]
+    pub fn partition_key(&self) -> Option<&PartitionKey> {
+        self.home.as_ref().map(|home| &home.key)
+    }
+
+    /// Keep relationship indexes current for rows placed in or taken from
+    /// this context's stores without a write.
+    pub(crate) fn track_relations(&self, items: &[Arc<dyn AnyItem>], change: MEventType) {
+        self.relationship_manager.track(items, change, self);
+        let Some(graph) = &self.graph_index else {
+            return;
+        };
+        let _authority = graph.lock_authority();
+        for item in items {
+            if graph.registration(item.entity_type()).is_none() {
+                continue;
+            }
+            let item = Some(item.as_ref());
+            let (old, new) = match change {
+                MEventType::SET => (None, item),
+                MEventType::DEL => (item, None),
+            };
+            if let Err(error) = graph.apply(old, new) {
+                tracing::error!(%error, "a placed edge did not project");
+            }
+        }
+    }
+
+    /// Run, in this partition, the relationships a shared write applied in
+    /// root derives here.
+    pub(crate) fn derive_relations(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+    ) -> Result<(), PersistError> {
+        match change {
+            MEventType::SET => self.relationship_manager.forward_set_batch(items, self),
+            MEventType::DEL => {
+                self.relationship_manager.forward_del_batch(items, self)?;
+                self.cascade_edges_of(items)
+            }
+        }
+    }
+
+    /// Delete this partition's edges whose policy cascades from deleting
+    /// the shared endpoints `items`.
+    fn cascade_edges_of(&self, items: &[Arc<dyn AnyItem>]) -> Result<(), PersistError> {
+        let Some(graph) = &self.graph_index else {
+            return Ok(());
+        };
+        let mut cascades = Vec::new();
+        for item in items {
+            cascades.extend(
+                graph
+                    .endpoint_delete_plan(&crate::graph::EntityRef::new(
+                        item.entity_type(),
+                        item.id(),
+                    ))
+                    .map_err(|error| Self::graph_error(item.as_ref(), error))?
+                    .cascade_edges,
+            );
+        }
+        self.submit_mutation(cascades, MEventType::DEL, Origin::Cascade)
+    }
+
+    /// Whether a write of `entity_type` runs a relationship that writes a
+    /// type for which `to` holds.
+    pub(crate) fn derives_into(
+        &self,
+        entity_type: &str,
+        change: MEventType,
+        to: &dyn Fn(&str) -> bool,
+    ) -> bool {
+        self.relationship_manager
+            .derives_into(entity_type, change, to)
+            || (change == MEventType::DEL && crate::graph::cascades_into(entity_type, to))
+    }
+
+    /// Whether `ensure_for` creates a type for which `to` holds.
+    pub(crate) fn ensures_into(&self, to: &dyn Fn(&str) -> bool) -> bool {
+        self.relationship_manager.ensures_into(to)
+    }
+
+    /// Create what `ensure_for` requires in this partition, as startup does.
+    pub(crate) fn ensure_relations(&self) -> Result<(), PersistError> {
+        self.relationship_manager.initialize_ensure_for(self)
+    }
+
+    /// Whether this context holds the rows of `entity_type`: a partition's
+    /// context holds the partitioned types, the root context every other.
+    pub(crate) fn stores_here(&self, entity_type: &str) -> bool {
+        self.partitions()
+            .is_none_or(|partitions| partitions.is_partitioned(entity_type) == self.home.is_some())
+    }
+
+    /// Whether `item` belongs in this context's stores: a shared item in
+    /// root, a partitioned item in the partition its route names.
+    pub(crate) fn holds(&self, item: &dyn AnyItem) -> bool {
+        let Some(partitions) = self.partitions() else {
+            return true;
+        };
+        if !partitions.is_partitioned(item.entity_type()) {
+            return self.home.is_none();
+        }
+        self.partition_key()
+            .is_some_and(|key| partitions.home_of(item).as_ref() == Some(key))
+    }
+
+    /// The context whose stores hold `event`'s row: root's for a shared type,
+    /// its partition's for a partitioned one.
+    ///
+    /// # Errors
+    /// [`PartitionError::NotOpen`] when that partition is not open, and
+    /// [`PartitionError::RootRead`] when the row names no partition, so
+    /// only root, which holds no such rows, could be read.
+    pub(crate) fn event_context(
+        &self,
+        event: &crate::wire::MEvent,
+    ) -> Result<Self, PartitionError> {
+        let Some(partitions) = self.partitions() else {
+            return Ok(self.clone());
+        };
+        let root = partitions.root();
+        let entity_type = event.item_type.as_ref();
+        if !partitions.is_partitioned(entity_type) {
+            return Ok(root.clone());
+        }
+        let unplaced = || PartitionError::RootRead {
+            entity_type: Arc::clone(&event.item_type),
+        };
+        let item = self
+            .parse_item(entity_type, event.item.clone())
+            .ok_or_else(unplaced)?;
+        let key = partitions
+            .placement(entity_type, &item.id())
+            .or_else(|| partitions.home_of(item.as_ref()))
+            .ok_or_else(unplaced)?;
+        partitions
+            .get(&key)
+            .map(|partition| partition.ctx().clone())
+            .ok_or(PartitionError::NotOpen(key))
+    }
+
+    /// The partition that holds the row `id` of a routed entity type, read
+    /// from the root-side placement index. No domain is involved.
+    #[must_use]
+    pub fn partition_of(&self, entity_type: &str, id: &Arc<str>) -> Option<PartitionKey> {
+        self.partitions()?.placement(entity_type, id)
+    }
+
+    /// Whether `entity_type`'s rows live in partitions rather than at the
+    /// root. Reading such a type from the root context panics; read it with
+    /// [`Self::partitioned_snapshot`] or on a partition's context instead.
+    #[must_use]
+    pub fn is_partitioned(&self, entity_type: &str) -> bool {
+        self.partitions()
+            .is_some_and(|partitions| partitions.is_partitioned(entity_type))
+    }
+
+    /// The rows of a partitioned entity type in every open partition, read
+    /// now. This is the only way to read a partitioned type across
+    /// partitions: the result is a plain value and follows nothing.
+    #[must_use]
+    pub fn partitioned_snapshot(&self, entity_type: &str) -> Vec<(PartitionKey, Vec<AnyItemArc>)> {
+        self.partitions()
+            .map_or_else(Vec::new, |partitions| partitions.snapshot(entity_type))
+    }
+
+    /// Run `construct`, a construction of reactive reads on this context, in
+    /// this context's domain, and refuse it when it read a partitioned entity type from the root
+    /// context. Such a read sees no rows, because the type's rows live only
+    /// in its partitions; it must be built on the partition's context.
+    ///
+    /// The check covers what `construct` builds on the calling thread. An
+    /// inner graph a wave builds later, such as a `switch_map` branch, is
+    /// not covered; its root read is only logged.
+    ///
+    /// # Errors
+    /// [`PartitionError::RootRead`] naming the first such entity type. What
+    /// `construct` returned is dropped.
+    pub fn checked<R>(&self, construct: impl FnOnce() -> R) -> Result<R, PartitionError> {
+        let (built, refused) = watch_root_reads(|| self.in_domain(construct));
+        match refused {
+            None => Ok(built),
+            Some(entity_type) => {
+                drop(built);
+                Err(PartitionError::RootRead { entity_type })
+            }
+        }
+    }
+
+    /// The context a client subscription opens in.
+    ///
+    /// It opens in the partition the schema's
+    /// [`PartitionSchema::subscribe_in`] hook names for the request, whatever
+    /// it reads. When the hook names none it opens in root, unless `reads`,
+    /// the entity type a query or view reads, is partitioned.
+    ///
+    /// # Errors
+    /// [`PartitionError::RootRead`] when `reads` is partitioned and the hook
+    /// names no partition, and [`PartitionError::NotOpen`] when the named
+    /// partition is not open.
+    pub fn subscription_context(
+        &self,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+        reads: Option<&str>,
+    ) -> Result<Self, PartitionError> {
+        let Some(partitions) = self.partitions() else {
+            return Ok(self.clone());
+        };
+        if self.home.is_some() {
+            return Ok(self.clone());
+        }
+        let Some(key) = partitions.subscription_partition(request, payload) else {
+            return reads
+                .filter(|entity_type| partitions.is_partitioned(entity_type))
+                .map_or_else(
+                    || Ok(self.clone()),
+                    |entity_type| {
+                        Err(PartitionError::RootRead {
+                            entity_type: Arc::from(entity_type),
+                        })
+                    },
+                );
+        };
+        partitions
+            .get(&key)
+            .map(|partition| partition.ctx().clone())
+            .ok_or(PartitionError::NotOpen(key))
+    }
+
+    /// The context a client's command runs in: the partition the schema's
+    /// [`PartitionSchema::command_in`] hook names, or this context when it
+    /// names none or this is a partition's context.
+    ///
+    /// # Errors
+    /// [`PartitionError::NotOpen`] when the named partition is not open.
+    pub fn command_context(
+        &self,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+    ) -> Result<Self, PartitionError> {
+        let Some(partitions) = self.partitions() else {
+            return Ok(self.clone());
+        };
+        if self.home.is_some() {
+            return Ok(self.clone());
+        }
+        partitions.command_partition(request, payload).map_or_else(
+            || Ok(self.clone()),
+            |key| {
+                partitions
+                    .get(&key)
+                    .map(|partition| partition.ctx().clone())
+                    .ok_or(PartitionError::NotOpen(key))
+            },
+        )
+    }
+
+    /// Follow where a live client subscription belongs, until the returned
+    /// watch is dropped. `opened_in` is the partition it opened in, as
+    /// [`subscription_context`](Self::subscription_context) chose it.
+    ///
+    /// When a write to one of the shared types the
+    /// [`PartitionSchema::subscribe_in`] hook reads changes the hook's answer
+    /// for it, `moved` is called, once per change, on the writer's thread:
+    /// the subscription belongs elsewhere now and must be opened again.
+    /// `moved` must only hand the move off; it must not block or write.
+    ///
+    /// When the partition it is open in closes, `moved` is called too, so it
+    /// is opened again where the hook places it or refused there.
+    ///
+    /// `None` when this server has no partitions, or the subscription opened
+    /// in root and the hook reads no shared data, so it can never move.
+    #[must_use]
+    pub fn watch_subscription(
+        &self,
+        request: Arc<RequestContext>,
+        payload: serde_json::Value,
+        opened_in: Option<PartitionKey>,
+        moved: impl Fn() + Send + Sync + 'static,
+    ) -> Option<SubscriptionWatch> {
+        self.partitions()?
+            .watch_subscription(request, payload, opened_in, Box::new(moved))
+    }
+
+    /// Where a client subscription of the merged view `view_id` runs: the
+    /// partitions its spanning rule names, and the context of each of them
+    /// that is open, by key. `None` when the view is not merged across this
+    /// server's partitions.
+    #[must_use]
+    pub fn span_contexts(
+        &self,
+        view_id: &str,
+        request: &RequestContext,
+        payload: &serde_json::Value,
+    ) -> Option<(std::collections::BTreeSet<PartitionKey>, Vec<Self>)> {
+        let partitions = self.partitions()?;
+        let keys = partitions.span_keys(view_id, request, payload)?;
+        let contexts = keys
+            .iter()
+            .filter_map(|key| partitions.get(key))
+            .map(|partition| partition.ctx().clone())
+            .collect();
+        Some((keys, contexts))
+    }
+
+    /// Follow a merged view's subscription built over `contexts` from what
+    /// [`span_contexts`](Self::span_contexts) returned, until the returned
+    /// watch is dropped. `moved` is called, as for
+    /// [`watch_subscription`](Self::watch_subscription), when the rule
+    /// names another set or a partition of the set opens or closes.
+    #[must_use]
+    pub fn watch_span(
+        &self,
+        view_id: Arc<str>,
+        (request, payload): (Arc<RequestContext>, serde_json::Value),
+        (keys, contexts): (std::collections::BTreeSet<PartitionKey>, &[Self]),
+        moved: impl Fn() + Send + Sync + 'static,
+    ) -> Option<SubscriptionWatch> {
+        let built = contexts
+            .iter()
+            .filter_map(|ctx| ctx.partition_key().cloned())
+            .collect();
+        Some(self.partitions()?.watch_span(
+            view_id,
+            (request, payload),
+            (keys, &built),
+            Box::new(moved),
+        ))
+    }
+
+    /// Block until every write admitted before the call has been applied
+    /// and delivered: in every open partition from the root context, in this
+    /// partition from a partition's context. Rows a root write hands to a
+    /// partition arrive asynchronously; this is the deterministic wait for
+    /// them, for tests and startup. Without partitions it returns at once.
+    ///
+    /// It is a barrier, not part of a write: never call it on a path that
+    /// serves writes or deliveries.
+    ///
+    /// # Panics
+    /// When called from inside a propagation, which would wait for itself.
+    pub fn settle(&self) {
+        let Some(partitions) = self.partitions() else {
+            return;
+        };
+        let settling = self.partition_key().map_or_else(
+            || partitions.all(),
+            |key| partitions.get(key).into_iter().collect(),
+        );
+        for partition in settling {
+            partition.settle_all();
+        }
+    }
+
+    /// The scheduling domain this context builds and writes in.
+    #[must_use]
+    pub fn domain(&self) -> Domain {
+        self.home
+            .as_ref()
+            .map_or_else(Domain::root, |home| home.domain.clone())
+    }
+
+    /// Run `build` with this context's domain as the calling thread's
+    /// ambient domain. Everything that derives a cell from a query, view or
+    /// report of this context must be built inside it.
+    pub fn in_domain<R>(&self, build: impl FnOnce() -> R) -> R {
+        match (&self.home, &self.partitions) {
+            (Some(home), _) => home.domain.enter(build),
+            (None, Some(_)) => Domain::root().enter(build),
+            (None, None) => build(),
         }
     }
 
@@ -479,31 +1051,37 @@ impl MykoServerContext {
         scope: RequestCacheScope,
     ) -> String {
         let payload_hash = params.cache_key_hash();
-        if let Some(auth) = &request.auth {
-            return format!(
-                "{}:{kind}:{id}:{payload_hash:016x}:auth:{}",
-                request.host_id,
-                auth.id()
-            );
-        }
+        // NOTE(ts): Authorization is decided before a graph is built, so a
+        // `Shared` graph is the same for every caller and is shared by them.
+        // Splitting it per authenticated identity gave every executor its own
+        // copy of every view it read, which multiplied memory and build time
+        // by the number of connected clients. A graph whose output depends
+        // on its caller declares `PerClient`, which also keys by the
+        // identity, so a client that signs in again never reuses another's.
         match scope {
             RequestCacheScope::Shared => {
                 format!("{}:{kind}:{id}:{payload_hash:016x}", request.host_id)
             }
-            RequestCacheScope::PerClient => request.client_id.as_deref().map_or_else(
-                || {
-                    format!(
-                        "{}:{kind}:{id}:{payload_hash:016x}:request-server",
-                        request.host_id
-                    )
-                },
-                |client_id| {
-                    format!(
-                        "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}",
-                        request.host_id
-                    )
-                },
-            ),
+            RequestCacheScope::PerClient => {
+                let identity = request
+                    .auth
+                    .as_ref()
+                    .map_or_else(String::new, |auth| format!(":auth:{}", auth.id()));
+                request.client_id.as_deref().map_or_else(
+                    || {
+                        format!(
+                            "{}:{kind}:{id}:{payload_hash:016x}:request-server{identity}",
+                            request.host_id
+                        )
+                    },
+                    |client_id| {
+                        format!(
+                            "{}:{kind}:{id}:{payload_hash:016x}:request-client:{client_id}{identity}",
+                            request.host_id
+                        )
+                    },
+                )
+            }
         }
     }
 
@@ -565,17 +1143,19 @@ impl MykoServerContext {
         self.persisters.default_health()
     }
 
-    /// Get a one-shot typed entity snapshot by id.
-    ///
-    /// NOTE(ts): restored after f8c71afd removed it as zero-caller — rship's
-    /// multi-action executor resolves a single Action this way, deliberately
-    /// avoiding a reactive subscription for a point lookup.
+    /// Get a one-shot typed entity snapshot by id: a point lookup with no
+    /// reactive subscription. Like [`query_snapshot`](Self::query_snapshot),
+    /// it may be taken from inside a partition's wave on the root context.
     pub fn entity_snapshot<T>(&self, id: &<T as WithTypedId>::Id) -> Option<Arc<T>>
     where
         T: Eventable + WithTypedId + Send + Sync + 'static,
         <T as WithTypedId>::Id: hyphae::IdFor<T, MapKey = Arc<str>>,
     {
-        let store = self.registry.get_or_create(T::entity_name_static());
+        let store = match self.one_shot_reader(T::entity_name_static()) {
+            OneShot::Here => self.registry.get_or_create(T::entity_name_static()),
+            OneShot::In(partition) => partition.registry.get_or_create(T::entity_name_static()),
+            OneShot::NoRows => return None,
+        };
         let map_key = <<T as WithTypedId>::Id as hyphae::IdFor<T>>::map_key(id);
         let item = store.get_value(&map_key)?;
         downcast_any_item_arc::<T>(&item, "MykoServerContext::entity_snapshot")
@@ -630,19 +1210,25 @@ impl MykoServerContext {
             .count()
     }
 
-    /// Remove dead weak-ref entries from all caches, including belongs-to
-    /// source index buckets (process-global, not per-`MykoServerContext`, but
-    /// swept from here for hosting apps that already call this
-    /// periodically). Bucket entries are also reaped lazily on next access
-    /// regardless — this is a backstop for foreign ids that go dead and are
-    /// never looked up again.
+    /// Remove dead weak-ref entries from all caches, including the buckets
+    /// of the belongs-to source indexes this context's registry holds. On
+    /// the root context it sweeps every open partition too. Bucket entries
+    /// are also reaped lazily on next access regardless — this is a backstop
+    /// for foreign ids that go dead and are never looked up again.
     pub fn sweep_dead_cache_entries(&self) {
         self.query_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.view_cache
             .retain(|_, entry| entry.weak.upgrade().is_some());
         self.report_cache.retain(|_, entry| entry.is_alive());
-        crate::query::sweep_all_belongs_to_source_indexes();
+        crate::query::sweep_belongs_to_source_indexes(&self.registry);
+        if self.home.is_none() {
+            for key in self.partition_keys() {
+                if let Some(partition) = self.partition(&key) {
+                    partition.sweep_dead_cache_entries();
+                }
+            }
+        }
     }
 
     /// Parse JSON to a typed entity using the registered item parser.
@@ -890,8 +1476,64 @@ impl MykoServerContext {
         id: &str,
         origin: Origin,
     ) -> Result<(), PersistError> {
+        if let Some(root) = self.unrouted_owner(std::iter::once(entity_type))? {
+            return root.del_by_id_with_origin(entity_type, id, origin);
+        }
         self.registry
             .with_mutation(|| self.del_by_id_coordinated(entity_type, id, origin))
+    }
+
+    /// The context that owns a write which bypasses routing: `None` for this
+    /// one, or root for a partition context's write of shared data, so that
+    /// write is coordinated and applied as root's own.
+    ///
+    /// # Errors
+    /// On the root context, a partitioned type, which has no store there. On
+    /// a partition context, shared data written from the partition's wave,
+    /// which would flow backwards, and a call that mixes shared and
+    /// partitioned types, which no single domain can apply at once.
+    fn unrouted_owner<'a>(
+        &self,
+        entity_types: impl Iterator<Item = &'a str>,
+    ) -> Result<Option<Self>, PersistError> {
+        let Some(partitions) = self.partitions() else {
+            return Ok(None);
+        };
+        let types: Vec<&str> = entity_types.collect();
+        if self.home.is_none() {
+            return types
+                .into_iter()
+                .find(|entity_type| partitions.is_partitioned(entity_type))
+                .map_or(Ok(None), |entity_type| {
+                    Err(PersistError {
+                        entity_type: Arc::from(entity_type),
+                        message: "this write of a partitioned type is only available on the \
+                                  context of its partition"
+                            .into(),
+                    })
+                });
+        }
+        let Some(shared) = types
+            .iter()
+            .find(|entity_type| !partitions.is_partitioned(entity_type))
+        else {
+            return Ok(None);
+        };
+        if Domain::propagating().is_some_and(|domain| !domain.is_root()) {
+            return Err(super::partition::backwards(shared, None));
+        }
+        if types
+            .iter()
+            .any(|entity_type| partitions.is_partitioned(entity_type))
+        {
+            return Err(PersistError {
+                entity_type: Arc::from(*shared),
+                message: "this write mixes shared and partitioned types; write each part on \
+                          its own context"
+                    .into(),
+            });
+        }
+        Ok(Some(partitions.root().clone()))
     }
 
     fn del_by_id_coordinated(
@@ -917,8 +1559,8 @@ impl MykoServerContext {
 
         // Persist: produce unless this origin must not (e.g. a peer tombstone).
         if origin.should_produce() {
-            if let Some(item) = existing {
-                self.produce_del_dyn(&item)?;
+            if let Some(item) = &existing {
+                self.produce_del_dyn(item)?;
             } else {
                 tracing::warn!(
                     "del_by_id could not persist DEL without full entity: {}:{}",
@@ -926,6 +1568,13 @@ impl MykoServerContext {
                     id
                 );
             }
+        }
+
+        if let Some(item) = existing
+            && self.home.is_none()
+            && let Some(partitions) = self.partitions()
+        {
+            partitions.shared_write_applied(&[item], MEventType::DEL, false);
         }
 
         tracing::trace!("Published DEL {}:{}", entity_type, id);
@@ -1033,19 +1682,30 @@ impl MykoServerContext {
     ///
     /// Returns an error when the requested operation cannot be completed.
     pub fn apply_event_batch(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
+        self.apply_item_event_batch(self.parse_events(events))
+    }
+
+    /// [`apply_event_batch`](Self::apply_event_batch) for events whose items
+    /// are already parsed, so a transport that decodes them straight from
+    /// its frame skips the `serde_json::Value` form.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the requested operation cannot be completed.
+    pub fn apply_item_event_batch(&self, events: Vec<IngestEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
             return Ok(0);
         }
 
         let mut accepted = 0usize;
         let mut immediate_events = Vec::new();
-        let mut buffered_by_type: HashMap<Arc<str>, (u64, Vec<MEvent>)> = HashMap::new();
+        let mut buffered_by_type: HashMap<&'static str, (u64, Vec<IngestEvent>)> = HashMap::new();
 
         for event in events {
-            match self.handler_registry.item_buffer_policy(&event.item_type) {
+            let entity_type = event.1.entity_type();
+            match self.handler_registry.item_buffer_policy(entity_type) {
                 IngestBufferPolicy::None => immediate_events.push(event),
                 IngestBufferPolicy::TimeWindow { window_ms } => {
-                    let entity_type: Arc<str> = event.item_type.clone();
                     buffered_by_type
                         .entry(entity_type)
                         .or_insert_with(|| (window_ms, Vec::new()))
@@ -1056,75 +1716,113 @@ impl MykoServerContext {
         }
 
         if !immediate_events.is_empty() {
-            accepted = accepted.saturating_add(self.apply_event_batch_immediate(immediate_events)?);
+            accepted = accepted.saturating_add(self.apply_items_immediate(immediate_events)?);
         }
 
         for (entity_type, (window_ms, buffered_events)) in buffered_by_type {
             accepted = accepted.saturating_add(buffered_events.len());
-            self.enqueue_buffered_events(entity_type, window_ms, buffered_events);
+            self.enqueue_buffered_events(
+                intern_entity_type(entity_type),
+                window_ms,
+                buffered_events,
+            );
         }
 
         Ok(accepted)
     }
 
+    /// Typed items of `events`, skipping (with a warning) any whose type is
+    /// unknown or whose item does not parse.
+    fn parse_events(&self, events: Vec<MEvent>) -> Vec<IngestEvent> {
+        events
+            .into_iter()
+            .filter_map(|event| {
+                let item_type = event.item_type;
+                let item = self.parse_item(&item_type, event.item);
+                if item.is_none() {
+                    tracing::warn!("Unknown entity type or parse error for ingest: {item_type}");
+                }
+                Some((event.change_type, item?))
+            })
+            .collect()
+    }
+
     fn apply_event_batch_immediate(&self, events: Vec<MEvent>) -> Result<usize, PersistError> {
+        self.apply_items_immediate(self.parse_events(events))
+    }
+
+    fn apply_items_immediate(&self, events: Vec<IngestEvent>) -> Result<usize, PersistError> {
         if events.is_empty() {
             return Ok(0);
         }
         let input_len = events.len();
 
-        let mut set_items: Vec<Arc<dyn AnyItem>> = Vec::new();
-        let mut del_items: Vec<Arc<dyn AnyItem>> = Vec::new();
+        // One grouped store write carries one change per key, so two events
+        // for one key in it reach subscribers as the later event alone, and a
+        // SET then DEL then SET of one key ends deleted. The batch is cut
+        // wherever a key repeats and the runs are applied in arrival order.
+        let mut runs: Vec<[Vec<Arc<dyn AnyItem>>; 2]> = Vec::new();
+        let mut run: [Vec<Arc<dyn AnyItem>>; 2] = Default::default();
+        let mut keys_in_run: HashSet<(&'static str, Arc<str>), ahash::RandomState> =
+            HashSet::with_hasher(ahash::RandomState::new());
+        let mut applied = 0usize;
 
-        for event in events {
-            let change = event.change_type;
-            let item_type = event.item_type;
-            let item_value = event.item;
-            let Some(item) = self.parse_item(&item_type, item_value) else {
-                tracing::warn!("Unknown entity type or parse error for ingest: {item_type}");
+        for (change, item) in events {
+            // NOTE(ts): A client re-sending a row unchanged writes nothing: it
+            // is not persisted and runs no relationships or re-routes. An
+            // executor repeating its instance row several times a second
+            // otherwise costs a full write each time.
+            if change == MEventType::SET && self.stores_equal(&item) {
                 continue;
-            };
+            }
+            let key = (item.entity_type(), item.id());
+            if !keys_in_run.insert(key.clone()) {
+                keys_in_run.clear();
+                runs.push(std::mem::take(&mut run));
+                keys_in_run.insert(key);
+            }
+            applied = applied.saturating_add(1);
+            let [sets, dels] = &mut run;
             match change {
-                MEventType::SET => set_items.push(item),
-                MEventType::DEL => del_items.push(item),
+                MEventType::SET => sets.push(item),
+                MEventType::DEL => dels.push(item),
             }
         }
+        runs.push(run);
 
-        let applied = set_items.len().saturating_add(del_items.len());
         if applied == 0 {
             return Ok(0);
         }
 
         tracing::trace!(
             target: "myko::server::context",
-            "apply_event_batch parsed: input_events={} sets={} dels={}",
+            "apply_event_batch parsed: input_events={} applied={} runs={}",
             input_len,
-            set_items.len(),
-            del_items.len()
+            applied,
+            runs.len()
         );
 
         // Ingested wire events are Local (cascade + produce); the shared batch
         // path groups by type, reduces, then runs the cascade/produce tail.
         // `emit_grouped` itself opens the `hyphae::batch` window (scoped to
         // just its reduce loop — see the comment there for why).
-        let emit = || -> Result<(), PersistError> {
-            self.submit_mutation_mode(
-                set_items.clone(),
-                MEventType::SET,
-                Origin::Local,
-                EdgeApplyMode::Import,
-            )?;
-            self.submit_mutation_mode(
-                del_items.clone(),
-                MEventType::DEL,
-                Origin::Local,
-                EdgeApplyMode::Import,
-            )?;
-            Ok(())
-        };
-        emit()?;
+        for [set_items, del_items] in runs {
+            for (items, change) in [(set_items, MEventType::SET), (del_items, MEventType::DEL)] {
+                if !items.is_empty() {
+                    self.submit_mutation_mode(items, change, Origin::Local, EdgeApplyMode::Import)?;
+                }
+            }
+        }
 
         Ok(applied)
+    }
+
+    /// Whether this context already stores `item` exactly.
+    fn stores_equal(&self, item: &Arc<dyn AnyItem>) -> bool {
+        self.registry
+            .get(item.entity_type())
+            .and_then(|store| store.get_value(&item.id()))
+            .is_some_and(|stored| stored.equals(item.as_ref()))
     }
 
     fn ingest_buffer_for(&self, entity_type: Arc<str>) -> Arc<BufferedIngestType> {
@@ -1134,7 +1832,12 @@ impl MykoServerContext {
             .clone()
     }
 
-    fn enqueue_buffered_events(&self, entity_type: Arc<str>, window_ms: u64, events: Vec<MEvent>) {
+    fn enqueue_buffered_events(
+        &self,
+        entity_type: Arc<str>,
+        window_ms: u64,
+        events: Vec<IngestEvent>,
+    ) {
         let buffer = self.ingest_buffer_for(entity_type.clone());
         let should_schedule = {
             let Ok(mut state) = buffer.state.lock() else {
@@ -1142,7 +1845,7 @@ impl MykoServerContext {
                     "Could not acquire ingest buffer lock for entity_type={}",
                     entity_type
                 );
-                if let Err(e) = self.apply_event_batch_immediate(events) {
+                if let Err(e) = self.apply_items_immediate(events) {
                     tracing::error!("Failed to apply buffered events for {}: {}", entity_type, e);
                 }
                 return;
@@ -1201,7 +1904,7 @@ impl MykoServerContext {
             events.len()
         );
 
-        match self.apply_event_batch_immediate(events) {
+        match self.apply_items_immediate(events) {
             Ok(count) => count,
             Err(e) => {
                 tracing::error!("Failed to flush buffered events for {}: {}", entity_type, e);
@@ -1516,6 +2219,7 @@ impl MykoServerContext {
         origin: Origin,
     ) -> Result<Option<super::MutationReplacement>, PersistError> {
         if matches!(origin, Origin::Transient)
+            || !super::proposed_state::has_rewriter(upserts, deletes)
             || self
                 .current_provenance()
                 .is_some_and(|provenance| provenance.undo_of_tx.is_some())
@@ -1577,6 +2281,17 @@ impl MykoServerContext {
         upserts: &[Arc<dyn AnyItem>],
         deletes: &[Arc<dyn AnyItem>],
     ) -> Result<(), PersistError> {
+        // Checked as a reversal first, which runs the most validators, so the
+        // common case with none to run never reads the provenance.
+        if !super::proposed_state::has_validator(upserts, deletes, true) {
+            return Ok(());
+        }
+        let reversal = self
+            .current_provenance()
+            .is_some_and(|provenance| provenance.undo_of_tx.is_some());
+        if !super::proposed_state::has_validator(upserts, deletes, reversal) {
+            return Ok(());
+        }
         super::ProposedState {
             server: Some(self),
             request: self.mutation_request(),
@@ -1585,14 +2300,129 @@ impl MykoServerContext {
             upserts,
             deletes,
         }
-        .validate(
-            self.current_provenance()
-                .is_some_and(|provenance| provenance.undo_of_tx.is_some()),
-        )
+        .validate(reversal)
         .map_err(|message| PersistError {
             entity_type: Arc::from("mutation"),
             message,
         })
+    }
+
+    /// Start loading a snapshot of a persisted log: the latest event of each
+    /// item, as a backend reads it. Every row lands where this server keeps
+    /// it; see [`LogLoad`](super::LogLoad).
+    #[must_use]
+    pub fn load_log(&self) -> super::LogLoad {
+        super::LogLoad::new(self)
+    }
+
+    /// Apply one event another host wrote, as a backend tails the log. An
+    /// event this host wrote is skipped: it already holds it.
+    pub fn apply_logged(&self, event: &MEvent) {
+        if event.source_id.as_deref() == Some(self.host_id.to_string().as_str()) {
+            return;
+        }
+        if self.partitions().is_some() {
+            if let Err(error) = self.replay([event.clone()]) {
+                tracing::error!(entity_type = %event.item_type, %error, "a logged event was refused");
+            }
+            return;
+        }
+        let registry = &self.registry;
+        match event.change_type {
+            MEventType::SET => {
+                if let Some(item) = self.parse_logged(event) {
+                    registry.with_mutation(|| {
+                        registry
+                            .get_or_create(item.entity_type())
+                            .insert(item.id(), item);
+                    });
+                } else {
+                    tracing::error!(entity_type = %event.item_type, "a logged event does not parse");
+                }
+            }
+            MEventType::DEL => {
+                if let Some(id) = event.item.get("id").and_then(|id| id.as_str()) {
+                    registry.with_mutation(|| {
+                        registry.get_or_create(&event.item_type).remove(&id.into());
+                    });
+                } else {
+                    tracing::error!(entity_type = %event.item_type, "a logged delete names no id");
+                }
+            }
+        }
+    }
+
+    /// The item a logged event holds, or `None` when its type is unknown
+    /// here or it does not parse into the type's current shape.
+    pub(crate) fn parse_logged(&self, event: &MEvent) -> Option<Arc<dyn AnyItem>> {
+        let parse = self.handler_registry.item_parser(&event.item_type)?;
+        parse(event.item.clone()).ok()
+    }
+
+    /// Whether a loaded row of `entity_type` goes through the partition
+    /// schema rather than straight into root's store.
+    pub(crate) fn places(&self, entity_type: &str) -> bool {
+        self.partitions()
+            .is_some_and(|partitions| partitions.places(entity_type))
+    }
+
+    pub(crate) fn place_logged(&self, rows: Vec<Arc<dyn AnyItem>>) -> Result<(), PersistError> {
+        self.partitions()
+            .map_or(Ok(()), |partitions| partitions.load(rows))
+    }
+
+    pub(crate) fn held_rows(&self) -> std::collections::BTreeMap<Arc<str>, usize> {
+        self.partitions()
+            .map(|partitions| partitions.held_rows())
+            .unwrap_or_default()
+    }
+
+    /// Apply a persisted event log at startup, oldest event first.
+    ///
+    /// Nothing is validated, recorded or cascaded again: the log holds every
+    /// effect. With partitions, every shared event is applied first, then
+    /// every partitioned event in log order, each in the partition that holds
+    /// its row once shared data is applied. A partition the application opens
+    /// itself, rather than through its lifecycle type, must be open first.
+    ///
+    /// Returns the number of events applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when an event names a type this server cannot parse.
+    pub fn replay(&self, events: impl IntoIterator<Item = MEvent>) -> Result<usize, PersistError> {
+        let events = events
+            .into_iter()
+            .map(|event| {
+                let parse = self
+                    .handler_registry
+                    .item_parser(&event.item_type)
+                    .ok_or_else(|| PersistError {
+                        entity_type: event.item_type.clone(),
+                        message: "no parser for this entity type".into(),
+                    })?;
+                let item = parse(event.item).map_err(|error| PersistError {
+                    entity_type: event.item_type.clone(),
+                    message: error.to_string(),
+                })?;
+                Ok((item, event.change_type))
+            })
+            .collect::<Result<Vec<_>, PersistError>>()?;
+        let count = events.len();
+        match self.partitions() {
+            Some(partitions) => partitions.replay(events)?,
+            None => {
+                for (item, change) in events {
+                    self.submit_local(
+                        vec![item],
+                        change,
+                        Origin::Replay,
+                        EdgeApplyMode::Authoritative,
+                    )?;
+                }
+            }
+        }
+        Ok(count)
     }
 
     fn submit_mutation_mode(
@@ -1602,10 +2432,80 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<(), PersistError> {
+        match self.partitions() {
+            Some(partitions) => partitions.submit(self, items, change, origin, mode),
+            None => self.submit_local(items, change, origin, mode),
+        }
+    }
+
+    /// Apply a write to this context's own stores. With partitions, the
+    /// caller has routed `items` here.
+    pub(crate) fn submit_local(
+        &self,
+        items: Vec<Arc<dyn AnyItem>>,
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+    ) -> Result<(), PersistError> {
+        let entity_type = items.first().map(|item| item.entity_type());
         self.registry.transactions.coordinate(
             super::proposed_state::requires_authority(items.iter()),
             || self.submit_mutation_mode_coordinated(items, change, origin, mode),
-        )
+        )?;
+        if self.home.is_some()
+            && let (Some(entity_type), Some(partitions)) = (entity_type, self.partitions())
+            && partitions.places_by(entity_type)
+        {
+            // Placed off this partition's work: the watches are shared by
+            // every partition, and the hook reads root.
+            crate::core::off_wave::off_wave(move || partitions.place_unplaced());
+        }
+        Ok(())
+    }
+
+    /// Admit a write that is applied later or elsewhere: run everything that
+    /// can refuse it and record its events now, on the writer's path, so
+    /// applying it cannot fail and its events are in admission order.
+    /// `before` gives each row's value as of this admission.
+    ///
+    /// Returns the origin to apply it with.
+    pub(crate) fn admit(
+        &self,
+        items: &[Arc<dyn AnyItem>],
+        change: MEventType,
+        origin: Origin,
+        mode: EdgeApplyMode,
+        before: impl Fn(&Arc<dyn AnyItem>) -> Option<Arc<dyn AnyItem>>,
+    ) -> Result<Origin, PersistError> {
+        if origin.should_prepare()
+            && matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import)
+        {
+            let (upserts, deletes) = if change == MEventType::SET {
+                (items, &[][..])
+            } else {
+                (&[][..], items)
+            };
+            if self.rewrite_plan(upserts, deletes, origin)?.is_some() {
+                return Err(PersistError {
+                    entity_type: Arc::from(
+                        items.first().map_or("mutation", |item| item.entity_type()),
+                    ),
+                    message: "a write a rewriter would change cannot be applied after its \
+                              admission; write it outside a shared write"
+                        .into(),
+                });
+            }
+            self.validate_mutation(items, change)?;
+        }
+        if origin.should_persist() {
+            for item in items {
+                self.persist_mutation(item, change, before(item).as_ref())?;
+            }
+        }
+        Ok(match origin {
+            Origin::Local | Origin::Cascade => Origin::Admitted,
+            other => other,
+        })
     }
 
     fn prepare_mutation(
@@ -1615,7 +2515,9 @@ impl MykoServerContext {
         origin: Origin,
         mode: EdgeApplyMode,
     ) -> Result<bool, PersistError> {
-        if matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import) {
+        if origin.should_prepare()
+            && matches!(mode, EdgeApplyMode::Authoritative | EdgeApplyMode::Import)
+        {
             let (upserts, deletes) = if change == MEventType::SET {
                 (items, &[][..])
             } else {
@@ -1759,6 +2661,19 @@ impl MykoServerContext {
         origin: Origin,
         expected_graph_generation: Option<u64>,
     ) -> Result<bool, PersistError> {
+        if let Some(root) = self.unrouted_owner(
+            upserts
+                .iter()
+                .chain(&deletes)
+                .map(|item| item.entity_type()),
+        )? {
+            return root.submit_replace_mutation_inner(
+                upserts,
+                deletes,
+                origin,
+                expected_graph_generation,
+            );
+        }
         self.registry.transactions.coordinate(
             super::proposed_state::requires_authority(upserts.iter().chain(&deletes)),
             || {
@@ -1963,7 +2878,7 @@ impl MykoServerContext {
                     .apply(old.as_deref(), new)
                     .map_err(|error| Self::graph_error(item.as_ref(), error))?;
             }
-            let persist_result = if origin.should_produce() {
+            let persist_result = if origin.should_persist() {
                 self.persist_mutation(&item, change, old.as_ref())
             } else {
                 Ok(())
@@ -2165,7 +3080,7 @@ impl MykoServerContext {
                                 .apply(old, new)
                                 .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                         }
-                        if origin.should_produce() {
+                        if origin.should_persist() {
                             self.persist_mutation(
                                 item,
                                 change,
@@ -2371,7 +3286,7 @@ impl MykoServerContext {
                         .apply(old, None)
                         .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
-                if origin.should_produce() {
+                if origin.should_persist() {
                     self.persist_mutation(
                         item,
                         MEventType::DEL,
@@ -2390,7 +3305,7 @@ impl MykoServerContext {
                         .apply(old, Some(item.as_ref()))
                         .map_err(|error| Self::graph_error(item.as_ref(), error))?;
                 }
-                if origin.should_produce() {
+                if origin.should_persist() {
                     self.persist_mutation(
                         item,
                         MEventType::SET,
@@ -2459,7 +3374,9 @@ impl MykoServerContext {
             }
         }
 
-        // Relationships: run cascades unless this origin must not descend.
+        // Relationships: keep the reverse indexes current whatever the
+        // origin, and run cascades unless this origin must not descend.
+        self.relationship_manager.track(items, change, self);
         if origin.should_cascade(change) {
             match change {
                 MEventType::SET => {
@@ -2492,6 +3409,12 @@ impl MykoServerContext {
                     }
                 }
             }
+        }
+
+        if self.home.is_none()
+            && let Some(partitions) = self.partitions()
+        {
+            partitions.shared_write_applied(items, change, origin.should_cascade(change));
         }
 
         Ok(())
@@ -2600,7 +3523,7 @@ impl MykoServerContext {
     }
 
     pub(crate) fn operation_owner(&self) -> *const () {
-        Arc::as_ptr(&self.causal_counters).cast()
+        Arc::as_ptr(&self.operation_identity).cast()
     }
 
     fn persist_record(
@@ -2692,6 +3615,12 @@ impl MykoServerContext {
     ///
     /// The typed projection is cached — multiple callers with the same query
     /// share a single underlying map instead of each creating their own copy.
+    ///
+    /// The map follows the store through diffs the scheduler delivers. While
+    /// another thread drains the domain, a write that has returned can reach
+    /// the map after it is built, so its first contents may predate that
+    /// write. Read a point-in-time result, your own writes included, with
+    /// [`query_snapshot`](Self::query_snapshot).
     pub fn query_map<Q>(
         &self,
         query: Q,
@@ -2712,8 +3641,10 @@ impl MykoServerContext {
         let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         // Hold the untyped map alive so the weak ref in the cache entry stays valid.
         let untyped = self.query_map_untyped(query, request);
-        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
-            typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
+        self.in_domain(|| {
+            Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+                typed_map_from_any_item_with_typed_id(source, "MykoServerContext::query_map")
+            })
         })
     }
 
@@ -2736,8 +3667,11 @@ impl MykoServerContext {
         F: LiveFilterQuery,
         F::Item: WithTypedId,
     {
-        let untyped = crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
-        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        self.in_domain(|| {
+            let untyped =
+                crate::query::query_live(self.registry.clone(), self.host_id, filter_cell);
+            typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        })
     }
 
     /// Build a live-filter query in the originating request context.
@@ -2750,9 +3684,11 @@ impl MykoServerContext {
         F: LiveFilterQuery,
         F::Item: WithTypedId,
     {
-        let untyped =
-            crate::query::query_live_in_context(self.registry.clone(), request, filter_cell);
-        typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        self.in_domain(|| {
+            let untyped =
+                crate::query::query_live_in_context(self.registry.clone(), request, filter_cell);
+            typed_map_from_any_item_with_typed_id(untyped, "MykoServerContext::query_live")
+        })
     }
 
     /// Run a reactive query and return a typed map keyed by canonical string ids.
@@ -2770,8 +3706,10 @@ impl MykoServerContext {
     {
         let key = Self::cache_key("query", Q::query_id_static().as_ref(), &query, &request);
         let untyped = self.query_map_untyped(query, request);
-        Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
-            typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
+        self.in_domain(|| {
+            Self::typed_projection(&self.query_cache, &key, &untyped, |source| {
+                typed_map_arc_from_any_item(source, "MykoServerContext::query_map_by_str")
+            })
         })
     }
 
@@ -2822,6 +3760,18 @@ impl MykoServerContext {
     /// Fast-path lookup shared by the query and view untyped-map caches:
     /// return the live shared map if the weak ref still upgrades, otherwise
     /// evict the dead entry and report a miss.
+    fn remember_refusal(&self, key: &str, refused: Option<Arc<str>>) {
+        if let Some(entity_type) = refused {
+            self.refused_builds.insert(key.to_owned(), entity_type);
+        }
+    }
+
+    fn repeat_refusal(&self, key: &str) {
+        if let Some(entity_type) = self.refused_builds.get(key) {
+            crate::store::record_root_read(entity_type.value());
+        }
+    }
+
     fn try_get_cached(
         cache: &DashMap<String, MapCacheEntry, ahash::RandomState>,
         key: &str,
@@ -2848,8 +3798,8 @@ impl MykoServerContext {
         project: impl Fn(FilteredCellMap) -> CellMap<K, V, CellImmutable>,
     ) -> CellMap<K, V, CellImmutable>
     where
-        K: std::hash::Hash + Eq + hyphae::traits::CellValue + 'static,
-        V: hyphae::traits::CellValue + 'static,
+        K: std::hash::Hash + Eq + hyphae::CellValue + 'static,
+        V: hyphae::CellValue + 'static,
     {
         if let Some(entry) = cache.get(key)
             && let Some(typed) = entry.value().get_or_create_typed(&project)
@@ -2883,6 +3833,7 @@ impl MykoServerContext {
     ) -> FilteredCellMap {
         // Fast path
         if let Some(cell) = Self::try_get_cached(cache, key) {
+            self.repeat_refusal(key);
             return cell;
         }
 
@@ -2897,10 +3848,12 @@ impl MykoServerContext {
 
         // Re-check after gate
         if let Some(cell) = Self::try_get_cached(cache, key) {
+            self.repeat_refusal(key);
             return cell;
         }
 
-        let computed = compute();
+        let (computed, refused) = watch_root_reads(|| self.in_domain(compute));
+        self.remember_refusal(key, refused);
         cache.insert(key.to_string(), MapCacheEntry::new(&computed));
         // The gate's only job was deduping concurrent first-computation; once
         // the cache entry above is visible, any racing caller's re-check will
@@ -2919,6 +3872,14 @@ impl MykoServerContext {
         V: ViewFactory + Clone + Send + Sync + 'static,
         V::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
     {
+        if self.partitions().is_some() && super::partition::is_merged(&V::view_id_static()) {
+            tracing::error!(
+                view_id = %V::view_id_static(),
+                "a view merged across partitions exists only for its subscriber; no graph \
+                 may read it, so this read is refused and returns no rows"
+            );
+            return CellMap::new().lock();
+        }
         let key = Self::cache_key_with_scope(
             "view",
             V::view_id_static().as_ref(),
@@ -2961,8 +3922,10 @@ impl MykoServerContext {
         );
         let untyped = self.view_map_untyped(view, request);
         if let Some(entry) = self.view_cache.get(&key)
-            && let Some(typed) = entry.value().get_or_create_typed(|source| {
-                typed_map_arc_from_any_item(source, "MykoServerContext::view")
+            && let Some(typed) = self.in_domain(|| {
+                entry.value().get_or_create_typed(|source| {
+                    typed_map_arc_from_any_item(source, "MykoServerContext::view")
+                })
             })
         {
             return typed;
@@ -2976,10 +3939,50 @@ impl MykoServerContext {
 
     /// Run a one-shot (non-reactive) query.
     ///
-    /// Iterates the store directly and returns matching entities without creating
-    /// any reactive cells or subscriptions. Use this for command handlers and other
-    /// contexts where you need a point-in-time snapshot, not a live query.
+    /// Reads the rows the query's route selects, or every row of the store
+    /// when it has none, and returns the ones that match. No reactive cell
+    /// or subscription is created. A write that has returned is visible to
+    /// the next snapshot. Use this for command handlers and other contexts
+    /// where you need a point-in-time snapshot, not a live query.
     pub fn query_snapshot<Q>(&self, query: Q, request: Arc<RequestContext>) -> Vec<Arc<Q::Item>>
+    where
+        Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
+        Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
+    {
+        match self.one_shot_reader(&Q::query_item_type_static()) {
+            OneShot::Here => self.in_domain(|| self.query_snapshot_here(query, request)),
+            OneShot::In(partition) => partition.query_snapshot_here(query, request),
+            OneShot::NoRows => Vec::new(),
+        }
+    }
+
+    /// Where a one-shot read of `entity_type` on this context runs.
+    ///
+    /// A one-shot read may be taken from any thread, a partition's wave
+    /// included, and may build what it routes through (an index, a
+    /// registered source). From inside a partition's wave, a read on the
+    /// root context cannot build root state, so it runs on that partition's
+    /// context: the same shared rows, through the partition's own copies of
+    /// root's indexes, as of the point in root's order the partition has
+    /// reached. A partitioned type read on root has no rows, as everywhere.
+    fn one_shot_reader(&self, entity_type: &str) -> OneShot {
+        if self.home.is_some() {
+            return OneShot::Here;
+        }
+        let Some(partitions) = self.partitions() else {
+            return OneShot::Here;
+        };
+        let Some(partition) = partitions.propagating() else {
+            return OneShot::Here;
+        };
+        if partitions.is_partitioned(entity_type) {
+            OneShot::NoRows
+        } else {
+            OneShot::In(Box::new(partition))
+        }
+    }
+
+    fn query_snapshot_here<Q>(&self, query: Q, request: Arc<RequestContext>) -> Vec<Arc<Q::Item>>
     where
         Q: QueryHandler + QueryParams + Clone + Send + Sync + 'static,
         Q::Item: DeserializeOwned + Clone + std::fmt::Debug + Send + Sync + 'static,
@@ -2990,7 +3993,7 @@ impl MykoServerContext {
         let query_context = Arc::new(QueryContext { req: request });
         let query = Arc::new(query);
 
-        let source = crate::query::registered_entity_source(
+        let scoped = crate::query::registered_entity_source(
             &crate::query::QueryBuildContext::new(
                 query_context.clone(),
                 self.registry.clone(),
@@ -2998,11 +4001,29 @@ impl MykoServerContext {
             ),
             &query_item_type,
             query.as_ref(),
-        )
-        .map_or_else(|| store.snapshot(), |source| source.snapshot());
-        source
+        );
+        let all_rows = |store: &crate::store::EntityStore| -> Vec<Arc<dyn AnyItem>> {
+            store.snapshot().into_iter().map(|(_, item)| item).collect()
+        };
+        let candidates: Vec<Arc<dyn AnyItem>> = match (scoped, query.snapshot_route()) {
+            (Some(source), _) => source
+                .snapshot()
+                .into_iter()
+                .map(|(_, item)| item)
+                .collect(),
+            (None, Some(crate::query::QueryRoute::Ids(ids))) => {
+                let ids: HashSet<Arc<str>> = ids.into_iter().collect();
+                ids.iter().filter_map(|id| store.get_value(id)).collect()
+            }
+            (None, Some(crate::query::QueryRoute::BelongsTo(route))) => {
+                crate::query::belongs_to_route_snapshot(&self.registry, &query_item_type, &route)
+                    .unwrap_or_else(|| all_rows(&store))
+            }
+            (None, None) => all_rows(&store),
+        };
+        candidates
             .into_iter()
-            .filter_map(|(_, item)| {
+            .filter_map(|item| {
                 let typed_item =
                     downcast_any_item_arc::<Q::Item>(&item, "MykoServerContext::query_snapshot")?;
                 let ctx = QueryTestContext {
@@ -3038,6 +4059,7 @@ impl MykoServerContext {
 
         // Fast path: cache hit with live cell.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            self.repeat_refusal(&key);
             crate::server::report_cache_stats::record_hit(&report_id);
             tracing::trace!(
                 target: "myko::server::context::report_cache",
@@ -3061,6 +4083,7 @@ impl MykoServerContext {
 
         // Re-check after acquiring the gate — another thread may have computed while we waited.
         if let Some(cell) = self.try_get_cached_report::<R>(&key) {
+            self.repeat_refusal(&key);
             crate::server::report_cache_stats::record_hit_after_gate(&report_id);
             tracing::trace!(
                 target: "myko::server::context::report_cache",
@@ -3095,16 +4118,10 @@ impl MykoServerContext {
         // The trait returns `impl Pipeline<...>`; materialize once here so the
         // cache and downstream consumers get a concrete `Cell`. This is the only
         // materialization per report, regardless of how deep the inner chain is.
-        let built = report.compute(nested_ctx).materialize();
+        let (built, refused) =
+            watch_root_reads(|| self.in_domain(|| report.compute(nested_ctx).materialize()));
         drop(report);
-        // Named by report id (bounded cardinality — one name per report
-        // *type*, not per invocation) so hyphae's `hyphae.fanout` span
-        // (under the `profiling` feature) surfaces `cell.name` instead of
-        // being anonymous. `Cell<T, CellImmutable>::with_name` is available
-        // post-materialize (unlike `CellMap`, which only exposes it pre-lock
-        // — query/view result maps can't be named at this seam the same way).
-        #[cfg(feature = "profiling")]
-        let built = built.with_name(report_id.as_ref());
+        self.remember_refusal(&key, refused);
         self.report_cache
             .insert(key.clone(), Arc::new(ReportCacheEntry::new(&built)));
         // See the matching comment in `query_map_untyped` — the gate is only
@@ -3174,7 +4191,7 @@ mod tests {
         core::item::{
             AnyItem, Eventable, IngestBufferPolicy, IngestBufferRegistration, ItemRegistration,
         },
-        hyphae::{Gettable, Materialize, ReactiveKeys},
+        hyphae::{Gettable, Materialize, ReactiveKeys, Watchable},
         search::SearchIndex,
         server::{
             HandlerRegistry, PersistError, Persister, RelationshipManager,
@@ -3915,6 +4932,248 @@ mod tests {
         assert!(
             store
                 .get(&Arc::<str>::from("buffered-1"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+    }
+
+    #[test]
+    #[ignore = "known loss without the process-wide write window (ac03eb4d reverted): when two threads write at \
+                once the scheduler keeps one pending update per cell, so an intermediate value is replaced. The \
+                fix belongs in hyphae (a writer's batch close must not return before its own operations have run)."]
+    fn a_write_on_another_thread_waits_for_the_window_being_settled() {
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let armed = Arc::new(AtomicBool::new(false));
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel::<()>();
+        let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
+        let release_rx = std::sync::Mutex::new(release_rx);
+        let slow_armed = armed.clone();
+        let _slow = ctx
+            .registry
+            .get_or_create("BufferedTestItem")
+            .subscribe_diffs(move |_| {
+                if slow_armed.load(Ordering::Relaxed) {
+                    let _ = entered_tx.send(());
+                    let _ = release_rx
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .recv();
+                }
+            });
+        // A row read by key is a value cell: the scheduler keeps one pending
+        // update for it, so a second write before the first is delivered
+        // replaces it.
+        let delivered = Arc::new(AtomicUsize::new(0));
+        let counter = delivered.clone();
+        let counter_armed = armed.clone();
+        let row = ctx
+            .registry
+            .get_or_create("ImmediateTestItem")
+            .get(&Arc::<str>::from("row"))
+            .materialize();
+        let _fast = row.subscribe(move |_| {
+            if counter_armed.load(Ordering::Relaxed) {
+                counter.fetch_add(1, Ordering::Relaxed);
+            }
+        });
+        armed.store(true, Ordering::Relaxed);
+
+        let slow_ctx = ctx.clone();
+        let settling = std::thread::spawn(move || {
+            slow_ctx.set_dyn(Arc::new(BufferedTestItem {
+                id: "slow".into(),
+                value: 0,
+            }))
+        });
+        assert!(entered_rx.recv().is_ok(), "the slow subscriber never ran");
+
+        let writer_ctx = ctx;
+        let writer_delivered = delivered.clone();
+        let writer = std::thread::spawn(move || {
+            (1..=2)
+                .map(|value| {
+                    let written = writer_ctx.set_dyn(Arc::new(ImmediateTestItem {
+                        id: "row".into(),
+                        value,
+                    }));
+                    (written.is_ok(), writer_delivered.load(Ordering::Relaxed))
+                })
+                .collect::<Vec<_>>()
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert!(release_tx.send(()).is_ok());
+        assert!(settling.join().is_ok_and(|written| written.is_ok()));
+        let seen_at_return = writer.join().unwrap_or_default();
+
+        assert_eq!(
+            delivered.load(Ordering::Relaxed),
+            2,
+            "a write was merged into the next one while another thread was settling"
+        );
+        assert_eq!(
+            seen_at_return,
+            vec![(true, 1), (true, 2)],
+            "each write must be delivered by the time its call returns"
+        );
+    }
+
+    #[test]
+    fn a_subscriber_on_the_wave_pool_can_write() {
+        struct RestoreThreshold;
+        impl Drop for RestoreThreshold {
+            fn drop(&mut self) {
+                hyphae::scheduler::set_wave_threshold(256);
+            }
+        }
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let armed = Arc::new(AtomicBool::new(false));
+        let writer_armed = armed.clone();
+        let writer_ctx = ctx.clone();
+        let _relay = ctx
+            .registry
+            .get_or_create("BufferedTestItem")
+            .subscribe_diffs(move |_| {
+                if writer_armed.swap(false, Ordering::Relaxed) {
+                    let _ = writer_ctx.set_dyn(Arc::new(ImmediateTestItem {
+                        id: "relayed".into(),
+                        value: 1,
+                    }));
+                }
+            });
+        armed.store(true, Ordering::Relaxed);
+        // Every wave now runs on hyphae's pool while this write holds the
+        // window and waits for it.
+        hyphae::scheduler::set_wave_threshold(1);
+        let _restore = RestoreThreshold;
+
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let write_ctx = ctx.clone();
+        std::thread::spawn(move || {
+            let written = write_ctx.set_dyn(Arc::new(BufferedTestItem {
+                id: "source".into(),
+                value: 0,
+            }));
+            let _ = done_tx.send(written.is_ok());
+        });
+
+        assert_eq!(
+            done_rx.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(true),
+            "a write from a pool thread waited for the window its own drain holds"
+        );
+        assert!(
+            ctx.registry
+                .get_or_create("ImmediateTestItem")
+                .get(&Arc::<str>::from("relayed"))
+                .materialize()
+                .get()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn apply_event_batch_skips_a_set_equal_to_the_stored_row() {
+        fn event(value: i32) -> MEvent {
+            MEvent {
+                item: json!({ "id": "row", "value": value }),
+                change_type: MEventType::SET,
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-resend".into(),
+                source_id: Some("test".into()),
+            }
+        }
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        assert_eq!(ctx.apply_event_batch(vec![event(1)]).ok(), Some(1));
+        let row = ctx
+            .registry
+            .get_or_create("ImmediateTestItem")
+            .get(&Arc::<str>::from("row"))
+            .materialize();
+        let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = seen.clone();
+        let _guard = row.subscribe(move |signal| {
+            if let hyphae::Signal::Value(_) = signal {
+                counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        });
+        let initial = seen.load(std::sync::atomic::Ordering::SeqCst);
+
+        assert_eq!(
+            ctx.apply_event_batch(vec![event(1), event(1)]).ok(),
+            Some(0),
+            "a re-sent unchanged row writes nothing"
+        );
+        assert_eq!(seen.load(std::sync::atomic::Ordering::SeqCst), initial);
+
+        assert_eq!(ctx.apply_event_batch(vec![event(2)]).ok(), Some(1));
+        assert_eq!(
+            seen.load(std::sync::atomic::Ordering::SeqCst),
+            initial + 1,
+            "a changed row is still written"
+        );
+    }
+
+    #[test]
+    fn apply_event_batch_applies_events_of_one_key_in_order() {
+        fn event(id: &str, value: i32, change_type: MEventType) -> MEvent {
+            MEvent {
+                item: json!({ "id": id, "value": value }),
+                change_type,
+                item_type: "ImmediateTestItem".into(),
+                created_at: "2026-03-12T00:00:00Z".into(),
+                tx: "tx-burst".into(),
+                source_id: Some("test".into()),
+            }
+        }
+        let _serial = scheduler_test_serial();
+        let ctx = make_ctx();
+        let store = ctx.registry.get_or_create("ImmediateTestItem");
+        let row = store.get(&Arc::<str>::from("row")).materialize();
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_by_subscriber = seen.clone();
+        let _guard = row.subscribe(move |signal| {
+            if let hyphae::Signal::Value(item) = signal {
+                let value = item.as_ref().as_ref().and_then(|item| {
+                    item.as_any()
+                        .downcast_ref::<ImmediateTestItem>()
+                        .map(|typed| typed.value)
+                });
+                seen_by_subscriber
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(value);
+            }
+        });
+        seen.lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
+
+        let applied = ctx
+            .apply_event_batch(vec![
+                event("row", 1, MEventType::SET),
+                event("other", 1, MEventType::SET),
+                event("row", 2, MEventType::SET),
+                event("row", 2, MEventType::DEL),
+                event("row", 3, MEventType::SET),
+            ])
+            .ok();
+
+        assert_eq!(applied, Some(5));
+        assert_eq!(
+            *seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+            vec![Some(1), Some(2), None, Some(3)],
+            "every event of the key must reach its subscriber, in the order sent"
+        );
+        assert!(
+            store
+                .get(&Arc::<str>::from("other"))
                 .materialize()
                 .get()
                 .is_some()

@@ -106,6 +106,11 @@ fn item_registry_index() -> &'static AMap<&'static str, &'static ItemRegistratio
     })
 }
 
+/// Every entity type registered in this binary.
+pub fn registered_entity_types() -> impl Iterator<Item = &'static str> {
+    item_registry_index().keys().copied()
+}
+
 /// Look up the typed JSON serialize shim for an `entity_type`.
 /// Returns `None` for unregistered types (e.g. the client-side `ValueItem`
 /// wrapper), in which case callers should fall back to `erased_serde`.

@@ -19,7 +19,7 @@ pub trait ViewIdStatic {
 }
 
 pub trait ViewItemType {
-    type Item: hyphae::traits::CellValue;
+    type Item: hyphae::CellValue;
     fn view_item_type(&self) -> Arc<str>;
     fn view_item_type_static() -> Arc<str>;
 }
@@ -72,6 +72,23 @@ pub trait ViewHandler: ViewItemType + Sized {
     {
         unreachable!("view handlers execute on the server")
             as super::cell::TypedViewCellMap<Self::Item>
+    }
+
+    /// Answer a live subscription from maps that already exist.
+    ///
+    /// Return `Some` to serve a websocket subscription with a read of shared
+    /// maps, typically [`ErasedViewMap::switched`](super::cell::ErasedViewMap::switched)
+    /// over a view read through `ctx.view_map_untyped`, so a subscriber costs
+    /// no scheduled write per changed row. It must deliver the same rows that
+    /// [`build_cell`](Self::build_cell) would. The default, `None`, materializes
+    /// `build_cell` for the subscription. One-shot reads and `ctx.view` always
+    /// use `build_cell`.
+    #[must_use]
+    fn subscribe(_ctx: &ViewBuildArgs<Self>) -> Option<super::cell::ErasedViewMap>
+    where
+        Self: Send + Sync + 'static,
+    {
+        None
     }
 }
 

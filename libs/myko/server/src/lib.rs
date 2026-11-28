@@ -12,6 +12,8 @@
 mod blocking_work;
 mod delivery_diagnostics;
 mod gateway_access;
+mod inbound_events;
+mod outbound_queue;
 mod subscription_authorization;
 mod time_limits;
 mod view_sampling;
@@ -116,6 +118,8 @@ pub struct MykoServerBuilder {
     /// set; binaries override this to advertise their own name / version /
     /// instructions on the `/myko/mcp` endpoint.
     server_info: Option<mcp::dispatch::ServerInfo>,
+    history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>>,
+    partitions: Option<myko::server::PartitionSchema>,
 }
 
 type AfterInitCallback =
@@ -269,6 +273,27 @@ impl MykoServerBuilder {
         self
     }
 
+    /// Serve durable history (undo, transaction replay) from `provider`
+    /// instead of Postgres, for example from fixtures in a test. It replaces
+    /// the provider `with_postgres` would install.
+    #[must_use]
+    pub fn with_history_replay(
+        mut self,
+        provider: Arc<dyn myko::server::HistoryReplayProvider>,
+    ) -> Self {
+        self.history_replay = Some(provider);
+        self
+    }
+
+    /// Partition the server's live state as `schema` declares. A client
+    /// subscription over a partitioned type opens in the partition the
+    /// schema's subscription hook names, and is delivered from there.
+    #[must_use]
+    pub fn with_partitions(mut self, schema: myko::server::PartitionSchema) -> Self {
+        self.partitions = Some(schema);
+        self
+    }
+
     /// Build the server.
     #[must_use]
     pub fn build(self) -> MykoServer {
@@ -278,7 +303,7 @@ impl MykoServerBuilder {
 
         let server_info = Arc::new(self.server_info.unwrap_or_default());
 
-        let mut server = MykoServer::new(MykoServerConfig {
+        let mut server = MykoServer::assemble(MykoServerConfig {
             bind_addr,
             tcp_nodelay: self.tcp_nodelay.unwrap_or(true),
             postgres: self.postgres,
@@ -293,6 +318,12 @@ impl MykoServerBuilder {
         server.auth_provider = self.auth_provider;
         server.websocket_path = self.websocket_path.unwrap_or(server.websocket_path);
         server.mcp_path = self.mcp_path.unwrap_or(server.mcp_path);
+        if let Some(provider) = self.history_replay {
+            server.history_replay = Some(provider);
+        }
+        server.partitioned = self.partitions.is_some();
+        server.partitions = std::sync::Mutex::new(self.partitions);
+        server.start_postgres_consumer();
         server
     }
 }
@@ -324,7 +355,9 @@ pub struct MykoServer {
     _postgres_producer_owner: Option<PostgresProducer>,
     /// Postgres consumer (kept alive)
     postgres_consumer: Option<PostgresConsumer>,
-    history_replay: Option<Arc<PostgresHistoryReplayProvider>>,
+    /// The history provider the consumer reports to, until it starts.
+    consumer_history: Option<Arc<PostgresHistoryReplayProvider>>,
+    history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>>,
     /// Whether the server is ready to accept connections
     ready: Arc<AtomicBool>,
     /// Peer registry for federation (initialized after catch-up)
@@ -354,6 +387,10 @@ pub struct MykoServer {
     /// same tick. Every `MykoServerContext` field is an `Arc`/`Cell`/`Uuid`, so a
     /// clone is a handful of refcount bumps that share the underlying state.
     ctx_cache: std::sync::OnceLock<MykoServerContext>,
+    /// Taken by the first `ctx()`, which partitions the memoized context.
+    partitions: std::sync::Mutex<Option<myko::server::PartitionSchema>>,
+    /// Whether the server declared partitions.
+    partitioned: bool,
 }
 
 impl MykoServer {
@@ -364,7 +401,36 @@ impl MykoServer {
     }
 
     /// Create a new cell-based server.
+    #[must_use]
     pub fn new(config: MykoServerConfig) -> Self {
+        let mut server = Self::assemble(config);
+        server.start_postgres_consumer();
+        server
+    }
+
+    /// Start tailing Postgres into this server, once it is configured. Every
+    /// row read back lands through the server's context.
+    fn start_postgres_consumer(&mut self) {
+        let (Some(postgres_config), Some(history_replay)) =
+            (self.config.postgres.clone(), self.consumer_history.take())
+        else {
+            return;
+        };
+        match PostgresConsumer::start(
+            &postgres_config,
+            self.handler_registry.clone(),
+            self.ctx(),
+            history_replay,
+        ) {
+            Ok(consumer) => self.postgres_consumer = Some(consumer),
+            Err(e) => tracing::error!("Failed to start Postgres consumer: {}", e),
+        }
+        // Without a durable consumer the server is ready at once.
+        self.ready
+            .store(self.postgres_consumer.is_none(), Ordering::SeqCst);
+    }
+
+    fn assemble(config: MykoServerConfig) -> Self {
         let host_id = config.host_id.unwrap_or_else(Uuid::new_v4);
         let registry = Arc::new(StoreRegistry::new());
         let handler_registry = Arc::new(HandlerRegistry::new());
@@ -374,7 +440,7 @@ impl MykoServer {
         init_client_registry();
 
         let (saga_event_tx, saga_event_rx) = flume::unbounded::<MEvent>();
-        let (history_replay, postgres_producer_owner, postgres_producer, postgres_consumer) =
+        let (history_replay, postgres_producer_owner, postgres_producer, consumer_history) =
             config.postgres.as_ref().map_or_else(
                 || (None, None, None, None),
                 |postgres_config| {
@@ -383,20 +449,12 @@ impl MykoServer {
                     match PostgresProducer::new(postgres_config, host_id) {
                         Ok(producer) => {
                             let handle = producer.handle();
-                            let consumer = match PostgresConsumer::start(
-                                postgres_config,
-                                host_id,
-                                handler_registry.clone(),
-                                registry.clone(),
-                                history_replay.clone(),
-                            ) {
-                                Ok(c) => Some(c),
-                                Err(e) => {
-                                    tracing::error!("Failed to start Postgres consumer: {}", e);
-                                    None
-                                }
-                            };
-                            (Some(history_replay), Some(producer), Some(handle), consumer)
+                            (
+                                Some(history_replay.clone()),
+                                Some(producer),
+                                Some(handle),
+                                Some(history_replay),
+                            )
                         }
                         Err(e) => {
                             tracing::error!("Failed to create Postgres producer: {}", e);
@@ -406,8 +464,7 @@ impl MykoServer {
                 },
             );
 
-        // If no durable consumer, server is immediately ready
-        let ready = Arc::new(AtomicBool::new(postgres_consumer.is_none()));
+        let ready = Arc::new(AtomicBool::new(true));
 
         // Initialize full-text search index
         let search_index = Arc::new(SearchIndex::new());
@@ -444,8 +501,10 @@ impl MykoServer {
             host_id,
             config,
             _postgres_producer_owner: postgres_producer_owner,
-            postgres_consumer,
-            history_replay,
+            postgres_consumer: None,
+            consumer_history,
+            history_replay: history_replay
+                .map(|provider| -> Arc<dyn myko::server::HistoryReplayProvider> { provider }),
             ready,
             peer_registry_instance: RwLock::new(None),
             peer_clients,
@@ -458,6 +517,8 @@ impl MykoServer {
             saga_tasks: std::sync::Mutex::new(Vec::new()),
             server_ownership_guard: std::sync::Mutex::new(None),
             ctx_cache: std::sync::OnceLock::new(),
+            partitions: std::sync::Mutex::new(None),
+            partitioned: false,
         }
     }
 
@@ -511,12 +572,8 @@ impl MykoServer {
     pub fn ctx(&self) -> MykoServerContext {
         self.ctx_cache
             .get_or_init(|| {
-                let history_replay: Option<Arc<dyn myko::server::HistoryReplayProvider>> =
-                    self.history_replay.clone().map(|provider| {
-                        let provider: Arc<dyn myko::server::HistoryReplayProvider> = provider;
-                        provider
-                    });
-                MykoServerContext::new(
+                let history_replay = self.history_replay.clone();
+                let ctx = MykoServerContext::new(
                     self.host_id,
                     self.registry.clone(),
                     self.handler_registry.clone(),
@@ -531,7 +588,16 @@ impl MykoServer {
                         history_replay,
                     },
                 )
-                .with_event_sink_filter(saga_event_matches)
+                .with_event_sink_filter(saga_event_matches);
+                let schema = self
+                    .partitions
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .take();
+                match schema {
+                    Some(schema) => ctx.with_partitions(schema),
+                    None => ctx,
+                }
             })
             .clone()
     }
@@ -580,20 +646,17 @@ impl MykoServer {
                 },
             ));
 
-            let saga_ctx = Arc::new(myko::saga::SagaContext::new(
-                self.host_id,
-                self.registry.clone(),
-            ));
+            let saga_ctx = Arc::new(
+                myko::saga::SagaContext::new(self.host_id, self.registry.clone())
+                    .with_server(self.ctx()),
+            );
             let mut command_stream = saga.build_boxed(events, saga_ctx);
 
             let host_id = self.host_id;
-            let registry = self.registry.clone();
-            let handler_registry = self.handler_registry.clone();
-            let relationship_manager = self.relationship_manager.clone();
-            let persisters = self.persisters.clone();
-            let search_index = self.search_index.clone();
-            let peer_clients = self.peer_clients.clone();
-            let saga_event_tx = self.saga_event_tx.clone();
+            // The server's own context: on a partitioned server a saga's
+            // writes are routed like any other, and its reads see what root
+            // sees.
+            let server_ctx = Arc::new(self.ctx());
 
             let handle = tokio::spawn(async move {
                 while let Some(command) = command_stream.next().await {
@@ -601,26 +664,8 @@ impl MykoServer {
                     tracing::debug!("Saga {} executing command {}", saga_name, command_name);
                     let req = Self::saga_request_context(command.as_ref(), host_id, &saga_name);
 
-                    let cmd_ctx = CommandContext::new(
-                        Arc::from(command_name),
-                        req,
-                        Arc::new(
-                            MykoServerContext::new(
-                                host_id,
-                                registry.clone(),
-                                handler_registry.clone(),
-                                relationship_manager.clone(),
-                                persisters.clone(),
-                                search_index.clone(),
-                                myko::server::MykoServerRuntime {
-                                    peer_clients: peer_clients.clone(),
-                                    event_sink: Some(saga_event_tx.clone()),
-                                    history_replay: None,
-                                },
-                            )
-                            .with_event_sink_filter(saga_event_matches),
-                        ),
-                    );
+                    let cmd_ctx =
+                        CommandContext::new(Arc::from(command_name), req, server_ctx.clone());
 
                     if let Err(err) = command.execute_boxed(cmd_ctx) {
                         tracing::error!(
@@ -711,6 +756,65 @@ impl MykoServer {
             self.ready.store(true, Ordering::SeqCst);
         }
         Ok(())
+    }
+
+    /// Bring the built-in OAuth authority's clients and grants back from
+    /// Postgres and persist its later changes there. Without Postgres or an
+    /// OAuth server, grants stay in memory.
+    async fn restore_oauth(&self) -> Result<(), String> {
+        let (Some(provider), Some(postgres)) = (&self.auth_provider, &self.config.postgres) else {
+            return Ok(());
+        };
+        let Some(oauth) = provider.oauth_server() else {
+            return Ok(());
+        };
+        let store = postgres::PostgresOAuthStore::new(postgres, oauth.issuer())?;
+        let restored = provider
+            .restore_oauth(Arc::new(store))
+            .await
+            .map_err(|error| format!("OAuth grant restore failed: {error}"))?;
+        tracing::info!(
+            clients = restored.clients,
+            restored = restored.restored,
+            dropped = restored.dropped,
+            deferred = restored.deferred,
+            "Restored OAuth grants"
+        );
+        Ok(())
+    }
+
+    /// Load a snapshot the way startup loads one from Postgres.
+    ///
+    /// Each SET event's item goes straight into its store. The mutation
+    /// pipeline does not run: nothing is validated, persisted, cascaded or
+    /// sent to subscribers event by event. The search index is then built and
+    /// relations are established once, as `run` does after catch-up. Events
+    /// that are not SETs are skipped: a snapshot holds the latest state of
+    /// each entity. Returns the number of events loaded.
+    ///
+    /// Use it to bring a server to a known state before it serves, for
+    /// example from a fixture in a test.
+    ///
+    /// Every row lands where the server keeps it, as
+    /// [`MykoServerContext::load_log`] places it: a row no partition takes
+    /// yet is held, and a row that does not parse is counted and left out.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a row is refused where it lands.
+    pub fn hydrate_snapshot(
+        &self,
+        events: impl IntoIterator<Item = MEvent>,
+    ) -> Result<myko::server::LoadSummary, String> {
+        let mut loading = self.ctx().load_log();
+        for event in events {
+            loading.push(&event);
+        }
+        let summary = loading.finish().map_err(|error| error.to_string())?;
+        tracing::info!("hydrated snapshot: {summary}");
+        self.search_index.build_from_registry(&self.registry);
+        self.establish_relations();
+        Ok(summary)
     }
 
     /// Establish relationship invariants.
@@ -844,6 +948,11 @@ impl MykoServer {
         // before/after returning free glibc arena pages, to tell allocator
         // page retention apart from real memory retention in deployments.
         crate::telemetry::start_malloc_trim_probe();
+
+        // NOTE(ts): after `after_init`, so a host that prepares its session state
+        // there can answer `restore_identity`; before the bind, so no grant is
+        // issued ahead of the store.
+        self.restore_oauth().await?;
 
         // Bind WebSocket listener last, once all synchronous startup work
         // (including after_init) is done, so peer publication only happens
@@ -1005,8 +1114,9 @@ fn saga_event_matches(entity_type: &str, change: MEventType) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use myko::entities::demo::{DemoStatus, DemoStatusId, GetDemoStatuses};
+
+    use super::*;
 
     #[test]
     fn no_default_persister_and_no_sagas_do_not_retain_same_id_updates()

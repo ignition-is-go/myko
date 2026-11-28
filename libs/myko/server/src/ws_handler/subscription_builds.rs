@@ -6,7 +6,9 @@ use std::{
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use super::{SubscriptionReady, ViewError, WS_SUBSCRIPTION_BLOCKING};
+use myko::{server::PendingWrites, wire::MykoMessage};
+
+use super::{SubscriptionReady, WS_SUBSCRIPTION_BLOCKING};
 
 pub(super) struct SubscriptionBuild {
     cancel: CancellationToken,
@@ -15,7 +17,7 @@ pub(super) struct SubscriptionBuild {
 pub(super) struct SubscriptionBuilt {
     pub tx: Arc<str>,
     pub owner: Arc<SubscriptionBuild>,
-    pub result: Option<Result<SubscriptionReady, ViewError>>,
+    pub result: Option<Result<SubscriptionReady, MykoMessage>>,
 }
 
 struct BuildCompletion {
@@ -36,9 +38,42 @@ impl Drop for BuildCompletion {
 #[derive(Default)]
 pub(super) struct SubscriptionBuilds {
     pending: Mutex<HashMap<Arc<str>, Arc<SubscriptionBuild>>>,
+    /// This connection's writes not yet applied. A build starts once they
+    /// are, so it observes them, without waiting for anyone else's.
+    writes: Mutex<PendingWrites>,
+}
+
+/// Resolves once `writes` are applied.
+pub(super) async fn applied(writes: PendingWrites) {
+    if writes.is_empty() {
+        return;
+    }
+    let (done, applied) = tokio::sync::oneshot::channel();
+    writes.when_applied(move || {
+        let _ = done.send(());
+    });
+    drop(applied.await);
 }
 
 impl SubscriptionBuilds {
+    /// Order this connection's later subscriptions and commands after
+    /// `writes`.
+    pub fn wrote(&self, writes: PendingWrites) {
+        self.writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .extend(writes);
+    }
+
+    /// The writes this connection's next subscription or command must
+    /// observe.
+    pub fn unapplied(&self) -> PendingWrites {
+        self.writes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
     pub fn begin(&self, tx: Arc<str>) -> Arc<SubscriptionBuild> {
         let owner = Arc::new(SubscriptionBuild {
             cancel: CancellationToken::new(),
@@ -85,7 +120,7 @@ impl SubscriptionBuilds {
         job_kind: &'static str,
         tx: Arc<str>,
         sender: mpsc::UnboundedSender<SubscriptionBuilt>,
-        job: impl FnOnce() -> Option<Result<SubscriptionReady, ViewError>> + Send + 'static,
+        job: impl FnOnce() -> Option<Result<SubscriptionReady, MykoMessage>> + Send + 'static,
     ) {
         let owner = self.begin(tx.clone());
         let cancel = owner.cancel.clone();
@@ -97,13 +132,31 @@ impl SubscriptionBuilds {
                 result: None,
             }),
         };
-        WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver_until(job_kind, sender, cancel, move |_| {
-            let mut completion = completion;
-            let result = job();
-            if let Some(built) = completion.built.as_mut() {
-                built.result = result;
-            }
-        });
+        let start = move || {
+            WS_SUBSCRIPTION_BLOCKING.spawn_for_receiver_until(
+                job_kind,
+                sender,
+                cancel,
+                move |_| {
+                    let mut completion = completion;
+                    let result = job();
+                    if let Some(built) = completion.built.as_mut() {
+                        built.result = result;
+                    }
+                },
+            );
+        };
+        let writes = self.unapplied();
+        if writes.is_empty() {
+            start();
+        } else {
+            // Waits off the build lane, so builds held on a write never
+            // occupy the threads other connections' builds run on.
+            drop(tokio::spawn(async move {
+                applied(writes).await;
+                start();
+            }));
+        }
     }
 }
 

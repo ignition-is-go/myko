@@ -41,6 +41,11 @@ pub mod entity_set_stats;
 mod handler_registry;
 pub mod history_feed;
 pub mod history_replay;
+mod log_load;
+pub use log_load::{LoadSummary, LogLoad};
+pub mod partition;
+mod pending_writes;
+pub use pending_writes::PendingWrites;
 pub mod persister;
 mod provenance;
 pub use provenance::{EventRecord, OperationProvenance};
@@ -49,7 +54,7 @@ mod relationship_manager;
 pub mod report_cache_stats;
 
 pub use client_registry::{client_registry, init_client_registry, try_client_registry};
-pub use client_session::{ClientSession, PendingQueryResponse, WsWriter};
+pub use client_session::{ClientSession, CommandValueKey, PendingQueryResponse, WsWriter};
 pub(crate) use context::Origin;
 pub use context::{CausalDiagnostics, CausalLimits, MykoServerContext, MykoServerRuntime};
 pub use handler_registry::HandlerRegistry;
@@ -59,6 +64,11 @@ pub use history_feed::{
 pub use history_replay::{
     CommittedHistoryEvent, EntityHistory, EntityHistoryAliasRegistration, HistoryEntityKey,
     HistoryEvent, HistoryPage, HistoryReplayProvider, history_storage_types,
+};
+pub use partition::{
+    MergedAcrossPartitions, MergedViewRegistration, PartitionError, PartitionKey,
+    PartitionKeyField, PartitionKeyRegistration, PartitionSchema, PartitionServices, RouteInput,
+    SubscriptionWatch,
 };
 pub use persister::{
     BlackholePersister, NullPersister, PersistError, PersistHealth, Persister, PersisterRouter,

@@ -97,6 +97,120 @@ pub struct BelongsToRoute {
     pub field_names: &'static [&'static str],
     pub keys: Vec<CompoundKey>,
     pub extract_fk: CompoundFkExtractor,
+    /// Set for an index that files one row under several keys, such as
+    /// `#[indexed(each)]` on a list field. It replaces `extract_fk`.
+    pub extract_each: Option<IndexKeysExtractor>,
+}
+
+impl BelongsToRoute {
+    /// How the index behind this route reads keys from a row.
+    #[must_use]
+    pub fn extractor(&self) -> KeyExtractor {
+        self.extract_each
+            .map_or(KeyExtractor::One(self.extract_fk), KeyExtractor::Each)
+    }
+}
+
+/// Every key one row is filed under, for an index whose rows can have more
+/// than one (see [`BelongsToRoute::extract_each`]).
+pub type IndexKeysExtractor = fn(&dyn std::any::Any) -> smallvec::SmallVec<[CompoundKey; 1]>;
+
+/// How a source index reads the keys of a row: one key or none, or any
+/// number of keys.
+#[derive(Clone, Copy)]
+pub enum KeyExtractor {
+    One(CompoundFkExtractor),
+    Each(IndexKeysExtractor),
+}
+
+impl KeyExtractor {
+    /// The keys `item` is filed under, without duplicates.
+    #[must_use]
+    pub fn keys(self, item: &dyn std::any::Any) -> smallvec::SmallVec<[CompoundKey; 1]> {
+        match self {
+            Self::One(extract) => extract(item).into_iter().collect(),
+            Self::Each(extract) => {
+                let mut keys = smallvec::SmallVec::<[CompoundKey; 1]>::new();
+                for key in extract(item) {
+                    if !keys.contains(&key) {
+                        keys.push(key);
+                    }
+                }
+                keys
+            }
+        }
+    }
+}
+
+/// A value that can be one part of an index key (see `#[indexed]`).
+///
+/// Two values that are equal must give the same key, and two that differ
+/// must give different keys. `None` means the row is not filed under this
+/// index, the way a `None` field never matches a filter. Floats are not
+/// keys: `NaN` is not equal to itself, and `0.0` equals `-0.0`.
+pub trait IndexKey {
+    fn index_key(&self) -> Option<Arc<str>>;
+}
+
+impl IndexKey for Arc<str> {
+    fn index_key(&self) -> Option<Arc<str>> {
+        Some(self.clone())
+    }
+}
+
+impl IndexKey for String {
+    fn index_key(&self) -> Option<Arc<str>> {
+        Some(Arc::from(self.as_str()))
+    }
+}
+
+impl IndexKey for bool {
+    fn index_key(&self) -> Option<Arc<str>> {
+        static TRUE: std::sync::LazyLock<Arc<str>> = std::sync::LazyLock::new(|| Arc::from("true"));
+        static FALSE: std::sync::LazyLock<Arc<str>> =
+            std::sync::LazyLock::new(|| Arc::from("false"));
+        Some(if *self { TRUE.clone() } else { FALSE.clone() })
+    }
+}
+
+macro_rules! index_key_by_display {
+    ($($ty:ty),+) => {
+        $(impl IndexKey for $ty {
+            fn index_key(&self) -> Option<Arc<str>> {
+                Some(Arc::from(self.to_string()))
+            }
+        })+
+    };
+}
+index_key_by_display!(
+    i8, i16, i32, i64, i128, isize, u8, u16, u32, u64, u128, usize
+);
+
+impl<T: IndexKey> IndexKey for Option<T> {
+    fn index_key(&self) -> Option<Arc<str>> {
+        self.as_ref().and_then(IndexKey::index_key)
+    }
+}
+
+/// The key of any serializable value, as its JSON text.
+///
+/// Use it for a value type with no natural key, such as a tagged enum that
+/// carries data, via [`impl_index_key_serde!`](crate::impl_index_key_serde). Struct fields
+/// serialize in declaration order, so equal values give equal text; a
+/// `HashMap` inside the value does not, and must not be part of a key.
+pub fn serde_index_key<T: Serialize + ?Sized>(value: &T) -> Option<Arc<str>> {
+    serde_json::to_string(value).ok().map(Arc::from)
+}
+
+/// The keys a filter selects, when it selects by equality only: `Eq` and
+/// `In` give their values; a substring or range filter gives `None` and
+/// cannot route through an index.
+pub trait EqualityKeys {
+    fn equality_keys(&self) -> Option<Vec<Arc<str>>>;
+}
+
+fn keys_of<'a, T: IndexKey + 'a>(values: impl IntoIterator<Item = &'a T>) -> Vec<Arc<str>> {
+    values.into_iter().filter_map(IndexKey::index_key).collect()
 }
 
 /// Sentinel `field_names` for the primary-key route, so `query_live`'s
@@ -653,6 +767,160 @@ impl<A, B, C, D> Filterable for (A, B, C, D) {
     type Filter = Unfilterable;
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+// Index routing. A filter on an `#[indexed]` field routes through the index
+// when it selects by equality; its values are encoded the way the row's
+// value is (see `IndexKey`).
+// ─────────────────────────────────────────────────────────────────────────
+
+impl<T: IndexKey> EqualityKeys for IdFilter<T> {
+    fn equality_keys(&self) -> Option<Vec<Arc<str>>> {
+        Some(match self {
+            Self::Eq(value) => keys_of([value]),
+            Self::In(values) => keys_of(values),
+        })
+    }
+}
+
+impl<T: IndexKey> EqualityKeys for EqFilter<T> {
+    fn equality_keys(&self) -> Option<Vec<Arc<str>>> {
+        Some(match self {
+            Self::Eq(value) => keys_of([value]),
+            Self::In(values) => keys_of(values),
+        })
+    }
+}
+
+impl<T: IndexKey> EqualityKeys for NumericFilter<T> {
+    fn equality_keys(&self) -> Option<Vec<Arc<str>>> {
+        match self {
+            Self::Eq(value) => Some(keys_of([value])),
+            Self::In(values) => Some(keys_of(values)),
+            Self::Range { .. } => None,
+        }
+    }
+}
+
+impl EqualityKeys for StringFilter {
+    fn equality_keys(&self) -> Option<Vec<Arc<str>>> {
+        match self {
+            Self::Eq(value) => Some(vec![value.clone()]),
+            Self::In(values) => Some(values.clone()),
+            Self::Contains(_) | Self::StartsWith(_) => None,
+        }
+    }
+}
+
+impl EqualityKeys for bool {
+    fn equality_keys(&self) -> Option<Vec<Arc<str>>> {
+        Some(keys_of([self]))
+    }
+}
+
+/// Filter on a list field declared `#[indexed(each)]`.
+///
+/// `Eq(x)` matches a row whose list contains `x`, `In(xs)` one whose list
+/// contains any of `xs`. On the wire it is the bare element or `{ "$in": [...] }`, like `IdFilter`.
+#[derive(Debug, Clone, PartialEq, Eq, TS)]
+#[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
+pub enum ContainsFilter<T> {
+    Eq(T),
+    In(Vec<T>),
+}
+
+impl<T: PartialEq> Filter<Vec<T>> for ContainsFilter<T> {
+    fn matches(&self, value: &Vec<T>) -> bool {
+        match self {
+            Self::Eq(expected) => value.contains(expected),
+            Self::In(expected) => value.iter().any(|v| expected.contains(v)),
+        }
+    }
+}
+
+impl<T> CanonicalFilter for ContainsFilter<T> {
+    fn canonicalize(self) -> Self {
+        self
+    }
+}
+
+impl<T: IndexKey> EqualityKeys for ContainsFilter<T> {
+    fn equality_keys(&self) -> Option<Vec<Arc<str>>> {
+        Some(match self {
+            Self::Eq(value) => keys_of([value]),
+            Self::In(values) => keys_of(values),
+        })
+    }
+}
+
+/// Equality filter for a value type compared by its [`IndexKey`] rather
+/// than by `Ord`, such as a JSON-like value that holds floats. Declare it
+/// with [`impl_filterable_by_key!`](crate::impl_filterable_by_key).
+// Not `Eq`: the values it holds, such as floats, may not be.
+#[allow(clippy::derive_partial_eq_without_eq)]
+#[derive(Debug, Clone, PartialEq, TS)]
+#[ts(type = "T | { \"$in\": Array<T> }", bound = "T: ts_rs::TS")]
+pub enum KeyFilter<T> {
+    Eq(T),
+    In(Vec<T>),
+}
+
+impl<T: IndexKey> Filter<T> for KeyFilter<T> {
+    fn matches(&self, value: &T) -> bool {
+        let Some(key) = value.index_key() else {
+            return false;
+        };
+        match self {
+            Self::Eq(expected) => expected.index_key().as_ref() == Some(&key),
+            Self::In(expected) => expected
+                .iter()
+                .any(|v| v.index_key().as_ref() == Some(&key)),
+        }
+    }
+}
+
+impl<T> CanonicalFilter for KeyFilter<T> {
+    fn canonicalize(self) -> Self {
+        self
+    }
+}
+
+impl<T: IndexKey> EqualityKeys for KeyFilter<T> {
+    fn equality_keys(&self) -> Option<Vec<Arc<str>>> {
+        Some(match self {
+            Self::Eq(value) => keys_of([value]),
+            Self::In(values) => keys_of(values),
+        })
+    }
+}
+
+/// Implements [`IndexKey`] for `$ty` by its JSON text (see
+/// [`serde_index_key`]).
+#[macro_export]
+macro_rules! impl_index_key_serde {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl $crate::query::IndexKey for $ty {
+                fn index_key(&self) -> Option<std::sync::Arc<str>> {
+                    $crate::query::serde_index_key(self)
+                }
+            }
+        )+
+    };
+}
+
+/// Makes `$ty` filterable by equality of its [`IndexKey`], so a field of
+/// that type can be `#[indexed]` without `$ty` implementing `Ord` or `Eq`.
+#[macro_export]
+macro_rules! impl_filterable_by_key {
+    ($($ty:ty),+ $(,)?) => {
+        $(
+            impl $crate::query::Filterable for $ty {
+                type Filter = $crate::query::KeyFilter<$ty>;
+            }
+        )+
+    };
+}
+
 // Register the four filter types for TS export, once per generic type here
 // (not per-entity — unlike XQuery, which is a concrete struct generated
 // fresh per entity by #[myko_item], these are ts-rs *generic* TS types:
@@ -693,7 +961,10 @@ crate::mark_framework_typegen_type!(
 mod wire_serde {
     use serde::{Deserializer, Serializer, ser::SerializeMap};
 
-    use super::{Arc, Deserialize, EqFilter, IdFilter, NumericFilter, Serialize, StringFilter};
+    use super::{
+        Arc, ContainsFilter, Deserialize, EqFilter, IdFilter, KeyFilter, NumericFilter, Serialize,
+        StringFilter,
+    };
 
     fn serialize_op<S: Serializer, T: Serialize + ?Sized>(
         s: S,
@@ -740,6 +1011,8 @@ mod wire_serde {
     }
     eq_in_wire!(IdFilter);
     eq_in_wire!(EqFilter);
+    eq_in_wire!(ContainsFilter);
+    eq_in_wire!(KeyFilter);
 
     impl Serialize for StringFilter {
         fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {

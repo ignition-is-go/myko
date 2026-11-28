@@ -311,3 +311,145 @@ fn id_query_concurrent_construction_and_same_id_update_never_strands_old_value()
         );
     }
 }
+
+fn snapshot_ids(ctx: &MykoServerContext, filter: ClientQuery) -> Vec<String> {
+    let mut ids: Vec<String> = ctx
+        .query_snapshot(GetClientsByQuery(filter), request(ctx, "tx-snapshot"))
+        .iter()
+        .map(|client| client.id.to_string())
+        .collect();
+    ids.sort();
+    ids
+}
+
+fn on_server(server_id: &str) -> ClientQuery {
+    ClientQuery {
+        server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from(server_id)))),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn snapshot_reads_the_rows_its_route_selects() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    insert_client(&ctx, "c1", "server-A");
+    insert_client(&ctx, "c2", "server-B");
+    insert_client(&ctx, "c3", "server-A");
+
+    assert_eq!(snapshot_ids(&ctx, on_server("server-A")), ["c1", "c3"]);
+    assert_eq!(
+        snapshot_ids(
+            &ctx,
+            ClientQuery {
+                id: Some(IdFilter::In(vec![
+                    Arc::<str>::from("c2").into(),
+                    Arc::<str>::from("c2").into(),
+                    Arc::<str>::from("missing").into(),
+                ])),
+                ..Default::default()
+            }
+        ),
+        ["c2"]
+    );
+    // The id route selects c1 and c2; the server filter still rejects c2.
+    assert_eq!(
+        snapshot_ids(
+            &ctx,
+            ClientQuery {
+                id: Some(IdFilter::In(vec![
+                    Arc::<str>::from("c1").into(),
+                    Arc::<str>::from("c2").into(),
+                ])),
+                ..on_server("server-A")
+            }
+        ),
+        ["c1"]
+    );
+    let by_ids = ctx.query_snapshot(
+        GetClientsByIds {
+            ids: vec![Arc::<str>::from("c3").into(), Arc::<str>::from("c1").into()],
+        },
+        request(&ctx, "tx-by-ids"),
+    );
+    assert_eq!(by_ids.len(), 2);
+    assert_eq!(snapshot_ids(&ctx, ClientQuery::default()).len(), 3);
+}
+
+#[test]
+fn snapshot_sees_a_write_made_just_before_it() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    insert_client(&ctx, "c1", "server-A");
+    assert_eq!(snapshot_ids(&ctx, on_server("server-A")), ["c1"]);
+
+    insert_client(&ctx, "c2", "server-A");
+    assert_eq!(snapshot_ids(&ctx, on_server("server-A")), ["c1", "c2"]);
+
+    insert_client(&ctx, "c1", "server-B");
+    assert_eq!(snapshot_ids(&ctx, on_server("server-A")), ["c2"]);
+    assert_eq!(snapshot_ids(&ctx, on_server("server-B")), ["c1"]);
+
+    delete_client(&ctx, "c2", "server-A");
+    assert!(snapshot_ids(&ctx, on_server("server-A")).is_empty());
+
+    // Inside an open batch the index has not yet seen the write. The
+    // snapshot must still see it.
+    myko::hyphae::batch(|| {
+        insert_client(&ctx, "c3", "server-A");
+        insert_client(&ctx, "c1", "server-A");
+        assert_eq!(snapshot_ids(&ctx, on_server("server-A")), ["c1", "c3"]);
+        assert!(snapshot_ids(&ctx, on_server("server-B")).is_empty());
+    });
+    assert_eq!(snapshot_ids(&ctx, on_server("server-A")), ["c1", "c3"]);
+}
+
+fn client_at(id: &str, server_id: &str, address: &str) -> Client {
+    Client {
+        id: id.into(),
+        server_id: ServerId::from(Arc::<str>::from(server_id)),
+        address: Some(address.into()),
+        windback: None,
+    }
+}
+
+/// A belongs_to-routed query with a residual filter on a field that is not
+/// a key: an update that changes only that field must take the row out,
+/// put it back, and keep it with its new value, live and in a snapshot.
+#[test]
+fn a_residual_field_change_moves_a_row_in_and_out_of_a_routed_query() {
+    let _serial = scheduler_test_serial();
+    let ctx = make_ctx();
+    let filter = || ClientQuery {
+        server_id: Some(IdFilter::Eq(ServerId::from(Arc::<str>::from("server-A")))),
+        address: Some(myko::query::StringFilter::In(vec!["a".into(), "c".into()])),
+        ..Default::default()
+    };
+    let live = ctx.query_map_untyped(GetClientsByQuery(filter()), request(&ctx, "tx-live"));
+    let address_of = |rows: &[(Arc<str>, Arc<dyn AnyItem>)]| -> Vec<String> {
+        rows.iter()
+            .filter_map(|(_, row)| row.as_any().downcast_ref::<Client>())
+            .filter_map(|client| client.address.as_deref().map(str::to_owned))
+            .collect()
+    };
+    let snapshot = || -> Vec<String> {
+        ctx.query_snapshot(GetClientsByQuery(filter()), request(&ctx, "tx-snap"))
+            .iter()
+            .filter_map(|client| client.address.as_deref().map(str::to_owned))
+            .collect()
+    };
+    for (address, expected) in [
+        ("a", vec!["a"]),
+        ("b", vec![]),
+        ("a", vec!["a"]),
+        ("c", vec!["c"]),
+    ] {
+        assert!(ctx.set(&client_at("c1", "server-A", address)).is_ok());
+        assert_eq!(
+            address_of(&live.snapshot()),
+            expected,
+            "live, address {address}"
+        );
+        assert_eq!(snapshot(), expected, "snapshot, address {address}");
+    }
+}

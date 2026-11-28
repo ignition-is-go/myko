@@ -8,10 +8,16 @@ use std::sync::Arc;
 use crate::{
     command::CommandHandlerRegistration,
     graph::GraphQueryRegistration,
-    item::{IngestBufferPolicy, IngestBufferRegistration, ItemParseFn, ItemRegistration},
+    item::{
+        IngestBufferPolicy, IngestBufferRegistration, ItemParseBytesFn, ItemParseFn,
+        ItemRegistration,
+    },
     query::{QueryCellFactory, QueryParseFn, QueryRegistration, QueryWindowCellFactory},
     report::{ReportCellFactory, ReportParseFn, ReportRegistration},
-    view::{ViewCellFactory, ViewParseFn, ViewRegistration},
+    view::{
+        ViewCellFactory, ViewParseFn, ViewRegistration, ViewSubscribeFactory,
+        ViewSubscribeRegistration,
+    },
 };
 
 // AHash on the dispatch maps below: every wire-routed command/query/view/
@@ -68,12 +74,16 @@ pub struct StoredReportData {
 pub struct HandlerRegistry {
     /// Item parse functions by entity type name
     item_parsers: AMap<Arc<str>, ItemParseFn>,
+    /// Item parse-from-JSON-bytes functions by entity type name
+    item_bytes_parsers: AMap<Arc<str>, ItemParseBytesFn>,
     /// Optional ingest buffering policy by entity type name
     item_buffer_policies: AMap<Arc<str>, IngestBufferPolicy>,
     /// Query data by query id
     query_data: AMap<Arc<str>, StoredQueryData>,
     /// View data by view id
     view_data: AMap<Arc<str>, StoredViewData>,
+    /// View subscription factories by view id
+    view_subscribers: AMap<Arc<str>, ViewSubscribeFactory>,
     /// Report data by report id
     report_data: AMap<Arc<str>, StoredReportData>,
 }
@@ -82,15 +92,22 @@ impl HandlerRegistry {
     /// Create a new handler registry by collecting all registrations from inventory.
     pub fn new() -> Self {
         let mut item_parsers = AMap::default();
+        let mut item_bytes_parsers = AMap::default();
         let mut item_buffer_policies = AMap::default();
         let mut query_data = AMap::default();
         let mut view_data = AMap::default();
         let mut report_data = AMap::default();
+        let view_subscribers: AMap<Arc<str>, ViewSubscribeFactory> =
+            inventory::iter::<ViewSubscribeRegistration>
+                .into_iter()
+                .map(|registration| (Arc::from(registration.view_id), registration.subscribe))
+                .collect();
 
         // Collect item registrations
         for registration in inventory::iter::<ItemRegistration> {
             tracing::trace!("Registered item parser: {}", registration.entity_type);
             item_parsers.insert(registration.entity_type.into(), registration.parse);
+            item_bytes_parsers.insert(registration.entity_type.into(), registration.parse_bytes);
         }
 
         for registration in inventory::iter::<IngestBufferRegistration> {
@@ -174,9 +191,11 @@ impl HandlerRegistry {
 
         Self {
             item_parsers,
+            item_bytes_parsers,
             item_buffer_policies,
             query_data,
             view_data,
+            view_subscribers,
             report_data,
         }
     }
@@ -185,6 +204,13 @@ impl HandlerRegistry {
     #[must_use]
     pub fn item_parser(&self, entity_type: &str) -> Option<ItemParseFn> {
         self.item_parsers.get(entity_type).copied()
+    }
+
+    /// Get the function that parses an item of `entity_type` from JSON bytes,
+    /// without building a `serde_json::Value` first.
+    #[must_use]
+    pub fn item_bytes_parser(&self, entity_type: &str) -> Option<ItemParseBytesFn> {
+        self.item_bytes_parsers.get(entity_type).copied()
     }
 
     /// Get the ingest buffering policy for an entity type.
@@ -212,6 +238,12 @@ impl HandlerRegistry {
     #[must_use]
     pub fn view(&self, view_id: &str) -> Option<&StoredViewData> {
         self.view_data.get(view_id)
+    }
+
+    /// Get the subscription factory for a view, when its registration has one.
+    #[must_use]
+    pub fn view_subscribe_factory(&self, view_id: &str) -> Option<ViewSubscribeFactory> {
+        self.view_subscribers.get(view_id).copied()
     }
 
     /// Check if an entity type has a registered parser.

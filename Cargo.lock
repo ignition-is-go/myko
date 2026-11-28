@@ -3759,9 +3759,8 @@ dependencies = [
 
 [[package]]
 name = "hyphae"
-version = "3.1.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a8737da165b405c716274711ffa937aea7f1973bad8d49b07a41d4abea9b65e8"
+version = "3.1.12"
+source = "git+https://github.com/ignition-is-go/hyphae.git?rev=d739a5d9b1b478e2afc72d45960fafb3aea24dd1#d739a5d9b1b478e2afc72d45960fafb3aea24dd1"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4894,6 +4893,21 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "myko-bench-suite"
+version = "6.17.1"
+dependencies = [
+ "ciborium",
+ "dashmap",
+ "flume 0.11.1",
+ "libc",
+ "myko",
+ "parking_lot",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

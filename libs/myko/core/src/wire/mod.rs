@@ -7,6 +7,7 @@
 //! - Helper functions for wrapping requests
 
 pub mod command;
+pub mod encoded;
 pub mod event;
 pub mod item;
 pub mod message;
@@ -30,7 +31,9 @@ pub use query::{
     QueryCursorWindowUpdate, QueryError, QueryResponse, QueryResult, QueryWindow,
     QueryWindowUpdate, WrappedQuery, wrap_query,
 };
-pub use report::{ReportError, ReportResponse, WrappedReport, wrap_report};
+pub use report::{
+    ReportError, ReportResponse, WrappedReport, encode_report_response_json, wrap_report,
+};
 pub use view::{
     ViewError, ViewResponse, ViewSampleRate, ViewSampleRateUpdate, ViewWindowUpdate, WrappedView,
     wrap_view,

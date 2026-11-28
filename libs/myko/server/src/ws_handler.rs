@@ -7,7 +7,7 @@ use std::{
     net::SocketAddr,
     sync::{
         Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -21,14 +21,10 @@ use myko::{
     command::{CommandContext, CommandHandlerRegistration},
     entities::client::{Client, ClientId},
     query::WindowedQuerySource,
-    relationship::{
-        iter_client_id_registrations, iter_fallback_to_id_registrations,
-        iter_server_owned_registrations,
-    },
     report::AnyOutput,
     request::RequestContext,
     server::{
-        ClientSession, MykoServerContext, PendingQueryResponse, WsWriter,
+        ClientSession, CommandValueKey, MykoServerContext, PendingQueryResponse, WsWriter,
         client_registry::try_client_registry,
     },
     wire::{
@@ -55,6 +51,8 @@ use crate::{
     GatewayAccess,
     blocking_work::{WS_CLEANUP_BLOCKING, WS_COMMAND_BLOCKING, WS_SUBSCRIPTION_BLOCKING},
     delivery_diagnostics::DeliveryDiagnostics,
+    inbound_events::{EventFrame, RawEvent, prepare_incoming_event},
+    outbound_queue::{self, Pushed},
     subscription_authorization::{Delivery, SubscriptionAuthorization},
     view_sampling::{ViewDelivery, ViewDeliveryControl},
 };
@@ -133,54 +131,65 @@ fn ensure_ws_benchmark_logger() {
     }
 }
 
-fn normalize_incoming_event(event: &mut MEvent, client_id: &str, host_id: uuid::Uuid) {
-    if event.change_type != MEventType::SET {
-        return;
-    }
+/// Sequenced `Message` frames a connection may have queued before it is torn
+/// down for a clean resnapshot.
+const MESSAGE_QUEUE_CAPACITY: usize = 10_000;
 
-    // Auto-populate #[myko_client_id] fields with the connection's client_id
-    for reg in iter_client_id_registrations() {
-        if reg.entity_type == &*event.item_type {
-            if let Some(obj) = event.item.as_object_mut() {
-                obj.insert(
-                    reg.field_name_json.to_string(),
-                    serde_json::Value::String(client_id.to_string()),
-                );
-            }
-            break;
-        }
-    }
+/// Frames a writer may buffer while a backlog drains before it flushes anyway,
+/// so a client under a steady stream still receives frames promptly.
+const MAX_UNFLUSHED_FRAMES: usize = 64;
 
-    // Auto-populate #[server_owned] fields with this server's ID
-    for reg in iter_server_owned_registrations() {
-        if reg.entity_type == &*event.item_type {
-            if let Some(obj) = event.item.as_object_mut() {
-                let field = reg.field_name_json;
-                let current = obj.get(field).and_then(|v| v.as_str()).unwrap_or("");
-                if current.is_empty() {
-                    obj.insert(
-                        field.to_string(),
-                        serde_json::Value::String(host_id.to_string()),
-                    );
-                }
-            }
-            break;
-        }
-    }
+static OUTBOUND_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static OVERLOAD_DISCONNECTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static SUPERSEDED_VALUE_COMMANDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
-    // Auto-populate #[fallback_to_id] fields with the entity's own id
-    // if the field is null or missing.
-    if let Some(obj) = event.item.as_object_mut()
-        && let Some(id) = obj.get("id").and_then(|v| v.as_str()).map(String::from)
-    {
-        for reg in iter_fallback_to_id_registrations() {
-            if reg.entity_type == &*event.item_type {
-                let field = reg.field_name_json;
-                if matches!(obj.get(field), None | Some(serde_json::Value::Null)) {
-                    obj.insert(field.to_string(), serde_json::Value::String(id.clone()));
-                }
-            }
-        }
+/// Value commands replaced in a client's queue by a newer value for the same
+/// key before they were written, since the process started.
+#[must_use]
+pub fn ws_superseded_value_commands() -> u64 {
+    SUPERSEDED_VALUE_COMMANDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static TEARDOWN_DISCARDED_EVENT_COMMANDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static TEARDOWN_DISCARDED_VALUE_COMMANDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Event commands still queued for a client when its connection closed, and
+/// so never written, since the process started.
+#[must_use]
+pub fn ws_teardown_discarded_event_commands() -> u64 {
+    TEARDOWN_DISCARDED_EVENT_COMMANDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Value commands still queued for a client when its connection closed, and
+/// so never written, since the process started.
+#[must_use]
+pub fn ws_teardown_discarded_value_commands() -> u64 {
+    TEARDOWN_DISCARDED_VALUE_COMMANDS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// What the server gave up delivering, since the process started.
+///
+/// Read it before and after a load test: a client that was disconnected for
+/// overload reconnects and resubscribes, so the test itself may not notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct WsDeliveryCounters {
+    /// Outbound frames that could not be queued for a client.
+    pub outbound_drops: u64,
+    /// Connections closed because a frame for them was dropped or could not
+    /// be written.
+    pub overload_disconnects: u64,
+}
+
+/// Process-wide WebSocket delivery failure counts.
+#[must_use]
+pub fn ws_delivery_counters() -> WsDeliveryCounters {
+    use std::sync::atomic::Ordering;
+    WsDeliveryCounters {
+        outbound_drops: OUTBOUND_DROPS.load(Ordering::Relaxed),
+        overload_disconnects: OVERLOAD_DISCONNECTS.load(Ordering::Relaxed),
     }
 }
 
@@ -213,10 +222,18 @@ impl DropLogger {
         }
     }
 
+    /// Ask the read loop to close the connection, counting it once.
+    fn disconnect_for_overload(&self) {
+        if !self.overload_tx.send_replace(true) {
+            OVERLOAD_DISCONNECTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
     fn on_drop(&self, kind: &'static str, err: &dyn std::fmt::Display) {
         use std::sync::atomic::Ordering;
 
         self.dropped.fetch_add(1, Ordering::Relaxed);
+        OUTBOUND_DROPS.fetch_add(1, Ordering::Relaxed);
 
         // A dropped sequenced diff cannot be repaired while keeping this
         // session alive: every later sequence would be based on state the
@@ -224,7 +241,7 @@ impl DropLogger {
         // connection; reconnecting clients then resubscribe and receive a
         // fresh sequence-0 snapshot. `send_replace` is synchronous, so this
         // remains safe to call from reactive callbacks.
-        self.overload_tx.send_replace(true);
+        self.disconnect_for_overload();
 
         // Log at most once per second per connection.
         let now_ms = std::time::SystemTime::now()
@@ -269,6 +286,8 @@ struct CommandJob {
     command_id: String,
     command: serde_json::Value,
     received_at: Instant,
+    /// The connection's writes the command must observe.
+    after: myko::server::PendingWrites,
 }
 
 struct QueryWindowJob {
@@ -298,7 +317,7 @@ enum SubscriptionReady {
     View {
         tx_id: Arc<str>,
         view_id: Arc<str>,
-        cellmap: hyphae::CellMap<Arc<str>, Arc<dyn myko::item::AnyItem>, hyphae::CellImmutable>,
+        cellmap: myko::view::ErasedViewMap,
         window: Option<myko::wire::QueryWindow>,
     },
 }
@@ -306,6 +325,58 @@ enum SubscriptionReady {
 type SharedTxNames = Arc<Mutex<HashMap<Arc<str>, Arc<str>>>>;
 type SharedTxTimes = Arc<Mutex<HashMap<Arc<str>, Instant>>>;
 type SharedOutboundCommands = Arc<Mutex<HashMap<String, (String, Instant)>>>;
+
+/// The live subscriptions whose partition follows shared data, by tx. One
+/// whose partition changed is handed to the read loop through `moved`, with
+/// the request that opened it, and opened again where it now belongs.
+#[derive(Clone)]
+struct SubscriptionPlacements {
+    watches: Arc<Mutex<HashMap<Arc<str>, myko::server::SubscriptionWatch>>>,
+    moved: mpsc::UnboundedSender<(Arc<str>, MykoMessage)>,
+}
+
+type MovedSubscriptions = mpsc::UnboundedReceiver<(Arc<str>, MykoMessage)>;
+
+impl SubscriptionPlacements {
+    fn new() -> (Self, MovedSubscriptions) {
+        let (moved, moved_rx) = mpsc::unbounded_channel();
+        (
+            Self {
+                watches: Arc::default(),
+                moved,
+            },
+            moved_rx,
+        )
+    }
+
+    /// Follow the subscription `tx`, opened in `opened` from `root` by
+    /// `request`, which `resend` makes again.
+    fn follow(
+        &self,
+        root: &MykoServerContext,
+        opened: &MykoServerContext,
+        (tx, request, payload): (&Arc<str>, &Arc<RequestContext>, &serde_json::Value),
+        resend: MykoMessage,
+    ) {
+        let moved = self.moved.clone();
+        let moved_tx = Arc::clone(tx);
+        let watch = root.watch_subscription(
+            Arc::clone(request),
+            payload.clone(),
+            opened.partition_key().cloned(),
+            move || drop(moved.send((Arc::clone(&moved_tx), resend.clone()))),
+        );
+        if let (Some(watch), Ok(mut watches)) = (watch, self.watches.lock()) {
+            watches.insert(Arc::clone(tx), watch);
+        }
+    }
+
+    fn forget(&self, tx: &str) {
+        if let Ok(mut watches) = self.watches.lock() {
+            watches.remove(tx);
+        }
+    }
+}
 
 struct MessageContext<'a> {
     auth: &'a Option<AuthSession>,
@@ -321,6 +392,7 @@ struct MessageContext<'a> {
     subscribe_tx: &'a mpsc::UnboundedSender<SubscriptionBuilt>,
     subscription_builds: &'a SubscriptionBuilds,
     view_delivery_tx: &'a mpsc::UnboundedSender<ViewDeliveryControl>,
+    placements: &'a SubscriptionPlacements,
 }
 
 struct ReadLoopState {
@@ -342,6 +414,7 @@ struct ReadLoopState {
     subscribe_tx: mpsc::UnboundedSender<SubscriptionBuilt>,
     subscription_builds: SubscriptionBuilds,
     view_delivery_tx: mpsc::UnboundedSender<ViewDeliveryControl>,
+    placements: SubscriptionPlacements,
     overload_rx: watch::Receiver<bool>,
 }
 
@@ -349,7 +422,7 @@ struct WriterState {
     subscription_auth: Arc<SubscriptionAuthorization>,
     auth: Option<AuthSession>,
     write: futures_util::stream::SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, Message>,
-    rx: mpsc::Receiver<OutboundMessage>,
+    rx: OutboundReceiver,
     deferred_rx: mpsc::Receiver<DeferredOutbound>,
     view_delivery_rx: mpsc::UnboundedReceiver<ViewDeliveryControl>,
     priority_rx: mpsc::Receiver<MykoMessage>,
@@ -364,11 +437,53 @@ struct WriterState {
 
 enum OutboundMessage {
     Message(MykoMessage),
+    /// A `ReportResponse` already encoded as its JSON text frame.
+    ReportJson {
+        tx: Arc<str>,
+        json: String,
+    },
     SerializedCommand {
         tx: Arc<str>,
         command_id: String,
         payload: EncodedCommandMessage,
     },
+}
+
+/// Writer half of the ordered outbound queue; releases a `Message` frame's
+/// slot in the shared bound as the writer takes it.
+struct OutboundReceiver {
+    rx: outbound_queue::Receiver<OutboundMessage>,
+    queued_messages: Arc<AtomicUsize>,
+    diagnostics: Option<Arc<DeliveryDiagnostics>>,
+}
+
+/// Runs however the writer ends, including when its task is aborted.
+impl Drop for OutboundReceiver {
+    fn drop(&mut self) {
+        let discarded = self.rx.close();
+        if discarded == outbound_queue::Discarded::default() {
+            return;
+        }
+        TEARDOWN_DISCARDED_EVENT_COMMANDS.fetch_add(discarded.events, Ordering::Relaxed);
+        TEARDOWN_DISCARDED_VALUE_COMMANDS.fetch_add(discarded.values, Ordering::Relaxed);
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.teardown_discarded(discarded.events, discarded.values);
+        }
+    }
+}
+
+impl OutboundReceiver {
+    async fn recv(&self) -> Option<OutboundMessage> {
+        let message = self.rx.recv().await?;
+        if matches!(message, OutboundMessage::Message(_)) {
+            self.queued_messages.fetch_sub(1, Ordering::AcqRel);
+        }
+        Some(message)
+    }
+
+    fn len(&self) -> usize {
+        self.rx.len()
+    }
 }
 
 enum DeferredOutbound {
@@ -429,9 +544,7 @@ impl WsHandler {
 
     fn authorize_incoming(
         auth: &AuthSession,
-        message: &mut MykoMessage,
-        client: &str,
-        host: uuid::Uuid,
+        message: &MykoMessage,
     ) -> Result<(), myko_auth::AuthError> {
         auth.check()?;
         let request = match message {
@@ -455,10 +568,10 @@ impl WsHandler {
                 operation: &w.command_id,
                 arguments: &w.command,
             },
-            MykoMessage::Event(event) => return Self::authorize_event(auth, event, client, host),
+            MykoMessage::Event(event) => return Self::authorize_event(auth, event),
             MykoMessage::EventBatch(events) => {
                 for event in events {
-                    Self::authorize_event(auth, event, client, host)?;
+                    Self::authorize_event(auth, event)?;
                 }
                 return auth.check();
             }
@@ -481,14 +594,7 @@ impl WsHandler {
         auth.authorize(request)
     }
 
-    fn authorize_event(
-        auth: &AuthSession,
-        event: &mut MEvent,
-        client: &str,
-        host: uuid::Uuid,
-    ) -> Result<(), myko_auth::AuthError> {
-        event.sanitize_null_bytes();
-        normalize_incoming_event(event, client, host);
+    fn authorize_event(auth: &AuthSession, event: &MEvent) -> Result<(), myko_auth::AuthError> {
         auth.authorize(AuthorizationRequest::ClientEvent {
             entity_type: &event.item_type,
             change: if event.change_type == MEventType::SET {
@@ -509,14 +615,25 @@ impl WsHandler {
             Self::reject_incoming(state, &message, "gateway is read-only".into());
             return true;
         }
+        // Every event is sanitized and normalized exactly once, before it is
+        // authorized, so policy sees the item that will be applied.
+        match &mut message {
+            MykoMessage::Event(event) => {
+                prepare_incoming_event(event, &session.client_id, state.ctx.host_id);
+            }
+            MykoMessage::EventBatch(events) => {
+                for event in events {
+                    prepare_incoming_event(event, &session.client_id, state.ctx.host_id);
+                }
+            }
+            _ => {}
+        }
         if let Some(auth) = &state.auth {
             // An invalid session terminates the transport; a denied operation does not.
             if auth.check().is_err() {
                 return false;
             }
-            if let Err(error) =
-                Self::authorize_incoming(auth, &mut message, &session.client_id, state.ctx.host_id)
-            {
+            if let Err(error) = Self::authorize_incoming(auth, &message) {
                 if auth.check().is_err() {
                     return false;
                 }
@@ -525,20 +642,16 @@ impl WsHandler {
             }
         }
         // Entity declarations apply even to trusted gateways without an auth provider.
-        let mutability = match &mut message {
-            MykoMessage::Event(event) => {
-                event.sanitize_null_bytes();
-                myko_auth::client_events::authorize(
-                    &event.item_type,
-                    if event.change_type == MEventType::SET {
-                        EventChange::Set
-                    } else {
-                        EventChange::Delete
-                    },
-                )
-            }
-            MykoMessage::EventBatch(events) => events.iter_mut().try_for_each(|event| {
-                event.sanitize_null_bytes();
+        let mutability = match &message {
+            MykoMessage::Event(event) => myko_auth::client_events::authorize(
+                &event.item_type,
+                if event.change_type == MEventType::SET {
+                    EventChange::Set
+                } else {
+                    EventChange::Delete
+                },
+            ),
+            MykoMessage::EventBatch(events) => events.iter().try_for_each(|event| {
                 myko_auth::client_events::authorize(
                     &event.item_type,
                     if event.change_type == MEventType::SET {
@@ -577,24 +690,66 @@ impl WsHandler {
         Self::handle_message(
             session,
             state.ctx.clone(),
-            &MessageContext {
-                auth: &state.auth,
-                priority_tx: &state.priority_tx,
-                drop_logger: &state.drop_logger,
-                query_ids_by_tx: &state.query_ids_by_tx,
-                view_ids_by_tx: &state.view_ids_by_tx,
-                subscribe_started_by_tx: &state.subscribe_started_by_tx,
-                command_started_by_tx: &state.command_started_by_tx,
-                outbound_commands_by_tx: &state.outbound_commands_by_tx,
-                command_tx: &state.command_tx,
-                query_window_tx: &state.query_window_tx,
-                subscribe_tx: &state.subscribe_tx,
-                subscription_builds: &state.subscription_builds,
-                view_delivery_tx: &state.view_delivery_tx,
-            },
+            &Self::message_context(state),
             message,
         );
         true
+    }
+
+    const fn message_context(state: &ReadLoopState) -> MessageContext<'_> {
+        MessageContext {
+            auth: &state.auth,
+            priority_tx: &state.priority_tx,
+            drop_logger: &state.drop_logger,
+            query_ids_by_tx: &state.query_ids_by_tx,
+            view_ids_by_tx: &state.view_ids_by_tx,
+            subscribe_started_by_tx: &state.subscribe_started_by_tx,
+            command_started_by_tx: &state.command_started_by_tx,
+            outbound_commands_by_tx: &state.outbound_commands_by_tx,
+            command_tx: &state.command_tx,
+            query_window_tx: &state.query_window_tx,
+            subscribe_tx: &state.subscribe_tx,
+            subscription_builds: &state.subscription_builds,
+            view_delivery_tx: &state.view_delivery_tx,
+            placements: &state.placements,
+        }
+    }
+
+    fn drop_denied<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        state: &ReadLoopState,
+        tx: &Arc<str>,
+    ) {
+        state.placements.forget(tx);
+        state.subscription_builds.cancel(tx);
+        session.cancel(tx);
+        let _ = state
+            .view_delivery_tx
+            .send(ViewDeliveryControl::Cancel(tx.clone()));
+        if let Ok(mut map) = state.query_ids_by_tx.lock() {
+            map.remove(tx);
+        }
+        if let Ok(mut map) = state.view_ids_by_tx.lock() {
+            map.remove(tx);
+        }
+        if let Ok(mut map) = state.subscribe_started_by_tx.lock() {
+            map.remove(tx);
+        }
+    }
+
+    /// Open the subscription `tx` again where its partition now is. The
+    /// client keeps what it holds until the new subscription's initial
+    /// response replaces it.
+    fn replace_subscription<W: WsWriter>(
+        session: &mut ClientSession<W>,
+        ctx: Arc<MykoServerContext>,
+        message_context: &MessageContext<'_>,
+        (tx, message): (Arc<str>, MykoMessage),
+    ) {
+        message_context.placements.forget(&tx);
+        message_context.subscription_builds.cancel(&tx);
+        session.cancel(&tx);
+        Self::handle_message(session, ctx, message_context, message);
     }
 
     fn reject_incoming(state: &ReadLoopState, message: &MykoMessage, reason: String) {
@@ -668,20 +823,27 @@ impl WsHandler {
                     ),
                 }
             }
-            Message::Text(text) => match serde_json::from_str::<MykoMessage>(&text) {
-                Ok(message) => {
-                    if !Self::dispatch_incoming(session, state, message) {
-                        return false;
-                    }
-                    tokio::task::yield_now().await;
+            Message::Text(text) => {
+                let dispatched = match Self::decode_event_frame(state, &text) {
+                    Some(frame) => Self::dispatch_event_frame(session, state, frame),
+                    None => match serde_json::from_str::<MykoMessage>(&text) {
+                        Ok(message) => Self::dispatch_incoming(session, state, message),
+                        Err(error) => {
+                            tracing::warn!(
+                                "Failed to parse JSON message from {}: {} | raw: {}",
+                                state.client_id,
+                                error,
+                                text.get(..1000).unwrap_or(&text)
+                            );
+                            return true;
+                        }
+                    },
+                };
+                if !dispatched {
+                    return false;
                 }
-                Err(error) => tracing::warn!(
-                    "Failed to parse JSON message from {}: {} | raw: {}",
-                    state.client_id,
-                    error,
-                    text.get(..1000).unwrap_or(&text)
-                ),
-            },
+                tokio::task::yield_now().await;
+            }
             Message::Ping(_) => tracing::trace!("Ping from {}", state.client_id),
             Message::Pong(_) => tracing::trace!("Pong from {}", state.client_id),
             Message::Close(frame) => {
@@ -690,6 +852,93 @@ impl WsHandler {
             }
             Message::Frame(_) => {}
         }
+        true
+    }
+
+    /// A JSON event frame decoded without a `serde_json::Value` per item,
+    /// when nothing on this connection reads those values. An authorizer
+    /// that reads proposed items gets the decoded message instead.
+    fn decode_event_frame<'a>(state: &ReadLoopState, text: &'a str) -> Option<EventFrame<'a>> {
+        if state
+            .auth
+            .as_ref()
+            .is_some_and(AuthSession::inspects_proposed_events)
+        {
+            return None;
+        }
+        crate::inbound_events::parse_event_frame(text)
+    }
+
+    /// [`Self::dispatch_incoming`] for a frame from
+    /// [`Self::decode_event_frame`]: the same access, authorization and
+    /// mutability checks, then its items are parsed and applied.
+    fn dispatch_event_frame<W: WsWriter>(
+        session: &ClientSession<W>,
+        state: &ReadLoopState,
+        frame: EventFrame<'_>,
+    ) -> bool {
+        let reject = |reason: &dyn std::fmt::Display| {
+            tracing::warn!(client_id = %state.client_id, %reason, "Rejected WebSocket input");
+        };
+        if state.access != GatewayAccess::Full {
+            reject(&"gateway is read-only");
+            return true;
+        }
+        let change = |event: &RawEvent<'_>| {
+            if event.change_type == MEventType::SET {
+                EventChange::Set
+            } else {
+                EventChange::Delete
+            }
+        };
+        if let Some(auth) = &state.auth {
+            // An invalid session terminates the transport; a denied operation does not.
+            if auth.check().is_err() {
+                return false;
+            }
+            let authorized = frame
+                .events
+                .iter()
+                .try_for_each(|event| {
+                    auth.authorize(AuthorizationRequest::ClientEvent {
+                        entity_type: &event.item_type,
+                        change: change(event),
+                        proposed: &serde_json::Value::Null,
+                    })
+                })
+                .and_then(|()| if frame.batch { auth.check() } else { Ok(()) });
+            if let Err(error) = authorized {
+                if auth.check().is_err() {
+                    return false;
+                }
+                reject(&error);
+                return true;
+            }
+        }
+        // Entity declarations apply even to trusted gateways without an auth provider.
+        if let Err(error) = frame.events.iter().try_for_each(|event| {
+            myko_auth::client_events::authorize(&event.item_type, change(event))
+        }) {
+            reject(&error);
+            return true;
+        }
+        crate::ws_timing::record_inbound_events(
+            frame.batch,
+            frame.events.iter().map(|event| &*event.item_type),
+            &session.client_id,
+        );
+        let ctx = &state.ctx;
+        let items = frame
+            .events
+            .into_iter()
+            .filter_map(|event| {
+                let change = event.change_type;
+                Some((change, event.into_item(ctx, &session.client_id)?))
+            })
+            .collect();
+        Self::apply_client_events(&session.client_id, &Self::message_context(state), || {
+            ctx.apply_item_event_batch(items)
+        });
         true
     }
 
@@ -754,17 +1003,19 @@ impl WsHandler {
                 cellmap,
                 window,
             } => {
-                session.subscribe_view_with_id(tx_id, view_id, cellmap, window);
+                session.subscribe_erased_view(tx_id, view_id, cellmap, window);
             }
         }
         true
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn run_read_loop<W: WsWriter>(
         mut read: futures_util::stream::SplitStream<tokio_tungstenite::WebSocketStream<TcpStream>>,
         session: &mut ClientSession<W>,
         mut subscribe_rx: mpsc::UnboundedReceiver<SubscriptionBuilt>,
         mut denied_rx: mpsc::UnboundedReceiver<Arc<str>>,
+        mut moved_rx: MovedSubscriptions,
         state: ReadLoopState,
     ) {
         let mut diagnostics_interval = interval(Duration::from_secs(5));
@@ -798,14 +1049,15 @@ impl WsHandler {
             }
             tokio::select! {
                 _ = auth_interval.tick(), if state.auth.is_some() => {}
-                Some(tx) = denied_rx.recv() => {
-                    state.subscription_builds.cancel(&tx);
-                    session.cancel(&tx);
-                    let _ = state.view_delivery_tx.send(ViewDeliveryControl::Cancel(tx.clone()));
-                    if let Ok(mut map) = state.query_ids_by_tx.lock() { map.remove(&tx); }
-                    if let Ok(mut map) = state.view_ids_by_tx.lock() { map.remove(&tx); }
-                    if let Ok(mut map) = state.subscribe_started_by_tx.lock() { map.remove(&tx); }
+                Some(moved) = moved_rx.recv() => {
+                    Self::replace_subscription(
+                        session,
+                        state.ctx.clone(),
+                        &Self::message_context(&state),
+                        moved,
+                    );
                 }
+                Some(tx) = denied_rx.recv() => Self::drop_denied(session, &state, &tx),
                 _ = diagnostics_interval.tick() => {
                     if let Some(diagnostics) = &state.drop_logger.diagnostics { diagnostics.flush(false); }
                 }
@@ -882,6 +1134,7 @@ impl WsHandler {
         command_started_cleanup: SharedTxTimes,
     ) {
         while let Some(job) = command_rx.recv().await {
+            subscription_builds::applied(job.after.clone()).await;
             let command_ctx = command_ctx.clone();
             let command_deferred_tx = command_deferred_tx.clone();
             let command_priority_tx = command_priority_tx.clone();
@@ -892,7 +1145,7 @@ impl WsHandler {
             let result = WS_COMMAND_BLOCKING
                 .run("command", move || {
                     Self::execute_command_job(
-                        command_ctx,
+                        &command_ctx,
                         &command_deferred_tx,
                         &command_priority_tx,
                         command_drop_logger.as_ref(),
@@ -942,6 +1195,7 @@ impl WsHandler {
     ) -> (&'static str, Option<Arc<str>>, Option<u64>) {
         match message {
             OutboundMessage::SerializedCommand { tx, .. } => ("command", Some(tx.clone()), None),
+            OutboundMessage::ReportJson { tx, .. } => ("report_response", Some(tx.clone()), None),
             OutboundMessage::Message(message) => match message {
                 MykoMessage::ViewResponse(response) => (
                     "view_response",
@@ -1004,7 +1258,8 @@ impl WsHandler {
             OutboundMessage::SerializedCommand {
                 payload: EncodedCommandMessage::Json(json),
                 ..
-            } => Some(Message::Text(json.clone().into())),
+            }
+            | OutboundMessage::ReportJson { json, .. } => Some(Message::Text(json.clone().into())),
             OutboundMessage::SerializedCommand {
                 payload: EncodedCommandMessage::Cbor(bytes),
                 ..
@@ -1056,10 +1311,23 @@ impl WsHandler {
         if auth.is_some_and(|session| session.check().is_err()) {
             return false;
         }
-        if let (Some(auth), OutboundMessage::Message(output)) = (auth, &message)
-            && auth.uses_live_permissions()
-        {
-            match subscription_auth.delivery(output, auth) {
+        let live_delivery = auth
+            .filter(|session| session.uses_live_permissions())
+            .and_then(|session| match &message {
+                OutboundMessage::Message(output) => {
+                    Some(subscription_auth.delivery(output, session))
+                }
+                // A pre-encoded report frame gets the same per-subscription
+                // check as a report response built per message.
+                OutboundMessage::ReportJson { tx, .. } => Some(subscription_auth.delivery_for(
+                    tx,
+                    myko_auth::OperationKind::Report,
+                    session,
+                )),
+                OutboundMessage::SerializedCommand { .. } => None,
+            });
+        if let Some(delivery) = live_delivery {
+            match delivery {
                 Delivery::Allow => {}
                 Delivery::Drop => return true,
                 Delivery::Error(error) => {
@@ -1083,11 +1351,14 @@ impl WsHandler {
         if auth.is_some_and(|session| session.check().is_err()) {
             return false;
         }
+        // Queue the frame in the WebSocket's write buffer; `run_writer`
+        // flushes once the backlog is drained, so a burst costs one write.
         let send_started = Instant::now();
-        let result = write.send(frame).await;
+        let result = write.feed(frame).await;
         let send_elapsed = send_started.elapsed();
         let (diagnostic_message, command_id) = match &message {
             OutboundMessage::Message(message) => (Some(message), None),
+            OutboundMessage::ReportJson { .. } => (None, None),
             OutboundMessage::SerializedCommand { command_id, .. } => {
                 (None, Some(command_id.as_str()))
             }
@@ -1113,7 +1384,17 @@ impl WsHandler {
             );
             return false;
         }
-        match &message {
+        Self::record_sent(&message, client_id, payload_bytes, diagnostics);
+        true
+    }
+
+    fn record_sent(
+        message: &OutboundMessage,
+        client_id: &str,
+        payload_bytes: usize,
+        diagnostics: &DeliveryDiagnostics,
+    ) {
+        match message {
             OutboundMessage::Message(message) => {
                 let tag = crate::ws_timing::resolved_message_tag(message, client_id);
                 crate::ws_timing::record_outbound_for_client(
@@ -1123,6 +1404,15 @@ impl WsHandler {
                     payload_bytes,
                 );
                 diagnostics.sent(message, payload_bytes);
+            }
+            OutboundMessage::ReportJson { tx, .. } => {
+                let tag = myko_telemetry::websocket_metrics::operation(client_id, "report", tx);
+                crate::ws_timing::record_outbound_for_client(
+                    "ReportResponse",
+                    client_id,
+                    tag.as_deref(),
+                    payload_bytes,
+                );
             }
             OutboundMessage::SerializedCommand { command_id, .. } => {
                 crate::ws_timing::record_outbound_for_client(
@@ -1134,22 +1424,36 @@ impl WsHandler {
                 diagnostics.serialized_command(command_id, payload_bytes);
             }
         }
-        true
     }
 
+    /// `encode_json` sends the frame pre-encoded, sharing the output's JSON
+    /// with every other subscriber of the same output. It is only taken when
+    /// nothing downstream needs the decoded message: a JSON session without
+    /// live permissions or delivery diagnostics.
     fn materialize_report(
-        tx: &str,
-        output: &dyn AnyOutput,
+        tx: &Arc<str>,
+        output: &Arc<dyn AnyOutput>,
         queued_at: Instant,
         diagnostics: &DeliveryDiagnostics,
+        encode_json: bool,
     ) -> OutboundMessage {
         diagnostics.queue(1, Some((tx, queued_at.elapsed())));
         let started = Instant::now();
-        let message =
-            OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
-                response: output.to_value(),
-                tx: tx.to_string(),
-            }));
+        let encoded = encode_json
+            .then(|| myko::wire::encode_report_response_json(tx, output).ok())
+            .flatten();
+        let message = encoded.map_or_else(
+            || {
+                OutboundMessage::Message(MykoMessage::ReportResponse(myko::wire::ReportResponse {
+                    response: output.to_value(),
+                    tx: tx.to_string(),
+                }))
+            },
+            |json| OutboundMessage::ReportJson {
+                tx: tx.clone(),
+                json,
+            },
+        );
         diagnostics.materialized(tx, started.elapsed());
         message
     }
@@ -1171,12 +1475,16 @@ impl WsHandler {
         message
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the writer's channel selection, flushing and delivery read in one place"
+    )]
     async fn run_writer(state: WriterState) {
         let WriterState {
             subscription_auth,
             auth,
             mut write,
-            mut rx,
+            rx,
             mut deferred_rx,
             mut view_delivery_rx,
             mut priority_rx,
@@ -1192,7 +1500,31 @@ impl WsHandler {
         let mut priority_open = true;
         let mut deferred_open = true;
         let mut delivery = ViewDelivery::default();
+        let mut unflushed = 0usize;
         while normal_open || priority_open || deferred_open {
+            if unflushed > 0 {
+                let backlog = rx
+                    .len()
+                    .saturating_add(deferred_rx.len())
+                    .saturating_add(priority_rx.len());
+                let view_due = delivery
+                    .next_deadline()
+                    .is_some_and(|deadline| deadline <= Instant::now());
+                if (backlog == 0 && !view_due) || unflushed >= MAX_UNFLUSHED_FRAMES {
+                    if let Err(error) = write.flush().await {
+                        tracing::error!(
+                            "WebSocket flush failed for client {} from {} after {} frames: {}",
+                            write_client_id,
+                            write_addr,
+                            unflushed,
+                            error
+                        );
+                        drop_logger.disconnect_for_overload();
+                        break;
+                    }
+                    unflushed = 0;
+                }
+            }
             diagnostics.queue(
                 rx.len()
                     .saturating_add(deferred_rx.len())
@@ -1219,12 +1551,15 @@ impl WsHandler {
                 maybe = deferred_rx.recv(), if deferred_open => {
                     match maybe {
                         Some(DeferredOutbound::Report(tx, output, queued_at)) => {
-                            Self::materialize_report(&tx, output.as_ref(), queued_at, &diagnostics)
+                            let encode_json = outgoing_format_writer.load(Ordering::SeqCst)
+                                == u8::from(MykoProtocol::JSON)
+                                && !diagnostics.enabled();
+                            Self::materialize_report(&tx, &output, queued_at, &diagnostics, encode_json)
                         }
                         Some(DeferredOutbound::Query { response, is_view, queued_at }) => {
                             diagnostics.queue(deferred_rx.len().saturating_add(1), Some((&response.tx, queued_at.elapsed())));
                             if is_view {
-                                let Some(response) = delivery.push(response, Instant::now()) else { continue; };
+                                let Some(response) = delivery.push(response, queued_at) else { continue; };
                                 Self::materialize_query(response, true, &diagnostics)
                             } else {
                                 Self::materialize_query(response, false, &diagnostics)
@@ -1261,9 +1596,14 @@ impl WsHandler {
             {
                 // Wake the read half so connection cleanup drops both halves.
                 // Reconnecting clients will resubscribe from a fresh snapshot.
-                drop_logger.overload_tx.send_replace(true);
+                drop_logger.disconnect_for_overload();
                 break;
             }
+            unflushed = unflushed.saturating_add(1);
+        }
+        // Frames already accepted are delivered before the writer exits.
+        if unflushed > 0 {
+            let _ = write.flush().await;
         }
         Self::writer_exited(
             &write_client_id,
@@ -1362,9 +1702,12 @@ impl WsHandler {
         }
         let (write, read) = ws_stream.split();
 
-        // Create a bounded channel for sending messages to the client
-        // High limit (10k) since we have good memory availability
-        let (tx, rx) = mpsc::channel::<OutboundMessage>(10_000);
+        // Outbound frames share one ordered queue. Only sequenced messages
+        // count against MESSAGE_QUEUE_CAPACITY (overflow resnapshots); commands
+        // are events that a resnapshot cannot replay, so they are never refused
+        // while the connection lives.
+        let (tx, rx) = outbound_queue::channel::<OutboundMessage>();
+        let queued_messages = Arc::new(AtomicUsize::new(0));
         let (deferred_tx, deferred_rx) = mpsc::channel::<DeferredOutbound>(10_000);
         let (priority_tx, priority_rx) = mpsc::channel::<MykoMessage>(1_000);
         let (command_tx, command_rx) = mpsc::unbounded_channel::<CommandJob>();
@@ -1385,6 +1728,7 @@ impl WsHandler {
         let drop_logger = Arc::new(logger);
         let writer = ChannelWriter {
             tx: tx.clone(),
+            queued_messages: queued_messages.clone(),
             deferred_tx: deferred_tx.clone(),
             drop_logger: drop_logger.clone(),
             outgoing_format: outgoing_format.clone(),
@@ -1415,12 +1759,17 @@ impl WsHandler {
         let command_client_id = client_id.clone();
 
         let (denied_tx, denied_rx) = mpsc::unbounded_channel();
+        let (placements, moved_rx) = SubscriptionPlacements::new();
         let subscription_auth = Arc::new(SubscriptionAuthorization::new(denied_tx));
         let write_task = tokio::spawn(Self::run_writer(WriterState {
             subscription_auth: subscription_auth.clone(),
             auth: auth.clone(),
             write,
-            rx,
+            rx: OutboundReceiver {
+                rx,
+                queued_messages: queued_messages.clone(),
+                diagnostics: Some(diagnostics.clone()),
+            },
             deferred_rx,
             view_delivery_rx,
             priority_rx,
@@ -1454,6 +1803,7 @@ impl WsHandler {
             &mut session,
             subscribe_rx,
             denied_rx,
+            moved_rx,
             ReadLoopState {
                 subscription_auth,
                 auth,
@@ -1473,6 +1823,7 @@ impl WsHandler {
                 subscribe_tx: subscribe_tx.clone(),
                 subscription_builds: SubscriptionBuilds::default(),
                 view_delivery_tx,
+                placements,
                 overload_rx,
             },
         )
@@ -1483,9 +1834,13 @@ impl WsHandler {
         Ok(())
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a query subscription's routing, build and fallback read in one place"
+    )]
     fn handle_query_request<W: WsWriter>(
         session: &mut ClientSession<W>,
-        ctx: Arc<MykoServerContext>,
+        ctx: &MykoServerContext,
         message_context: &MessageContext<'_>,
         wrapped: WrappedQuery,
     ) {
@@ -1515,6 +1870,20 @@ impl WsHandler {
             RequestContext::from_client(tx_id.clone(), session.client_id.clone(), ctx.host_id)
                 .with_auth(message_context.auth.clone()),
         );
+        let Some(ctx) = Self::open_subscription(
+            ctx,
+            message_context,
+            (&tx_id, &request, &wrapped.query),
+            (
+                Some(&wrapped.query_item_type),
+                MykoMessage::Query(wrapped.clone()),
+            ),
+            |error| {
+                MykoMessage::QueryError(myko::wire::QueryError::new(&*tx_id, &*query_id, error))
+            },
+        ) else {
+            return;
+        };
         if let Some(query_data) = ctx.handler_registry.query(&query_id) {
             match (query_data.parse)(wrapped.query.clone()) {
                 Ok(query) => {
@@ -1531,13 +1900,15 @@ impl WsHandler {
                             if let (Some(window_factory), Some(initial_window)) =
                                 (window_factory, window.clone())
                             {
-                                match window_factory(
-                                    query.clone(),
-                                    registry.clone(),
-                                    request.clone(),
-                                    ctx.clone(),
-                                    initial_window,
-                                ) {
+                                match ctx.in_domain(|| {
+                                    window_factory(
+                                        query.clone(),
+                                        registry.clone(),
+                                        request.clone(),
+                                        ctx.clone(),
+                                        initial_window,
+                                    )
+                                }) {
                                     Ok(Some(source)) => {
                                         return Some(Ok(SubscriptionReady::WindowedQuery {
                                             tx_id,
@@ -1556,7 +1927,11 @@ impl WsHandler {
                                     }
                                 }
                             }
-                            match factory(query, registry, request, Some(ctx)) {
+                            let built = ctx
+                                .checked(|| factory(query, registry, request, Some(ctx.clone())))
+                                .map_err(|error| error.to_string())
+                                .and_then(|built| built);
+                            match built {
                                 Ok(cellmap) => Some(Ok(SubscriptionReady::Query {
                                     tx_id,
                                     query_id,
@@ -1569,7 +1944,11 @@ impl WsHandler {
                                         query_id,
                                         error
                                     );
-                                    None
+                                    Some(Err(MykoMessage::QueryError(myko::wire::QueryError::new(
+                                        tx_id.to_string(),
+                                        query_id.to_string(),
+                                        error,
+                                    ))))
                                 }
                             }
                         },
@@ -1584,7 +1963,7 @@ impl WsHandler {
             }
         } else {
             let store = (*ctx.registry.get_or_create(&wrapped.query_item_type)).clone();
-            let cellmap = hyphae::MapQuery::materialize(store.select(|_| true));
+            let cellmap = ctx.in_domain(|| hyphae::MapQuery::materialize(store.select(|_| true)));
             message_context.drop_logger.subscription_ready(&tx_id);
             message_context.subscription_builds.cancel(&tx_id);
             session.subscribe_query(tx_id, query_id, cellmap, wrapped.window);
@@ -1635,9 +2014,31 @@ impl WsHandler {
             drop(ctx);
             return;
         };
+        if let Some(span) = ctx.span_contexts(&view_id, &request, &wrapped.view) {
+            Self::open_merged_view(&ctx, message_context, (&tx_id, &request), &wrapped, span);
+            return;
+        }
+        let Some(ctx) = Self::open_subscription(
+            &ctx,
+            message_context,
+            (&tx_id, &request, &wrapped.view),
+            (
+                Some(&view_data.view_item_type),
+                MykoMessage::View(wrapped.clone()),
+            ),
+            |error| MykoMessage::ViewError(ViewError::new(&*tx_id, &*view_id, error)),
+        ) else {
+            return;
+        };
         match (view_data.parse)(wrapped.view.clone()) {
             Ok(view) => {
-                let factory = view_data.cell_factory;
+                let cell_factory = view_data.cell_factory;
+                let subscribe_factory = ctx.handler_registry.view_subscribe_factory(&view_id);
+                let factory = move |view, registry, request, ctx| match subscribe_factory {
+                    Some(subscribe) => subscribe(view, registry, request, ctx),
+                    None => cell_factory(view, registry, request, ctx)
+                        .map(myko::view::ErasedViewMap::from),
+                };
                 let registry = ctx.registry.clone();
                 let window = wrapped.window;
                 let sender = message_context.subscribe_tx.clone();
@@ -1645,18 +2046,22 @@ impl WsHandler {
                     "view-subscription",
                     tx_id.clone(),
                     sender,
-                    move || match factory(view, registry, request, ctx) {
+                    move || match ctx
+                        .checked(|| factory(view, registry, request, ctx.clone()))
+                        .map_err(|error| error.to_string())
+                        .and_then(|built| built)
+                    {
                         Ok(cellmap) => Some(Ok(SubscriptionReady::View {
                             tx_id,
                             view_id,
                             cellmap,
                             window,
                         })),
-                        Err(error) => Some(Err(ViewError::new(
+                        Err(error) => Some(Err(MykoMessage::ViewError(ViewError::new(
                             tx_id.to_string(),
                             view_id.to_string(),
                             error,
-                        ))),
+                        )))),
                     },
                 );
             }
@@ -1667,6 +2072,123 @@ impl WsHandler {
                 format!("Failed to parse view {view_id}: {error}"),
             ),
         }
+    }
+
+    /// The context a subscription opens in, or `None` after sending the
+    /// client `refuse` of why it cannot open.
+    ///
+    /// A subscription the hook places from shared data is followed, and
+    /// `resend` opens it again when it belongs elsewhere.
+    fn open_subscription(
+        ctx: &MykoServerContext,
+        message_context: &MessageContext<'_>,
+        opening: (&Arc<str>, &Arc<RequestContext>, &serde_json::Value),
+        (reads, resend): (Option<&str>, MykoMessage),
+        refuse: impl FnOnce(String) -> MykoMessage,
+    ) -> Option<Arc<MykoServerContext>> {
+        let (_, request, payload) = opening;
+        match ctx.subscription_context(request, payload, reads) {
+            Ok(opened) => {
+                message_context
+                    .placements
+                    .follow(ctx, &opened, opening, resend);
+                Some(Arc::new(opened))
+            }
+            Err(error) => {
+                // A subscription the hook placed nowhere opens once a write
+                // makes the hook place it.
+                if matches!(error, myko::server::PartitionError::RootRead { .. }) {
+                    message_context.placements.follow(ctx, ctx, opening, resend);
+                }
+                if let Err(error) = message_context
+                    .priority_tx
+                    .try_send(refuse(error.to_string()))
+                {
+                    message_context
+                        .drop_logger
+                        .on_drop("SubscriptionError", &error);
+                }
+                None
+            }
+        }
+    }
+
+    /// Open a subscription of a view merged across partitions: build its part
+    /// in each partition of `span` and deliver the union. It is opened again
+    /// when the span changes or one of its partitions opens or closes.
+    fn open_merged_view(
+        root: &MykoServerContext,
+        message_context: &MessageContext<'_>,
+        (tx_id, request): (&Arc<str>, &Arc<RequestContext>),
+        wrapped: &WrappedView,
+        (keys, contexts): (
+            std::collections::BTreeSet<myko::server::PartitionKey>,
+            Vec<MykoServerContext>,
+        ),
+    ) {
+        let view_id = wrapped.view_id.clone();
+        let moved = message_context.placements.moved.clone();
+        let moved_tx = Arc::clone(tx_id);
+        let resend = MykoMessage::View(wrapped.clone());
+        let watch = root.watch_span(
+            Arc::clone(&view_id),
+            (Arc::clone(request), wrapped.view.clone()),
+            (keys, &contexts),
+            move || drop(moved.send((Arc::clone(&moved_tx), resend.clone()))),
+        );
+        if let (Some(watch), Ok(mut watches)) = (watch, message_context.placements.watches.lock()) {
+            watches.insert(Arc::clone(tx_id), watch);
+        }
+        let Some(view_data) = root.handler_registry.view(&view_id) else {
+            return;
+        };
+        let subscribe_factory = root.handler_registry.view_subscribe_factory(&view_id);
+        let cell_factory = view_data.cell_factory;
+        let parse = view_data.parse;
+        let payload = wrapped.view.clone();
+        let request = Arc::clone(request);
+        let tx = Arc::clone(tx_id);
+        let window = wrapped.window.clone();
+        message_context.subscription_builds.spawn(
+            "merged-view-subscription",
+            Arc::clone(tx_id),
+            message_context.subscribe_tx.clone(),
+            move || {
+                let mut parts = Vec::with_capacity(contexts.len());
+                for part in contexts {
+                    let built = parse(payload.clone())
+                        .map_err(|error| error.to_string())
+                        .and_then(|view| {
+                            let registry = part.registry.clone();
+                            let request = Arc::clone(&request);
+                            let ctx = Arc::new(part.clone());
+                            part.checked(|| match subscribe_factory {
+                                Some(subscribe) => subscribe(view, registry, request, ctx),
+                                None => cell_factory(view, registry, request, ctx)
+                                    .map(myko::view::ErasedViewMap::from),
+                            })
+                            .map_err(|error| error.to_string())
+                            .and_then(|built| built)
+                        });
+                    match built {
+                        Ok(map) => parts.push(map),
+                        Err(error) => {
+                            return Some(Err(MykoMessage::ViewError(ViewError::new(
+                                tx.to_string(),
+                                view_id.to_string(),
+                                error,
+                            ))));
+                        }
+                    }
+                }
+                Some(Ok(SubscriptionReady::View {
+                    tx_id: tx,
+                    view_id,
+                    cellmap: myko::view::ErasedViewMap::merged(parts),
+                    window,
+                }))
+            },
+        );
     }
 
     fn send_view_error(
@@ -1698,7 +2220,7 @@ impl WsHandler {
         crate::ws_timing::record_inbound_message(&msg, &session.client_id);
         match msg {
             MykoMessage::Query(wrapped) => {
-                Self::handle_query_request(session, ctx, message_context, wrapped);
+                Self::handle_query_request(session, &ctx, message_context, wrapped);
             }
             MykoMessage::View(wrapped) => {
                 Self::handle_view_request(session, ctx, message_context, wrapped);
@@ -1780,8 +2302,8 @@ impl WsHandler {
         let ready = match built.result {
             Some(Ok(ready)) => Some(ready),
             Some(Err(error)) => {
-                if let Err(error) = priority.try_send(MykoMessage::ViewError(error)) {
-                    logger.on_drop("ViewError", &error);
+                if let Err(error) = priority.try_send(error) {
+                    logger.on_drop("SubscriptionError", &error);
                 }
                 None
             }
@@ -1797,6 +2319,7 @@ impl WsHandler {
     ) {
         match message {
             MykoMessage::QueryCancel(CancelSubscription { tx }) => {
+                message_context.placements.forget(&tx);
                 message_context.subscription_builds.cancel(&tx);
                 let tx: Arc<str> = tx.into();
                 if let Ok(mut map) = message_context.query_ids_by_tx.lock() {
@@ -1823,6 +2346,7 @@ impl WsHandler {
                 session.update_query_cursor_window(&Arc::from(tx), window);
             }
             MykoMessage::ViewCancel(CancelSubscription { tx }) => {
+                message_context.placements.forget(&tx);
                 message_context.subscription_builds.cancel(&tx);
                 let tx: Arc<str> = tx.into();
                 let _ = message_context
@@ -1848,6 +2372,7 @@ impl WsHandler {
                 session.update_view_window(&Arc::from(tx), window);
             }
             MykoMessage::ReportCancel(CancelSubscription { tx }) => {
+                message_context.placements.forget(&tx);
                 message_context.subscription_builds.cancel(&tx);
                 session.cancel(&Arc::from(tx));
             }
@@ -1869,7 +2394,7 @@ impl WsHandler {
                     .and_then(|value| value.as_str())
                     .unwrap_or("unknown")
                     .into();
-                let report_id = wrapped.report_id;
+                let report_id = wrapped.report_id.clone();
                 let Some(data) = ctx.handler_registry.report(&report_id) else {
                     tracing::warn!("No registered handler for report: {}", report_id);
                     return;
@@ -1884,13 +2409,30 @@ impl WsHandler {
                             )
                             .with_auth(message_context.auth.clone()),
                         );
+                        let Some(ctx) = Self::open_subscription(
+                            &ctx,
+                            message_context,
+                            (&tx, &request, &wrapped.report),
+                            (None, MykoMessage::Report(wrapped.clone())),
+                            |error| {
+                                MykoMessage::ReportError(myko::wire::ReportError::new(
+                                    &*tx, &report_id, error,
+                                ))
+                            },
+                        ) else {
+                            return;
+                        };
                         let factory = data.cell_factory;
                         let sender = message_context.subscribe_tx.clone();
                         message_context.subscription_builds.spawn(
                             "report-subscription",
                             tx.clone(),
                             sender,
-                            move || match factory(report, request, ctx) {
+                            move || match ctx
+                                .checked(|| factory(report, request, ctx.clone()))
+                                .map_err(|error| error.to_string())
+                                .and_then(|built| built)
+                            {
                                 Ok(cell) => Some(Ok(SubscriptionReady::Report {
                                     tx_id: tx,
                                     report_id: report_id.into(),
@@ -1902,7 +2444,9 @@ impl WsHandler {
                                         report_id,
                                         error
                                     );
-                                    None
+                                    Some(Err(MykoMessage::ReportError(
+                                        myko::wire::ReportError::new(&*tx, &report_id, error),
+                                    )))
                                 }
                             },
                         );
@@ -1915,32 +2459,38 @@ impl WsHandler {
                     ),
                 }
             }
-            MykoMessage::Event(mut event) => {
-                event.sanitize_null_bytes();
-                normalize_incoming_event(&mut event, &session.client_id, ctx.host_id);
-                if let Err(error) = ctx.apply_event(event) {
-                    tracing::error!(
-                        "Failed to apply event from client {}: {error}",
-                        session.client_id
-                    );
-                }
+            MykoMessage::Event(event) => {
+                Self::apply_client_events(&session.client_id, message_context, || {
+                    ctx.apply_event(event)
+                });
                 drop(ctx);
             }
-            MykoMessage::EventBatch(mut events) => {
-                for event in &mut events {
-                    event.sanitize_null_bytes();
-                    normalize_incoming_event(event, &session.client_id, ctx.host_id);
-                }
-                if let Err(error) = ctx.apply_event_batch(events) {
-                    tracing::error!(
-                        "Failed to apply event batch from client {}: {}",
-                        session.client_id,
-                        error
-                    );
-                }
+            MykoMessage::EventBatch(events) => {
+                Self::apply_client_events(&session.client_id, message_context, || {
+                    ctx.apply_event_batch(events)
+                });
                 drop(ctx);
             }
             _ => drop(ctx),
+        }
+    }
+
+    /// Apply a client's events without waiting for the partitions they go
+    /// to. The connection's later subscriptions and commands start once the
+    /// events are applied, so they observe them; other clients wait on
+    /// nothing of this one.
+    fn apply_client_events<R, E: std::fmt::Display>(
+        client_id: &str,
+        message_context: &MessageContext<'_>,
+        apply: impl FnOnce() -> Result<R, E>,
+    ) {
+        // NOTE(ts): Captured writes never wait for a partition's backlog, so
+        // this runs on the async worker; moving it off with block_in_place
+        // cost a worker hand-off per frame.
+        let (applied, writes) = myko::server::PendingWrites::capture(apply);
+        message_context.subscription_builds.wrote(writes);
+        if let Err(error) = applied {
+            tracing::error!("Failed to apply events from client {client_id}: {error}");
         }
     }
 
@@ -1968,6 +2518,7 @@ impl WsHandler {
                     command_id: command_id.clone(),
                     command: wrapped.command,
                     received_at,
+                    after: message_context.subscription_builds.unapplied(),
                 }) {
                     tracing::error!(
                         "Failed to enqueue command {} for client {} tx={}: {}",
@@ -2044,8 +2595,18 @@ impl WsHandler {
         );
     }
 
+    fn send_command_result(
+        deferred_tx: &mpsc::Sender<DeferredOutbound>,
+        drop_logger: &DropLogger,
+        result: MykoMessage,
+    ) {
+        if let Err(error) = deferred_tx.try_send(DeferredOutbound::CommandResult(result)) {
+            drop_logger.on_drop("CommandResult", &error);
+        }
+    }
+
     fn execute_command_job(
-        ctx: Arc<MykoServerContext>,
+        ctx: &MykoServerContext,
         deferred_tx: &mpsc::Sender<DeferredOutbound>,
         priority_tx: &mpsc::Sender<MykoMessage>,
         drop_logger: &DropLogger,
@@ -2068,6 +2629,21 @@ impl WsHandler {
                         .with_auth(job.auth.clone()),
                 );
                 let cmd_id: Arc<str> = Arc::from(command_id.clone());
+                let ctx = match ctx.command_context(&req, &job.command) {
+                    Ok(placed) => Arc::new(placed),
+                    Err(refused) => {
+                        Self::send_command_result(
+                            deferred_tx,
+                            drop_logger,
+                            MykoMessage::CommandError(CommandError::new(
+                                job.tx_id.to_string(),
+                                command_id,
+                                refused.to_string(),
+                            )),
+                        );
+                        return;
+                    }
+                };
                 let cmd_ctx = CommandContext::new(cmd_id, req, ctx);
                 let execute_started = Instant::now();
 
@@ -2082,31 +2658,18 @@ impl WsHandler {
                 {
                     return;
                 }
-                match executor.execute_from_value(job.command.clone(), cmd_ctx) {
-                    Ok(result) => {
-                        let response = CommandResponse {
-                            response: result,
-                            tx: job.tx_id.to_string(),
-                        };
-                        if let Err(e) = deferred_tx.try_send(DeferredOutbound::CommandResult(
-                            MykoMessage::CommandResponse(response),
-                        )) {
-                            drop_logger.on_drop("CommandResponse", &e);
-                        }
-                    }
-                    Err(e) => {
-                        let error = MykoMessage::CommandError(CommandError::new(
-                            job.tx_id.to_string(),
-                            command_id.clone(),
-                            e.message,
-                        ));
-                        if let Err(err) =
-                            deferred_tx.try_send(DeferredOutbound::CommandResult(error))
-                        {
-                            drop_logger.on_drop("CommandError", &err);
-                        }
-                    }
-                }
+                let result = match executor.execute_from_value(job.command.clone(), cmd_ctx) {
+                    Ok(response) => MykoMessage::CommandResponse(CommandResponse {
+                        response,
+                        tx: job.tx_id.to_string(),
+                    }),
+                    Err(error) => MykoMessage::CommandError(CommandError::new(
+                        job.tx_id.to_string(),
+                        command_id.clone(),
+                        error.message,
+                    )),
+                };
+                Self::send_command_result(deferred_tx, drop_logger, result);
                 let execute_ms = execute_started.elapsed().as_millis();
                 let total_ms = job.received_at.elapsed().as_millis();
                 tracing::trace!(
@@ -2157,7 +2720,9 @@ impl WsHandler {
 /// forwarded to the actual WebSocket.
 #[derive(Clone)]
 struct ChannelWriter {
-    tx: mpsc::Sender<OutboundMessage>,
+    tx: outbound_queue::Sender<OutboundMessage>,
+    /// `Message` frames enqueued on `tx` and not yet taken by the writer.
+    queued_messages: Arc<AtomicUsize>,
     deferred_tx: mpsc::Sender<DeferredOutbound>,
     drop_logger: Arc<DropLogger>,
     outgoing_format: Arc<AtomicU8>,
@@ -2193,12 +2758,16 @@ impl WsWriter for ChannelWriter {
         if self.tx_dead() {
             return;
         }
-        if let Err(e) = self.tx.try_send(OutboundMessage::Message(msg)) {
-            // Closed errors here race with the writer task exiting between
-            // the is_dead check and the try_send; suppress them too.
-            if !matches!(e, mpsc::error::TrySendError::Closed(_)) {
-                self.drop_logger.on_drop("message", &e);
-            }
+        if self.queued_messages.fetch_add(1, Ordering::AcqRel) >= MESSAGE_QUEUE_CAPACITY {
+            self.queued_messages.fetch_sub(1, Ordering::AcqRel);
+            self.drop_logger
+                .on_drop("message", &"outbound message queue full");
+            return;
+        }
+        // A send error means the writer task exited after the is_dead check;
+        // the session is tearing down, so there is nothing to report.
+        if self.tx.push(OutboundMessage::Message(msg)) == Pushed::Closed {
+            self.queued_messages.fetch_sub(1, Ordering::AcqRel);
         }
     }
 
@@ -2212,17 +2781,67 @@ impl WsWriter for ChannelWriter {
         command_id: String,
         payload: EncodedCommandMessage,
     ) {
+        let _ = self.try_send_serialized_command(tx, command_id, payload);
+    }
+
+    fn try_send_serialized_command(
+        &self,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) -> bool {
         if self.tx_dead() {
-            return;
+            return false;
         }
-        if let Err(e) = self.tx.try_send(OutboundMessage::SerializedCommand {
+        // Unbounded: a command is an event, and dropping it would lose it for
+        // good. It is also a barrier no queued value may be replaced across.
+        // A closed queue means the writer already exited (disconnect).
+        self.tx.push_barrier(OutboundMessage::SerializedCommand {
             tx,
             command_id,
             payload,
-        }) && !matches!(e, mpsc::error::TrySendError::Closed(_))
-        {
-            self.drop_logger.on_drop("serialized_command", &e);
+        }) != Pushed::Closed
+    }
+
+    fn send_serialized_value_command(
+        &self,
+        key: CommandValueKey,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) {
+        let _ = self.try_send_serialized_value_command(key, tx, command_id, payload);
+    }
+
+    fn try_send_serialized_value_command(
+        &self,
+        key: CommandValueKey,
+        tx: Arc<str>,
+        command_id: String,
+        payload: EncodedCommandMessage,
+    ) -> bool {
+        if self.tx_dead() {
+            return false;
         }
+        // NOTE(ts): The newest value for a key makes a queued older one
+        // redundant, so it overwrites it in place unless an event was queued
+        // in between; a slow client then gets fresh values sooner and queued
+        // values are bounded by keys plus queued events.
+        let pushed = self.tx.push_value(
+            key,
+            OutboundMessage::SerializedCommand {
+                tx,
+                command_id,
+                payload,
+            },
+        );
+        if pushed == Pushed::Superseded {
+            SUPERSEDED_VALUE_COMMANDS.fetch_add(1, Ordering::Relaxed);
+            if let Some(diagnostics) = &self.drop_logger.diagnostics {
+                diagnostics.superseded();
+            }
+        }
+        pushed != Pushed::Closed
     }
 
     fn send_report_response(&self, tx: Arc<str>, output: Arc<dyn AnyOutput>) {
@@ -2277,6 +2896,8 @@ impl WsWriter for ChannelWriter {
 
 #[cfg(test)]
 mod delivery_timing_tests;
+#[cfg(test)]
+mod partition_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2286,6 +2907,27 @@ mod tests {
     use tungstenite::{Error as WebSocketError, error::ProtocolError};
 
     use super::*;
+
+    #[test]
+    fn dropped_frames_and_overload_disconnects_are_counted() {
+        let before = ws_delivery_counters();
+        let (overload_tx, overload_rx) = watch::channel(false);
+        let logger = DropLogger::new("counted".into(), overload_tx);
+        logger.on_drop("test", &"queue full");
+        logger.on_drop("test", &"queue full");
+        logger.disconnect_for_overload();
+        let after = ws_delivery_counters();
+
+        assert!(*overload_rx.borrow());
+        // Other tests in this binary may drop frames too, so these are floors.
+        assert!(after.outbound_drops.saturating_sub(before.outbound_drops) >= 2);
+        assert!(
+            after
+                .overload_disconnects
+                .saturating_sub(before.overload_disconnects)
+                >= 1
+        );
+    }
 
     struct SubscriptionWriter;
     impl WsWriter for SubscriptionWriter {
@@ -2317,6 +2959,7 @@ mod tests {
             subscribe_tx: &mpsc::unbounded_channel().0,
             subscription_builds: builds,
             view_delivery_tx: &mpsc::unbounded_channel().0,
+            placements: &SubscriptionPlacements::new().0,
         };
         action(&context)
     }
@@ -2357,7 +3000,7 @@ mod tests {
                 view_id,
                 cellmap,
                 window,
-            } => session.subscribe_view_with_id(tx_id, view_id, cellmap, window),
+            } => session.subscribe_erased_view(tx_id, view_id, cellmap, window),
         }
     }
 
@@ -2431,7 +3074,7 @@ mod tests {
             query.query_id = "unregistered-fallback-query".into();
             assert!(context.handler_registry.query(&query.query_id).is_none());
             with_subscription_context(&builds, |messages| {
-                WsHandler::handle_query_request(&mut session, context.clone(), messages, query);
+                WsHandler::handle_query_request(&mut session, &context, messages, query);
             });
         }
         assert!(session.has_subscription(&tx));
@@ -2509,7 +3152,7 @@ mod tests {
             SubscriptionReady::View {
                 tx_id: tx.clone(),
                 view_id: "test-view".into(),
-                cellmap: hyphae::CellMap::new().lock(),
+                cellmap: hyphae::CellMap::new().lock().into(),
                 window: None,
             },
             SubscriptionReady::Report {
@@ -2559,11 +3202,11 @@ mod tests {
         let stale = SubscriptionBuilt {
             tx: tx.clone(),
             owner: old,
-            result: Some(Err(ViewError::new(
+            result: Some(Err(MykoMessage::ViewError(ViewError::new(
                 tx.to_string(),
                 "test-view",
                 "old failure",
-            ))),
+            )))),
         };
         assert!(
             complete_test_subscription(&mut session, &builds, stale, &priority, &logger).is_none()
@@ -2665,11 +3308,11 @@ mod tests {
         let failed = SubscriptionBuilt {
             tx: tx.clone(),
             owner,
-            result: Some(Err(ViewError::new(
+            result: Some(Err(MykoMessage::ViewError(ViewError::new(
                 tx.to_string(),
                 "test-view",
                 "current failure",
-            ))),
+            )))),
         };
         assert!(
             complete_test_subscription(&mut session, &builds, failed, &priority, &logger).is_some()
@@ -2754,12 +3397,13 @@ mod tests {
 
     #[test]
     fn test_channel_writer() {
-        let (tx, mut rx) = mpsc::channel(10);
+        let (tx, rx) = outbound_queue::channel();
         let (deferred_tx, _deferred_rx) = mpsc::channel(10);
         let (overload_tx, _overload_rx) = watch::channel(false);
         let drop_logger = Arc::new(DropLogger::new("test-client".into(), overload_tx));
         let writer = ChannelWriter {
             tx,
+            queued_messages: Arc::default(),
             deferred_tx,
             drop_logger,
             outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON.into())),
@@ -2772,8 +3416,8 @@ mod tests {
         writer.send(msg);
 
         let received = rx.try_recv();
-        assert!(received.is_ok(), "writer must enqueue ping");
-        let Ok(received) = received else {
+        assert!(received.is_some(), "writer must enqueue ping");
+        let Some(received) = received else {
             return;
         };
         assert!(matches!(
@@ -2782,14 +3426,244 @@ mod tests {
         ));
     }
 
+    fn bounded_test_writer() -> (
+        ChannelWriter,
+        outbound_queue::Receiver<OutboundMessage>,
+        watch::Receiver<bool>,
+    ) {
+        let (tx, rx) = outbound_queue::channel();
+        let (deferred_tx, _deferred_rx) = mpsc::channel(1);
+        let (overload_tx, overload_rx) = watch::channel(false);
+        let writer = ChannelWriter {
+            tx,
+            queued_messages: Arc::default(),
+            deferred_tx,
+            drop_logger: Arc::new(DropLogger::new("test-client".into(), overload_tx)),
+            outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON.into())),
+        };
+        (writer, rx, overload_rx)
+    }
+
+    fn ping() -> MykoMessage {
+        MykoMessage::Ping(myko::wire::PingData {
+            id: "test".to_string(),
+            timestamp: 0,
+        })
+    }
+
+    #[test]
+    fn commands_past_the_message_bound_are_all_queued_in_order() {
+        let (writer, rx, overload_rx) = bounded_test_writer();
+        let commands = MESSAGE_QUEUE_CAPACITY * 2;
+        for sequence in 0..commands {
+            writer.send_serialized_command(
+                "tx".into(),
+                sequence.to_string(),
+                EncodedCommandMessage::Json(String::new()),
+            );
+        }
+        assert!(
+            !*overload_rx.borrow(),
+            "a command burst must not tear down the session"
+        );
+        // Commands do not consume the message bound.
+        writer.send(ping());
+        assert!(!*overload_rx.borrow());
+        for sequence in 0..commands {
+            let received = rx.try_recv();
+            assert!(
+                matches!(
+                    &received,
+                    Some(OutboundMessage::SerializedCommand { command_id, .. })
+                        if *command_id == sequence.to_string()
+                ),
+                "command {sequence} missing or out of order"
+            );
+        }
+        assert!(matches!(rx.try_recv(), Some(OutboundMessage::Message(_))));
+    }
+
+    #[test]
+    fn slow_reader_gets_every_event_once_and_the_latest_value_per_key() {
+        let (writer, rx, overload_rx) = bounded_test_writer();
+        let keys: Vec<_> = (0..10)
+            .map(|k| CommandValueKey::new(format!("k{k}")))
+            .collect();
+        let frame_id = |frame: &OutboundMessage| match frame {
+            OutboundMessage::SerializedCommand {
+                command_id,
+                payload: EncodedCommandMessage::Json(round),
+                ..
+            } => format!("{command_id}@{round}"),
+            _ => String::from("unexpected frame"),
+        };
+        let before = ws_superseded_value_commands();
+        let mut sent = Vec::new();
+        let mut received = Vec::new();
+        let mut peak = 0;
+        for round in 0..10_000 {
+            for (k, key) in keys.iter().enumerate() {
+                let payload = EncodedCommandMessage::Json(round.to_string());
+                sent.push(format!("v{k}@{round}"));
+                writer.send_serialized_value_command(
+                    key.clone(),
+                    "tx".into(),
+                    format!("v{k}"),
+                    payload,
+                );
+            }
+            if round % 50 == 0 {
+                sent.push(format!("e{round}@-"));
+                let payload = EncodedCommandMessage::Json("-".into());
+                writer.send_serialized_command("tx".into(), format!("e{round}"), payload);
+            }
+            peak = peak.max(rx.len());
+            // The socket writer is blocked; it takes one frame every few rounds.
+            if round % 7 == 0
+                && let Some(frame) = rx.try_recv()
+            {
+                received.push(frame_id(&frame));
+            }
+        }
+        received.extend(std::iter::from_fn(|| rx.try_recv()).map(|frame| frame_id(&frame)));
+        assert!(!*overload_rx.borrow());
+
+        // Values are bounded by keys per event interval, not by sends.
+        assert!(peak <= (10_000 / 50 + 1) * (keys.len() + 1), "peak {peak}");
+        // Delivery is the sent order with superseded values removed.
+        let mut sent_iter = sent.iter();
+        for frame in &received {
+            assert!(sent_iter.any(|s| s == frame), "{frame} out of order");
+        }
+        let events: Vec<_> = received
+            .iter()
+            .filter(|f| f.starts_with('e'))
+            .cloned()
+            .collect();
+        let sent_events: Vec<_> = sent
+            .iter()
+            .filter(|f| f.starts_with('e'))
+            .cloned()
+            .collect();
+        assert_eq!(events, sent_events);
+        for k in 0..keys.len() {
+            let last = received
+                .iter()
+                .rev()
+                .find(|f| f.starts_with(&format!("v{k}@")));
+            assert_eq!(
+                last.map(String::as_str),
+                Some(format!("v{k}@9999").as_str())
+            );
+        }
+        assert!(ws_superseded_value_commands() > before);
+    }
+
+    #[derive(serde::Serialize)]
+    struct Probe;
+
+    impl myko::command::CommandId for Probe {
+        fn command_id(&self) -> Arc<str> {
+            "Probe".into()
+        }
+    }
+
+    #[test]
+    fn registry_sends_report_false_once_the_client_queue_is_closed() {
+        let (writer, rx, _overload_rx) = bounded_test_writer();
+        let registry = myko::server::client_registry();
+        let client_id = Uuid::new_v4().to_string();
+        registry.register(client_id.as_str().into(), Arc::new(writer));
+        let request = myko::command::CommandRequest::new(Probe);
+        let key = CommandValueKey::new("probe");
+
+        assert!(registry.send_command_request_to(&client_id, &request));
+        assert!(registry.send_value_command_request_to(&client_id, key.clone(), &request));
+        assert_eq!(rx.len(), 2);
+
+        // The writer exited but the registry entry is still there.
+        drop(rx);
+        assert!(!registry.send_command_request_to(&client_id, &request));
+        assert!(!registry.send_value_command_request_to(&client_id, key, &request));
+        registry.unregister(&client_id);
+    }
+
+    #[test]
+    fn teardown_counts_queued_events_and_values_it_discards() {
+        let (writer, rx, _overload_rx) = bounded_test_writer();
+        let receiver = OutboundReceiver {
+            rx,
+            queued_messages: Arc::default(),
+            diagnostics: None,
+        };
+        let command = |id: &str| {
+            (
+                Arc::<str>::from("tx"),
+                id.to_string(),
+                EncodedCommandMessage::Json("{}".into()),
+            )
+        };
+        writer.send(ping());
+        for id in ["e1", "e2", "e3"] {
+            let (tx, id, payload) = command(id);
+            writer.send_serialized_command(tx, id, payload);
+        }
+        for k in ["a", "a", "b"] {
+            let (tx, id, payload) = command(k);
+            writer.send_serialized_value_command(CommandValueKey::new(k), tx, id, payload);
+        }
+        // The first event was written before the connection went away.
+        let _ = receiver.rx.try_recv();
+        let _ = receiver.rx.try_recv();
+
+        let events = ws_teardown_discarded_event_commands();
+        let values = ws_teardown_discarded_value_commands();
+        drop(receiver);
+        // Other tests in this binary may tear down queues too: floors.
+        assert!(ws_teardown_discarded_event_commands().saturating_sub(events) >= 2);
+        assert!(ws_teardown_discarded_value_commands().saturating_sub(values) >= 2);
+        let (tx, id, payload) = command("late");
+        assert!(!writer.try_send_serialized_command(tx, id, payload));
+    }
+
+    #[test]
+    fn teardown_with_nothing_queued_counts_nothing() {
+        let (_writer, rx, _overload_rx) = bounded_test_writer();
+        let receiver = OutboundReceiver {
+            rx,
+            queued_messages: Arc::default(),
+            diagnostics: None,
+        };
+        let events = ws_teardown_discarded_event_commands();
+        let values = ws_teardown_discarded_value_commands();
+        drop(receiver);
+        assert_eq!(ws_teardown_discarded_event_commands(), events);
+        assert_eq!(ws_teardown_discarded_value_commands(), values);
+    }
+
+    #[test]
+    fn messages_past_the_bound_mark_connection_for_resnapshot() {
+        let (writer, _rx, overload_rx) = bounded_test_writer();
+        for _ in 0..MESSAGE_QUEUE_CAPACITY {
+            writer.send(ping());
+        }
+        assert!(!*overload_rx.borrow());
+        writer.send(ping());
+        assert!(
+            *overload_rx.borrow(),
+            "message overflow must force a resnapshot"
+        );
+    }
+
     #[test]
     fn full_deferred_queue_marks_connection_for_resnapshot() {
-        let (tx, _rx) = mpsc::channel(1);
+        let (tx, _rx) = outbound_queue::channel();
         let (deferred_tx, mut deferred_rx) = mpsc::channel(1);
         let (overload_tx, overload_rx) = watch::channel(false);
         let drop_logger = Arc::new(DropLogger::new("test-client".into(), overload_tx));
         let writer = ChannelWriter {
             tx,
+            queued_messages: Arc::default(),
             deferred_tx,
             drop_logger,
             outgoing_format: Arc::new(AtomicU8::new(MykoProtocol::JSON.into())),

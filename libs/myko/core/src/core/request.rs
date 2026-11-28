@@ -36,7 +36,9 @@ use crate::entities::client::ClientId;
 ///
 /// Handlers that read [`RequestContext::client_id`] must use
 /// [`Self::PerClient`](RequestCacheScope::PerClient), because their reactive
-/// graph captures the caller that first materializes it. Transaction IDs are
+/// graph captures the caller that first materializes it. A `Shared` graph is
+/// shared by every caller, authenticated or not: authorization happens before
+/// it is built, so it must not read who the caller is. Transaction IDs are
 /// intentionally excluded: they correlate a request but do not change the
 /// graph a caller should share.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]

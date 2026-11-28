@@ -13,6 +13,7 @@ use syn::{
 mod client_events;
 mod command;
 mod graph;
+mod index;
 mod item;
 mod message_events;
 mod operation_contract;
@@ -507,6 +508,20 @@ pub fn myko_non_hash_cache_key(_attr: TokenStream, input: TokenStream) -> TokenS
 /// pub struct Instance {
 ///     #[myko_client_id]
 ///     pub client_id: Option<String>,
+/// }
+/// ```
+///
+/// ## `#[myko_partition_key]`
+/// Partitions the entity type: each item lives in the partition this field
+/// names. A server that declares partitions with `PartitionSchema::new()`
+/// routes the type by it. The field is `Arc<str>`, `String`, or an `Option`
+/// of either; `None` names no partition and the write is refused.
+///
+/// ```ignore
+/// #[myko_item]
+/// pub struct Reading {
+///     #[myko_partition_key]
+///     pub runtime: Arc<str>,
 /// }
 /// ```
 ///

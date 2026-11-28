@@ -34,29 +34,17 @@ fn counts() -> &'static DashMap<String, ReportCounts> {
 
 #[inline]
 pub fn record_hit(report_id: &str) {
-    counts()
-        .entry(report_id.to_string())
-        .or_default()
-        .hits
-        .fetch_add(1, Ordering::Relaxed);
+    bump(counts(), report_id, |c| &c.hits);
 }
 
 #[inline]
 pub fn record_hit_after_gate(report_id: &str) {
-    counts()
-        .entry(report_id.to_string())
-        .or_default()
-        .hits_after_gate
-        .fetch_add(1, Ordering::Relaxed);
+    bump(counts(), report_id, |c| &c.hits_after_gate);
 }
 
 #[inline]
 pub fn record_miss(report_id: &str) {
-    counts()
-        .entry(report_id.to_string())
-        .or_default()
-        .misses
-        .fetch_add(1, Ordering::Relaxed);
+    bump(counts(), report_id, |c| &c.misses);
 }
 
 /// Spawn the summary thread. Idempotent.
@@ -132,4 +120,17 @@ fn emit_window() {
         },
         detail,
     );
+}
+
+/// Counts one event for `key`, allocating the key only the first time it is seen.
+fn bump(
+    map: &DashMap<String, ReportCounts>,
+    key: &str,
+    field: impl Fn(&ReportCounts) -> &AtomicU64,
+) {
+    if let Some(counts) = map.get(key) {
+        field(&counts).fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    field(&map.entry(key.to_owned()).or_default()).fetch_add(1, Ordering::Relaxed);
 }

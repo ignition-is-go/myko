@@ -1,0 +1,40 @@
+[package]
+name = "myko-bench-suite"
+version = "6.17.1"
+edition = "2024"
+description = "Level-2 benchmark, stress and regression suite for myko"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[lints]
+workspace = true
+
+[package.metadata.flux]
+tasks = ["check", "test"]
+
+[dependencies]
+myko.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+ciborium.workspace = true
+flume.workspace = true
+parking_lot.workspace = true
+dashmap.workspace = true
+uuid.workspace = true
+libc = "0.2"
+
+[features]
+default = []
+ci = []
+# Builds the timed full-scale matrix (`benches/level2.rs`). Off by default so
+# `cargo bench` and CI never start a multi-hour timed series by accident.
+bench = []
+
+[[bench]]
+name = "level2"
+harness = false
+required-features = ["bench"]
+
+[[bin]]
+name = "bench-compare"
+path = "src/bin/bench-compare.rs"

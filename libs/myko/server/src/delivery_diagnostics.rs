@@ -68,6 +68,7 @@ struct State {
     send_ms: f64,
     failures: u64,
     untracked: u64,
+    superseded: u64,
 }
 
 fn subscription_response_tx(message: &MykoMessage) -> Option<&str> {
@@ -126,6 +127,12 @@ impl DeliveryDiagnostics {
         Self::with_enabled(client_id, peer, enabled)
     }
 
+    /// Whether delivery diagnostics are recorded for this connection.
+    #[must_use]
+    pub const fn enabled(&self) -> bool {
+        self.state.is_some()
+    }
+
     fn with_enabled(client_id: &str, peer: SocketAddr, enabled: bool) -> Self {
         let diagnostics = Self {
             client_id: client_id.into(),
@@ -150,6 +157,7 @@ impl DeliveryDiagnostics {
                     send_ms: 0.0,
                     failures: 0,
                     untracked: 0,
+                    superseded: 0,
                 })
             }),
         };
@@ -281,6 +289,27 @@ impl DeliveryDiagnostics {
             self.metrics
                 .histogram(Histogram::Setup, subscription.requested.elapsed(), &attrs);
         }
+    }
+
+    /// A queued value command was replaced by a newer one for the same key.
+    pub fn superseded(&self) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let Ok(mut state) = state.lock() else {
+            return;
+        };
+        state.superseded = state.superseded.saturating_add(1);
+    }
+
+    /// The connection closed with commands still queued for it.
+    pub fn teardown_discarded(&self, events: u64, values: u64) {
+        if self.state.is_none() {
+            return;
+        }
+        tracing::warn!(target: "myko_server::delivery", client_id = %self.client_id, peer = %self.peer,
+            discarded_events = events, discarded_values = values,
+            "client teardown discarded queued commands");
     }
 
     pub fn queue(&self, depth: usize, wait: Option<(&str, Duration)>) {
@@ -566,6 +595,7 @@ impl DeliveryDiagnostics {
             equivalent_subscriptions = duplicates, queue_peak = state.queue_peak,
             max_queue_wait_ms = state.queue_wait_ms, max_serialize_ms = state.serialize_ms,
             max_materialize_ms = state.materialize_ms, max_send_ms = state.send_ms, failures = state.failures, untracked = state.untracked,
+            superseded_values = state.superseded,
             "client delivery summary");
         }
         let attrs = self.attributes();
@@ -626,6 +656,7 @@ impl DeliveryDiagnostics {
         state.send_ms = 0.0;
         state.failures = 0;
         state.untracked = 0;
+        state.superseded = 0;
     }
 }
 

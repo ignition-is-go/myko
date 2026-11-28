@@ -66,6 +66,12 @@ mod stub_index {
         pub const fn new() -> Self {
             Self
         }
+        pub(crate) fn for_partition(
+            _root: Arc<Self>,
+            _is_partitioned: crate::store::IsPartitioned,
+        ) -> Self {
+            Self
+        }
         pub fn index_item(&self, _item: &Arc<dyn AnyItem>) {}
         pub const fn remove_entity(&self, _entity_type: &str, _entity_id: &str) {}
         pub const fn commit(&self) {}

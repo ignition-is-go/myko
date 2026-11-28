@@ -105,8 +105,8 @@ pub mod prelude;
 pub mod bench_entities;
 
 /// Shared websocket sizing used by Myko client/server on native platforms.
-pub const WS_MAX_MESSAGE_SIZE_BYTES: usize = 64 * 1024 * 1024;
-pub const WS_MAX_FRAME_SIZE_BYTES: usize = 64 * 1024 * 1024;
+pub const WS_MAX_MESSAGE_SIZE_BYTES: usize = 1024 * 1024 * 1024;
+pub const WS_MAX_FRAME_SIZE_BYTES: usize = 1024 * 1024 * 1024;
 
 // Re-export core modules at top level for backwards compatibility
 #[cfg(not(target_arch = "wasm32"))]
@@ -140,6 +140,23 @@ pub use tracing; // For proc macro generated tracing::debug!/warn! in typed saga
 pub use ts_rs::{self, TS};
 // Re-export wire types at top level for backwards compatibility
 pub use wire::event; // For #[derive(myko::TS)]
+
+/// Declare the view `$view` merged across partitions.
+///
+/// A server builds a client's subscription of it in each partition its
+/// schema's [`PartitionSchema::span`](crate::server::PartitionSchema::span)
+/// rule names and delivers the union. No graph may read it.
+#[macro_export]
+macro_rules! merged_across_partitions {
+    ($view:ty) => {
+        impl $crate::server::MergedAcrossPartitions for $view {}
+        $crate::inventory::submit! {
+            $crate::server::MergedViewRegistration {
+                view_id: <$view as $crate::view::ViewIdStatic>::view_id_static,
+            }
+        }
+    };
+}
 
 /// Register a Rust type for generated-language export.
 ///

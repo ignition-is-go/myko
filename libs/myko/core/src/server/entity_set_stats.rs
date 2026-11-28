@@ -41,22 +41,14 @@ fn counts() -> &'static DashMap<String, Counts> {
 /// plus a relaxed atomic increment.
 #[inline]
 pub fn record_set(entity_type: &str) {
-    counts()
-        .entry(entity_type.to_string())
-        .or_default()
-        .set
-        .fetch_add(1, Ordering::Relaxed);
+    bump(counts(), entity_type, |c| &c.set);
 }
 
 /// Record a single entity `DEL` for `entity_type`. Counted separately from
 /// `SET` so the summary distinguishes churn from removal.
 #[inline]
 pub fn record_del(entity_type: &str) {
-    counts()
-        .entry(entity_type.to_string())
-        .or_default()
-        .del
-        .fetch_add(1, Ordering::Relaxed);
+    bump(counts(), entity_type, |c| &c.del);
 }
 
 /// Spawn the summary thread. Idempotent.
@@ -117,4 +109,13 @@ fn emit_window() {
         del_total,
         detail,
     );
+}
+
+/// Counts one event for `key`, allocating the key only the first time it is seen.
+fn bump(map: &DashMap<String, Counts>, key: &str, field: impl Fn(&Counts) -> &AtomicU64) {
+    if let Some(counts) = map.get(key) {
+        field(&counts).fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    field(&map.entry(key.to_owned()).or_default()).fetch_add(1, Ordering::Relaxed);
 }

@@ -173,7 +173,7 @@ jobs:
         # Package myko alongside myko-gpui so the verify build resolves myko
         # from this checkout. Alone, it resolves the last published myko and
         # fails any change that adds myko API and uses it in myko-gpui.
-        run: cargo publish --dry-run --locked --allow-dirty -p myko -p myko-gpui
+        run: cargo publish --dry-run --locked --allow-dirty -p myko-macros -p myko -p myko-gpui
       - name: Save ROSE snapshot and clean local Cargo targets
         if: success() && steps.compiler-snapshot.outputs.state != ''
         uses: ignition-is-go/pulse-actions/actions/flux-target-cache@9a22a3c3987bfa13c1619f6bc3ff14de893e35e8

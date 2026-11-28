@@ -156,7 +156,7 @@ pub enum QueryTraceErrorKind {
 
 #[derive(Clone)]
 struct QueryTraceEmitter {
-    trace: hyphae::cell::WeakCell<Option<QueryTrace>, CellMutable>,
+    trace: hyphae::WeakCell<Option<QueryTrace>, CellMutable>,
     query_id: Arc<str>,
     tx: Arc<str>,
     epoch: Arc<AtomicU64>,
@@ -794,7 +794,7 @@ trait ClientReportCacheEntryDyn: Any + Send + Sync {
 }
 
 struct ClientReportCacheEntry<T> {
-    weak: hyphae::cell::WeakCell<T, CellImmutable>,
+    weak: hyphae::WeakCell<T, CellImmutable>,
 }
 
 impl<T: Clone + Send + Sync + 'static> ClientReportCacheEntry<T> {
@@ -825,10 +825,10 @@ trait ClientListWatchCacheEntryDyn: Any + Send + Sync {
 
 struct ClientListWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
-    items: hyphae::cell::WeakCell<Vec<T>, CellImmutable>,
-    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
-    error: hyphae::cell::WeakCell<Option<String>, CellImmutable>,
-    trace: Option<hyphae::cell::WeakCell<Option<QueryTrace>, CellImmutable>>,
+    items: hyphae::WeakCell<Vec<T>, CellImmutable>,
+    ready: hyphae::WeakCell<bool, CellImmutable>,
+    error: hyphae::WeakCell<Option<String>, CellImmutable>,
+    trace: Option<hyphae::WeakCell<Option<QueryTrace>, CellImmutable>>,
 }
 
 impl<T: CellValue> ClientListWatchCacheEntry<T> {
@@ -867,13 +867,13 @@ impl<T: CellValue> ClientListWatchCacheEntryDyn for ClientListWatchCacheEntry<T>
 
 struct ClientWindowWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
-    items: hyphae::cell::WeakCell<Vec<Arc<T>>, CellImmutable>,
-    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
-    total_count: hyphae::cell::WeakCell<Option<usize>, CellImmutable>,
-    window: hyphae::cell::WeakCell<Option<QueryWindow>, CellImmutable>,
-    state: hyphae::cell::WeakCell<WindowedQueryState<T>, CellImmutable>,
+    items: hyphae::WeakCell<Vec<Arc<T>>, CellImmutable>,
+    ready: hyphae::WeakCell<bool, CellImmutable>,
+    total_count: hyphae::WeakCell<Option<usize>, CellImmutable>,
+    window: hyphae::WeakCell<Option<QueryWindow>, CellImmutable>,
+    state: hyphae::WeakCell<WindowedQueryState<T>, CellImmutable>,
     cursor_window: Arc<std::sync::Mutex<Option<QueryCursorWindow>>>,
-    error: hyphae::cell::WeakCell<Option<String>, CellImmutable>,
+    error: hyphae::WeakCell<Option<String>, CellImmutable>,
 }
 
 impl<T: CellValue> ClientWindowWatchCacheEntry<T> {
@@ -923,7 +923,7 @@ trait ClientMapWatchCacheEntryDyn: Any + Send + Sync {
 struct ClientMapWatchCacheEntry<T: CellValue> {
     tx: Arc<str>,
     map: WeakCellMap<Arc<str>, Arc<T>>,
-    ready: hyphae::cell::WeakCell<bool, CellImmutable>,
+    ready: hyphae::WeakCell<bool, CellImmutable>,
     sampling: Option<Arc<view_map::ViewSamplingControl>>,
 }
 
@@ -1352,8 +1352,8 @@ impl MykoClient {
         options: MykoClientOptions,
     ) -> Self {
         let protocol = Arc::new(AtomicU8::new(MykoProtocol::JSON.into()));
-        let last_message = Cell::new(None).with_name("last_message");
-        let ping_ms = Cell::new(None).with_name("ping_ms");
+        let last_message = Cell::new(None);
+        let ping_ms = Cell::new(None);
 
         let query_handlers: DashMap<Arc<str>, QueryHandler> = DashMap::new();
         let report_handlers: DashMap<Arc<str>, ReportHandler> = DashMap::new();
@@ -2105,15 +2105,12 @@ impl MykoClient {
         let query = QueryRequest::with_tx(supplied.query, next_subscription_tx());
         let tx: Arc<str> = query.tx.clone();
 
-        let cell = Cell::new(vec![]).with_name(query_id.as_ref());
+        let cell = Cell::new(vec![]);
         let cell_weak = cell.downgrade();
-        let ready =
-            Cell::<bool, CellMutable>::new(false).with_name(format!("query_ready:{query_id}"));
+        let ready = Cell::<bool, CellMutable>::new(false);
         let ready_weak = ready.downgrade();
         let ready_read = ready.clone().lock();
-        let trace = Cell::<Option<QueryTrace>, CellMutable>::new(None)
-            .with_name(format!("query_trace:{query_id}"))
-            .no_coalesce();
+        let trace = Cell::<Option<QueryTrace>, CellMutable>::new(None).no_coalesce();
         let trace_read = trace.clone().lock();
         let epoch = Arc::new(AtomicU64::new(0));
         let trace_emitter = QueryTraceEmitter {
@@ -2400,7 +2397,7 @@ impl MykoClient {
         }
 
         let tx: Arc<str> = report.tx.clone();
-        let cell = Cell::new(None).with_name(report_id.as_ref());
+        let cell = Cell::new(None);
         let cell_weak = cell.downgrade();
 
         let Ok(report_value) = serde_json::to_value(&report) else {
@@ -2606,10 +2603,9 @@ impl MykoClient {
 
         let view = ViewRequest::with_tx(supplied.view, next_subscription_tx());
         let tx: Arc<str> = view.tx.clone();
-        let cell = Cell::new(vec![]).with_name(view_id.as_ref());
+        let cell = Cell::new(vec![]);
         let cell_weak = cell.downgrade();
-        let ready =
-            Cell::<bool, CellMutable>::new(false).with_name(format!("view_ready:{view_id}"));
+        let ready = Cell::<bool, CellMutable>::new(false);
         let ready_weak = ready.downgrade();
         let ready_read = ready.clone().lock();
 
@@ -2815,7 +2811,7 @@ impl MykoClient {
             }
         };
 
-        let cell = Cell::new(None).with_name(format!("cmd:{}", command.command_id()).as_str());
+        let cell = Cell::new(None);
         let cell_writer = cell.clone();
 
         // Register one-shot handler
@@ -2957,7 +2953,7 @@ impl MykoClient {
         request.insert("tx".to_owned(), Value::String(tx.to_string()));
 
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
-        let cell = Cell::new(Vec::<Value>::new()).with_name(query.query_id.as_ref());
+        let cell = Cell::new(Vec::<Value>::new());
         let cell_weak = cell.downgrade();
         let ready = Cell::new(false);
         let ready_weak = ready.downgrade();
@@ -3073,7 +3069,7 @@ impl MykoClient {
         request.insert("tx".to_owned(), Value::String(tx.to_string()));
 
         let state: Arc<Mutex<HashMap<Arc<str>, Value>>> = Arc::default();
-        let cell = Cell::new(Vec::<Value>::new()).with_name(view.view_id.as_ref());
+        let cell = Cell::new(Vec::<Value>::new());
         let cell_weak = cell.downgrade();
         let ready = Cell::new(false);
         let ready_weak = ready.downgrade();
@@ -3174,7 +3170,7 @@ impl MykoClient {
             .unwrap_or("")
             .into();
 
-        let cell = Cell::new(None).with_name(report.report_id.as_str());
+        let cell = Cell::new(None);
         let cell_weak = cell.downgrade();
 
         let msg = MykoMessage::Report(report);
@@ -3226,7 +3222,7 @@ impl MykoClient {
             .command_observers
             .is_observed()
             .then(|| command.command_id.as_str().into());
-        let cell = Cell::new(None).with_name(format!("cmd:{}", command.command_id).as_str());
+        let cell = Cell::new(None);
         let cell_writer = cell.clone();
 
         {
@@ -3767,11 +3763,15 @@ mod query_trace_tests {
 
 #[cfg(test)]
 mod report_dispatch_tests {
-    use super::{MykoClient, ReportHandler, dispatch_report_response};
+    use std::{
+        sync::{Arc, Barrier, mpsc},
+        time::Duration,
+    };
+
     use dashmap::DashMap;
     use serde_json::Value;
-    use std::sync::{Arc, Barrier, mpsc};
-    use std::time::Duration;
+
+    use super::{MykoClient, ReportHandler, dispatch_report_response};
 
     #[test]
     fn report_callback_can_cancel_itself_without_deadlocking_dispatch() {
@@ -3868,14 +3868,18 @@ mod report_dispatch_tests {
 
 #[cfg(test)]
 mod callback_dispatch_tests {
+    use std::{
+        sync::{Arc, Barrier, mpsc},
+        time::Duration,
+    };
+
+    use dashmap::DashMap;
+    use serde_json::Value;
+
     use super::{
         Cell, CellImmutable, CommandRequestHandler, CommandResponder, MykoClient, QueryHandler,
         dispatch_command_request, dispatch_query_response,
     };
-    use dashmap::DashMap;
-    use serde_json::Value;
-    use std::sync::{Arc, Barrier, mpsc};
-    use std::time::Duration;
 
     fn registered_query_tx(client: &MykoClient) -> Result<Arc<str>, &'static str> {
         client
@@ -4561,7 +4565,7 @@ mod send_admission_tests {
                     }
                 }))),
             });
-            let transport_dyn: Arc<dyn SocketTransport> = transport.clone();
+            let transport_dyn: Arc<dyn SocketTransport> = transport;
             let client = MykoClient::with_transport_and_options(
                 &transport_dyn,
                 MykoClientOptions {
@@ -4674,8 +4678,9 @@ mod send_admission_tests {
 #[cfg(test)]
 #[allow(clippy::panic_in_result_fn)]
 mod report_result_tests {
-    use super::*;
     use std::{sync::mpsc, time::Duration};
+
+    use super::*;
 
     struct FixtureTransport {
         status: Cell<ConnectionStatus, CellMutable>,

@@ -9,6 +9,7 @@ members = [
   "libs/myko/macros",
   "libs/myko/server",
   "libs/myko/telemetry",
+  "libs/myko/bench-suite",
   "libs/myko/leptos",
   "libs/myko/gpui",
   "libs/autosocket",
@@ -45,6 +46,15 @@ panic_in_result_fn = "deny"
 panic = "deny"
 exit = "deny"
 as_conversions = "deny"
+# New in Rust 1.100 and not followed here:
+# asks for `assert_eq!(x, [] as [T; 0])` in place of `assert!(x.is_empty())`.
+assert_is_empty = "allow"
+# Fires on what leptos' `#[component]` generates and on `Unfilterable`,
+# whose derives the never type cannot carry.
+empty_enums = "allow"
+# Suggests `Option::map_or_default`, which is not stable before Rust 1.99.
+# No crate declares a `rust-version`, so the suggestion would raise it.
+map_unwrap_or = "allow"
 
 [workspace.dependencies]
 num-traits = "0.2"
@@ -100,7 +110,7 @@ parking_lot = "0.12"
 
 # The scheduler is required by Myko's batched store propagation. Keep the
 # Leptos adapter on the same Hyphae major so its extension traits share types.
-hyphae = { version = "^3.1.11", features = ["scheduler"] }
+hyphae = { version = "^3.1.11" }
 hyphae-leptos = { version = "^3.1.11" }
 # Pin the published bridge so Myko and Hyphae share one GPUI type universe.
 hyphae-gpui = "=3.1.11"
@@ -124,3 +134,6 @@ myko-server = { version = "6.19.4", path = "libs/myko/server" }
 # Test the Git-distributed GPUI bridge against this workspace's Myko core.
 # Downstream consumers ignore dependency-owned patches and use crates.io.
 myko = { path = "libs/myko/core" }
+# NOTE(ts): scheduling domains are not in a published hyphae yet. Remove this
+# line and raise the hyphae requirement once hyphae releases them.
+hyphae = { git = "https://github.com/ignition-is-go/hyphae.git", rev = "d739a5d9b1b478e2afc72d45960fafb3aea24dd1" }

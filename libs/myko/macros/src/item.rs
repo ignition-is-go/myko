@@ -153,6 +153,12 @@ fn generate_get_by_ids_query(
                 ctx.query.ids.contains(&ctx.item.id.clone().into())
             }
 
+            fn snapshot_route(&self) -> Option<#krate::query::QueryRoute> {
+                Some(#krate::query::QueryRoute::Ids(
+                    self.ids.iter().map(|id| std::sync::Arc::<str>::from(id.clone())).collect(),
+                ))
+            }
+
             #[cfg(not(target_arch = "wasm32"))]
             fn build_view(
                 ctx: #krate::prelude::QueryBuildArgs<Self>,
@@ -178,16 +184,24 @@ fn generate_filter_struct(
     name: &syn::Ident,
     filter_ident: &syn::Ident,
     filter_fields: &[(syn::Ident, syn::Type)],
+    each_filters: &[(syn::Ident, TokenStream)],
     ctx: &DeriveCtx,
 ) -> TokenStream {
     let krate = &ctx.krate;
     let serde_path = &ctx.serde_path;
     let serde_rename_attr = ctx.serde_attr(&quote!(rename_all = "camelCase"));
     let fields = filter_fields.iter().map(|(field_ident, field_ty)| {
+        let filter = each_filters
+            .iter()
+            .find(|(each, _)| each == field_ident)
+            .map_or_else(
+                || quote!(<#field_ty as #krate::query::Filterable>::Filter),
+                |(_, filter)| filter.clone(),
+            );
         quote! {
             #[serde(default, skip_serializing_if = "Option::is_none")]
             #[ts(optional = nullable)]
-            pub #field_ident: Option<<#field_ty as #krate::query::Filterable>::Filter>
+            pub #field_ident: Option<#filter>
         }
     });
     let matches = filter_fields.iter().map(|(field_ident, field_ty)| {
@@ -241,7 +255,7 @@ fn generate_route_arms(
     name: &syn::Ident,
     belongs_to: &[&relationship::BelongsToInfo],
     krate: &syn::Path,
-) -> Vec<TokenStream> {
+) -> Vec<(usize, TokenStream)> {
     let count = belongs_to.len();
     let Some(mask_limit) = 1u32.checked_shl(u32::try_from(count).unwrap_or(u32::MAX)) else {
         return Vec::new();
@@ -289,7 +303,8 @@ fn generate_route_arms(
             let values = filters.iter().map(|filter| quote! {
             #filter.key_values().into_iter().map(std::sync::Arc::<str>::from).collect::<Vec<_>>()
         });
-            quote! {
+            let pinned = selected.len();
+            let arm = quote! {
                 #condition {
                     let keys = #krate::query::cartesian_product(vec![#(#values),*]);
                     return Some(#krate::query::BelongsToRoute {
@@ -298,9 +313,11 @@ fn generate_route_arms(
                             item.downcast_ref::<#name>()
                                 .map(|e| #krate::query::CompoundKey::from_iter([#(#extracted),*]))
                         },
+                        extract_each: None,
                     });
                 }
-            }
+            };
+            (pinned, arm)
         })
         .collect()
 }
@@ -377,6 +394,11 @@ fn generate_filter_query(
             }
 
             #[cfg(not(target_arch = "wasm32"))]
+            fn snapshot_route(&self) -> Option<#krate::query::QueryRoute> {
+                self.0.query_route()
+            }
+
+            #[cfg(not(target_arch = "wasm32"))]
             fn build_view(ctx: #krate::prelude::QueryBuildArgs<Self>)
                 -> Option<impl #krate::prelude::MapQuery<
                     Key = std::sync::Arc<str>,
@@ -384,21 +406,25 @@ fn generate_filter_query(
                 >>
             where Self: std::marker::Send + std::marker::Sync + 'static,
             {
+                let mut residual = ctx.query.clone();
                 let source = if let Some(source) = #krate::query::registered_entity_source(&ctx.query_context, #name_str, ctx.query.as_ref()) { source } else { match ctx.query.0.query_route()? {
                     #krate::query::QueryRoute::Ids(ids) => {
+                        // The source holds these ids and no others, so the
+                        // id filter has nothing left to reject. Testing it
+                        // again would scan the id list for every changed row.
+                        std::sync::Arc::make_mut(&mut residual).0.id = None;
                         let store = ctx.query_context.registry().get_or_create(#name_str);
                         #krate::query::build_ids_source_map(&store, &ids)
                     }
                     #krate::query::QueryRoute::BelongsTo(route) => {
-                        #krate::query::build_belongs_to_union_source_map(
+                        #krate::query::build_index_union_source_map(
                             ctx.query_context.registry(),
-                            ctx.query_context.query_context.req.host_id,
-                            #name_str, route.field_names, route.extract_fk, route.keys,
+                            #name_str, route,
                         )
                     }
                 }};
                 Some(#krate::query::filter_query_over_source::<#query_ident>(
-                    source, ctx.query.clone(), ctx.query_context.query_context.clone(),
+                    source, residual, ctx.query_context.query_context.clone(),
                 ))
             }
         }
@@ -486,9 +512,12 @@ fn generate_get_by_id_report(
                 use #krate::prelude::{Eventable, MapExt};
                 let id: std::sync::Arc<str> = self.id.clone().into();
                 let store = ctx.entity_query_source(#name::ENTITY_NAME_STATIC, self);
+                // The row is handed on as the store holds it. Cloning it
+                // would copy the whole entity for every write and subscriber.
                 store.get(&id).map(move |item| std::sync::Arc::new(
-                    item.as_ref().and_then(|item| item.as_any().downcast_ref::<#name>())
-                        .map(|typed| std::sync::Arc::new(typed.clone()))
+                    item.as_ref().and_then(|item| {
+                        #krate::item::downcast_any_item_arc::<#name>(item, "get by id report")
+                    })
                 ))
             }
         }
@@ -756,6 +785,9 @@ fn generate_id_type(name: &syn::Ident, id: &syn::Ident, ctx: &DeriveCtx) -> Toke
         }
         impl #krate::hyphae::IdType for #id { type Parent = #name; }
         impl #krate::query::Filterable for #id { type Filter = #krate::query::IdFilter<#id>; }
+        impl #krate::query::IndexKey for #id {
+            fn index_key(&self) -> Option<std::sync::Arc<str>> { Some(self.0.clone()) }
+        }
     }
 }
 
@@ -909,13 +941,20 @@ pub fn myko_item_impl(args: &ItemArgs, mut input_struct: ItemStruct) -> TokenStr
             Ok(queries) => queries,
             Err(error) => return error.to_compile_error(),
         };
-    let expanded = prepare_item(args, input_struct)
-        .map_or_else(|err| err.to_compile_error(), expand_prepared_item);
+    let expanded = crate::index::take_indexes(&mut input_struct)
+        .and_then(|indexes| Ok((prepare_item(args, input_struct)?, indexes)))
+        .map_or_else(
+            |err| err.to_compile_error(),
+            |(prepared, indexes)| expand_prepared_item(prepared, &indexes),
+        );
     quote!(#expanded #registration #queries #external_events)
 }
 
 #[allow(clippy::too_many_lines)]
-fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
+fn expand_prepared_item(
+    prepared: PreparedItem,
+    indexes: &[crate::index::IndexDecl],
+) -> TokenStream {
     let PreparedItem {
         undoable,
         input_struct,
@@ -979,7 +1018,9 @@ fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
     // deserialize; `skip_serializing_if` keeps unpinned fields off the wire
     // (and out of the serde-derived cache key, which only sees pinned
     // fields either way since it hashes the canonicalized value).
-    let filter_struct = generate_filter_struct(name, &filter_ident, &filter_fields, &ctx);
+    let each_filters = crate::index::each_filter_types(indexes, krate);
+    let filter_struct =
+        generate_filter_struct(name, &filter_ident, &filter_fields, &each_filters, &ctx);
 
     // K-bucket union routing for In/Eq on #[belongs_to] fields — the spec
     // §4 hard requirement. Subset enumeration (largest/most-selective
@@ -997,7 +1038,22 @@ fn expand_prepared_item(prepared: PreparedItem) -> TokenStream {
     // incremental per-tick diffing can call the exact same decision logic
     // build_view uses for the one-shot value-based query — one routing
     // rule, two consumers.
-    let filter_belongs_to_route_arms = generate_route_arms(name, &required_belongs_to, krate);
+    // Declared indexes join the belongs_to subsets. Arms are tried from the
+    // most fields pinned down; at equal counts a belongs_to subset comes
+    // before a declared index, and declared indexes keep their order.
+    let mut route_arms: Vec<(usize, usize, TokenStream)> =
+        generate_route_arms(name, &required_belongs_to, krate)
+            .into_iter()
+            .map(|(fields, arm)| (fields, 0, arm))
+            .chain(
+                crate::index::route_arms(name, indexes, krate)
+                    .into_iter()
+                    .map(|(fields, arm)| (fields, 1, arm)),
+            )
+            .collect();
+    route_arms.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    let filter_belongs_to_route_arms: Vec<TokenStream> =
+        route_arms.into_iter().map(|(_, _, arm)| arm).collect();
 
     // BelongsToRoute is a plain data type visible on every target (needed so
     // ReportContext::query_live's wasm32 stub can name LiveFilterQuery in its
