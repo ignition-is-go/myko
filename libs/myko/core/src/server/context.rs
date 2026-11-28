@@ -3615,6 +3615,12 @@ impl MykoServerContext {
     ///
     /// The typed projection is cached — multiple callers with the same query
     /// share a single underlying map instead of each creating their own copy.
+    ///
+    /// The map follows the store through diffs the scheduler delivers. While
+    /// another thread drains the domain, a write that has returned can reach
+    /// the map after it is built, so its first contents may predate that
+    /// write. Read a point-in-time result, your own writes included, with
+    /// [`query_snapshot`](Self::query_snapshot).
     pub fn query_map<Q>(
         &self,
         query: Q,
