@@ -482,7 +482,7 @@ impl BelongsToSourceIndex {
                 }
                 let changes = match ahead.get_mut(&fk) {
                     Some(rows_ahead) => {
-                        let changes = Self::skip_held(changes, rows_ahead);
+                        let changes = self.skip_held(&fk, changes, rows_ahead);
                         if rows_ahead.is_empty() {
                             ahead.remove(&fk);
                         }
@@ -498,37 +498,48 @@ impl BelongsToSourceIndex {
             .collect()
     }
 
-    /// Drop the changes to rows a bucket was seeded ahead with: every change
-    /// up to and including the one that reaches the row it holds.
+    /// Bring the changes to rows a bucket was seeded ahead with in line with
+    /// what the bucket holds. A change that leaves the row older than the
+    /// store's is dropped: a later queued diff carries the store's row. The
+    /// change that reaches the store's row ends the hold, and reaches the
+    /// bucket only if the bucket holds something else, as the insert or
+    /// removal that takes it from the held row to the store's.
     fn skip_held(
+        &self,
+        foreign_key: &CompoundKey,
         changes: BucketDiffs,
         ahead: &mut HashMap<Arc<str>, Option<AnyItemArc>>,
     ) -> BucketDiffs {
         changes
             .into_iter()
-            .filter(|change| {
-                let (id, row) = match change {
+            .filter_map(|change| {
+                let (id, row) = match &change {
                     MapDiff::Insert { key, value }
                     | MapDiff::Update {
                         key,
                         new_value: value,
                         ..
-                    } => (key, Some(value)),
-                    MapDiff::Remove { key, .. } => (key, None),
-                    MapDiff::Initial { .. } | MapDiff::Batch { .. } => return true,
+                    } => (key.clone(), Some(value.clone())),
+                    MapDiff::Remove { key, .. } => (key.clone(), None),
+                    MapDiff::Initial { .. } | MapDiff::Batch { .. } => return Some(change),
                 };
-                let Some(held) = ahead.get(id) else {
-                    return true;
-                };
-                let reached = match (held, row) {
-                    (Some(held), Some(row)) => same_row(held, row),
-                    (None, None) => true,
-                    _ => false,
-                };
-                if reached {
-                    ahead.remove(id);
+                let held = ahead.get(&id)?.clone();
+                let stored = self
+                    .store
+                    .get_value(&id)
+                    .filter(|item| self.extract_fk.keys(item.as_any()).contains(foreign_key));
+                if !same_slot(row.as_ref(), stored.as_ref()) {
+                    return None;
                 }
-                false
+                ahead.remove(&id);
+                if same_slot(held.as_ref(), row.as_ref()) {
+                    return None;
+                }
+                match (row, held) {
+                    (Some(value), _) => Some(MapDiff::Insert { key: id, value }),
+                    (None, Some(old_value)) => Some(MapDiff::Remove { key: id, old_value }),
+                    (None, None) => None,
+                }
             })
             .collect()
     }
@@ -665,6 +676,15 @@ fn belongs_to_source_index_for(
 /// `Arc` the store holds, so identity finds the diff that wrote a row.
 fn same_row(a: &AnyItemArc, b: &AnyItemArc) -> bool {
     std::ptr::addr_eq(Arc::as_ptr(a), Arc::as_ptr(b))
+}
+
+/// Whether two optional rows are both absent or the same stored row.
+fn same_slot(a: Option<&AnyItemArc>, b: Option<&AnyItemArc>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => same_row(a, b),
+        (None, None) => true,
+        _ => false,
+    }
 }
 
 thread_local! {

@@ -82,15 +82,17 @@ fn rows_of(
     rows
 }
 
+/// The root drain is process-wide, so a test holding one would hold up the
+/// other's writes.
+fn one_at_a_time() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Run `during` while another thread holds a root-domain drain open, so the
 /// store diffs it produces stay queued until it returns.
 fn while_another_thread_drains<R>(during: impl FnOnce() -> R) -> R {
-    // NOTE(ts): The root drain is process-wide, so two tests holding one at
-    // once would each queue behind the other.
-    static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
-    let _serial = ONE_AT_A_TIME
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (ready_tx, ready_rx) = mpsc::channel();
     let (go_tx, go_rx) = mpsc::channel::<()>();
     let (done_tx, done_rx) = mpsc::channel::<()>();
@@ -127,6 +129,7 @@ fn pair(id: &str, address: &str) -> (String, String) {
 
 #[test]
 fn a_route_built_during_a_drain_holds_an_insert_that_returned() {
+    let _serial = one_at_a_time();
     let ctx = make_ctx();
     ctx.set(&client("c1", "a")).expect("set c1");
     assert_eq!(rows(&ctx), vec![pair("c1", "a")], "builds the index");
@@ -145,6 +148,7 @@ fn a_route_built_during_a_drain_holds_an_insert_that_returned() {
 
 #[test]
 fn queued_diffs_do_not_move_a_route_back_to_an_older_row() {
+    let _serial = one_at_a_time();
     let ctx = make_ctx();
     ctx.set(&client("c1", "a")).expect("set c1");
     ctx.set(&client("gone", "a")).expect("set gone");
